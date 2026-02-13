@@ -1,4 +1,8 @@
-import { streamText, type Message } from "ai";
+import {
+  streamText,
+  convertToModelMessages,
+  type UIMessage,
+} from "ai";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { Config } from "../config.js";
@@ -25,16 +29,29 @@ export async function chatRoutes(app: FastifyInstance, config: Config) {
     const model = createModel(config);
     const system = buildSystemPrompt(canvasContext);
 
+    const modelMessages = await convertToModelMessages(
+      messages as unknown as UIMessage[]
+    );
+
     const result = streamText({
       model,
       system,
-      messages: messages as unknown as Message[],
+      messages: modelMessages,
       tools: penTools,
     });
 
-    reply.header("Content-Type", "text/plain; charset=utf-8");
-    reply.header("X-Vercel-AI-Data-Stream", "v1");
+    // Set CORS headers manually since reply.hijack() bypasses Fastify plugins.
+    const origin = request.headers.origin;
+    if (origin) {
+      reply.raw.setHeader("Access-Control-Allow-Origin", origin);
+      reply.raw.setHeader("Access-Control-Allow-Credentials", "true");
+    }
 
-    return reply.send(result.toDataStream());
+    // Pipe the UI message stream directly to the raw Node.js response,
+    // bypassing Fastify's send() which can't handle object streams.
+    result.pipeUIMessageStreamToResponse(reply.raw);
+
+    // Tell Fastify we already handled the response.
+    reply.hijack();
   });
 }

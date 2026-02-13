@@ -7,7 +7,7 @@ export const penTools = {
   get_editor_state: tool({
     description:
       "Get the current editor state including active .pen file, user selection, top-level nodes, and available reusable components. Call this first to understand what you're working with.",
-    parameters: z.object({
+    inputSchema: z.object({
       include_schema: z
         .boolean()
         .describe(
@@ -19,7 +19,7 @@ export const penTools = {
   open_document: tool({
     description:
       'Open an existing .pen file or create a new one. Pass "new" to create a blank document, or a file path to open an existing file.',
-    parameters: z.object({
+    inputSchema: z.object({
       filePathOrTemplate: z
         .string()
         .describe(
@@ -31,7 +31,7 @@ export const penTools = {
   batch_get: tool({
     description:
       "Retrieve nodes by searching for matching patterns or by reading specific node IDs. Supports flexible tree traversal with depth control. Use this to inspect node structure before modifying.",
-    parameters: z.object({
+    inputSchema: z.object({
       patterns: z
         .array(
           z.object({
@@ -107,7 +107,7 @@ export const penTools = {
   snapshot_layout: tool({
     description:
       "Get computed layout rectangles (positions and sizes after the layout engine runs). Use this to understand where elements actually appear on screen, check for overlapping/clipped elements, and find space for new content.",
-    parameters: z.object({
+    inputSchema: z.object({
       parentId: z
         .string()
         .optional()
@@ -132,7 +132,7 @@ export const penTools = {
   get_screenshot: tool({
     description:
       "Take a screenshot of a specific node for visual verification. Use this after making changes to confirm they look correct. Returns an image.",
-    parameters: z.object({
+    inputSchema: z.object({
       nodeId: z.string().describe("The ID of the node to screenshot."),
     }),
   }),
@@ -140,7 +140,7 @@ export const penTools = {
   get_variables: tool({
     description:
       "Read all design variables (tokens) and themes defined in the .pen file. Variables can be colors, numbers, strings, or booleans, and may have different values per theme.",
-    parameters: z.object({}),
+    inputSchema: z.object({}),
   }),
 
   // ── Modification ──────────────────────────────────────────────────
@@ -175,7 +175,7 @@ card=I("parentId", {type: "ref", ref: "CardComp"})
 U(card+"/title", {content: "Account Details"})
 U(card+"/description", {content: "Manage your settings"})
 \`\`\``,
-    parameters: z.object({
+    inputSchema: z.object({
       operations: z
         .string()
         .describe(
@@ -187,7 +187,7 @@ U(card+"/description", {content: "Manage your settings"})
   set_variables: tool({
     description:
       "Add or update design variables and themes. Variables can reference theme axes for different values per theme. By default merges with existing variables; set replace=true to overwrite all.",
-    parameters: z.object({
+    inputSchema: z.object({
       variables: z
         .record(z.unknown())
         .describe("Variable definitions to add or merge."),
@@ -203,7 +203,7 @@ U(card+"/description", {content: "Manage your settings"})
   replace_all_matching_properties: tool({
     description:
       "Recursively find-and-replace property values across the node tree. Useful for bulk color/font/spacing changes (e.g. rebranding, theme adjustments).",
-    parameters: z.object({
+    inputSchema: z.object({
       parents: z
         .array(z.string())
         .describe("Node IDs to search within recursively."),
@@ -256,7 +256,7 @@ U(card+"/description", {content: "Manage your settings"})
   find_empty_space_on_canvas: tool({
     description:
       "Find available empty space on the canvas in a given direction with the specified dimensions. Use before inserting new top-level frames to avoid overlapping.",
-    parameters: z.object({
+    inputSchema: z.object({
       direction: z
         .enum(["top", "right", "bottom", "left"])
         .describe("Direction to search for empty space."),
@@ -277,7 +277,7 @@ U(card+"/description", {content: "Manage your settings"})
   search_all_unique_properties: tool({
     description:
       "Search for all unique values of specified properties across the node tree. Useful for auditing design consistency (e.g. finding all colors or font sizes in use).",
-    parameters: z.object({
+    inputSchema: z.object({
       parents: z
         .array(z.string())
         .describe("Node IDs to search within recursively."),
@@ -303,7 +303,7 @@ U(card+"/description", {content: "Manage your settings"})
   get_guidelines: tool({
     description:
       "Get design guidelines and rules for a specific topic. Returns static instructional content to help you follow best practices.",
-    parameters: z.object({
+    inputSchema: z.object({
       topic: z
         .enum(["code", "table", "tailwind", "landing-page", "design-system"])
         .describe("Topic to retrieve guidelines for."),
@@ -313,13 +313,13 @@ U(card+"/description", {content: "Manage your settings"})
   get_style_guide_tags: tool({
     description:
       "Get all available style guide tags. Call this before get_style_guide to know which tags you can use for filtering.",
-    parameters: z.object({}),
+    inputSchema: z.object({}),
   }),
 
   get_style_guide: tool({
     description:
       "Get a style guide for design inspiration. Either pass 5-10 tags to find a matching style, or pass a specific name to retrieve a known style guide.",
-    parameters: z.object({
+    inputSchema: z.object({
       tags: z
         .array(z.string())
         .optional()
