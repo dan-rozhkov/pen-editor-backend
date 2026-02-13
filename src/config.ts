@@ -3,9 +3,8 @@ import { z } from "zod";
 const envSchema = z.object({
   PORT: z.coerce.number().default(3001),
   HOST: z.string().default("0.0.0.0"),
-  OPENAI_API_KEY: z.string().min(1, "OPENAI_API_KEY is required"),
-  OPENAI_BASE_URL: z.string().optional(),
-  OPENAI_MODEL: z.string().default("gpt-4o"),
+  OPENROUTER_API_KEY: z.string().min(1, "OPENROUTER_API_KEY is required"),
+  OPENROUTER_MODEL: z.string().default("openai/gpt-4o"),
 });
 
 export type Config = z.infer<typeof envSchema>;

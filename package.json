@@ -8,8 +8,8 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
-    "@ai-sdk/openai": "^3.0.28",
     "@fastify/cors": "^11.0.0",
+    "@openrouter/ai-sdk-provider": "^2.2.3",
     "ai": "^6.0.85",
     "fastify": "^5.2.0",
     "zod": "^3.24.0"
