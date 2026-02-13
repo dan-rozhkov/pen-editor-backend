@@ -3,12 +3,9 @@ import { z } from "zod";
 const envSchema = z.object({
   PORT: z.coerce.number().default(3001),
   HOST: z.string().default("0.0.0.0"),
-  AI_PROVIDER: z.enum(["anthropic", "openai"]).default("anthropic"),
-  ANTHROPIC_API_KEY: z.string().optional(),
-  OPENAI_API_KEY: z.string().optional(),
-  ANTHROPIC_MODEL: z.string().default("claude-sonnet-4-20250514"),
+  OPENAI_API_KEY: z.string().min(1, "OPENAI_API_KEY is required"),
+  OPENAI_BASE_URL: z.string().optional(),
   OPENAI_MODEL: z.string().default("gpt-4o"),
-  FRONTEND_URL: z.string().default("http://localhost:5173"),
 });
 
 export type Config = z.infer<typeof envSchema>;

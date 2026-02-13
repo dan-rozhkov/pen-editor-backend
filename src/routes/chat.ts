@@ -7,16 +7,7 @@ import { penTools } from "../ai/tools.js";
 import { buildSystemPrompt } from "../ai/system-prompt.js";
 
 const chatBodySchema = z.object({
-  messages: z
-    .array(
-      z.object({
-        role: z.enum(["user", "assistant", "system", "tool"]),
-        content: z.unknown(),
-        toolInvocations: z.unknown().optional(),
-      }),
-    )
-    .min(1, "messages must not be empty"),
-  provider: z.enum(["anthropic", "openai"]).optional(),
+  messages: z.array(z.record(z.unknown())).min(1, "messages must not be empty"),
   canvasContext: z.string().optional(),
 });
 
@@ -30,16 +21,15 @@ export async function chatRoutes(app: FastifyInstance, config: Config) {
       });
     }
 
-    const { messages, provider, canvasContext } = parsed.data;
-    const model = createModel(config, provider);
+    const { messages, canvasContext } = parsed.data;
+    const model = createModel(config);
     const system = buildSystemPrompt(canvasContext);
 
     const result = streamText({
       model,
       system,
-      messages: messages as Message[],
+      messages: messages as unknown as Message[],
       tools: penTools,
-      maxSteps: 10,
     });
 
     reply.header("Content-Type", "text/plain; charset=utf-8");

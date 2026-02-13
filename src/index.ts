@@ -9,7 +9,7 @@ const app = Fastify({
   logger: true,
 });
 
-await registerCors(app, config);
+await registerCors(app);
 await chatRoutes(app, config);
 
 app.setErrorHandler((error, _request, reply) => {
