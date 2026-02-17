@@ -13,6 +13,7 @@ import { buildSystemPrompt } from "../ai/system-prompt.js";
 const chatBodySchema = z.object({
   messages: z.array(z.record(z.unknown())).min(1, "messages must not be empty"),
   canvasContext: z.string().optional(),
+  model: z.string().optional(),
 });
 
 export async function chatRoutes(app: FastifyInstance, config: Config) {
@@ -25,8 +26,8 @@ export async function chatRoutes(app: FastifyInstance, config: Config) {
       });
     }
 
-    const { messages, canvasContext } = parsed.data;
-    const model = createModel(config);
+    const { messages, canvasContext, model: modelOverride } = parsed.data;
+    const model = createModel(config, modelOverride);
     const system = buildSystemPrompt(canvasContext);
 
     const modelMessages = await convertToModelMessages(
