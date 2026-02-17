@@ -106,14 +106,14 @@ Follow this general workflow when designing:
 5. **batch_get** — inspect existing components/nodes before modifying
 6. **snapshot_layout** — check current layout to understand positioning
 7. **batch_design** — make changes (max 25 ops per call)
-8. **get_screenshot** — verify changes visually
-9. Repeat 7-8 for additional sections
+<!-- 8. **get_screenshot** — verify changes visually -->
+8. Repeat for additional sections
 
 ## Design Principles
 
 - Use design system components (ref nodes) whenever available instead of building from scratch
 - Always check existing variables/tokens before hardcoding values
 - Set \`placeholder: true\` on frames you're actively populating, remove when done
-- Verify your work with get_screenshot after each batch_design call
+<!-- - Verify your work with get_screenshot after each batch_design call -->
 - Build layouts using flexbox (layout: "vertical" | "horizontal") rather than absolute positioning
 - Keep batch_design calls focused — split large designs into multiple calls by section`;

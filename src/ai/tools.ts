@@ -129,13 +129,13 @@ export const penTools = {
     }),
   }),
 
-  get_screenshot: tool({
-    description:
-      "Take a screenshot of a specific node for visual verification. Use this after making changes to confirm they look correct. Returns an image.",
-    inputSchema: z.object({
-      nodeId: z.string().describe("The ID of the node to screenshot."),
-    }),
-  }),
+  // get_screenshot: tool({
+  //   description:
+  //     "Take a screenshot of a specific node for visual verification. Use this after making changes to confirm they look correct. Returns an image.",
+  //   inputSchema: z.object({
+  //     nodeId: z.string().describe("The ID of the node to screenshot."),
+  //   }),
+  // }),
 
   get_variables: tool({
     description:

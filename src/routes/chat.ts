@@ -39,6 +39,11 @@ export async function chatRoutes(app: FastifyInstance, config: Config) {
       system,
       messages: modelMessages,
       tools: penTools,
+      onFinish({ usage }) {
+        console.log(
+          `[tokens] input: ${usage.inputTokens}, output: ${usage.outputTokens}, cache read: ${usage.inputTokenDetails?.cacheReadTokens ?? "n/a"}`
+        );
+      },
     });
 
     // Set CORS headers manually since reply.hijack() bypasses Fastify plugins.
