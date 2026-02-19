@@ -6,5 +6,10 @@ export function createModel(config: Config, modelOverride?: string): LanguageMod
   const openrouter = createOpenRouter({
     apiKey: config.OPENROUTER_API_KEY,
   });
-  return openrouter(modelOverride ?? config.OPENROUTER_MODEL);
+  const modelId = modelOverride ?? config.OPENROUTER_MODEL;
+  const reasoningPrefixes = ["anthropic/", "moonshotai/", "minimax/", "qwen/", "z-ai/"];
+  const supportsReasoning = reasoningPrefixes.some((p) => modelId.startsWith(p));
+  return openrouter(modelId, supportsReasoning ? {
+    reasoning: { effort: "medium" },
+  } : undefined);
 }
