@@ -1,6 +1,7 @@
 import {
   streamText,
   convertToModelMessages,
+  stepCountIs,
   type UIMessage,
 } from "ai";
 import type { FastifyInstance } from "fastify";
@@ -39,6 +40,7 @@ export async function chatRoutes(app: FastifyInstance, config: Config) {
       system,
       messages: modelMessages,
       tools: penTools,
+      stopWhen: stepCountIs(3),
       onFinish({ usage }) {
         console.log(
           `[tokens] input: ${usage.inputTokens}, output: ${usage.outputTokens}, cache read: ${usage.inputTokenDetails?.cacheReadTokens ?? "n/a"}`
