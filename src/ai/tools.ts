@@ -168,6 +168,7 @@ export const penTools = {
 - \`placeholder: true\` marks frames being actively designed
 - Text has no color by default — set \`fill\` property
 - \`fill_container\` only valid when parent has flexbox layout
+- Variable references must use exact names from \`get_variables\` (including leading \`--\` and dashes), e.g. \`"$--ck-blue-500"\`
 
 **Example:**
 \`\`\`

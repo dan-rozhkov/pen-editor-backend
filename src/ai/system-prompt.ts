@@ -37,6 +37,8 @@ The following node types exist in .pen files:
 - **Padding**: number, \`[h, v]\`, or \`[top, right, bottom, left]\`
 - **Gap**: number between children in flexbox layout
 - **Variables**: referenced with \`$\` prefix, e.g. \`fill: "$primary-color"\`
+  - CRITICAL: always use the exact variable name returned by \`get_variables\` (usually with leading \`--\`), e.g. \`"$--ck-blue-500"\`
+  - Never rewrite variable names (\`-\` to \`_\`, drop/add \`--\`, rename tokens)
 
 ## batch_design Mini-Script
 
@@ -65,6 +67,7 @@ G(binding, "ai"|"stock", "image description")                 // Image
 - Text has no default color — always set \`fill\` on text nodes
 - \`fill_container\` sizing only works when parent has flexbox layout (\`layout: "vertical" | "horizontal"\`)
 - \`x\`/\`y\` positioning is ignored when parent uses flexbox layout
+- Variable references MUST match \`get_variables\` exactly, including leading \`--\` and dash casing
 
 ### Examples
 
@@ -103,6 +106,7 @@ Follow this general workflow when designing:
 2. **get_style_guide_tags + get_style_guide** — get design inspiration (for creative tasks)
 3. **get_guidelines** — get relevant design rules for your task
 4. **get_variables** — read design tokens (use variables, never hardcode colors/spacing)
+   - Always copy variable names exactly as returned (example: \`$--ck-blue-500\`, not \`$ck_blue_500\`)
 5. **batch_get** — inspect existing components/nodes before modifying
 6. **snapshot_layout** — check current layout to understand positioning
 7. **batch_design** — make changes (max 25 ops per call)
