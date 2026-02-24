@@ -161,6 +161,7 @@ export const penTools = {
 - Max 25 operations per call
 - Bindings (e.g. \`card=I(...)\`) only live within one call
 - Use \`+\` to build paths: \`U(card+"/title", {content: "Hello"})\`
+- If using existing node IDs from previous tool results, pass them as strings (e.g. \`U("abc123", {...})\`)
 - The "document" binding is predefined and references the document root
 - Insert/Copy/Replace MUST have a binding name
 - Do NOT U() descendants of a copied node — use \`descendants\` in C() instead
@@ -169,12 +170,15 @@ export const penTools = {
 - Text has no color by default — set \`fill\` property
 - \`fill_container\` only valid when parent has flexbox layout
 - Variable references must use exact names from \`get_variables\` (including leading \`--\` and dashes), e.g. \`"$--ck-blue-500"\`
+- For instance descendant updates, path must start with the instance/ref ID (NOT a frame path chain).
 
 **Example:**
 \`\`\`
 card=I("parentId", {type: "ref", ref: "CardComp"})
 U(card+"/title", {content: "Account Details"})
 U(card+"/description", {content: "Manage your settings"})
+U("existingRefId", {descendants: {"title": {content: "New title"}}})
+U("existingRefId/title", {content: "New title"})
 \`\`\``,
     inputSchema: z.object({
       operations: z

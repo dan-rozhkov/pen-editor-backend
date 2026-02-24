@@ -60,8 +60,10 @@ G(binding, "ai"|"stock", "image description")                 // Image
 - Insert (I), Copy (C), and Replace (R) MUST have a binding name
 - Bindings only live within a single batch_design call
 - Use \`+\` to compose paths: \`U(card+"/title", {content: "Hello"})\`
+- If using existing node IDs from previous tool results, pass them as strings, e.g. \`U("abc123", {...})\`
 - Max 25 operations per batch_design call
 - Do NOT Update (U) descendants of a copied node — use \`descendants\` in C() instead
+- For instance descendant edits, path must start at the instance/ref ID (NOT \`frameId/.../instanceId\`)
 - There is NO "image" node type — use G() on frame/rectangle to apply image fills
 - \`placeholder: true\` marks frames being actively designed
 - Text has no default color — always set \`fill\` on text nodes
@@ -76,6 +78,12 @@ G(binding, "ai"|"stock", "image description")                 // Image
 card=I("parentId", {type: "ref", ref: "CardComp"})
 U(card+"/title", {content: "Account Details"})
 U(card+"/description", {content: "Manage your settings"})
+\`\`\`
+
+**Update existing instance by ID:**
+\`\`\`
+U("existingRefId", {descendants: {"title": {content: "Account Details"}}})
+U("existingRefId/title", {content: "Account Details"})
 \`\`\`
 
 **Create layout with frames:**
