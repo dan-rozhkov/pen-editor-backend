@@ -16,6 +16,7 @@ const chatBodySchema = z.object({
   messages: z.array(z.record(z.unknown())).min(1, "messages must not be empty"),
   canvasContext: z.string().optional(),
   model: z.string().optional(),
+  agentMode: z.enum(["edits", "fast"]).optional(),
 });
 
 function hasDesignSystemGuidelinesCall(
@@ -47,9 +48,14 @@ export async function chatRoutes(app: FastifyInstance, config: Config) {
       });
     }
 
-    const { messages, canvasContext, model: modelOverride } = parsed.data;
+    const {
+      messages,
+      canvasContext,
+      model: modelOverride,
+      agentMode = "edits",
+    } = parsed.data;
     const model = createModel(config, modelOverride);
-    const system = buildSystemPrompt(canvasContext);
+    const system = buildSystemPrompt(canvasContext, agentMode);
 
     const modelMessages = await convertToModelMessages(
       messages as unknown as UIMessage[]
@@ -58,10 +64,17 @@ export async function chatRoutes(app: FastifyInstance, config: Config) {
     const toolsWithoutBatchDesign = allToolNames.filter(
       (toolName) => toolName !== "batch_design",
     );
-    const mandatoryGuidelinesInstruction =
+    const mandatoryEditsInstruction =
       `${system}\n\n` +
       "MANDATORY TOOL RULE: You must call get_guidelines with topic=\"design-system\" " +
       "before your first batch_design call. Until then, batch_design is unavailable.";
+    const mandatoryFastInstruction =
+      `${system}\n\n` +
+      "MANDATORY FAST TOOL RULES:\n" +
+      "1) You must call get_guidelines with topic=\"design-system\".\n" +
+      "2) You must call get_variables.\n" +
+      "3) You must call find_empty_space_on_canvas with the intended embed width/height.\n" +
+      "Only after all three are completed, batch_design becomes available.";
 
     const result = streamText({
       model,
@@ -69,20 +82,35 @@ export async function chatRoutes(app: FastifyInstance, config: Config) {
       messages: modelMessages,
       tools: penTools,
       prepareStep: ({ steps }) => {
-        const guidelinesLoaded = hasDesignSystemGuidelinesCall(
-          steps as Array<{
-            toolCalls?: Array<{
-              toolName?: string;
-              args?: unknown;
-              input?: unknown;
-            }>;
-          }>,
-        );
+        const typedSteps = steps as Array<{
+          toolCalls?: Array<{
+            toolName?: string;
+            args?: unknown;
+            input?: unknown;
+          }>;
+        }>;
+        const guidelinesLoaded = hasDesignSystemGuidelinesCall(typedSteps);
 
-        if (!guidelinesLoaded) {
+        if (agentMode === "fast") {
+          const hasVariablesCall = typedSteps.some((step) =>
+            (step.toolCalls ?? []).some((call) => call.toolName === "get_variables"),
+          );
+          const hasFindEmptySpaceCall = typedSteps.some((step) =>
+            (step.toolCalls ?? []).some(
+              (call) => call.toolName === "find_empty_space_on_canvas",
+            ),
+          );
+
+          if (!guidelinesLoaded || !hasVariablesCall || !hasFindEmptySpaceCall) {
+            return {
+              activeTools: toolsWithoutBatchDesign,
+              system: mandatoryFastInstruction,
+            };
+          }
+        } else if (!guidelinesLoaded) {
           return {
             activeTools: toolsWithoutBatchDesign,
-            system: mandatoryGuidelinesInstruction,
+            system: mandatoryEditsInstruction,
           };
         }
 
@@ -90,7 +118,7 @@ export async function chatRoutes(app: FastifyInstance, config: Config) {
           activeTools: allToolNames,
         };
       },
-      stopWhen: stepCountIs(3),
+      stopWhen: stepCountIs(agentMode === "fast" ? 6 : 3),
       onFinish({ usage, steps }) {
         console.log(
           `[tokens] input: ${usage.inputTokens}, output: ${usage.outputTokens}, cache read: ${usage.inputTokenDetails?.cacheReadTokens ?? "n/a"}`

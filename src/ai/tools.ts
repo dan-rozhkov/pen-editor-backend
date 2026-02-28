@@ -50,6 +50,7 @@ export const penTools = {
                 "icon_font",
                 "image",
                 "ref",
+                "embed",
               ])
               .optional()
               .describe("Only return nodes with this type"),

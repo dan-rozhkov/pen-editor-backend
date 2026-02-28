@@ -1,5 +1,16 @@
-export function buildSystemPrompt(canvasContext?: string): string {
+type AgentMode = "edits" | "fast";
+
+export function buildSystemPrompt(
+  canvasContext?: string,
+  agentMode: AgentMode = "edits",
+): string {
   const parts: string[] = [CORE_PROMPT];
+
+  if (agentMode === "fast") {
+    parts.push(FAST_MODE_PROMPT);
+  } else {
+    parts.push(EDITS_MODE_PROMPT);
+  }
 
   if (canvasContext) {
     parts.push(`\n## Current Canvas Context\n\n${canvasContext}`);
@@ -26,6 +37,7 @@ The following node types exist in .pen files:
 | \`text\` | Text content | \`content\`, \`fontSize\`, \`fontFamily\`, \`fontWeight\`, \`lineHeight\`, \`textAlign\`, \`textGrowth\` |
 | \`icon_font\` | Icon from font | \`iconFontName\`, \`iconFontFamily\`, \`weight\` |
 | \`ref\` | Component instance | \`ref\` (component ID), \`descendants\` (overrides) |
+| \`embed\` | HTML embed node | \`htmlContent\`, \`width\`, \`height\` |
 | \`note\` | Sticky note | \`content\` |
 | \`connection\` | Line between nodes | \`source\`, \`target\` (with path + anchor) |
 
@@ -129,3 +141,35 @@ Follow this general workflow when designing:
 <!-- - Verify your work with get_screenshot after each batch_design call -->
 - Build layouts using flexbox (layout: "vertical" | "horizontal") rather than absolute positioning
 - Keep batch_design calls focused — split large designs into multiple calls by section`;
+
+const EDITS_MODE_PROMPT = `
+## Agent Mode: edits
+
+This is the default editing mode. Follow the normal design workflow and make incremental canvas updates.`;
+
+const FAST_MODE_PROMPT = `
+## Agent Mode: fast
+
+You are in FAST mode. Your goal is to quickly insert exactly one top-level \`embed\` node with generated static HTML content.
+
+### Device size presets
+- If the user asks for mobile/phone: \`width: 375, height: 812\`
+- If the user asks for tablet/ipad: \`width: 768, height: 1024\`
+- Otherwise (default desktop): \`width: 1440, height: 1024\`
+
+### Mandatory flow
+1. Call \`get_guidelines\` with \`topic: "design-system"\`
+2. Call \`get_variables\`
+3. Call \`find_empty_space_on_canvas\` using the target embed width/height
+4. Call \`batch_design\` to insert one top-level embed node into \`document\` at the returned \`x,y\`
+
+### Embed insertion requirements
+- Insert exactly one embed node.
+- Use operation shape like:
+\`embed=I(document, {type: "embed", x: <x>, y: <y>, width: <w>, height: <h>, htmlContent: "<html...>"})\`
+- The \`htmlContent\` must be complete static HTML/CSS markup for the user's request.
+
+### HTML safety constraints
+- HTML/CSS only. Do NOT include JavaScript.
+- Do NOT use \`<script>\` tags.
+- Do NOT use inline event attributes (\`onclick\`, \`onload\`, etc).`;
