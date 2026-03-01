@@ -19,6 +19,34 @@ const chatBodySchema = z.object({
   agentMode: z.enum(["edits", "fast"]).optional(),
 });
 
+function sanitizeMessagesForGoogleModel(
+  rawMessages: Array<Record<string, unknown>>,
+): { messages: Array<Record<string, unknown>>; removedReasoningParts: number } {
+  let removedReasoningParts = 0;
+  const messages = rawMessages.map((message) => {
+    const partsRaw = message.parts;
+    if (!Array.isArray(partsRaw)) return message;
+
+    const parts = partsRaw
+      .filter((part) => {
+        if (!part || typeof part !== "object") return true;
+        const isReasoning = (part as { type?: unknown }).type === "reasoning";
+        if (isReasoning) removedReasoningParts += 1;
+        return !isReasoning;
+      })
+      .map((part) => {
+        if (!part || typeof part !== "object") return part;
+        const cleaned = { ...(part as Record<string, unknown>) };
+        delete cleaned.providerMetadata;
+        delete cleaned.callProviderMetadata;
+        return cleaned;
+      });
+
+    return { ...message, parts };
+  });
+  return { messages, removedReasoningParts };
+}
+
 function hasDesignSystemGuidelinesCall(
   steps: Array<{
     toolCalls?: Array<{
@@ -56,9 +84,24 @@ export async function chatRoutes(app: FastifyInstance, config: Config) {
     } = parsed.data;
     const model = createModel(config, modelOverride);
     const system = buildSystemPrompt(canvasContext, agentMode);
+    const selectedModelId = modelOverride ?? config.OPENROUTER_MODEL;
+    const normalizedMessages =
+      selectedModelId.startsWith("google/")
+        ? (() => {
+            const sanitized = sanitizeMessagesForGoogleModel(
+              messages as Array<Record<string, unknown>>,
+            );
+            if (sanitized.removedReasoningParts > 0) {
+              console.warn(
+                `[chat] Sanitized ${sanitized.removedReasoningParts} reasoning part(s) for Google model request.`,
+              );
+            }
+            return sanitized.messages;
+          })()
+        : (messages as Array<Record<string, unknown>>);
 
     const modelMessages = await convertToModelMessages(
-      messages as unknown as UIMessage[]
+      normalizedMessages as unknown as UIMessage[]
     );
     const allToolNames = Object.keys(penTools) as Array<keyof typeof penTools>;
     const toolsWithoutBatchDesign = allToolNames.filter(
@@ -74,6 +117,7 @@ export async function chatRoutes(app: FastifyInstance, config: Config) {
       "1) You must call get_guidelines with topic=\"design-system\".\n" +
       "2) You must call get_variables.\n" +
       "3) You must call find_empty_space_on_canvas with the intended embed width/height.\n" +
+      "4) For batch_design input, always use JSON key \"operations\" and never \"design\"/\"script\"/\"batch\".\n" +
       "Only after all three are completed, batch_design becomes available.";
 
     const result = streamText({
@@ -146,7 +190,7 @@ export async function chatRoutes(app: FastifyInstance, config: Config) {
           logSession({
             sessionId: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
             timestamp: new Date().toISOString(),
-            model: modelOverride ?? config.OPENROUTER_MODEL,
+            model: selectedModelId,
             systemPrompt: system,
             messages: messages as unknown[],
             steps: logSteps,

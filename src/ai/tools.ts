@@ -1,6 +1,29 @@
 import { tool } from "ai";
 import { z } from "zod";
 
+const batchDesignInputSchema = z
+  .object({
+    operations: z.string().optional(),
+    // Compatibility aliases for models that occasionally emit wrong key names.
+    design: z.string().optional(),
+    script: z.string().optional(),
+    batch: z.string().optional(),
+  })
+  .transform((input, ctx) => {
+    const operations = input.operations ?? input.design ?? input.script ?? input.batch;
+
+    if (!operations || !operations.trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Required string field "operations" is missing or empty.',
+        path: ["operations"],
+      });
+      return z.NEVER;
+    }
+
+    return { operations };
+  });
+
 export const penTools = {
   // ── Reading & Navigation ──────────────────────────────────────────
 
@@ -181,13 +204,9 @@ U(card+"/description", {content: "Manage your settings"})
 U("existingRefId", {descendants: {"title": {content: "New title"}}})
 U("existingRefId/title", {content: "New title"})
 \`\`\``,
-    inputSchema: z.object({
-      operations: z
-        .string()
-        .describe(
-          "Mini-script string with I/C/U/R/M/D/G operations, one per line.",
-        ),
-    }),
+    inputSchema: batchDesignInputSchema.describe(
+      'Tool input object. Required canonical field: {"operations":"..."}; aliases design/script/batch are accepted for robustness.',
+    ),
   }),
 
   set_variables: tool({

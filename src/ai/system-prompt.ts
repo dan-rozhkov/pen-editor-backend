@@ -66,6 +66,8 @@ D("nodeId")                                                   // Delete
 G(binding, "ai"|"stock", "image description")                 // Image
 \`\`\`
 
+Tool call payload shape is strict: always send \`{"operations":"<mini-script>"}\` (do not use keys like \`design\`, \`script\`, or \`batch\`).
+
 ### Key Rules
 
 - The \`document\` binding is predefined — use it as parent for top-level frames
@@ -140,7 +142,8 @@ Follow this general workflow when designing:
 - Set \`placeholder: true\` on frames you're actively populating, remove when done
 <!-- - Verify your work with get_screenshot after each batch_design call -->
 - Build layouts using flexbox (layout: "vertical" | "horizontal") rather than absolute positioning
-- Keep batch_design calls focused — split large designs into multiple calls by section`;
+- Keep batch_design calls focused — split large designs into multiple calls by section
+- Do NOT use emoji in any generated content (including text nodes and embed HTML content).`;
 
 const EDITS_MODE_PROMPT = `
 ## Agent Mode: edits
@@ -162,6 +165,7 @@ You are in FAST mode. Your goal is to quickly insert exactly one top-level \`emb
 2. Call \`get_variables\`
 3. Call \`find_empty_space_on_canvas\` using the target embed width/height
 4. Call \`batch_design\` to insert one top-level embed node into \`document\` at the returned \`x,y\`
+   - Tool args must be \`{"operations":"embed=I(document, {...})"}\`
 
 ### Embed insertion requirements
 - Insert exactly one embed node.
@@ -172,4 +176,5 @@ You are in FAST mode. Your goal is to quickly insert exactly one top-level \`emb
 ### HTML safety constraints
 - HTML/CSS only. Do NOT include JavaScript.
 - Do NOT use \`<script>\` tags.
-- Do NOT use inline event attributes (\`onclick\`, \`onload\`, etc).`;
+- Do NOT use inline event attributes (\`onclick\`, \`onload\`, etc).
+- Do NOT use CSS \`filter\`, \`transition\`, or \`transform\`.`;
