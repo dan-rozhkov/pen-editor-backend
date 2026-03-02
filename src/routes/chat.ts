@@ -12,6 +12,8 @@ import { penTools } from "../ai/tools.js";
 import { buildSystemPrompt } from "../ai/system-prompt.js";
 import { logSession, type LogStep } from "../logging.js";
 
+const MAX_IMAGE_PARTS = 3;
+
 const chatBodySchema = z.object({
   messages: z.array(z.record(z.unknown())).min(1, "messages must not be empty"),
   canvasContext: z.string().optional(),
@@ -19,6 +21,8 @@ const chatBodySchema = z.object({
   agentMode: z.enum(["edits", "fast"]).optional(),
 });
 
+// Strips reasoning parts and provider metadata for Google models.
+// Other part types (text, file/image, tool-call, etc.) pass through untouched.
 function sanitizeMessagesForGoogleModel(
   rawMessages: Array<Record<string, unknown>>,
 ): { messages: Array<Record<string, unknown>>; removedReasoningParts: number } {
@@ -82,6 +86,21 @@ export async function chatRoutes(app: FastifyInstance, config: Config) {
       model: modelOverride,
       agentMode = "edits",
     } = parsed.data;
+
+    const imagePartCount = messages.reduce((count, msg) => {
+      const parts = msg.parts;
+      if (!Array.isArray(parts)) return count;
+      return count + parts.filter((p) =>
+        p && typeof p === "object" &&
+        ((p as { type?: unknown }).type === "file" || (p as { type?: unknown }).type === "image"),
+      ).length;
+    }, 0);
+    if (imagePartCount > MAX_IMAGE_PARTS) {
+      return reply.status(400).send({
+        error: `Too many images: ${imagePartCount} attached, maximum is ${MAX_IMAGE_PARTS}`,
+      });
+    }
+
     const model = createModel(config, modelOverride);
     const system = buildSystemPrompt(canvasContext, agentMode);
     const selectedModelId = modelOverride ?? config.OPENROUTER_MODEL;

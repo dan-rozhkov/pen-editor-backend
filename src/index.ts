@@ -7,6 +7,7 @@ const config = loadConfig();
 
 const app = Fastify({
   logger: true,
+  bodyLimit: 10 * 1024 * 1024, // 10 MB — base64 images can be 2-5 MB each
 });
 
 await registerCors(app);

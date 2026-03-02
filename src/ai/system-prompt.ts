@@ -334,10 +334,21 @@ Before generating the final htmlContent, verify every point:
 7. Is there NO JavaScript, NO \`<script>\`, NO event handlers, NO \`filter\`, NO \`transition\`, NO \`transform\`, NO \`animation\`, NO \`@keyframes\`, NO \`backdrop-filter\`?
 8. Are cards used only where elevation communicates hierarchy (not as default containers)?
 9. Are all image URLs using \`picsum.photos/seed/...\` (no broken Unsplash links)?
-10. Is the HTML self-contained, complete, and renderable standalone?`;
+10. Is the HTML self-contained, complete, and renderable standalone?
+11. If reference images were provided, is their style influence visible in the output (palette, typography, layout feel)?`;
+
+const FAST_REFERENCE_IMAGES = `
+### Reference images
+The user may attach reference images to their messages. When present:
+- Treat them as **visual inspiration**, not a pixel-perfect target to replicate.
+- Extract the **style signals**: color palette, typography choices, layout structure, spacing rhythm, surface treatments.
+- Adapt those signals to the design rules above — asymmetric layouts, Google Fonts only, banned patterns still apply.
+- If a reference conflicts with these rules (e.g. uses Inter, centered hero, neon purple), the rules win — adapt the spirit of the reference, not the violation.
+- When multiple references are provided, synthesize a cohesive style from their common threads rather than copying any single one.`;
 
 const FAST_MODE_PROMPT = [
   FAST_MODE_CORE,
+  FAST_REFERENCE_IMAGES,
   FAST_DESIGN_BASELINE,
   FAST_TYPOGRAPHY,
   FAST_COLOR_RULES,
