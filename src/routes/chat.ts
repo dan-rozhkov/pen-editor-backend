@@ -132,12 +132,10 @@ export async function chatRoutes(app: FastifyInstance, config: Config) {
       "before your first batch_design call. Until then, batch_design is unavailable.";
     const mandatoryFastInstruction =
       `${system}\n\n` +
-      "MANDATORY FAST TOOL RULES:\n" +
-      "1) You must call get_guidelines with topic=\"design-system\".\n" +
-      "2) You must call get_variables.\n" +
-      "3) You must call find_empty_space_on_canvas with the intended embed width/height.\n" +
-      "4) For batch_design input, always use JSON key \"operations\" and never \"design\"/\"script\"/\"batch\".\n" +
-      "Only after all three are completed, batch_design becomes available.";
+      "MANDATORY TOOL RULE: You must call get_guidelines with topic=\"design-system\" " +
+      "before your first batch_design call. Until then, batch_design is unavailable.\n" +
+      "RECOMMENDED: Also call get_variables and find_empty_space_on_canvas for best results.\n" +
+      "For batch_design input, always use JSON key \"operations\" and never \"design\"/\"script\"/\"batch\".";
 
     const result = streamText({
       model,
@@ -154,26 +152,13 @@ export async function chatRoutes(app: FastifyInstance, config: Config) {
         }>;
         const guidelinesLoaded = hasDesignSystemGuidelinesCall(typedSteps);
 
-        if (agentMode === "fast") {
-          const hasVariablesCall = typedSteps.some((step) =>
-            (step.toolCalls ?? []).some((call) => call.toolName === "get_variables"),
-          );
-          const hasFindEmptySpaceCall = typedSteps.some((step) =>
-            (step.toolCalls ?? []).some(
-              (call) => call.toolName === "find_empty_space_on_canvas",
-            ),
-          );
-
-          if (!guidelinesLoaded || !hasVariablesCall || !hasFindEmptySpaceCall) {
-            return {
-              activeTools: toolsWithoutBatchDesign,
-              system: mandatoryFastInstruction,
-            };
-          }
-        } else if (!guidelinesLoaded) {
+        if (!guidelinesLoaded) {
+          const instruction = agentMode === "fast"
+            ? mandatoryFastInstruction
+            : mandatoryEditsInstruction;
           return {
             activeTools: toolsWithoutBatchDesign,
-            system: mandatoryEditsInstruction,
+            system: instruction,
           };
         }
 

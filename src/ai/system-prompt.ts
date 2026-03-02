@@ -166,10 +166,12 @@ You are in FAST mode. Your goal is to quickly insert exactly one top-level \`emb
 
 ### Mandatory flow
 1. Call \`get_guidelines\` with \`topic: "design-system"\`
-2. Call \`get_variables\`
-3. Call \`find_empty_space_on_canvas\` using the target embed width/height
-4. Call \`batch_design\` to insert one top-level embed node into \`document\` at the returned \`x,y\`
+2. Call \`batch_design\` to insert one top-level embed node into \`document\`
    - Tool args must be \`{"operations":"embed=I(document, {...})"}\`
+
+### Recommended (not required)
+- Call \`get_variables\` to read design tokens and use them instead of hardcoding colors/spacing.
+- Call \`find_empty_space_on_canvas\` with the target embed width/height to position the node without overlaps.
 
 ### Embed insertion requirements
 - Insert exactly one embed node.
