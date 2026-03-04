@@ -10,6 +10,6 @@ export function createModel(config: Config, modelOverride?: string): LanguageMod
   const reasoningPrefixes = ["anthropic/", "moonshotai/", "minimax/", "qwen/", "z-ai/"];
   const supportsReasoning = reasoningPrefixes.some((p) => modelId.startsWith(p));
   return openrouter(modelId, supportsReasoning ? {
-    reasoning: { effort: "medium" },
+    reasoning: { effort: "low" },
   } : undefined);
 }

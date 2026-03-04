@@ -51,25 +51,6 @@ function sanitizeMessagesForGoogleModel(
   return { messages, removedReasoningParts };
 }
 
-function hasDesignSystemGuidelinesCall(
-  steps: Array<{
-    toolCalls?: Array<{
-      toolName?: string;
-      args?: unknown;
-      input?: unknown;
-    }>;
-  }>,
-): boolean {
-  return steps.some((step) =>
-    (step.toolCalls ?? []).some((call) => {
-      if (call.toolName !== "get_guidelines") return false;
-
-      const payload = (call.args ?? call.input ?? {}) as { topic?: string };
-      return payload.topic === "design-system";
-    }),
-  );
-}
-
 export async function chatRoutes(app: FastifyInstance, config: Config) {
   app.post("/api/chat", async (request, reply) => {
     const parsed = chatBodySchema.safeParse(request.body);
@@ -122,51 +103,13 @@ export async function chatRoutes(app: FastifyInstance, config: Config) {
     const modelMessages = await convertToModelMessages(
       normalizedMessages as unknown as UIMessage[]
     );
-    const allToolNames = Object.keys(penTools) as Array<keyof typeof penTools>;
-    const toolsWithoutBatchDesign = allToolNames.filter(
-      (toolName) => toolName !== "batch_design",
-    );
-    const mandatoryEditsInstruction =
-      `${system}\n\n` +
-      "MANDATORY TOOL RULE: You must call get_guidelines with topic=\"design-system\" " +
-      "before your first batch_design call. Until then, batch_design is unavailable.";
-    const mandatoryFastInstruction =
-      `${system}\n\n` +
-      "MANDATORY TOOL RULE: You must call get_guidelines with topic=\"design-system\" " +
-      "before your first batch_design call. Until then, batch_design is unavailable.\n" +
-      "RECOMMENDED: Also call get_variables and find_empty_space_on_canvas for best results.\n" +
-      "For batch_design input, always use JSON key \"operations\" and never \"design\"/\"script\"/\"batch\".";
 
     const result = streamText({
       model,
       system,
       messages: modelMessages,
       tools: penTools,
-      prepareStep: ({ steps }) => {
-        const typedSteps = steps as Array<{
-          toolCalls?: Array<{
-            toolName?: string;
-            args?: unknown;
-            input?: unknown;
-          }>;
-        }>;
-        const guidelinesLoaded = hasDesignSystemGuidelinesCall(typedSteps);
-
-        if (!guidelinesLoaded) {
-          const instruction = agentMode === "fast"
-            ? mandatoryFastInstruction
-            : mandatoryEditsInstruction;
-          return {
-            activeTools: toolsWithoutBatchDesign,
-            system: instruction,
-          };
-        }
-
-        return {
-          activeTools: allToolNames,
-        };
-      },
-      stopWhen: stepCountIs(agentMode === "fast" ? 6 : 3),
+      stopWhen: stepCountIs(5),
       onFinish({ usage, steps }) {
         console.log(
           `[tokens] input: ${usage.inputTokens}, output: ${usage.outputTokens}, cache read: ${usage.inputTokenDetails?.cacheReadTokens ?? "n/a"}`
