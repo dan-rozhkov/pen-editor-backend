@@ -1,4 +1,4 @@
-export const AGENT_MODES = ["edits", "fast", "research"] as const;
+export const AGENT_MODES = ["edits", "prototype", "research"] as const;
 export type AgentMode = (typeof AGENT_MODES)[number];
 
 export function buildSystemPrompt(
@@ -11,8 +11,8 @@ export function buildSystemPrompt(
 
   const parts: string[] = [CORE_PROMPT];
 
-  if (agentMode === "fast") {
-    parts.push(FAST_MODE_PROMPT);
+  if (agentMode === "prototype") {
+    parts.push(PROTOTYPE_MODE_PROMPT);
   } else {
     parts.push(EDITS_MODE_PROMPT);
   }
@@ -156,13 +156,13 @@ const EDITS_MODE_PROMPT = `
 This is the default editing mode. Follow the normal design workflow and make incremental canvas updates.`;
 
 // ---------------------------------------------------------------------------
-// Fast-mode prompt pieces (taste-skill integration)
+// Prototype-mode prompt pieces (taste-skill integration)
 // ---------------------------------------------------------------------------
 
-const FAST_MODE_CORE = `
-## Agent Mode: fast
+const PROTOTYPE_MODE_CORE = `
+## Agent Mode: prototype
 
-You are in FAST mode. Your goal is to quickly insert exactly one top-level \`embed\` node with generated static HTML content.
+You are in PROTOTYPE mode. Your goal is to quickly insert exactly one top-level \`embed\` node with generated static HTML content.
 
 ### Device size presets
 - If the user asks for mobile/phone: \`width: 375, height: 812\`
@@ -191,14 +191,14 @@ You are in FAST mode. Your goal is to quickly insert exactly one top-level \`emb
 - Do NOT use CSS \`filter\`, \`transition\`, or \`transform\`.
 - Do NOT use CSS \`animation\`, \`@keyframes\`, or \`backdrop-filter\`.`;
 
-const FAST_DESIGN_BASELINE = `
+const PROTOTYPE_DESIGN_BASELINE = `
 ### Design baseline
 Apply these global dials to every design decision:
 - DESIGN_VARIANCE = 8 (lean toward asymmetric, offset layouts — never default to centered symmetry)
 - VISUAL_DENSITY = 4 (balanced spacing — not gallery-sparse, not cockpit-dense)
 - There is NO motion — all output is static HTML/CSS. Never add transitions, animations, or keyframes.`;
 
-const FAST_TYPOGRAPHY = `
+const PROTOTYPE_TYPOGRAPHY = `
 ### Typography rules
 - **Google Fonts ONLY:** Every font you use MUST be loaded via a \`<link>\` tag from Google Fonts at the top of the HTML. Do NOT reference fonts that are not available on Google Fonts.
   - Include the \`<link rel="preconnect">\` tags for \`fonts.googleapis.com\` and \`fonts.gstatic.com\`, then the font \`<link>\`.
@@ -216,7 +216,7 @@ const FAST_TYPOGRAPHY = `
 - **Serif constraint:** Serif fonts are BANNED in dashboard / software UIs. Use them ONLY for editorial or creative designs.
 - **Weight hierarchy:** Control hierarchy with weight (400 vs 600 vs 700) and color contrast, not just size.`;
 
-const FAST_COLOR_RULES = `
+const PROTOTYPE_COLOR_RULES = `
 ### Color rules
 - Max 1 accent color per design. Saturation must stay below 80%.
 - **BANNED:** "AI Purple" / neon purple / neon gradients. No purple button glows.
@@ -226,7 +226,7 @@ const FAST_COLOR_RULES = `
 - Shadows must be tinted toward the background hue, not pure black. Example: \`box-shadow: 0 4px 24px -4px rgba(15,23,42,0.08);\`
 - Ensure WCAG AA contrast: body text ≥ 4.5:1, large text / headings ≥ 3:1 against their backgrounds.`;
 
-const FAST_LAYOUT_RULES = `
+const PROTOTYPE_LAYOUT_RULES = `
 ### Layout rules (DESIGN_VARIANCE = 8)
 - **ANTI-CENTER BIAS:** Centered hero / H1 sections are BANNED. Use split-screen (50/50 or 60/40), left-aligned content with right-aligned asset, or asymmetric whitespace.
 - **NO 3-equal-cards row:** The generic "3 equal cards horizontally" feature section is BANNED. Use 2-column zig-zag, asymmetric grid, or horizontal scroll.
@@ -236,7 +236,7 @@ const FAST_LAYOUT_RULES = `
 - **Viewport:** Use \`min-height: 100dvh;\` for full-height hero sections — never \`height: 100vh;\` (breaks on iOS Safari).
 - **Page containers:** Cap content width with \`max-width: 1400px; margin: 0 auto;\` or equivalent.`;
 
-const FAST_MATERIALITY = `
+const PROTOTYPE_MATERIALITY = `
 ### Materiality, shadows & surfaces
 - Use cards ONLY when elevation communicates hierarchy. When VISUAL_DENSITY > 7, prefer grouping with \`border-top: 1px solid\`, dividers, or negative space instead of card containers.
 - **Shadow scale (inline CSS):**
@@ -246,7 +246,7 @@ const FAST_MATERIALITY = `
 - **Border-radius scale:** Small elements 6–8px, cards/containers 12–16px, large panels 20–24px. Stay consistent.
 - **Glassmorphism (if needed):** Use a semi-transparent background (\`rgba(255,255,255,0.7)\`) with a 1px inner border (\`border: 1px solid rgba(255,255,255,0.15);\`) and subtle inner shadow (\`box-shadow: inset 0 1px 0 rgba(255,255,255,0.1);\`). Do NOT use \`backdrop-filter\`.`;
 
-const FAST_UI_STATES = `
+const PROTOTYPE_UI_STATES = `
 ### UI states
 LLMs default to generating only the "happy path" static state. You MUST consider these:
 - **Loading:** Show skeleton placeholders that match final layout dimensions — not generic spinners. Use a light gray rectangle (\`background: #e4e4e7; border-radius: 4px;\`) matching the content size.
@@ -255,7 +255,7 @@ LLMs default to generating only the "happy path" static state. You MUST consider
 - **Hover states (CSS only):** Use \`<style>\` blocks with \`:hover\` selectors. Changes must be instant (no \`transition\`). Example: \`button:hover { background: #18181b; color: #fff; }\`
 - **Focus states:** Visible focus rings for accessibility: \`outline: 2px solid #3b82f6; outline-offset: 2px;\``;
 
-const FAST_FORM_PATTERNS = `
+const PROTOTYPE_FORM_PATTERNS = `
 ### Form patterns
 - Label MUST sit above input (never inline/floating).
 - Input minimum height: 44px (touch target).
@@ -264,7 +264,7 @@ const FAST_FORM_PATTERNS = `
 - Error text below input in red (\`color: #dc2626; font-size: 0.875rem;\`).
 - Buttons minimum height: 44px, minimum width: 120px. Primary buttons should have clear visual weight.`;
 
-const FAST_AI_TELLS = `
+const PROTOTYPE_AI_TELLS = `
 ### Forbidden AI patterns (anti-slop)
 You MUST avoid these generic AI design signatures:
 
@@ -292,7 +292,7 @@ You MUST avoid these generic AI design signatures:
 - NO filler copywriting: "Elevate", "Seamless", "Unleash", "Next-Gen", "Supercharge" are BANNED. Use concrete verbs and specific descriptions.
 - NO broken image links. Use \`https://picsum.photos/seed/{unique_string}/{width}/{height}\` for photo placeholders.`;
 
-const FAST_CREATIVE_ARSENAL = `
+const PROTOTYPE_CREATIVE_ARSENAL = `
 ### Creative layout arsenal (static CSS only)
 Do not default to generic UI. Pull from these patterns for visually striking layouts:
 
@@ -318,7 +318,7 @@ Do not default to generic UI. Pull from these patterns for visually striking lay
 - Mixed weight headings: first word bold, rest thin — e.g. \`<span style="font-weight:700">Build</span> <span style="font-weight:300">something great</span>\`.
 - Monospace accents for data, stats, or code-related UI.`;
 
-const FAST_CONTENT_RULES = `
+const PROTOTYPE_CONTENT_RULES = `
 ### Content & data realism
 - **Names:** Use diverse, creative, realistic names. Examples: "Margaux Delacroix", "Tomás Herrera", "Priya Anand", "Owen Blackwell".
 - **Prices:** Use organic numbers: \`$34.50\`, \`$1,247.83\`, \`€89.00\`. Never round to \`.00\` or \`.99\` predictably.
@@ -329,7 +329,7 @@ const FAST_CONTENT_RULES = `
 - **Brand names:** Invent specific, premium names: "Verdant", "Arclight", "Keystone", "Halcyon". Never "Acme" or "TechCorp".
 - **Avatars:** Use \`https://picsum.photos/seed/{unique_per_person}/200/200\` or colored-initial circles. Never generic silhouettes.`;
 
-const FAST_PREFLIGHT = `
+const PROTOTYPE_PREFLIGHT = `
 ### Pre-flight checklist (verify before outputting HTML)
 Before generating the final htmlContent, verify every point:
 1. Is the layout asymmetric / non-centered (DESIGN_VARIANCE = 8)?
@@ -344,7 +344,7 @@ Before generating the final htmlContent, verify every point:
 10. Is the HTML self-contained, complete, and renderable standalone?
 11. If reference images were provided, is their style influence visible in the output (palette, typography, layout feel)?`;
 
-const FAST_REFERENCE_IMAGES = `
+const PROTOTYPE_REFERENCE_IMAGES = `
 ### Reference images
 The user may attach reference images to their messages. When present:
 - Treat them as **visual inspiration**, not a pixel-perfect target to replicate.
@@ -353,20 +353,20 @@ The user may attach reference images to their messages. When present:
 - If a reference conflicts with these rules (e.g. uses Inter, centered hero, neon purple), the rules win — adapt the spirit of the reference, not the violation.
 - When multiple references are provided, synthesize a cohesive style from their common threads rather than copying any single one.`;
 
-const FAST_MODE_PROMPT = [
-  FAST_MODE_CORE,
-  FAST_REFERENCE_IMAGES,
-  FAST_DESIGN_BASELINE,
-  FAST_TYPOGRAPHY,
-  FAST_COLOR_RULES,
-  FAST_LAYOUT_RULES,
-  FAST_MATERIALITY,
-  FAST_UI_STATES,
-  FAST_FORM_PATTERNS,
-  FAST_AI_TELLS,
-  FAST_CREATIVE_ARSENAL,
-  FAST_CONTENT_RULES,
-  FAST_PREFLIGHT,
+const PROTOTYPE_MODE_PROMPT = [
+  PROTOTYPE_MODE_CORE,
+  PROTOTYPE_REFERENCE_IMAGES,
+  PROTOTYPE_DESIGN_BASELINE,
+  PROTOTYPE_TYPOGRAPHY,
+  PROTOTYPE_COLOR_RULES,
+  PROTOTYPE_LAYOUT_RULES,
+  PROTOTYPE_MATERIALITY,
+  PROTOTYPE_UI_STATES,
+  PROTOTYPE_FORM_PATTERNS,
+  PROTOTYPE_AI_TELLS,
+  PROTOTYPE_CREATIVE_ARSENAL,
+  PROTOTYPE_CONTENT_RULES,
+  PROTOTYPE_PREFLIGHT,
 ].join("\n\n");
 
 // ---------------------------------------------------------------------------
