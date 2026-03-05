@@ -3,13 +3,15 @@ import {
   convertToModelMessages,
   stepCountIs,
   type UIMessage,
+  type ToolSet,
 } from "ai";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { Config } from "../config.js";
 import { createModel } from "../ai/provider.js";
 import { penTools } from "../ai/tools.js";
-import { buildSystemPrompt } from "../ai/system-prompt.js";
+import { AGENT_MODES, buildSystemPrompt } from "../ai/system-prompt.js";
+import { getMCPTools } from "../ai/mcp.js";
 import { logSession, type LogStep } from "../logging.js";
 
 const MAX_IMAGE_PARTS = 3;
@@ -18,36 +20,48 @@ const chatBodySchema = z.object({
   messages: z.array(z.record(z.unknown())).min(1, "messages must not be empty"),
   canvasContext: z.string().optional(),
   model: z.string().optional(),
-  agentMode: z.enum(["edits", "fast"]).optional(),
+  agentMode: z.enum(AGENT_MODES).optional(),
 });
 
-// Strips reasoning parts and provider metadata for Google models.
-// Other part types (text, file/image, tool-call, etc.) pass through untouched.
-function sanitizeMessagesForGoogleModel(
+// Strips reasoning/thinking blocks and provider metadata from chat history.
+// Some providers reject stale/invalid thinking signatures when prior assistant turns are replayed.
+function sanitizeMessagesForProvider(
   rawMessages: Array<Record<string, unknown>>,
 ): { messages: Array<Record<string, unknown>>; removedReasoningParts: number } {
   let removedReasoningParts = 0;
-  const messages = rawMessages.map((message) => {
-    const partsRaw = message.parts;
-    if (!Array.isArray(partsRaw)) return message;
 
-    const parts = partsRaw
-      .filter((part) => {
-        if (!part || typeof part !== "object") return true;
-        const isReasoning = (part as { type?: unknown }).type === "reasoning";
-        if (isReasoning) removedReasoningParts += 1;
-        return !isReasoning;
+  const sanitizeBlocks = (blocksRaw: unknown): unknown => {
+    if (!Array.isArray(blocksRaw)) return blocksRaw;
+
+    return blocksRaw
+      .filter((block) => {
+        if (!block || typeof block !== "object") return true;
+        const type = (block as { type?: unknown }).type;
+        const isReasoningLike =
+          type === "reasoning" || type === "thinking" || type === "redacted_thinking";
+        if (isReasoningLike) removedReasoningParts += 1;
+        return !isReasoningLike;
       })
-      .map((part) => {
-        if (!part || typeof part !== "object") return part;
-        const cleaned = { ...(part as Record<string, unknown>) };
+      .map((block) => {
+        if (!block || typeof block !== "object") return block;
+        const cleaned = { ...(block as Record<string, unknown>) };
         delete cleaned.providerMetadata;
         delete cleaned.callProviderMetadata;
         return cleaned;
       });
+  };
 
-    return { ...message, parts };
+  const messages = rawMessages.map((message) => {
+    const sanitizedMessage = { ...message };
+    if ("parts" in sanitizedMessage) {
+      sanitizedMessage.parts = sanitizeBlocks(sanitizedMessage.parts);
+    }
+    if ("content" in sanitizedMessage) {
+      sanitizedMessage.content = sanitizeBlocks(sanitizedMessage.content);
+    }
+    return sanitizedMessage;
   });
+
   return { messages, removedReasoningParts };
 }
 
@@ -85,31 +99,41 @@ export async function chatRoutes(app: FastifyInstance, config: Config) {
     const model = createModel(config, modelOverride);
     const system = buildSystemPrompt(canvasContext, agentMode);
     const selectedModelId = modelOverride ?? config.OPENROUTER_MODEL;
-    const normalizedMessages =
-      selectedModelId.startsWith("google/")
-        ? (() => {
-            const sanitized = sanitizeMessagesForGoogleModel(
-              messages as Array<Record<string, unknown>>,
-            );
-            if (sanitized.removedReasoningParts > 0) {
-              console.warn(
-                `[chat] Sanitized ${sanitized.removedReasoningParts} reasoning part(s) for Google model request.`,
-              );
-            }
-            return sanitized.messages;
-          })()
-        : (messages as Array<Record<string, unknown>>);
+    const normalizedMessages = (() => {
+      const sanitized = sanitizeMessagesForProvider(
+        messages as Array<Record<string, unknown>>,
+      );
+      if (sanitized.removedReasoningParts > 0) {
+        console.warn(
+          `[chat] Sanitized ${sanitized.removedReasoningParts} reasoning/thinking part(s) for model "${selectedModelId}".`,
+        );
+      }
+      return sanitized.messages;
+    })();
 
     const modelMessages = await convertToModelMessages(
       normalizedMessages as unknown as UIMessage[]
     );
 
+    const mcpTools = await getMCPTools(config);
+    const isResearch = agentMode === "research";
+    if (isResearch && Object.keys(mcpTools).length === 0) {
+      return reply.status(503).send({
+        error:
+          "Research mode is unavailable: no MCP tools are connected. Check REFERO_API_KEY and MCP connectivity.",
+      });
+    }
+    const tools = isResearch
+      ? (mcpTools as ToolSet)
+      : { ...penTools, ...mcpTools };
+    const maxSteps = isResearch ? 15 : 5;
+
     const result = streamText({
       model,
       system,
       messages: modelMessages,
-      tools: penTools,
-      stopWhen: stepCountIs(5),
+      tools,
+      stopWhen: stepCountIs(maxSteps),
       onFinish({ usage, steps }) {
         console.log(
           `[tokens] input: ${usage.inputTokens}, output: ${usage.outputTokens}, cache read: ${usage.inputTokenDetails?.cacheReadTokens ?? "n/a"}`

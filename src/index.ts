@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import { loadConfig } from "./config.js";
 import { registerCors } from "./plugins/cors.js";
 import { chatRoutes } from "./routes/chat.js";
+import { closeAllMCPClients } from "./ai/mcp.js";
 
 const config = loadConfig();
 
@@ -23,6 +24,14 @@ app.setErrorHandler((error, _request, reply) => {
     error instanceof Error ? error.message : "Internal Server Error";
   reply.status(statusCode).send({ error: message });
 });
+
+const shutdown = async () => {
+  await closeAllMCPClients();
+  await app.close();
+  process.exit(0);
+};
+process.on("SIGTERM", shutdown);
+process.on("SIGINT", shutdown);
 
 app.listen({ port: config.PORT, host: config.HOST }, (err) => {
   if (err) {

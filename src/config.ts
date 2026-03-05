@@ -6,6 +6,7 @@ const envSchema = z.object({
   OPENROUTER_API_KEY: z.string().min(1, "OPENROUTER_API_KEY is required"),
   OPENROUTER_MODEL: z.string().default("openai/gpt-4o"),
   ENABLE_AGENT_LOGGING: z.coerce.boolean().default(false),
+  REFERO_API_KEY: z.string().optional(),
 });
 
 export type Config = z.infer<typeof envSchema>;
