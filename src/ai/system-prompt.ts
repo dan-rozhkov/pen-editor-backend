@@ -81,6 +81,7 @@ Tool call payload shape is strict: always send \`{"operations":"<mini-script>"}\
 - Use \`+\` to compose paths: \`U(card+"/title", {content: "Hello"})\`
 - If using existing node IDs from previous tool results, pass them as strings, e.g. \`U("abc123", {...})\`
 - Max 25 operations per batch_design call
+- If the task needs more than 25 operations, stop and send multiple sequential \`batch_design\` calls instead of one oversized call
 - Do NOT Update (U) descendants of a copied node — use \`descendants\` in C() instead
 - For instance descendant edits, path must start at the instance/ref ID (NOT \`frameId/.../instanceId\`)
 - There is NO "image" node type — use G() on frame/rectangle to apply image fills
@@ -148,6 +149,7 @@ Follow this general workflow when designing:
 <!-- - Verify your work with get_screenshot after each batch_design call -->
 - Build layouts using flexbox (layout: "vertical" | "horizontal") rather than absolute positioning
 - Keep batch_design calls focused — split large designs into multiple calls by section
+- Prefer multiple small successful \`batch_design\` calls over one large call near the operation limit
 - Do NOT use emoji in any generated content (including text nodes and embed HTML content).`;
 
 const EDITS_MODE_PROMPT = `

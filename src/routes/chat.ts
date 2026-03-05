@@ -15,6 +15,10 @@ import { getMCPTools } from "../ai/mcp.js";
 import { logSession, type LogStep } from "../logging.js";
 
 const MAX_IMAGE_PARTS = 3;
+const MAX_AGENT_STEPS = {
+  research: 15,
+  default: 12,
+} as const;
 
 const chatBodySchema = z.object({
   messages: z.array(z.record(z.unknown())).min(1, "messages must not be empty"),
@@ -126,7 +130,9 @@ export async function chatRoutes(app: FastifyInstance, config: Config) {
     const tools = isResearch
       ? (mcpTools as ToolSet)
       : { ...penTools, ...mcpTools };
-    const maxSteps = isResearch ? 15 : 5;
+    const maxSteps = isResearch
+      ? MAX_AGENT_STEPS.research
+      : MAX_AGENT_STEPS.default;
 
     const result = streamText({
       model,

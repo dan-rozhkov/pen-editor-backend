@@ -1,6 +1,15 @@
 import { tool } from "ai";
 import { z } from "zod";
 
+const MAX_BATCH_DESIGN_OPERATIONS = 25;
+
+function countBatchDesignOperations(operations: string): number {
+  return operations
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean).length;
+}
+
 const batchDesignInputSchema = z
   .object({
     operations: z.string().optional(),
@@ -16,6 +25,18 @@ const batchDesignInputSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: 'Required string field "operations" is missing or empty.',
+        path: ["operations"],
+      });
+      return z.NEVER;
+    }
+
+    const operationCount = countBatchDesignOperations(operations);
+    if (operationCount > MAX_BATCH_DESIGN_OPERATIONS) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          `Too many operations (${operationCount}). Maximum is ${MAX_BATCH_DESIGN_OPERATIONS}. ` +
+          `Split the work into multiple sequential batch_design calls.`,
         path: ["operations"],
       });
       return z.NEVER;
@@ -182,7 +203,8 @@ export const penTools = {
 - \`G(nodeId, "ai"|"stock", prompt)\` — Generate/find image and apply as fill to frame/rectangle
 
 **Rules:**
-- Max 25 operations per call
+- Max ${MAX_BATCH_DESIGN_OPERATIONS} operations per call
+- If the task needs more than ${MAX_BATCH_DESIGN_OPERATIONS} operations, split it into multiple sequential \`batch_design\` calls
 - Bindings (e.g. \`card=I(...)\`) only live within one call
 - Use \`+\` to build paths: \`U(card+"/title", {content: "Hello"})\`
 - If using existing node IDs from previous tool results, pass them as strings (e.g. \`U("abc123", {...})\`)
