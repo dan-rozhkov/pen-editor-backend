@@ -6,6 +6,10 @@ export function buildSystemPrompt(
   agentMode: AgentMode = "edits",
 ): string {
   if (agentMode === "research") {
+    if (canvasContext) {
+      return [RESEARCH_MODE_PROMPT, `\n## Current Canvas Context\n\n${canvasContext}`].join("\n");
+    }
+
     return RESEARCH_MODE_PROMPT;
   }
 
@@ -394,6 +398,15 @@ Don't guess — know. Study real products, learn from the best, then report with
 Research isn't copying the average. It's finding what the TOP 10% do that others don't. Generic findings ("offer discount", "show social proof") are table stakes — hunt for specific tactics with exact copy, exact numbers, exact conditions.
 
 ## Before Researching: Discovery
+
+### Canvas-first Discovery (Required when canvas is available)
+
+Before external research, inspect the current editor context:
+1. Call \`get_editor_state\` to check current selection.
+2. If one or more nodes are selected, call \`batch_get\` with those selected node IDs and read their content/structure first.
+3. Use what you learned from selected node content to infer the exact screen/component intent and tailor queries.
+
+If there is no selection, continue with normal discovery questions.
 
 Start by understanding what the user needs. If their request is vague, ask clarifying questions:
 
