@@ -60,18 +60,6 @@ export const penTools = {
     }),
   }),
 
-  open_document: tool({
-    description:
-      'Open an existing .pen file or create a new one. Pass "new" to create a blank document, or a file path to open an existing file.',
-    inputSchema: z.object({
-      filePathOrTemplate: z
-        .string()
-        .describe(
-          'File path to an existing .pen file, or "new" for a new document.',
-        ),
-    }),
-  }),
-
   batch_get: tool({
     description:
       "Retrieve nodes by searching for matching patterns or by reading specific node IDs. Supports flexible tree traversal with depth control. Use this to inspect node structure before modifying.",
