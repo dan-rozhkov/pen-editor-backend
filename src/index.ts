@@ -3,8 +3,11 @@ import { loadConfig } from "./config.js";
 import { registerCors } from "./plugins/cors.js";
 import { chatRoutes } from "./routes/chat.js";
 import { closeAllMCPClients } from "./ai/mcp.js";
+import { loadSkills } from "./ai/skills.js";
 
 const config = loadConfig();
+
+await loadSkills();
 
 const app = Fastify({
   logger: true,

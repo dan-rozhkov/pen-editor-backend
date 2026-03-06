@@ -13,6 +13,8 @@ import { penTools } from "../ai/tools.js";
 import { AGENT_MODES, buildSystemPrompt } from "../ai/system-prompt.js";
 import { getMCPTools } from "../ai/mcp.js";
 import { logSession, type LogStep } from "../logging.js";
+import { randomUUID } from "node:crypto";
+import { detectSkillCommand, getAllSkills, getSkill } from "../ai/skills.js";
 
 const MAX_IMAGE_PARTS = 3;
 const MAX_AGENT_STEPS = {
@@ -85,6 +87,75 @@ export async function chatRoutes(app: FastifyInstance, config: Config) {
       model: modelOverride,
       agentMode = "edits",
     } = parsed.data;
+
+    // Detect slash command skill in last user message and resolve it
+    let skillContent: string | undefined;
+    const lastMsg = messages[messages.length - 1];
+    if (lastMsg && lastMsg.role === "user") {
+      const parts = lastMsg.parts ?? lastMsg.content;
+
+      // Extract the raw text and a setter to write back the stripped text
+      let rawText: string | undefined;
+      let setText: ((v: string) => void) | undefined;
+
+      if (Array.isArray(parts)) {
+        const textPart = parts.find(
+          (p: Record<string, unknown>) => p && typeof p === "object" && (p as { type?: string }).type === "text",
+        ) as { type: string; text: string } | undefined;
+        if (textPart?.text) {
+          rawText = textPart.text;
+          setText = (v) => { textPart.text = v; };
+        }
+      } else if (typeof parts === "string") {
+        rawText = parts;
+        const key = "parts" in lastMsg ? "parts" : "content";
+        setText = (v) => { (lastMsg as Record<string, unknown>)[key] = v; };
+      }
+
+      if (rawText && setText) {
+        const detected = detectSkillCommand(rawText);
+        if (detected) {
+          const skill = getSkill(detected.skillName);
+          if (!skill) {
+            return reply.status(400).send({
+              error: `Unknown skill: /${detected.skillName}`,
+            });
+          }
+          skillContent = skill.content;
+          setText(detected.userText);
+        }
+      }
+    }
+
+    // When a skill is detected, inject a synthetic tool call + result pair
+    // right before the last user message so the AI sees skill instructions
+    // without changing the system prompt (preserves prompt caching).
+    if (skillContent) {
+      const toolCallId = `skill-${randomUUID()}`;
+      const assistantMsg: Record<string, unknown> = {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId,
+            toolName: "lookup_skill",
+            args: {},
+          },
+        ],
+      };
+      const toolResultMsg: Record<string, unknown> = {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId,
+            toolName: "lookup_skill",
+            result: `Follow these instructions for the current task:\n\n${skillContent}`,
+          },
+        ],
+      };
+      messages.splice(messages.length - 1, 0, assistantMsg, toolResultMsg);
+    }
 
     const imagePartCount = messages.reduce((count, msg) => {
       const parts = msg.parts;
@@ -195,5 +266,13 @@ export async function chatRoutes(app: FastifyInstance, config: Config) {
 
     // Tell Fastify we already handled the response.
     reply.hijack();
+  });
+
+  app.get("/api/skills", async (_request, reply) => {
+    const skills = getAllSkills().map((s) => ({
+      name: s.name,
+      description: s.description,
+    }));
+    return reply.send({ skills });
   });
 }
