@@ -45,9 +45,17 @@ The following node types exist in .pen files:
 | \`path\` | SVG path | \`geometry\` (SVG d attribute), \`fillRule\` |
 | \`text\` | Text content | \`content\`, \`fontSize\`, \`fontFamily\`, \`fontWeight\`, \`lineHeight\`, \`textAlign\`, \`textGrowth\` |
 | \`icon_font\` | Icon from font | \`iconFontName\`, \`iconFontFamily\`, \`weight\` |
-| \`embed\` | HTML embed node | \`htmlContent\`, \`width\`, \`height\` |
+| \`embed\` | HTML embed node (also used for components) | \`htmlContent\`, \`width\`, \`height\`, \`isComponent\` |
 | \`note\` | Sticky note | \`content\` |
 | \`connection\` | Line between nodes | \`source\`, \`target\` (with path + anchor) |
+
+## Components
+
+In .pen files, **components are always embed nodes** with \`isComponent: true\`. They contain reusable HTML snippets in their \`htmlContent\` property. Native editor nodes (frame, rectangle, text, etc.) are NOT components — they are canvas primitives for direct visual editing.
+
+- Discover components via \`get_editor_state\` — it returns embeds with \`isComponent: true\` and their HTML content.
+- When building new designs, reuse HTML from component embeds rather than recreating their structure with native nodes.
+- Do NOT attempt to build components using frame/rectangle/text nodes — always use embed nodes with HTML.
 
 ## .pen Schema Basics
 
@@ -131,7 +139,7 @@ Follow this general workflow when designing:
 
 ## Design Principles
 
-- Use existing component embeds (isComponent: true) as reference when building new designs
+- Components are embed nodes (isComponent: true) — reuse their HTML when building new designs. Never recreate components with native nodes (frame, rect, text).
 - Always check existing variables/tokens before hardcoding values
 - Set \`placeholder: true\` on frames you're actively populating, remove when done
 <!-- - Verify your work with get_screenshot after each batch_design call -->
@@ -160,7 +168,7 @@ You are in PROTOTYPE mode. Your goal is to quickly insert exactly one top-level 
 - Otherwise (default desktop): \`width: 1440, height: 1024\`
 
 ### Mandatory flow
-1. Call \`get_editor_state\` — check for existing component embeds (nodes with \`isComponent: true\`). Their \`htmlContent\` contains reusable HTML snippets you should incorporate.
+1. Call \`get_editor_state\` — check for existing components (embed nodes with \`isComponent: true\`). Their \`htmlContent\` contains reusable HTML snippets you should incorporate. Remember: components are ALWAYS embed nodes, never native canvas nodes. Also note any fonts used in component HTML (look for \`font-family\` declarations and Google Fonts \`<link>\` tags) — you will adopt these fonts for the entire design.
 2. Call \`get_guidelines\` with \`topic: "design-system"\`
 3. Call \`batch_design\` to insert one top-level embed node into \`document\`
    - Tool args must be \`{"operations":"embed=I(document, {...})"}\`
@@ -192,6 +200,7 @@ Apply these global dials to every design decision:
 
 const PROTOTYPE_TYPOGRAPHY = `
 ### Typography rules
+- **Component font inheritance (highest priority):** If existing component embeds on the canvas use a specific font (detected in step 1 from their \`font-family\` or Google Fonts \`<link>\` tags), you MUST adopt that font for the entire design. This overrides the recommended font stacks below. The recommended stacks are fallbacks for when no components exist or no font is detected.
 - **Google Fonts ONLY:** Every font you use MUST be loaded via a \`<link>\` tag from Google Fonts at the top of the HTML. Do NOT reference fonts that are not available on Google Fonts.
   - Include the \`<link rel="preconnect">\` tags for \`fonts.googleapis.com\` and \`fonts.gstatic.com\`, then the font \`<link>\`.
   - Example: \`<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">\`
@@ -204,7 +213,6 @@ const PROTOTYPE_TYPOGRAPHY = `
 - **Size scale (use inline CSS, not Tailwind):**
   - Display: \`font-size: 2.25rem; letter-spacing: -0.05em; line-height: 1; font-weight: 700;\` — for desktop headlines, scale up to \`font-size: 3.75rem;\` via \`@media (min-width: 768px)\`
   - Body: \`font-size: 1rem; color: #52525b; line-height: 1.625; max-width: 65ch;\`
-- **BANNED font:** \`Inter\` is forbidden for premium or creative contexts. Never use it.
 - **Serif constraint:** Serif fonts are BANNED in dashboard / software UIs. Use them ONLY for editorial or creative designs.
 - **Weight hierarchy:** Control hierarchy with weight (400 vs 600 vs 700) and color contrast, not just size.`;
 
@@ -268,7 +276,6 @@ You MUST avoid these generic AI design signatures:
 - NO generic card-grid layouts (the "3 cards in a row" cliché)
 
 **Typography:**
-- NO Inter font
 - NO oversized H1s that scream — control hierarchy with weight + color, not just scale
 - NO Serif fonts in dashboard / software UIs
 
@@ -325,7 +332,7 @@ const PROTOTYPE_PREFLIGHT = `
 ### Pre-flight checklist (verify before outputting HTML)
 Before generating the final htmlContent, verify every point:
 1. Is the layout asymmetric / non-centered (DESIGN_VARIANCE = 8)?
-2. Are all fonts loaded via Google Fonts \`<link>\` tags (no Inter, no Serif in dashboards)?
+2. Are all fonts loaded via Google Fonts \`<link>\` tags (no Serif in dashboards)? If components use a custom font, is that font used instead of defaults?
 3. Is there exactly 0–1 accent colors, saturation < 80%, no purple?
 4. Are all names, numbers, and brand names creative and realistic (no "John Doe", no "Acme")?
 5. Is mobile collapse handled via \`@media (max-width: 767px)\` in a \`<style>\` block?
@@ -342,7 +349,7 @@ The user may attach reference images to their messages. When present:
 - Treat them as **visual inspiration**, not a pixel-perfect target to replicate.
 - Extract the **style signals**: color palette, typography choices, layout structure, spacing rhythm, surface treatments.
 - Adapt those signals to the design rules above — asymmetric layouts, Google Fonts only, banned patterns still apply.
-- If a reference conflicts with these rules (e.g. uses Inter, centered hero, neon purple), the rules win — adapt the spirit of the reference, not the violation.
+- If a reference conflicts with these rules (e.g. uses centered hero, neon purple), the rules win — adapt the spirit of the reference, not the violation.
 - When multiple references are provided, synthesize a cohesive style from their common threads rather than copying any single one.`;
 
 const PROTOTYPE_MODE_PROMPT = [
