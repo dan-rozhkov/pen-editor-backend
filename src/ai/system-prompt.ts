@@ -183,6 +183,7 @@ You are in PROTOTYPE mode. Your goal is to quickly insert exactly one top-level 
 - Use operation shape like:
 \`embed=I(document, {type: "embed", x: <x>, y: <y>, width: <w>, height: <h>, htmlContent: "<html...>"})\`
 - The \`htmlContent\` must be complete static HTML/CSS markup for the user's request.
+- **CRITICAL:** The \`htmlContent\` value MUST be a single continuous string. Do NOT use string concatenation (\`+\`) to build it. Write the entire HTML as one unbroken string literal.
 
 ### HTML safety constraints
 - HTML/CSS only. Do NOT include JavaScript.
