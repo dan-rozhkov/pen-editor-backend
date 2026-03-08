@@ -50,7 +50,7 @@ export const penTools = {
 
   get_editor_state: tool({
     description:
-      "Get the current editor state including active .pen file, user selection, top-level nodes, and available reusable components. Call this first to understand what you're working with.",
+      "Get the current editor state including active .pen file, user selection, top-level nodes, and available component embeds with their HTML content. Call this first to understand what you're working with.",
     inputSchema: z.object({
       include_schema: z
         .boolean()
@@ -81,7 +81,6 @@ export const penTools = {
                 "note",
                 "icon_font",
                 "image",
-                "ref",
                 "embed",
               ])
               .optional()
@@ -92,10 +91,6 @@ export const penTools = {
               .describe(
                 "Only return nodes whose name matches this regex pattern",
               ),
-            reusable: z
-              .boolean()
-              .optional()
-              .describe("Only return nodes with this reusable value"),
           }),
         )
         .optional()
@@ -118,12 +113,6 @@ export const penTools = {
         .number()
         .optional()
         .describe("How deep to search in the node tree. Unlimited if omitted."),
-      resolveInstances: z
-        .boolean()
-        .optional()
-        .describe(
-          "If true, ref nodes are fully expanded instead of showing as references.",
-        ),
       resolveVariables: z
         .boolean()
         .optional()
@@ -183,9 +172,9 @@ export const penTools = {
 
 **Operations:**
 - \`binding=I(parent, nodeData)\` — Insert new node
-- \`binding=C(sourceId, parent, overrides)\` — Copy node (use \`descendants\` for nested overrides, \`positionDirection\`/\`positionPadding\` for placement)
-- \`U(path, updateData)\` — Update properties (cannot change id, type, ref, or children)
-- \`binding=R(path, newNodeData)\` — Replace node entirely (ideal for swapping slots in component instances)
+- \`binding=C(sourceId, parent, overrides)\` — Copy node (\`positionDirection\`/\`positionPadding\` for placement)
+- \`U(path, updateData)\` — Update properties (cannot change id, type, or children)
+- \`binding=R(path, newNodeData)\` — Replace node entirely
 - \`M(nodeId, parent?, index?)\` — Move node
 - \`D(nodeId)\` — Delete node
 - \`G(nodeId, "ai"|"stock", prompt)\` — Generate/find image and apply as fill to frame/rectangle
@@ -198,21 +187,16 @@ export const penTools = {
 - If using existing node IDs from previous tool results, pass them as strings (e.g. \`U("abc123", {...})\`)
 - The "document" binding is predefined and references the document root
 - Insert/Copy/Replace MUST have a binding name
-- Do NOT U() descendants of a copied node — use \`descendants\` in C() instead
 - No "image" node type — use G() on frame/rectangle to apply image fills
 - \`placeholder: true\` marks frames being actively designed
 - Text has no color by default — set \`fill\` property
 - \`fill_container\` only valid when parent has flexbox layout
 - Variable references must use exact names from \`get_variables\` (including leading \`--\` and dashes), e.g. \`"$--ck-blue-500"\`
-- For instance descendant updates, path must start with the instance/ref ID (NOT a frame path chain).
 
 **Example:**
 \`\`\`
-card=I("parentId", {type: "ref", ref: "CardComp"})
+card=I("parentId", {type: "frame", layout: "vertical", padding: 16, gap: 12, width: 300, height: "fit_content"})
 U(card+"/title", {content: "Account Details"})
-U(card+"/description", {content: "Manage your settings"})
-U("existingRefId", {descendants: {"title": {content: "New title"}}})
-U("existingRefId/title", {content: "New title"})
 \`\`\``,
     inputSchema: batchDesignInputSchema.describe(
       'Tool input object. Required canonical field: {"operations":"..."}; aliases design/script/batch are accepted for robustness.',
@@ -361,11 +345,9 @@ U("existingRefId/title", {content: "New title"})
           "WRONG: `I(screen, {type: \"frame\", layout: \"vertical\", gap: 16})` — no width/height, will use fixed defaults!\n" +
           "RIGHT: `I(screen, {type: \"frame\", layout: \"vertical\", gap: 16, width: \"fill_container\", height: \"fit_content\"})`\n\n" +
           "## Component Usage\n" +
-          "- Use reusable components (frames with reusable: true) as building blocks.\n" +
-          "- Insert instances via ref nodes: `{type: \"ref\", ref: \"componentId\"}`.\n" +
-          "- Override descendant properties using the descendants map.\n" +
-          "- Use slots (frames with `slot` property) to insert child content into components.\n" +
-          "- Disable unused slots with `enabled: false`.\n\n" +
+          "- Component embeds (embed nodes with isComponent: true) contain reusable HTML snippets.\n" +
+          "- Use `get_editor_state` to discover available components and their htmlContent.\n" +
+          "- When creating new embeds, reuse HTML from component embeds rather than building from scratch.\n\n" +
           "## Layout Patterns\n" +
           "- Sidebar + Content: sidebar with fixed width (240-280px), main with `width: \"fill_container\"`.\n" +
           "- Card grids: horizontal frame with `gap: 16-24`, cards with `width: \"fill_container\"`.\n" +
