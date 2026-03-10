@@ -170,12 +170,13 @@ You are in PROTOTYPE mode. Your goal is to quickly insert exactly one top-level 
 - Otherwise (default desktop): \`width: 1440, height: 1024\`
 
 ### Mandatory flow
-1. Call \`get_editor_state\` — check for existing components. The response includes:
+1. Call \`get_editor_state\` — check for existing components and note available variables from canvas context. The response includes:
    - \`reusableComponents\` — full HTML of each component (for reference/inspection)
    - \`documentComponents\` — compact list with \`tag\`, \`name\`, \`width\`, \`height\` for each component
    Remember: components are ALWAYS embed nodes, never native canvas nodes. Also note any fonts used in component HTML (look for \`font-family\` declarations and Google Fonts \`<link>\` tags) — you will adopt these fonts for the entire design.
-2. Call \`get_guidelines\` with \`topic: "design-system"\`
-3. Call \`batch_design\` to insert one top-level embed node into \`document\`
+2. **Use variables from Canvas Context** — if \`variables\` are present in canvas context, define them as CSS custom properties in a \`<style>:root{...}</style>\` block at the top of your \`htmlContent\`, and reference them via \`var(--name)\` in styles. Never hardcode colors that have a matching variable.
+3. Call \`get_guidelines\` with \`topic: "design-system"\`
+4. Call \`batch_design\` to insert one top-level embed node into \`document\`
    - Tool args must be \`{"operations":"embed=I(document, {...})"}\`
    - **If \`documentComponents\` is non-empty**, compose your HTML using document component tags (e.g. \`<c-user-card />\`, \`<c-sidebar-nav />\`) instead of copying raw HTML. These tags are automatically expanded to the component's full HTML before rendering.
    - If no document components exist, compose plain HTML as before.
@@ -190,7 +191,7 @@ When \`get_editor_state\` returns \`documentComponents\`, each entry has a \`tag
 - To inspect a component's actual HTML structure, use \`batch_get\` with \`preferSourceTemplate: true\` or check \`reusableComponents\` in \`get_editor_state\`.
 
 ### Recommended (not required)
-- Call \`get_variables\` to read design tokens and use them instead of hardcoding colors/spacing.
+- Variables are provided in canvas context automatically. Use them as CSS custom properties: \`var(--name)\`. Call \`get_variables\` only if you need to refresh values.
 - Call \`find_empty_space_on_canvas\` with the target embed width/height to position the node without overlaps.
 
 ### Embed insertion requirements
@@ -242,7 +243,8 @@ const PROTOTYPE_COLOR_RULES = `
 - **Never use pure black (\`#000000\`).** Use off-black: \`#18181b\` (zinc-900), \`#0f172a\` (slate-900), or similar.
 - Stick to ONE warm-or-cool gray palette for the entire output — never mix warm and cool grays.
 - Shadows must be tinted toward the background hue, not pure black. Example: \`box-shadow: 0 4px 24px -4px rgba(15,23,42,0.08);\`
-- Ensure WCAG AA contrast: body text ≥ 4.5:1, large text / headings ≥ 3:1 against their backgrounds.`;
+- Ensure WCAG AA contrast: body text ≥ 4.5:1, large text / headings ≥ 3:1 against their backgrounds.
+- **Variable priority:** If design variables exist in canvas context, ALWAYS use them as CSS custom properties (\`var(--name, fallback)\`) instead of hardcoding hex values.`;
 
 const PROTOTYPE_LAYOUT_RULES = `
 ### Layout rules (DESIGN_VARIANCE = 8)
@@ -360,7 +362,8 @@ Before generating the final htmlContent, verify every point:
 9. Are all image URLs using \`picsum.photos/seed/...\` (no broken Unsplash links)?
 10. Is the HTML self-contained, complete, and renderable standalone?
 11. If reference images were provided, is their style influence visible in the output (palette, typography, layout feel)?
-12. If \`documentComponents\` were available, did you use their \`c-*\` tags instead of copying raw HTML? Did you avoid inventing tags not listed in \`documentComponents\`?`;
+12. If \`documentComponents\` were available, did you use their \`c-*\` tags instead of copying raw HTML? Did you avoid inventing tags not listed in \`documentComponents\`?
+13. If variables were provided in canvas context, are they defined in a \`:root {}\` block and referenced via \`var()\` throughout the HTML?`;
 
 const PROTOTYPE_REFERENCE_IMAGES = `
 ### Reference images
