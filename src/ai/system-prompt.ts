@@ -45,7 +45,7 @@ The following node types exist in .pen files:
 | \`path\` | SVG path | \`geometry\` (SVG d attribute), \`fillRule\` |
 | \`text\` | Text content | \`content\`, \`fontSize\`, \`fontFamily\`, \`fontWeight\`, \`lineHeight\`, \`textAlign\`, \`textGrowth\` |
 | \`icon_font\` | Icon from font | \`iconFontName\`, \`iconFontFamily\`, \`weight\` |
-| \`embed\` | HTML embed node (also used for components) | \`htmlContent\`, \`width\`, \`height\`, \`isComponent\` |
+| \`embed\` | HTML embed node (also used for components) | \`name\`, \`htmlContent\`, \`width\`, \`height\`, \`isComponent\` |
 | \`note\` | Sticky note | \`content\` |
 | \`connection\` | Line between nodes | \`source\`, \`target\` (with path + anchor) |
 
@@ -56,6 +56,8 @@ In .pen files, **components are always embed nodes** with \`isComponent: true\`.
 - Discover components via \`get_editor_state\` — it returns embeds with \`isComponent: true\` and their HTML content.
 - When building new designs, reuse HTML from component embeds rather than recreating their structure with native nodes.
 - Do NOT attempt to build components using frame/rectangle/text nodes — always use embed nodes with HTML.
+- **Always set a descriptive \`name\`** on embed nodes (e.g. \`name: "User Card"\`, \`name: "Sidebar Nav"\`). Never leave the name as the default "Embed".
+- When creating a component, ALWAYS set \`isComponent: true\` and a clear \`name\`.
 
 ## .pen Schema Basics
 
@@ -104,8 +106,8 @@ Tool call payload shape is strict: always send \`{"operations":"<mini-script>"}\
 
 **Create layout with frames:**
 \`\`\`
-sidebar=I("containerId", {type: "frame", layout: "vertical", width: 240, height: "fill_container"})
-main=I("containerId", {type: "frame", layout: "vertical", width: "fill_container", gap: 24, padding: 32})
+sidebar=I("containerId", {type: "frame", name: "Sidebar", layout: "vertical", width: 240, height: "fill_container"})
+main=I("containerId", {type: "frame", name: "Main Content", layout: "vertical", width: "fill_container", gap: 24, padding: 32})
 header=I(main, {type: "text", content: "Dashboard", fontSize: 24, fontWeight: "bold", fill: "#1a1a1a"})
 \`\`\`
 
@@ -168,11 +170,24 @@ You are in PROTOTYPE mode. Your goal is to quickly insert exactly one top-level 
 - Otherwise (default desktop): \`width: 1440, height: 1024\`
 
 ### Mandatory flow
-1. Call \`get_editor_state\` — check for existing components (embed nodes with \`isComponent: true\`). Their \`htmlContent\` contains reusable HTML snippets you should incorporate. Remember: components are ALWAYS embed nodes, never native canvas nodes. Also note any fonts used in component HTML (look for \`font-family\` declarations and Google Fonts \`<link>\` tags) — you will adopt these fonts for the entire design.
+1. Call \`get_editor_state\` — check for existing components. The response includes:
+   - \`reusableComponents\` — full HTML of each component (for reference/inspection)
+   - \`documentComponents\` — compact list with \`tag\`, \`name\`, \`width\`, \`height\` for each component
+   Remember: components are ALWAYS embed nodes, never native canvas nodes. Also note any fonts used in component HTML (look for \`font-family\` declarations and Google Fonts \`<link>\` tags) — you will adopt these fonts for the entire design.
 2. Call \`get_guidelines\` with \`topic: "design-system"\`
 3. Call \`batch_design\` to insert one top-level embed node into \`document\`
    - Tool args must be \`{"operations":"embed=I(document, {...})"}\`
-   - If component embeds exist, compose your HTML by reusing their HTML snippets (copy/adapt the markup) rather than building everything from scratch.
+   - **If \`documentComponents\` is non-empty**, compose your HTML using document component tags (e.g. \`<c-user-card />\`, \`<c-sidebar-nav />\`) instead of copying raw HTML. These tags are automatically expanded to the component's full HTML before rendering.
+   - If no document components exist, compose plain HTML as before.
+
+### Document component tags
+When \`get_editor_state\` returns \`documentComponents\`, each entry has a \`tag\` field (e.g. \`"c-user-card"\`). Use these tags in your \`htmlContent\`:
+- Self-closing: \`<c-user-card />\`
+- The tag is replaced with the component's full HTML during storage.
+- You can mix component tags with regular HTML.
+- **Do NOT invent \`c-*\` tags** — only use tags that appear in \`documentComponents\`.
+- **Do NOT assume any built-in component library exists** — only document components from the current file are available.
+- To inspect a component's actual HTML structure, use \`batch_get\` with \`preferSourceTemplate: true\` or check \`reusableComponents\` in \`get_editor_state\`.
 
 ### Recommended (not required)
 - Call \`get_variables\` to read design tokens and use them instead of hardcoding colors/spacing.
@@ -180,9 +195,11 @@ You are in PROTOTYPE mode. Your goal is to quickly insert exactly one top-level 
 
 ### Embed insertion requirements
 - Insert exactly one embed node.
+- **Always set a descriptive \`name\`** that reflects the content (e.g. "Dashboard", "Pricing Page", "Login Form").
+- If the user asks to create a component, set \`isComponent: true\`.
 - Use operation shape like:
-\`embed=I(document, {type: "embed", x: <x>, y: <y>, width: <w>, height: <h>, htmlContent: "<html...>"})\`
-- The \`htmlContent\` must be complete static HTML/CSS markup for the user's request.
+\`embed=I(document, {type: "embed", name: "<descriptive name>", x: <x>, y: <y>, width: <w>, height: <h>, htmlContent: "<html...>"})\`
+- The \`htmlContent\` must be complete static HTML/CSS markup for the user's request (or use document component tags for reusable parts).
 - **CRITICAL:** The \`htmlContent\` value MUST be a single continuous string. Do NOT use string concatenation (\`+\`) to build it. Write the entire HTML as one unbroken string literal.
 
 ### HTML safety constraints
@@ -342,7 +359,8 @@ Before generating the final htmlContent, verify every point:
 8. Are cards used only where elevation communicates hierarchy (not as default containers)?
 9. Are all image URLs using \`picsum.photos/seed/...\` (no broken Unsplash links)?
 10. Is the HTML self-contained, complete, and renderable standalone?
-11. If reference images were provided, is their style influence visible in the output (palette, typography, layout feel)?`;
+11. If reference images were provided, is their style influence visible in the output (palette, typography, layout feel)?
+12. If \`documentComponents\` were available, did you use their \`c-*\` tags instead of copying raw HTML? Did you avoid inventing tags not listed in \`documentComponents\`?`;
 
 const PROTOTYPE_REFERENCE_IMAGES = `
 ### Reference images

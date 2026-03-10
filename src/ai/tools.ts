@@ -50,7 +50,7 @@ export const penTools = {
 
   get_editor_state: tool({
     description:
-      "Get the current editor state including active .pen file, user selection, top-level nodes, and available component embeds with their HTML content. Call this first to understand what you're working with.",
+      "Get the current editor state including active .pen file, user selection, top-level nodes, and available components (embed nodes with isComponent: true and their HTML content). Components are always embed nodes — never native canvas nodes like frame/rect/text.",
     inputSchema: z.object({
       include_schema: z
         .boolean()
@@ -62,7 +62,7 @@ export const penTools = {
 
   batch_get: tool({
     description:
-      "Retrieve nodes by searching for matching patterns or by reading specific node IDs. Supports flexible tree traversal with depth control. Use this to inspect node structure before modifying.",
+      "Retrieve nodes by searching for matching patterns or by reading specific node IDs. Supports flexible tree traversal with depth control. Use this to inspect node structure before modifying. Note: components are embed nodes with isComponent: true — search with type: \"embed\" to find them.",
     inputSchema: z.object({
       patterns: z
         .array(
@@ -195,7 +195,7 @@ export const penTools = {
 
 **Example:**
 \`\`\`
-card=I("parentId", {type: "frame", layout: "vertical", padding: 16, gap: 12, width: 300, height: "fit_content"})
+card=I("parentId", {type: "frame", name: "Account Card", layout: "vertical", padding: 16, gap: 12, width: 300, height: "fit_content"})
 U(card+"/title", {content: "Account Details"})
 \`\`\``,
     inputSchema: batchDesignInputSchema.describe(
@@ -345,9 +345,11 @@ U(card+"/title", {content: "Account Details"})
           "WRONG: `I(screen, {type: \"frame\", layout: \"vertical\", gap: 16})` — no width/height, will use fixed defaults!\n" +
           "RIGHT: `I(screen, {type: \"frame\", layout: \"vertical\", gap: 16, width: \"fill_container\", height: \"fit_content\"})`\n\n" +
           "## Component Usage\n" +
-          "- Component embeds (embed nodes with isComponent: true) contain reusable HTML snippets.\n" +
+          "- Components are ALWAYS embed nodes (type: \"embed\") with isComponent: true. They are NOT native editor nodes.\n" +
+          "- Native nodes (frame, rectangle, text, icon_font, etc.) are canvas primitives — they are NOT components.\n" +
           "- Use `get_editor_state` to discover available components and their htmlContent.\n" +
-          "- When creating new embeds, reuse HTML from component embeds rather than building from scratch.\n\n" +
+          "- When creating new designs, reuse HTML snippets from component embeds rather than building from scratch.\n" +
+          "- Do NOT recreate component UIs using frame/rect/text nodes — always use embed nodes with HTML.\n\n" +
           "## Layout Patterns\n" +
           "- Sidebar + Content: sidebar with fixed width (240-280px), main with `width: \"fill_container\"`.\n" +
           "- Card grids: horizontal frame with `gap: 16-24`, cards with `width: \"fill_container\"`.\n" +
