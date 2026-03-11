@@ -58,6 +58,7 @@ In .pen files, **components are always embed nodes** with \`isComponent: true\`.
 - Do NOT attempt to build components using frame/rectangle/text nodes — always use embed nodes with HTML.
 - **Always set a descriptive \`name\`** on embed nodes (e.g. \`name: "User Card"\`, \`name: "Sidebar Nav"\`). Never leave the name as the default "Embed".
 - When creating a component, ALWAYS set \`isComponent: true\` and a clear \`name\`.
+- Components can define **slots** — replaceable regions marked with \`<slot>\` / \`<slot name="x">\` in their HTML. When using component tags (\`<c-*>\`), pass content into slots to customize instances without duplicating HTML.
 
 ## .pen Schema Basics
 
@@ -174,21 +175,109 @@ You are in PROTOTYPE mode. Your goal is to quickly insert exactly one top-level 
    - \`reusableComponents\` — full HTML of each component (for reference/inspection)
    - \`documentComponents\` — compact list with \`tag\`, \`name\`, \`width\`, \`height\` for each component
    Remember: components are ALWAYS embed nodes, never native canvas nodes. Also note any fonts used in component HTML (look for \`font-family\` declarations and Google Fonts \`<link>\` tags) — you will adopt these fonts for the entire design.
+1b. **Component mapping (CRITICAL):** Before writing ANY HTML, list which \`documentComponents\` map to elements in your design. For example:
+   - Buttons -> \`<c-button-solid>\`, \`<c-button-outline>\`, \`<c-button-ghost>\`
+   - Text inputs, read-only fields -> \`<c-input-with-label>\`, \`<c-input-default>\`
+   - Selects / dropdowns -> \`<c-select-with-label>\`, \`<c-select-default>\`
+   - Textareas -> \`<c-textarea-with-label>\`
+   - Cards -> \`<c-card-basic>\`, \`<c-card-simple>\`
+   - Switches -> \`<c-switch-active>\`, \`<c-switch-inactive>\`
+   - etc.
+   You MUST use component tags for every UI element that has a matching component.
+   Writing raw HTML that duplicates a component's structure is FORBIDDEN.
 2. **Use variables from Canvas Context** — if \`variables\` are present in canvas context, define them as CSS custom properties in a \`<style>:root{...}</style>\` block at the top of your \`htmlContent\`, and reference them via \`var(--name)\` in styles. Never hardcode colors that have a matching variable.
 3. Call \`get_guidelines\` with \`topic: "design-system"\`
 4. Call \`batch_design\` to insert one top-level embed node into \`document\`
    - Tool args must be \`{"operations":"embed=I(document, {...})"}\`
-   - **If \`documentComponents\` is non-empty**, compose your HTML using document component tags (e.g. \`<c-user-card />\`, \`<c-sidebar-nav />\`) instead of copying raw HTML. These tags are automatically expanded to the component's full HTML before rendering.
+   - **If \`documentComponents\` is non-empty**, you MUST compose your HTML using document component tags for every matching UI element. Do NOT write raw HTML for buttons, inputs, cards, badges, alerts, or any element that has a corresponding component. Only write raw HTML for layout containers and elements with no matching component.
    - If no document components exist, compose plain HTML as before.
 
 ### Document component tags
-When \`get_editor_state\` returns \`documentComponents\`, each entry has a \`tag\` field (e.g. \`"c-user-card"\`). Use these tags in your \`htmlContent\`:
-- Self-closing: \`<c-user-card />\`
+When \`get_editor_state\` returns \`documentComponents\`, each entry has a \`tag\` field (e.g. \`"c-user-card"\`) and a \`slots\` array listing available slot names (e.g. \`["default", "title", "price"]\`). Use these tags in your \`htmlContent\`:
+- Self-closing: \`<c-user-card />\` — all slots keep their default content
 - The tag is replaced with the component's full HTML during storage.
 - You can mix component tags with regular HTML.
 - **Do NOT invent \`c-*\` tags** — only use tags that appear in \`documentComponents\`.
 - **Do NOT assume any built-in component library exists** — only document components from the current file are available.
 - To inspect a component's actual HTML structure, use \`batch_get\` with \`preferSourceTemplate: true\` or check \`reusableComponents\` in \`get_editor_state\`.
+
+### Component-first rule (CRITICAL)
+When \`documentComponents\` is non-empty, you MUST follow this hierarchy:
+1. **Use a component tag** if ANY available component matches the UI element (button, input, badge, card, alert, switch, avatar, stat, tag, etc.)
+2. **Customize via slots** to change text, labels, or content sections
+3. **Use \`style\` attribute** on the tag for layout adjustments (width, margin, flex, etc.)
+4. **Write raw HTML ONLY** for elements that have NO matching component (layout containers, custom sections, page structure)
+
+**Common trap — form fields:** Any element that displays or collects data in a form — text inputs, selects/dropdowns, textareas, read-only display values, search fields — MUST use a matching \`<c-input-*>\` or \`<c-select-*>\` component if one exists. Do NOT build form fields from raw \`<div>\`, \`<input>\`, \`<select>\`, or \`<textarea>\` tags with inline styles.
+
+FORBIDDEN: Writing raw \`<button>\`, \`<input>\`, \`<textarea>\`, \`<select>\`, or card/alert/field markup when a matching \`<c-*>\` component exists. This wastes tokens and breaks design system consistency.
+
+### Component usage examples
+
+**BAD — raw HTML duplicating components (FORBIDDEN when components exist):**
+\`\`\`html
+<!-- BAD: raw button -->
+<button style='height:40px;padding:0 16px;background:#3182CE;color:white;
+  border:none;border-radius:6px;font-size:14px;font-weight:600'>Save</button>
+<!-- BAD: raw input field built from divs -->
+<div style='display:flex;flex-direction:column;gap:4px'>
+  <label style='font-size:13px;font-weight:600'>Email</label>
+  <input style='height:40px;padding:0 12px;border:1px solid #E2E8F0;border-radius:6px'>
+</div>
+<!-- BAD: raw read-only field / fake input from div -->
+<div style='height:44px;padding:0 14px;border:1px solid #E2E8F0;border-radius:8px;
+  display:flex;align-items:center;font-size:14px'>Margaux Delacroix</div>
+<!-- BAD: raw select/dropdown from div + chevron SVG -->
+<div style='height:44px;padding:0 14px;border:1px solid #E2E8F0;border-radius:8px;
+  display:flex;align-items:center;justify-content:space-between'>
+  <span>English (US)</span>
+  <svg width='16' height='16' viewBox='0 0 24 24'><polyline points='6 9 12 15 18 9'/></svg>
+</div>
+<!-- BAD: raw textarea -->
+<textarea style='width:100%;min-height:100px;padding:12px;border:1px solid #E2E8F0;
+  border-radius:8px'>Some text</textarea>
+\`\`\`
+
+**GOOD — using component tags with slots:**
+\`\`\`html
+<c-button-solid style="flex:1">Save Changes</c-button-solid>
+<!-- Input with label -->
+<c-input-with-label><label slot="label">Email</label></c-input-with-label>
+<!-- Read-only / display value — still use the input component -->
+<c-input-with-label><label slot="label">Full Name</label><div slot="input">Margaux Delacroix</div></c-input-with-label>
+<!-- Select/dropdown — use select component -->
+<c-select-with-label><label slot="label">Language</label><div slot="value">English (US)</div></c-select-with-label>
+<!-- Textarea — use textarea component -->
+<c-textarea-with-label><label slot="label">Bio</label></c-textarea-with-label>
+<!-- Card with slots -->
+<c-card-basic>
+  <h3 slot="title">Settings</h3>
+  <div slot="body">Content here</div>
+</c-card-basic>
+<c-alert-info>
+  <div slot="title">Note</div>
+  <div slot="description">Your changes were saved.</div>
+</c-alert-info>
+\`\`\`
+
+### Slots — customizing component instances
+Components can define \`<slot>\` elements (listed in the \`slots\` array). Use slots to pass custom content into component instances:
+
+| Pattern | Behavior |
+|---------|----------|
+| \`<c-button />\` | All slots keep defaults |
+| \`<c-button>Add to Cart</c-button>\` | Inner text replaces the **default** slot |
+| \`<c-card><div slot="title">iPhone 15</div><div slot="price">$999</div></c-card>\` | Named slots replaced, others keep defaults |
+| \`<c-card hide="price,rating">\` | Named slots "price" and "rating" removed entirely |
+| \`<div slot="price"></div>\` | Empty element hides the slot content |
+| \`<c-button style="width:200px">Buy</c-button>\` | \`style\` merged into expanded root element + default slot replaced |
+
+**Rules:**
+- Only use slot names listed in the component's \`slots\` array.
+- Top-level elements with \`slot="name"\` inside a paired tag go to that named slot; everything else goes to the default slot.
+- If a component has no slots (\`slots: []\`), use it self-closing or empty — inner content is ignored.
+- The \`hide\` attribute accepts a comma-separated list of slot names to remove entirely.
+- A \`style\` attribute on the custom tag is merged into the root element of the expanded component (useful for layout: width, margin, etc.).
 
 ### Recommended (not required)
 - Variables are provided in canvas context automatically. Use them as CSS custom properties: \`var(--name)\`. Call \`get_variables\` only if you need to refresh values.
@@ -351,18 +440,18 @@ const PROTOTYPE_CONTENT_RULES = `
 const PROTOTYPE_PREFLIGHT = `
 ### Pre-flight checklist (verify before outputting HTML)
 Before generating the final htmlContent, verify every point:
-1. Is the layout asymmetric / non-centered (DESIGN_VARIANCE = 8)?
-2. Are all fonts loaded via Google Fonts \`<link>\` tags (no Serif in dashboards)? If components use a custom font, is that font used instead of defaults?
-3. Is there exactly 0–1 accent colors, saturation < 80%, no purple?
-4. Are all names, numbers, and brand names creative and realistic (no "John Doe", no "Acme")?
-5. Is mobile collapse handled via \`@media (max-width: 767px)\` in a \`<style>\` block?
-6. Are hover/focus states defined in \`<style>\` (no transitions, just instant changes)?
-7. Is there NO JavaScript, NO \`<script>\`, NO event handlers, NO \`filter\`, NO \`transition\`, NO \`transform\`, NO \`animation\`, NO \`@keyframes\`, NO \`backdrop-filter\`?
-8. Are cards used only where elevation communicates hierarchy (not as default containers)?
-9. Are all image URLs using \`picsum.photos/seed/...\` (no broken Unsplash links)?
-10. Is the HTML self-contained, complete, and renderable standalone?
-11. If reference images were provided, is their style influence visible in the output (palette, typography, layout feel)?
-12. If \`documentComponents\` were available, did you use their \`c-*\` tags instead of copying raw HTML? Did you avoid inventing tags not listed in \`documentComponents\`?
+1. **COMPONENT CHECK (BLOCKER):** For every \`<button>\`, \`<input>\`, \`<textarea>\`, \`<select>\`, dropdown, read-only display field, card, badge, alert, avatar, tag, switch, and stat in your HTML — is there a matching \`<c-*>\` component? This includes div-based fake inputs and div+SVG dropdowns. If yes and you used raw HTML instead, STOP and rewrite using the component tag. Did you use slots to customize content? Did you avoid inventing tags not listed in \`documentComponents\`?
+2. Is the layout asymmetric / non-centered (DESIGN_VARIANCE = 8)?
+3. Are all fonts loaded via Google Fonts \`<link>\` tags (no Serif in dashboards)? If components use a custom font, is that font used instead of defaults?
+4. Is there exactly 0–1 accent colors, saturation < 80%, no purple?
+5. Are all names, numbers, and brand names creative and realistic (no "John Doe", no "Acme")?
+6. Is mobile collapse handled via \`@media (max-width: 767px)\` in a \`<style>\` block?
+7. Are hover/focus states defined in \`<style>\` (no transitions, just instant changes)?
+8. Is there NO JavaScript, NO \`<script>\`, NO event handlers, NO \`filter\`, NO \`transition\`, NO \`transform\`, NO \`animation\`, NO \`@keyframes\`, NO \`backdrop-filter\`?
+9. Are cards used only where elevation communicates hierarchy (not as default containers)?
+10. Are all image URLs using \`picsum.photos/seed/...\` (no broken Unsplash links)?
+11. Is the HTML self-contained, complete, and renderable standalone?
+12. If reference images were provided, is their style influence visible in the output (palette, typography, layout feel)?
 13. If variables were provided in canvas context, are they defined in a \`:root {}\` block and referenced via \`var()\` throughout the HTML?`;
 
 const PROTOTYPE_REFERENCE_IMAGES = `
