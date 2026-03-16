@@ -44,7 +44,9 @@ function sanitizeMessagesForProvider(
         if (!block || typeof block !== "object") return true;
         const type = (block as { type?: unknown }).type;
         const isReasoningLike =
-          type === "reasoning" || type === "thinking" || type === "redacted_thinking";
+          type === "reasoning" ||
+          type === "thinking" ||
+          type === "redacted_thinking";
         if (isReasoningLike) removedReasoningParts += 1;
         return !isReasoningLike;
       })
@@ -100,16 +102,23 @@ export async function chatRoutes(app: FastifyInstance, config: Config) {
 
       if (Array.isArray(parts)) {
         const textPart = parts.find(
-          (p: Record<string, unknown>) => p && typeof p === "object" && (p as { type?: string }).type === "text",
+          (p: Record<string, unknown>) =>
+            p &&
+            typeof p === "object" &&
+            (p as { type?: string }).type === "text",
         ) as { type: string; text: string } | undefined;
         if (textPart?.text) {
           rawText = textPart.text;
-          setText = (v) => { textPart.text = v; };
+          setText = (v) => {
+            textPart.text = v;
+          };
         }
       } else if (typeof parts === "string") {
         rawText = parts;
         const key = "parts" in lastMsg ? "parts" : "content";
-        setText = (v) => { (lastMsg as Record<string, unknown>)[key] = v; };
+        setText = (v) => {
+          (lastMsg as Record<string, unknown>)[key] = v;
+        };
       }
 
       if (rawText && setText) {
@@ -160,10 +169,16 @@ export async function chatRoutes(app: FastifyInstance, config: Config) {
     const imagePartCount = messages.reduce((count, msg) => {
       const parts = msg.parts;
       if (!Array.isArray(parts)) return count;
-      return count + parts.filter((p) =>
-        p && typeof p === "object" &&
-        ((p as { type?: unknown }).type === "file" || (p as { type?: unknown }).type === "image"),
-      ).length;
+      return (
+        count +
+        parts.filter(
+          (p) =>
+            p &&
+            typeof p === "object" &&
+            ((p as { type?: unknown }).type === "file" ||
+              (p as { type?: unknown }).type === "image"),
+        ).length
+      );
     }, 0);
     if (imagePartCount > MAX_IMAGE_PARTS) {
       return reply.status(400).send({
@@ -187,7 +202,7 @@ export async function chatRoutes(app: FastifyInstance, config: Config) {
     })();
 
     const modelMessages = await convertToModelMessages(
-      normalizedMessages as unknown as UIMessage[]
+      normalizedMessages as unknown as UIMessage[],
     );
 
     const mcpTools = await getMCPTools(config);
@@ -213,7 +228,7 @@ export async function chatRoutes(app: FastifyInstance, config: Config) {
       stopWhen: stepCountIs(maxSteps),
       onFinish({ usage, steps }) {
         console.log(
-          `[tokens] input: ${usage.inputTokens}, output: ${usage.outputTokens}, cache read: ${usage.inputTokenDetails?.cacheReadTokens ?? "n/a"}`
+          `[tokens] input: ${usage.inputTokens}, output: ${usage.outputTokens}, cache read: ${usage.inputTokenDetails?.cacheReadTokens ?? "n/a"}`,
         );
 
         if (config.ENABLE_AGENT_LOGGING) {
@@ -224,10 +239,12 @@ export async function chatRoutes(app: FastifyInstance, config: Config) {
               toolName: String(tc.toolName ?? ""),
               args: (tc.args ?? {}) as Record<string, unknown>,
             })),
-            toolResults: step.toolResults.map((tr: Record<string, unknown>) => ({
-              toolName: String(tr.toolName ?? ""),
-              result: tr.result,
-            })),
+            toolResults: step.toolResults.map(
+              (tr: Record<string, unknown>) => ({
+                toolName: String(tr.toolName ?? ""),
+                result: tr.result,
+              }),
+            ),
             finishReason: step.finishReason,
             usage: {
               inputTokens: step.usage.inputTokens ?? 0,
