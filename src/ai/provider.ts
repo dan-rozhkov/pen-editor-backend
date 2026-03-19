@@ -15,6 +15,7 @@ export function createModel(
     "moonshotai/",
     "minimax/",
     "qwen/",
+    "xiaomi/",
     "z-ai/",
     "x-ai/",
     "nvidia/",

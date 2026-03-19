@@ -63,6 +63,7 @@ In .pen files, **components are always embed nodes** with \`isComponent: true\`.
 ## .pen Schema Basics
 
 - **Layout**: \`layout: "none" | "vertical" | "horizontal"\`
+- **Alignment (flexbox)**: \`alignItems: "flex-start" | "center" | "flex-end" | "stretch"\`, \`justifyContent: "flex-start" | "center" | "flex-end" | "space-between" | "space-around" | "space-evenly"\`
 - **Sizing**: width/height as numbers, or \`"fill_container"\`, \`"fit_content"\`, \`"fill_container(500)"\`, \`"fit_content(100)"\`
 - **Fill**: color string, or objects: \`{type: "color", color: "..."}\`, \`{type: "gradient", ...}\`, \`{type: "image", url: "...", mode: "stretch"|"fill"|"fit"}\`
 - **Padding**: number, \`[h, v]\`, or \`[top, right, bottom, left]\`
@@ -89,27 +90,70 @@ Tool call payload shape is strict: always send \`{"operations":"<mini-script>"}\
 
 ### Key Rules
 
-- The \`document\` binding is predefined — use it as parent for top-level frames
+- The \`document\` binding is predefined — use it as parent for top-level frames. It is a binding, NOT a string ID. Write \`I(document, ...)\`, NEVER \`I("document", ...)\`.
 - Insert (I), Copy (C), and Replace (R) MUST have a binding name
-- Bindings only live within a single batch_design call
+- **Bindings only live within a single batch_design call.** When you need to reference a node created in a previous batch_design call, use the real node ID (a string from the tool result), NOT the old binding name.
 - Use \`+\` to compose paths: \`U(card+"/title", {content: "Hello"})\`
 - If using existing node IDs from previous tool results, pass them as strings, e.g. \`U("abc123", {...})\`
+- **Replace (R) destroys the old node and its children.** After \`R("parentId/childId", ...)\`, the old childId and all its descendants no longer exist. Do NOT reference old child IDs after a Replace — read the new structure with \`batch_get\` if needed.
+- **Binding syntax:** No spaces around \`=\`. Write \`foo=I(...)\`, NEVER \`foo= I(...)\` or \`foo =I(...)\`.
 - Max 25 operations per batch_design call
 - If the task needs more than 25 operations, stop and send multiple sequential \`batch_design\` calls instead of one oversized call
 - There is NO "image" node type — use G() on frame/rectangle to apply image fills
 - \`placeholder: true\` marks frames being actively designed
 - Text has no default color — always set \`fill\` on text nodes
+- Frames have NO default fill (they are transparent by default). Do NOT set \`fill: "transparent"\` — simply omit the \`fill\` property when you want a frame without a visible background
 - \`fill_container\` sizing only works when parent has flexbox layout (\`layout: "vertical" | "horizontal"\`)
 - \`x\`/\`y\` positioning is ignored when parent uses flexbox layout
+- **Default alignment:** When using auto-layout (\`layout: "vertical" | "horizontal"\`), ALWAYS set \`alignItems: "center"\` and \`justifyContent: "center"\` unless the design clearly requires a different alignment (e.g. \`justifyContent: "space-between"\` for navbars, \`alignItems: "stretch"\` for full-width children)
+- **Prefer fit_content for height:** Frames inside a layout container should almost always use \`height: "fit_content"\` so they grow with their content. Only use fixed pixel heights for elements with a known exact size (images, icons, avatars, spacers). Using fixed heights on content frames is a common mistake that breaks layouts
 - Variable references MUST match \`get_variables\` exactly, including leading \`--\` and dash casing
+
+### Common Errors (AVOID)
+
+\`\`\`
+// ERROR: reusing binding from a previous batch_design call
+// "catalog" was defined in call #1, but bindings reset each call
+U(catalog, {width: 1440})
+// FIX: use the actual node ID returned by the previous call
+U("il6ulaa", {width: 1440})
+
+// ERROR: "document" in quotes — it's a predefined binding, not a string ID
+page=I("document", {type: "frame", ...})
+// FIX: use document without quotes
+page=I(document, {type: "frame", ...})
+
+// ERROR: referencing children of a replaced node — they no longer exist
+page=R("oldPageId", {type: "frame", ...})
+U("oldChildId", {name: "Sidebar"})   // oldChildId was destroyed by R()
+// FIX: insert new children into the replacement node instead
+page=R("oldPageId", {type: "frame", ...})
+sidebar=I(page, {type: "frame", name: "Sidebar", ...})
+
+// ERROR: space after = in binding
+leftcol= I("parent", {type: "frame"})
+// FIX: no spaces around =
+leftcol=I("parent", {type: "frame"})
+
+// ERROR: fixed height on a content frame inside a layout container
+section=I("pageId", {type: "frame", layout: "vertical", width: "fill_container", height: 400})
+// FIX: use fit_content so the frame grows with its content
+section=I("pageId", {type: "frame", layout: "vertical", width: "fill_container", height: "fit_content"})
+
+// ERROR: no alignment set on auto-layout frame
+row=I("parentId", {type: "frame", layout: "horizontal", gap: 16})
+// FIX: always set alignItems and justifyContent
+row=I("parentId", {type: "frame", layout: "horizontal", alignItems: "center", justifyContent: "center", gap: 16})
+\`\`\`
 
 ### Examples
 
 **Create layout with frames:**
 \`\`\`
-sidebar=I("containerId", {type: "frame", name: "Sidebar", layout: "vertical", width: 240, height: "fill_container"})
-main=I("containerId", {type: "frame", name: "Main Content", layout: "vertical", width: "fill_container", gap: 24, padding: 32})
-header=I(main, {type: "text", content: "Dashboard", fontSize: 24, fontWeight: "bold", fill: "#1a1a1a"})
+sidebar=I("containerId", {type: "frame", name: "Sidebar", layout: "vertical", alignItems: "center", justifyContent: "flex-start", width: 240, height: "fill_container", gap: 16, padding: 16})
+main=I("containerId", {type: "frame", name: "Main Content", layout: "vertical", alignItems: "center", justifyContent: "center", width: "fill_container", height: "fit_content", gap: 24, padding: 32})
+card=I(main, {type: "frame", name: "Card", layout: "vertical", alignItems: "center", width: "fill_container", height: "fit_content", gap: 12, padding: 24})
+header=I(card, {type: "text", content: "Dashboard", fontSize: 24, fontWeight: "bold", fill: "#1a1a1a"})
 \`\`\`
 
 **Copy and modify:**
@@ -154,7 +198,24 @@ Follow this general workflow when designing:
 const EDITS_MODE_PROMPT = `
 ## Agent Mode: edits
 
-This is the default editing mode. Follow the normal design workflow and make incremental canvas updates.`;
+This is the default editing mode. Build and modify designs using native canvas nodes only.
+
+### Mandatory flow (MUST follow every time)
+1. **\`get_editor_state\`** — check the current file, selection, and available components.
+2. **\`get_variables\`** — read all design tokens. You MUST call this before any \`batch_design\`. Never hardcode colors or spacing when a matching variable exists — use \`$\` references (e.g. \`fill: "$--primary"\`).
+3. **\`batch_get\`** — inspect existing nodes/components relevant to your task before modifying or adding anything.
+4. **\`batch_design\`** — make changes using native canvas nodes.
+
+Skipping steps 1–3 is FORBIDDEN. If you jump straight to \`batch_design\` without reading variables and inspecting existing content, you will produce inconsistent designs.
+
+### Component reuse (CRITICAL)
+\`get_editor_state\` returns existing components (embed nodes with \`isComponent: true\`). When a component matches what you need (button, card, input, icon, etc.):
+- **Copy it** with \`C("componentId", parentBinding, {name: "...", ...})\` — this reuses the component as-is.
+- Do NOT recreate a component's visual structure from scratch using frame/rectangle/text nodes. That wastes operations and breaks design system consistency.
+- If no existing component matches, then build from native canvas nodes.
+
+### Embed restriction
+Do NOT insert new \`embed\` nodes (\`type: "embed"\` in I() or R()). Reuse existing components only via Copy (C()). All new content must be built from native canvas node types (frame, text, rectangle, ellipse, polygon, path, icon_font, group, etc.).`;
 
 // ---------------------------------------------------------------------------
 // Prototype-mode prompt pieces (taste-skill integration)
