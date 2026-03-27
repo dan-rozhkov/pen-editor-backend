@@ -1,7 +1,9 @@
 import Fastify from "fastify";
 import { loadConfig } from "./config.js";
 import { registerCors } from "./plugins/cors.js";
+import { registerMultipart } from "./plugins/multipart.js";
 import { chatRoutes } from "./routes/chat.js";
+import { uploadRoutes } from "./routes/upload.js";
 import { closeAllMCPClients } from "./ai/mcp.js";
 import { loadSkills } from "./ai/skills.js";
 
@@ -15,7 +17,9 @@ const app = Fastify({
 });
 
 await registerCors(app);
+await registerMultipart(app);
 await chatRoutes(app, config);
+await uploadRoutes(app, config);
 
 app.setErrorHandler((error, _request, reply) => {
   app.log.error(error);
