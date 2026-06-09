@@ -3,11 +3,66 @@ import { z } from "zod";
 
 const MAX_BATCH_DESIGN_OPERATIONS = 25;
 
+// Mirrors splitOperationLines in the frontend parser
+// (pen-editor/src/lib/tools/batchDesign/parser.ts): a newline ends a statement
+// only at top level — outside strings and unbalanced (), {}, [] — so a
+// multi-line value (e.g. htmlContent) still counts as one operation.
 function countBatchDesignOperations(operations: string): number {
-  return operations
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean).length;
+  let count = 0;
+  let current = "";
+  let parenDepth = 0;
+  let braceDepth = 0;
+  let bracketDepth = 0;
+  let escaped = false;
+  let stringDelimiter: '"' | "'" | "`" | null = null;
+
+  const countStatement = (text: string) => {
+    const trimmed = text.trim();
+    if (trimmed && !trimmed.startsWith("//") && !trimmed.startsWith("#")) {
+      count++;
+    }
+  };
+
+  for (const ch of operations) {
+    current += ch;
+
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (stringDelimiter) {
+      if (ch === stringDelimiter) stringDelimiter = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      stringDelimiter = ch;
+      continue;
+    }
+
+    if (ch === "(") parenDepth++;
+    else if (ch === ")") parenDepth--;
+    else if (ch === "{") braceDepth++;
+    else if (ch === "}") braceDepth--;
+    else if (ch === "[") bracketDepth++;
+    else if (ch === "]") bracketDepth--;
+
+    if (
+      ch === "\n" &&
+      parenDepth === 0 &&
+      braceDepth === 0 &&
+      bracketDepth === 0
+    ) {
+      countStatement(current);
+      current = "";
+    }
+  }
+
+  countStatement(current);
+  return count;
 }
 
 const batchDesignInputSchema = z

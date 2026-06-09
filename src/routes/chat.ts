@@ -140,13 +140,12 @@ export async function chatRoutes(app: FastifyInstance, config: Config) {
         const detected = detectSkillCommand(rawText);
         if (detected) {
           const skill = getSkill(detected.skillName);
-          if (!skill) {
-            return reply.status(400).send({
-              error: `Unknown skill: /${detected.skillName}`,
-            });
+          // Unknown "/..." (a pasted path, "/как дела") is not an error —
+          // the message passes through as plain text.
+          if (skill) {
+            skillContent = skill.content;
+            setText(detected.userText);
           }
-          skillContent = skill.content;
-          setText(detected.userText);
         }
       }
     }
