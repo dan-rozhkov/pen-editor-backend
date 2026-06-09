@@ -4,10 +4,16 @@ import {
   stepCountIs,
   type UIMessage,
   type ToolSet,
+  type DynamicToolUIPart,
 } from "ai";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import type { Config } from "../config.js";
+import {
+  getAllowedModels,
+  isOriginAllowed,
+  parseEnvList,
+  type Config,
+} from "../config.js";
 import { createModel } from "../ai/provider.js";
 import { penTools } from "../ai/tools.js";
 import { AGENT_MODES, buildSystemPrompt } from "../ai/system-prompt.js";
@@ -74,6 +80,9 @@ function sanitizeMessagesForProvider(
 }
 
 export async function chatRoutes(app: FastifyInstance, config: Config) {
+  const allowedModels = getAllowedModels(config);
+  const allowedOrigins = parseEnvList(config.CORS_ALLOWED_ORIGINS);
+
   app.post("/api/chat", async (request, reply) => {
     const parsed = chatBodySchema.safeParse(request.body);
     if (!parsed.success) {
@@ -89,6 +98,12 @@ export async function chatRoutes(app: FastifyInstance, config: Config) {
       model: modelOverride,
       agentMode = "edits",
     } = parsed.data;
+
+    if (modelOverride && !allowedModels.includes(modelOverride)) {
+      return reply.status(400).send({
+        error: `Model "${modelOverride}" is not allowed. Allowed models: ${allowedModels.join(", ")}`,
+      });
+    }
 
     // Detect slash command skill in last user message and resolve it
     let skillContent: string | undefined;
@@ -136,34 +151,26 @@ export async function chatRoutes(app: FastifyInstance, config: Config) {
       }
     }
 
-    // When a skill is detected, inject a synthetic tool call + result pair
+    // When a skill is detected, inject a synthetic tool call + result
     // right before the last user message so the AI sees skill instructions
     // without changing the system prompt (preserves prompt caching).
+    // This must be a valid UIMessage: convertToModelMessages expands the
+    // dynamic-tool part into an assistant tool-call plus a tool result
+    // message (and throws on raw ModelMessage roles like "tool").
     if (skillContent) {
-      const toolCallId = `skill-${randomUUID()}`;
-      const assistantMsg: Record<string, unknown> = {
+      const skillToolPart: DynamicToolUIPart = {
+        type: "dynamic-tool",
+        toolName: "lookup_skill",
+        toolCallId: `skill-${randomUUID()}`,
+        state: "output-available",
+        input: {},
+        output: `Follow these instructions for the current task:\n\n${skillContent}`,
+      };
+      const skillMsg: Record<string, unknown> = {
         role: "assistant",
-        content: [
-          {
-            type: "tool-call",
-            toolCallId,
-            toolName: "lookup_skill",
-            args: {},
-          },
-        ],
+        parts: [skillToolPart],
       };
-      const toolResultMsg: Record<string, unknown> = {
-        role: "tool",
-        content: [
-          {
-            type: "tool-result",
-            toolCallId,
-            toolName: "lookup_skill",
-            result: `Follow these instructions for the current task:\n\n${skillContent}`,
-          },
-        ],
-      };
-      messages.splice(messages.length - 1, 0, assistantMsg, toolResultMsg);
+      messages.splice(messages.length - 1, 0, skillMsg);
     }
 
     const imagePartCount = messages.reduce((count, msg) => {
@@ -220,12 +227,27 @@ export async function chatRoutes(app: FastifyInstance, config: Config) {
       ? MAX_AGENT_STEPS.research
       : MAX_AGENT_STEPS.default;
 
+    // Abort the LLM stream when the client disconnects mid-response, so we
+    // stop paying for tokens nobody will receive.
+    const abortController = new AbortController();
+    reply.raw.on("close", () => {
+      if (!reply.raw.writableEnded) {
+        abortController.abort();
+      }
+    });
+
     const result = streamText({
       model,
       system,
       messages: modelMessages,
       tools,
       stopWhen: stepCountIs(maxSteps),
+      abortSignal: abortController.signal,
+      onAbort({ steps }) {
+        console.log(
+          `[chat] Client disconnected; aborted stream after ${steps.length} step(s).`,
+        );
+      },
       onFinish({ usage, steps }) {
         console.log(
           `[tokens] input: ${usage.inputTokens}, output: ${usage.outputTokens}, cache read: ${usage.inputTokenDetails?.cacheReadTokens ?? "n/a"}`,
@@ -271,10 +293,11 @@ export async function chatRoutes(app: FastifyInstance, config: Config) {
     });
 
     // Set CORS headers manually since reply.hijack() bypasses Fastify plugins.
+    // Only reflect origins from the allowlist (empty allowlist = dev mode, allow any).
     const origin = request.headers.origin;
-    if (origin) {
+    reply.raw.setHeader("Vary", "Origin");
+    if (origin && isOriginAllowed(allowedOrigins, origin)) {
       reply.raw.setHeader("Access-Control-Allow-Origin", origin);
-      reply.raw.setHeader("Access-Control-Allow-Credentials", "true");
     }
 
     // Pipe the UI message stream directly to the raw Node.js response,

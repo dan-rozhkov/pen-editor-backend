@@ -1,14 +1,7 @@
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { randomUUID } from "node:crypto";
 import type { Config } from "../config.js";
-
-const MIME_TO_EXT: Record<string, string> = {
-  "image/png": ".png",
-  "image/jpeg": ".jpg",
-  "image/webp": ".webp",
-  "image/gif": ".gif",
-  "image/svg+xml": ".svg",
-};
+import { extensionForMime } from "./imageTypes.js";
 
 export function createS3Client(config: Config): S3Client | null {
   if (
@@ -38,7 +31,7 @@ export async function uploadImage(
   buffer: Buffer,
   mimeType: string,
 ): Promise<string> {
-  const ext = MIME_TO_EXT[mimeType] ?? ".bin";
+  const ext = extensionForMime(mimeType);
   const key = `pen-editor/${randomUUID()}${ext}`;
 
   await client.send(

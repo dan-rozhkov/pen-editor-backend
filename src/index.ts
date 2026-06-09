@@ -16,7 +16,7 @@ const app = Fastify({
   bodyLimit: 10 * 1024 * 1024, // 10 MB — base64 images can be 2-5 MB each
 });
 
-await registerCors(app);
+await registerCors(app, config);
 await registerMultipart(app);
 await chatRoutes(app, config);
 await uploadRoutes(app, config);

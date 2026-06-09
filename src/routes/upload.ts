@@ -1,27 +1,21 @@
 import type { FastifyInstance } from "fastify";
 import type { Config } from "../config.js";
 import { createS3Client, uploadImage } from "../services/s3.js";
+import {
+  sniffImageType,
+  SUPPORTED_IMAGE_TYPES_LABEL,
+} from "../services/imageTypes.js";
 
 const MAX_SIZE = 5 * 1024 * 1024; // 5 MB
 
-const ALLOWED_MIME_TYPES = new Set([
-  "image/png",
-  "image/jpeg",
-  "image/webp",
-  "image/gif",
-  "image/svg+xml",
-]);
-
-function parseDataUri(dataUri: string): { mimeType: string; buffer: Buffer } {
-  const match = dataUri.match(/^data:(image\/[^;]+);base64,(.+)$/s);
+function parseDataUri(dataUri: string): Buffer {
+  const match = dataUri.match(/^data:image\/[^;]+;base64,(.+)$/s);
   if (!match) {
     throw Object.assign(new Error("Invalid data URI format"), {
       statusCode: 400,
     });
   }
-  const mimeType = match[1];
-  const buffer = Buffer.from(match[2], "base64");
-  return { mimeType, buffer };
+  return Buffer.from(match[1], "base64");
 }
 
 export async function uploadRoutes(app: FastifyInstance, config: Config) {
@@ -35,7 +29,6 @@ export async function uploadRoutes(app: FastifyInstance, config: Config) {
     }
 
     let buffer: Buffer;
-    let mimeType: string;
 
     const contentType = request.headers["content-type"] ?? "";
 
@@ -44,20 +37,20 @@ export async function uploadRoutes(app: FastifyInstance, config: Config) {
       if (!file) {
         return reply.status(400).send({ error: "No file uploaded" });
       }
-      mimeType = file.mimetype;
       buffer = await file.toBuffer();
     } else {
       const body = request.body as { image?: string } | null;
       if (!body?.image) {
         return reply.status(400).send({ error: "Missing 'image' field" });
       }
-      ({ mimeType, buffer } = parseDataUri(body.image));
+      buffer = parseDataUri(body.image);
     }
 
-    if (!ALLOWED_MIME_TYPES.has(mimeType)) {
-      return reply
-        .status(400)
-        .send({ error: `Unsupported image type: ${mimeType}` });
+    const mimeType = sniffImageType(buffer);
+    if (!mimeType) {
+      return reply.status(400).send({
+        error: `Uploaded data is not a supported image (supported: ${SUPPORTED_IMAGE_TYPES_LABEL})`,
+      });
     }
 
     if (buffer.length > MAX_SIZE) {
