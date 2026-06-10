@@ -38,7 +38,8 @@ const chatBodySchema = z.object({
 
 // Strips reasoning/thinking blocks and provider metadata from chat history.
 // Some providers reject stale/invalid thinking signatures when prior assistant turns are replayed.
-function sanitizeMessagesForProvider(
+// Exported for unit testing.
+export function sanitizeMessagesForProvider(
   rawMessages: Array<Record<string, unknown>>,
 ): { messages: Array<Record<string, unknown>>; removedReasoningParts: number } {
   let removedReasoningParts = 0;
