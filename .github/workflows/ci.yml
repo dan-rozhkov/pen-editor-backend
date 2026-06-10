@@ -15,6 +15,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npm run lint
       # Tests mock the LLM provider and MCP — no OPENROUTER_API_KEY needed.
       - run: npm test
       - run: npm run build
