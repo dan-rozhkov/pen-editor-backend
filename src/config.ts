@@ -4,7 +4,7 @@ const envSchema = z.object({
   PORT: z.coerce.number().default(3001),
   HOST: z.string().default("0.0.0.0"),
   OPENROUTER_API_KEY: z.string().min(1, "OPENROUTER_API_KEY is required"),
-  OPENROUTER_MODEL: z.string().default("openai/gpt-4o"),
+  OPENROUTER_MODEL: z.string().default("google/gemini-2.5-flash"),
   // Comma-separated list of additional models clients may request via the
   // "model" field. OPENROUTER_MODEL is always allowed.
   OPENROUTER_ALLOWED_MODELS: z.string().optional(),
