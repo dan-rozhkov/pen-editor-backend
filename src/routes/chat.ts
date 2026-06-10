@@ -22,7 +22,8 @@ import { logSession, type LogStep } from "../logging.js";
 import { randomUUID } from "node:crypto";
 import { detectSkillCommand, getAllSkills, getSkill } from "../ai/skills.js";
 
-const MAX_IMAGE_PARTS = 3;
+// Maximum image parts per single message (not per conversation).
+const MAX_IMAGE_PARTS = 4;
 const MAX_AGENT_STEPS = {
   research: 15,
   default: 12,
@@ -172,23 +173,21 @@ export async function chatRoutes(app: FastifyInstance, config: Config) {
       messages.splice(messages.length - 1, 0, skillMsg);
     }
 
-    const imagePartCount = messages.reduce((count, msg) => {
+    const maxImagesInOneMessage = messages.reduce((max, msg) => {
       const parts = msg.parts;
-      if (!Array.isArray(parts)) return count;
-      return (
-        count +
-        parts.filter(
-          (p) =>
-            p &&
-            typeof p === "object" &&
-            ((p as { type?: unknown }).type === "file" ||
-              (p as { type?: unknown }).type === "image"),
-        ).length
-      );
+      if (!Array.isArray(parts)) return max;
+      const count = parts.filter(
+        (p) =>
+          p &&
+          typeof p === "object" &&
+          ((p as { type?: unknown }).type === "file" ||
+            (p as { type?: unknown }).type === "image"),
+      ).length;
+      return Math.max(max, count);
     }, 0);
-    if (imagePartCount > MAX_IMAGE_PARTS) {
+    if (maxImagesInOneMessage > MAX_IMAGE_PARTS) {
       return reply.status(400).send({
-        error: `Too many images: ${imagePartCount} attached, maximum is ${MAX_IMAGE_PARTS}`,
+        error: `Too many images in a single message: ${maxImagesInOneMessage} attached, maximum is ${MAX_IMAGE_PARTS} per message`,
       });
     }
 
