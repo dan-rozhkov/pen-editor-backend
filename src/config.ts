@@ -50,11 +50,47 @@ export function isOriginAllowed(
   return allowedOrigins.length === 0 || allowedOrigins.includes(origin);
 }
 
-export function getAllowedModels(config: Config): string[] {
-  return [
-    ...new Set([
-      config.OPENROUTER_MODEL,
-      ...parseEnvList(config.OPENROUTER_ALLOWED_MODELS),
-    ]),
+export interface ModelOption {
+  id: string;
+  label: string;
+  supportsVision: boolean;
+}
+
+// The canonical chat model list with UI metadata. This is the single source of
+// truth: it powers both the GET /api/models endpoint (consumed by the frontend
+// dropdown) and the allowlist check in the chat route. The frontend keeps a
+// hardcoded mirror only as an offline/first-paint fallback.
+export const DEFAULT_MODELS: ModelOption[] = [
+  {
+    id: "google/gemini-2.5-flash",
+    label: "Gemini 2.5 Flash",
+    supportsVision: true,
+  },
+  { id: "moonshotai/kimi-k2.6", label: "Kimi K2.6", supportsVision: true },
+  { id: "minimax/minimax-m3", label: "Minimax M3", supportsVision: true },
+];
+
+// Full model list for a config: the built-in models, plus any extra models an
+// operator allows via OPENROUTER_ALLOWED_MODELS, plus the active OPENROUTER_MODEL.
+// Models without built-in metadata are assumed vision-capable and labelled by id.
+export function getModels(config: Config): ModelOption[] {
+  const byId = new Map<string, ModelOption>();
+  for (const model of DEFAULT_MODELS) byId.set(model.id, model);
+  const extras = [
+    ...parseEnvList(config.OPENROUTER_ALLOWED_MODELS),
+    config.OPENROUTER_MODEL,
   ];
+  for (const id of extras) {
+    if (!byId.has(id)) byId.set(id, { id, label: id, supportsVision: true });
+  }
+  return [...byId.values()];
+}
+
+export function getAllowedModels(config: Config): string[] {
+  return getModels(config).map((model) => model.id);
+}
+
+// The model selected by default when a client sends no override.
+export function getDefaultModel(config: Config): string {
+  return config.OPENROUTER_MODEL;
 }
