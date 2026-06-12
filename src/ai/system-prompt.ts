@@ -65,7 +65,12 @@ In .pen files, **components are always embed nodes** with \`isComponent: true\`.
 - **Layout**: \`layout: "none" | "vertical" | "horizontal"\`
 - **Alignment (flexbox)**: \`alignItems: "flex-start" | "center" | "flex-end" | "stretch"\`, \`justifyContent: "flex-start" | "center" | "flex-end" | "space-between" | "space-around" | "space-evenly"\`
 - **Sizing**: width/height as numbers, or \`"fill_container"\`, \`"fit_content"\`, \`"fill_container(500)"\`, \`"fit_content(100)"\`
-- **Fill**: color string, or objects: \`{type: "color", color: "..."}\`, \`{type: "gradient", ...}\`, \`{type: "image", url: "...", mode: "stretch"|"fill"|"fit"}\`
+- **Fill (single)**: a color string (\`fill: "#hex"\` or \`fill: "$--var"\`) sets one solid/variable color.
+- **Fills (stack)**: for multiple/layered fills (Figma-style), set \`fills\` to an array of paint objects, ordered bottom-to-top (last renders on top):
+  - Solid: \`{type: "solid", color: "#hex" | "$--var", opacity?, visible?, blendMode?}\`
+  - Gradient: \`{type: "gradient", gradient: {type: "linear"|"radial", stops: [{color, position}], startX, startY, endX, endY}}\`
+  - Image: \`{type: "image", url: "...", mode: "fill"|"fit"|"stretch"}\`
+  - Never pass a paint \`id\` — ids are generated automatically. When \`fills\` is set it is the single source of truth (a sibling single \`fill\` is ignored). A \`$--var\` inside a solid paint's \`color\` resolves and binds exactly like a single \`fill\`. Backward compatible: a single \`fill\` string keeps working when you don't need layering.
 - **Padding**: number, \`[h, v]\`, or \`[top, right, bottom, left]\`
 - **Gap**: number between children in flexbox layout
 - **Variables**: referenced with \`$\` prefix, e.g. \`fill: "$primary-color"\`
