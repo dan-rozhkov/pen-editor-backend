@@ -29,7 +29,7 @@ interface CachedEntry {
 
 const cache = new Map<string, Promise<CachedEntry>>();
 
-function removeBase64Fields(value: unknown): unknown {
+export function removeBase64Fields(value: unknown): unknown {
   if (Array.isArray(value)) {
     return value.map(removeBase64Fields);
   }
@@ -46,7 +46,7 @@ function removeBase64Fields(value: unknown): unknown {
   return out;
 }
 
-function sanitizeMcpToolResult(result: unknown): unknown {
+export function sanitizeMcpToolResult(result: unknown): unknown {
   if (!result || typeof result !== "object") {
     return result;
   }
@@ -71,7 +71,7 @@ function sanitizeMcpToolResult(result: unknown): unknown {
   return output;
 }
 
-function wrapReferoTools(tools: Record<string, unknown>): Record<string, unknown> {
+export function wrapReferoTools(tools: Record<string, unknown>): Record<string, unknown> {
   const tool = tools.refero_get_screen as {
     description?: string;
     title?: string;
