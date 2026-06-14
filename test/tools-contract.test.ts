@@ -235,3 +235,207 @@ describe("replace_all_matching_properties schema", () => {
     ).toBe(false);
   });
 });
+
+describe("get_editor_state schema", () => {
+  const schema = schemaOf("get_editor_state");
+
+  it("requires the include_schema boolean", () => {
+    expect(schema.safeParse({ include_schema: true }).success).toBe(true);
+    expect(schema.safeParse({ include_schema: false }).success).toBe(true);
+    expect(schema.safeParse({}).success).toBe(false);
+    expect(schema.safeParse({ include_schema: "yes" }).success).toBe(false);
+  });
+});
+
+describe("snapshot_layout schema", () => {
+  const schema = schemaOf("snapshot_layout");
+
+  it("accepts an empty object (all fields optional)", () => {
+    expect(schema.safeParse({}).success).toBe(true);
+  });
+
+  it("accepts a full valid query", () => {
+    expect(
+      schema.safeParse({ parentId: "root1", maxDepth: 3, problemsOnly: true })
+        .success,
+    ).toBe(true);
+  });
+
+  it("rejects wrongly typed fields", () => {
+    expect(schema.safeParse({ maxDepth: "deep" }).success).toBe(false);
+    expect(schema.safeParse({ problemsOnly: "yes" }).success).toBe(false);
+    expect(schema.safeParse({ parentId: 1 }).success).toBe(false);
+  });
+});
+
+describe("get_variables schema", () => {
+  const schema = schemaOf("get_variables");
+
+  it("accepts an empty object", () => {
+    const result = schema.safeParse({});
+    expect(result.success).toBe(true);
+    expect(result.success && result.data).toEqual({});
+  });
+});
+
+describe("find_empty_space_on_canvas schema", () => {
+  const schema = schemaOf("find_empty_space_on_canvas");
+
+  it("accepts a full valid query with and without nodeId", () => {
+    expect(
+      schema.safeParse({
+        direction: "right",
+        width: 200,
+        height: 100,
+        padding: 16,
+      }).success,
+    ).toBe(true);
+    expect(
+      schema.safeParse({
+        direction: "bottom",
+        width: 200,
+        height: 100,
+        padding: 16,
+        nodeId: "abc",
+      }).success,
+    ).toBe(true);
+  });
+
+  it("requires direction, width, height and padding", () => {
+    expect(schema.safeParse({ width: 1, height: 1, padding: 1 }).success).toBe(false);
+    expect(
+      schema.safeParse({ direction: "top", height: 1, padding: 1 }).success,
+    ).toBe(false);
+  });
+
+  it("rejects an invalid direction and non-number dimensions", () => {
+    expect(
+      schema.safeParse({ direction: "up", width: 1, height: 1, padding: 1 })
+        .success,
+    ).toBe(false);
+    expect(
+      schema.safeParse({
+        direction: "top",
+        width: "wide",
+        height: 1,
+        padding: 1,
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe("search_all_unique_properties schema", () => {
+  const schema = schemaOf("search_all_unique_properties");
+
+  it("accepts valid parents and property enums", () => {
+    expect(
+      schema.safeParse({
+        parents: ["rootId"],
+        properties: ["fillColor", "fontSize", "cornerRadius"],
+      }).success,
+    ).toBe(true);
+  });
+
+  it("rejects unknown property names", () => {
+    expect(
+      schema.safeParse({ parents: ["rootId"], properties: ["opacity"] })
+        .success,
+    ).toBe(false);
+  });
+
+  it("requires both parents and properties as arrays", () => {
+    expect(schema.safeParse({}).success).toBe(false);
+    expect(schema.safeParse({ parents: ["rootId"] }).success).toBe(false);
+    expect(
+      schema.safeParse({ parents: "rootId", properties: ["fillColor"] })
+        .success,
+    ).toBe(false);
+  });
+});
+
+describe("get_guidelines schema + execute", () => {
+  const schema = schemaOf("get_guidelines");
+
+  it("accepts known topics and rejects unknown/missing ones", () => {
+    expect(schema.safeParse({ topic: "design-system" }).success).toBe(true);
+    expect(schema.safeParse({ topic: "tailwind" }).success).toBe(true);
+    expect(schema.safeParse({ topic: "made-up" }).success).toBe(false);
+    expect(schema.safeParse({}).success).toBe(false);
+  });
+
+  it("execute returns the guideline text for a topic", async () => {
+    const execute = (penTools.get_guidelines as {
+      execute: (args: { topic: string }) => Promise<unknown>;
+    }).execute;
+    const result = (await execute({ topic: "design-system" })) as {
+      topic: string;
+      guidelines: string;
+    };
+    expect(result.topic).toBe("design-system");
+    expect(result.guidelines).toContain("Auto-Layout");
+  });
+});
+
+describe("get_style_guide_tags schema + execute", () => {
+  const schema = schemaOf("get_style_guide_tags");
+
+  it("accepts an empty object", () => {
+    expect(schema.safeParse({}).success).toBe(true);
+  });
+
+  it("execute returns the tag categories", async () => {
+    const execute = (penTools.get_style_guide_tags as {
+      execute: () => Promise<unknown>;
+    }).execute;
+    const result = (await execute()) as {
+      tags: Record<string, string[]>;
+    };
+    expect(Object.keys(result.tags).sort()).toEqual([
+      "color",
+      "industry",
+      "layout",
+      "platform",
+      "style",
+    ]);
+    expect(result.tags.style).toContain("minimal");
+  });
+});
+
+describe("get_style_guide schema + execute", () => {
+  const schema = schemaOf("get_style_guide");
+
+  it("accepts tags, name, or an empty object", () => {
+    expect(schema.safeParse({}).success).toBe(true);
+    expect(schema.safeParse({ tags: ["minimal", "dark"] }).success).toBe(true);
+    expect(schema.safeParse({ name: "Acme" }).success).toBe(true);
+  });
+
+  it("rejects wrongly typed fields", () => {
+    expect(schema.safeParse({ tags: "minimal" }).success).toBe(false);
+    expect(schema.safeParse({ name: 42 }).success).toBe(false);
+  });
+
+  it("execute echoes name/tags and returns a full style guide", async () => {
+    const execute = (penTools.get_style_guide as {
+      execute: (args: { tags?: string[]; name?: string }) => Promise<unknown>;
+    }).execute;
+
+    const named = (await execute({ name: "Acme" })) as {
+      name: string;
+      basedOn: string[];
+      typography: unknown;
+      colors: unknown;
+    };
+    expect(named.name).toBe("Acme");
+    expect(named.basedOn).toEqual([]);
+    expect(named.typography).toBeDefined();
+    expect(named.colors).toBeDefined();
+
+    const tagged = (await execute({ tags: ["minimal", "dark"] })) as {
+      name: string;
+      basedOn: string[];
+    };
+    expect(tagged.name).toBe("Generated Style Guide");
+    expect(tagged.basedOn).toEqual(["minimal", "dark"]);
+  });
+});
