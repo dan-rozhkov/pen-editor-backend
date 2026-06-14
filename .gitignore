@@ -3,3 +3,6 @@ dist/
 .env
 *.tsbuildinfo
 .logs/
+
+# Vitest coverage output
+coverage/
