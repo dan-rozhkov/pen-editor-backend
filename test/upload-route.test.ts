@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../src/app.js";
+import { createS3Client } from "../src/services/s3.js";
 import { makeConfig } from "./helpers.js";
 import type { Config } from "../src/config.js";
 
@@ -50,8 +51,20 @@ function postJson(base: string, body: unknown) {
 }
 
 describe("POST /api/upload-image", () => {
-  it("returns 503 when S3 is not configured", async () => {
+  it("returns 503 when S3 is not configured (missing bucket/endpoint)", async () => {
     const base = await startServer(makeConfig());
+    const res = await postJson(base, { image: pngDataUri });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: "S3 storage is not configured" });
+    expect(uploadImageMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 503 when the S3 client cannot be created despite full config", async () => {
+    // Exercise the `!s3Client` branch specifically: full config present, but
+    // createS3Client returns null (e.g. SDK init failure). createS3Client is
+    // called once at route registration, so override just that next call.
+    vi.mocked(createS3Client).mockReturnValueOnce(null);
+    const base = await startServer(makeConfig(S3_CONFIG));
     const res = await postJson(base, { image: pngDataUri });
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: "S3 storage is not configured" });

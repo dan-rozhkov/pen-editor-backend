@@ -45,6 +45,32 @@ describe("loadConfig", () => {
     expect(config.ENABLE_AGENT_LOGGING).toBe(true);
   });
 
+  it("treats only true/1 as ENABLE_AGENT_LOGGING=true; false/0/other are false", () => {
+    const cases: [string, boolean][] = [
+      ["true", true],
+      ["TRUE", true],
+      ["1", true],
+      ["false", false],
+      ["0", false],
+      ["no", false],
+      ["", false],
+    ];
+    for (const [value, expected] of cases) {
+      process.env = {
+        OPENROUTER_API_KEY: "key",
+        ENABLE_AGENT_LOGGING: value,
+      } as NodeJS.ProcessEnv;
+      expect(loadConfig().ENABLE_AGENT_LOGGING, `value=${JSON.stringify(value)}`).toBe(
+        expected,
+      );
+    }
+  });
+
+  it("defaults ENABLE_AGENT_LOGGING to false when unset", () => {
+    process.env = { OPENROUTER_API_KEY: "key" } as NodeJS.ProcessEnv;
+    expect(loadConfig().ENABLE_AGENT_LOGGING).toBe(false);
+  });
+
   it("exits when OPENROUTER_API_KEY is missing", () => {
     process.env = {} as NodeJS.ProcessEnv;
     expect(() => loadConfig()).toThrow(/process\.exit\(1\)/);

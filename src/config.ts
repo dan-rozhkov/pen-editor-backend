@@ -11,7 +11,17 @@ const envSchema = z.object({
   // Comma-separated list of origins allowed by CORS. Empty = allow any origin
   // (suitable for local development only).
   CORS_ALLOWED_ORIGINS: z.string().optional(),
-  ENABLE_AGENT_LOGGING: z.coerce.boolean().default(false),
+  // Note: do NOT use z.coerce.boolean() here — it treats any non-empty string
+  // (incl. "false"/"0") as true, so ENABLE_AGENT_LOGGING=false would not disable
+  // logging. Only "true"/"1" (case-insensitive) enable it; absent/anything else
+  // is false.
+  ENABLE_AGENT_LOGGING: z
+    .string()
+    .optional()
+    .transform((v) => {
+      const s = v?.toLowerCase();
+      return s === "true" || s === "1";
+    }),
   REFERO_API_KEY: z.string().optional(),
   S3_ENDPOINT: z.string().url().optional(),
   S3_BUCKET: z.string().optional(),
