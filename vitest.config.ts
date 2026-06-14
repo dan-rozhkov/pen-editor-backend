@@ -14,6 +14,16 @@ export default defineConfig({
         "src/index.ts", // entrypoint: reads env and listens
         "src/**/*.d.ts",
       ],
+      // Non-regression gate: floors sit ~1-2pp below current measured coverage
+      // so `npm run test:coverage` fails if coverage drops, without flaking on
+      // minor v8 measurement variance. Ratchet these UP as coverage grows;
+      // never lower them to make a red build pass.
+      thresholds: {
+        statements: 82,
+        branches: 78,
+        functions: 80,
+        lines: 83,
+      },
     },
   },
 });

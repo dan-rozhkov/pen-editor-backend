@@ -17,5 +17,7 @@ jobs:
       - run: npm ci
       - run: npm run lint
       # Tests mock the LLM provider and MCP — no OPENROUTER_API_KEY needed.
-      - run: npm test
+      # test:coverage runs the full suite AND enforces the non-regression
+      # coverage thresholds in vitest.config.ts (fails if coverage drops).
+      - run: npm run test:coverage
       - run: npm run build
