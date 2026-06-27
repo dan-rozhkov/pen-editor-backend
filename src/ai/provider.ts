@@ -27,7 +27,9 @@ export function createModel(
     modelId,
     supportsReasoning
       ? {
-          reasoning: { effort: "low" },
+          // Trim how long the agent "thinks" before answering. "minimal" keeps
+          // reasoning enabled (unlike "none") but one notch below "low".
+          reasoning: { effort: "minimal" },
         }
       : undefined,
   );
