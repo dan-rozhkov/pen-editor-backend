@@ -18,6 +18,7 @@ import { createModel } from "../ai/provider.js";
 import { penTools } from "../ai/tools.js";
 import { AGENT_MODES, buildSystemPrompt } from "../ai/system-prompt.js";
 import { getMCPTools } from "../ai/mcp.js";
+import { getWebTools } from "../ai/web-search.js";
 import { logSession, type LogStep } from "../logging.js";
 import { randomUUID } from "node:crypto";
 import { detectSkillCommand, getAllSkills, getSkill } from "../ai/skills.js";
@@ -221,7 +222,7 @@ export async function chatRoutes(app: FastifyInstance, config: Config) {
     }
     const tools = isResearch
       ? (mcpTools as ToolSet)
-      : { ...penTools, ...mcpTools };
+      : { ...penTools, ...getWebTools(config), ...mcpTools };
     const maxSteps = isResearch
       ? MAX_AGENT_STEPS.research
       : MAX_AGENT_STEPS.default;
