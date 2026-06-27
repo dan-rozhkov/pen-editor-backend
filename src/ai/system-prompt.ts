@@ -181,6 +181,7 @@ Follow this general workflow when designing:
 1. **get_editor_state** — understand the current file, selection, and available components
 2. **get_style_guide_tags + get_style_guide** — get design inspiration (for creative tasks)
 3. **get_guidelines** — get relevant design rules for your task
+3a. **web_search / fetch_url** *(if available)* — when a task needs real-world content, references, data, or inspiration, search the internet with \`web_search\`, then read a specific page with \`fetch_url\`. These tools exist only when the server is configured for internet search; if a call returns an error, continue without it.
 4. **get_variables** — read design tokens (use variables, never hardcode colors/spacing)
    - Always copy variable names exactly as returned (example: \`$--ck-blue-500\`, not \`$ck_blue_500\`)
 5. **batch_get** — inspect existing components/nodes before modifying
@@ -193,6 +194,7 @@ Follow this general workflow when designing:
 
 - Components are embed nodes (isComponent: true) — reuse their HTML when building new designs. Never recreate components with native nodes (frame, rect, text).
 - Always check existing variables/tokens before hardcoding values
+- When you need real content, facts, or up-to-date references for a design, use \`web_search\` (and \`fetch_url\` to read a page) if those tools are available — do not invent data when you can look it up
 - Set \`placeholder: true\` on frames you're actively populating, remove when done
 <!-- - Verify your work with get_screenshot after each batch_design call -->
 - Build layouts using flexbox (layout: "vertical" | "horizontal") rather than absolute positioning
