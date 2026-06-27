@@ -23,6 +23,9 @@ const envSchema = z.object({
       return s === "true" || s === "1";
     }),
   REFERO_API_KEY: z.string().optional(),
+  // Internet search (optional) — enables the web_search/fetch_url tools (Tavily).
+  // Free tier: 1,000 credits/month (basic search = 1 credit).
+  TAVILY_API_KEY: z.string().optional(),
   S3_ENDPOINT: z.string().url().optional(),
   S3_BUCKET: z.string().optional(),
   S3_ACCESS_KEY_ID: z.string().optional(),
