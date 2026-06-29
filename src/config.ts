@@ -81,6 +81,18 @@ export const DEFAULT_MODELS: ModelOption[] = [
   },
   { id: "moonshotai/kimi-k2.6", label: "Kimi K2.6", supportsVision: true },
   { id: "minimax/minimax-m3", label: "Minimax M3", supportsVision: true },
+  // DeepSeek V4 (text-only — image parts are stripped before sending).
+  {
+    id: "deepseek/deepseek-v4-flash",
+    label: "DeepSeek V4 Flash",
+    supportsVision: false,
+  },
+  {
+    id: "deepseek/deepseek-v4-pro",
+    label: "DeepSeek V4 Pro",
+    supportsVision: false,
+  },
+  { id: "qwen/qwen3.7-plus", label: "Qwen3.7 Plus", supportsVision: true },
 ];
 
 // Full model list for a config: the built-in models, plus any extra models an
