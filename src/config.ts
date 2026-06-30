@@ -7,7 +7,7 @@ const envSchema = z.object({
   OPENROUTER_MODEL: z.string().default("google/gemini-2.5-flash"),
   OPENROUTER_IMAGE_MODEL: z
     .string()
-    .default("google/gemini-2.5-flash-image-preview"),
+    .default("google/gemini-3.1-flash-lite-image"),
   // Comma-separated list of additional models clients may request via the
   // "model" field. OPENROUTER_MODEL is always allowed.
   OPENROUTER_ALLOWED_MODELS: z.string().optional(),
