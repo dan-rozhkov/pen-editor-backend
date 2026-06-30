@@ -18,6 +18,8 @@ describe("penTools registry", () => {
         "batch_design",
         "batch_get",
         "find_empty_space_on_canvas",
+        "generate_frame_image",
+        "generate_image",
         "get_editor_state",
         "get_guidelines",
         "get_style_guide",
@@ -48,6 +50,8 @@ describe("penTools registry", () => {
       "find_empty_space_on_canvas",
       "search_all_unique_properties",
       "rename_layers",
+      "generate_image",
+      "generate_frame_image",
     ] as const) {
       expect(hasExecute(name), `${name} must be client-executed`).toBe(false);
     }

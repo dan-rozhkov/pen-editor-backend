@@ -530,4 +530,22 @@ U(card+"/title", {content: "Account Details"})
       };
     },
   }),
+
+  generate_image: tool({
+    description:
+      "Generate an image from a text prompt and show it in the chat. Use when the user asks for an illustration, photo, texture, or background that is NOT being applied to a specific frame. Returns the image URL, which is rendered inline in the chat.",
+    inputSchema: z.object({
+      prompt: z.string().describe("Detailed description of the image to generate"),
+    }),
+  }),
+  generate_frame_image: tool({
+    description:
+      "Generate an image from a text prompt and set it as the image fill of a specific frame. Use for on-canvas requests that target a frame (e.g. 'make a background for this frame', 'fill this frame with a photo of X'). Pass the target frame's id from the editor state / current selection. The image also appears in the chat.",
+    inputSchema: z.object({
+      prompt: z.string().describe("Detailed description of the image to generate"),
+      frame_id: z
+        .string()
+        .describe("ID of the frame whose fill should become the generated image"),
+    }),
+  }),
 };
