@@ -89,4 +89,35 @@ describe("generateImage", () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("boom", { status: 500 })));
     await expect(generateImage(makeConfig(), "x")).rejects.toThrow(/failed/i);
   });
+
+  it("throws when the data URL mime type is not an image type", async () => {
+    vi.mocked(createS3Client).mockReturnValue(null);
+    const NON_IMAGE_DATA_URL = "data:text/html;base64,aGVsbG8=";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        okResponse({
+          choices: [{ message: { images: [{ image_url: { url: NON_IMAGE_DATA_URL } }] } }],
+        }),
+      ),
+    );
+    await expect(generateImage(makeConfig(), "x")).rejects.toThrow(/not a valid base64 data url/i);
+  });
+
+  it("extracts a data URL from message content when images is absent", async () => {
+    vi.mocked(createS3Client).mockReturnValue(null);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        okResponse({
+          choices: [{ message: { content: "Here you go: data:image/png;base64,aGVsbG8=" } }],
+        }),
+      ),
+    );
+
+    const result = await generateImage(makeConfig(), "x");
+
+    expect(result.url).toBe("data:image/png;base64,aGVsbG8=");
+    expect(result.mimeType).toBe("image/png");
+  });
 });

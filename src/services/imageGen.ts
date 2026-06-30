@@ -25,7 +25,7 @@ function extractDataUrl(data: OpenRouterImageResponse): string | null {
 }
 
 function decodeDataUrl(dataUrl: string): { mimeType: string; buffer: Buffer } {
-  const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+  const match = dataUrl.match(/^data:(image\/[^;]+);base64,(.+)$/);
   if (!match) throw new Error("Generated image is not a valid base64 data URL");
   return { mimeType: match[1], buffer: Buffer.from(match[2], "base64") };
 }
