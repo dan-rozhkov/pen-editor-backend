@@ -6,6 +6,7 @@ import type { Config } from "./config.js";
 import { registerCors } from "./plugins/cors.js";
 import { registerMultipart } from "./plugins/multipart.js";
 import { chatRoutes } from "./routes/chat.js";
+import { generateImageRoutes } from "./routes/generateImage.js";
 import { modelsRoutes } from "./routes/models.js";
 import { uploadRoutes } from "./routes/upload.js";
 
@@ -27,6 +28,7 @@ export async function buildApp(
   await chatRoutes(app, config);
   await modelsRoutes(app, config);
   await uploadRoutes(app, config);
+  await generateImageRoutes(app, config);
 
   app.setErrorHandler((error, _request, reply) => {
     app.log.error(error);
