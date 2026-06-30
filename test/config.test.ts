@@ -82,3 +82,12 @@ describe("getDefaultModel", () => {
     expect(getDefaultModel(makeConfig({ OPENROUTER_MODEL: "x/y" }))).toBe("x/y");
   });
 });
+
+describe("OPENROUTER_IMAGE_MODEL config", () => {
+  it("defaults to the cheap gemini image model", () => {
+    const config = makeConfig();
+    expect(config.OPENROUTER_IMAGE_MODEL).toBe(
+      "google/gemini-2.5-flash-image-preview",
+    );
+  });
+});

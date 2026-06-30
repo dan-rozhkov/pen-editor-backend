@@ -7,6 +7,7 @@ export function makeConfig(overrides: Partial<Config> = {}): Config {
     HOST: "127.0.0.1",
     OPENROUTER_API_KEY: "test-api-key",
     OPENROUTER_MODEL: "google/gemini-2.5-flash",
+    OPENROUTER_IMAGE_MODEL: "google/gemini-2.5-flash-image-preview",
     OPENROUTER_ALLOWED_MODELS: undefined,
     CORS_ALLOWED_ORIGINS: undefined,
     ENABLE_AGENT_LOGGING: false,
