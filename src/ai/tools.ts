@@ -263,6 +263,25 @@ U(card+"/title", {content: "Account Details"})
     ),
   }),
 
+  rename_layers: tool({
+    description:
+      "Rename one or more layers (nodes) to logical, human-readable names in a single undoable step. Provide the node id and the new name for each layer. Read each layer's type, text content, and hierarchy first (via get_editor_state / batch_get) so the names reflect each layer's role (e.g. a text node reading \"Sign in\" → \"Sign in button\"; a frame of inputs → \"Login form\"). Leave already-meaningful names alone.",
+    inputSchema: z.object({
+      renames: z
+        .array(
+          z.object({
+            id: z.string().describe("The node id to rename."),
+            name: z
+              .string()
+              .min(1)
+              .describe("The new layer name (non-empty)."),
+          }),
+        )
+        .min(1)
+        .describe("One {id, name} entry per layer to rename."),
+    }),
+  }),
+
   set_variables: tool({
     description:
       "Add or update design variables and themes. Variables can reference theme axes for different values per theme. By default merges with existing variables; set replace=true to overwrite all.",

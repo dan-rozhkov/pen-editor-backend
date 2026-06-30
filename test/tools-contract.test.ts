@@ -23,6 +23,7 @@ describe("penTools registry", () => {
         "get_style_guide",
         "get_style_guide_tags",
         "get_variables",
+        "rename_layers",
         "replace_all_matching_properties",
         "search_all_unique_properties",
         "set_variables",
@@ -46,6 +47,7 @@ describe("penTools registry", () => {
       "snapshot_layout",
       "find_empty_space_on_canvas",
       "search_all_unique_properties",
+      "rename_layers",
     ] as const) {
       expect(hasExecute(name), `${name} must be client-executed`).toBe(false);
     }
@@ -233,6 +235,36 @@ describe("replace_all_matching_properties schema", () => {
         properties: { fontSize: [{ from: "14", to: "16" }] },
       }).success,
     ).toBe(false);
+  });
+});
+
+describe("rename_layers schema", () => {
+  const schema = schemaOf("rename_layers");
+
+  it("accepts a valid renames array", () => {
+    const result = schema.safeParse({
+      renames: [
+        { id: "frame1", name: "Login screen" },
+        { id: "text1", name: "Title heading" },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects an empty renames array", () => {
+    expect(schema.safeParse({ renames: [] }).success).toBe(false);
+  });
+
+  it("rejects blank names", () => {
+    expect(
+      schema.safeParse({ renames: [{ id: "frame1", name: "" }] }).success,
+    ).toBe(false);
+  });
+
+  it("requires the renames field with id and name", () => {
+    expect(schema.safeParse({}).success).toBe(false);
+    expect(schema.safeParse({ renames: [{ id: "frame1" }] }).success).toBe(false);
+    expect(schema.safeParse({ renames: [{ name: "X" }] }).success).toBe(false);
   });
 });
 
