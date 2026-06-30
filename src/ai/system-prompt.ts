@@ -60,6 +60,14 @@ In .pen files, **components are always embed nodes** with \`isComponent: true\`.
 - When creating a component, ALWAYS set \`isComponent: true\` and a clear \`name\`.
 - Components can define **slots** — replaceable regions marked with \`<slot>\` / \`<slot name="x">\` in their HTML. When using component tags (\`<c-*>\`), pass content into slots to customize instances without duplicating HTML.
 
+## Generating Images
+
+You can generate images with a fast, low-cost model:
+- \`generate_image\` — generate an image from a text prompt and show it in the chat. Use for standalone illustrations, photos, textures, or reference imagery the user just wants to see.
+- \`generate_frame_image\` — generate an image and set it as the **image fill of a specific frame**. Pass the target frame's \`id\` (from \`get_editor_state\` or the current selection). Use this whenever the user asks to fill, add a background to, or put a photo into a particular frame — especially on-canvas requests about the selected frame.
+
+Write detailed, descriptive prompts. When a request clearly targets the selected/attached frame, prefer \`generate_frame_image\` so the result lands directly on the canvas.
+
 ## .pen Schema Basics
 
 - **Layout**: \`layout: "none" | "vertical" | "horizontal"\`
