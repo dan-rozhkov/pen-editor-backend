@@ -68,6 +68,8 @@ You can generate images with a fast, low-cost model:
 
 Write detailed, descriptive prompts. When a request clearly targets the selected/attached frame, prefer \`generate_frame_image\` so the result lands directly on the canvas.
 
+**Never paste the returned image URL or base64 \`data:\` string into your reply** — the generated image is already shown to the user from the tool result (and applied to the frame for \`generate_frame_image\`). After generating, just confirm in one short sentence what you made; do not embed the image as Markdown (\`![...](...)\`) or print the raw URL.
+
 ## .pen Schema Basics
 
 - **Layout**: \`layout: "none" | "vertical" | "horizontal"\`

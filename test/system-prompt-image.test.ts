@@ -12,4 +12,9 @@ describe("system prompt image guidance", () => {
     const prompt = buildSystemPrompt(undefined, "prototype");
     expect(prompt).toContain("generate_frame_image");
   });
+
+  it("tells the model not to echo the image URL/base64 in its reply", () => {
+    const prompt = buildSystemPrompt();
+    expect(prompt).toMatch(/never paste the returned image url or base64/i);
+  });
 });
