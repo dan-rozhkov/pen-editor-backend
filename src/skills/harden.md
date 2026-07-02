@@ -8,7 +8,7 @@ args:
 user-invokable: true
 ---
 
-Strengthen interfaces against edge cases, errors, internationalization issues, and real-world usage scenarios that break idealized designs.
+Designs that only work with perfect data aren't production-ready. Harden the interface against the inputs, errors, languages, and network conditions that real users will throw at it.
 
 ## Assess Hardening Needs
 
@@ -354,5 +354,4 @@ Test thoroughly with edge cases:
 - **Errors**: Force API errors, test all error states
 - **Empty**: Remove all data, test empty states
 
-Remember: You're hardening for production reality, not demo perfection. Expect users to input weird data, lose connection mid-flow, and use your product in unexpected ways. Build resilience into every component.
-
+When edge cases are covered, hand off to the `/polish` skill for the final pass.

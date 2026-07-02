@@ -8,24 +8,8 @@ args:
 user-invokable: true
 ---
 
-Remove unnecessary complexity from designs, revealing the essential elements and creating clarity through ruthless simplification.
+Strip a design to its essence. Remove anything that doesn't earn its place: redundant elements, repeated information, decorative noise, cosmetic complexity.
 
-## MANDATORY PREPARATION
-
-### Context Gathering (Do This First)
-
-You cannot do a great job without having necessary context, such as target audience (critical), desired use-cases (critical), and understanding what's truly essential vs nice-to-have for this product.
-
-Attempt to gather these from the current thread or codebase.
-
-1. If you don't find *exact* information and have to infer from existing design and functionality, you MUST STOP and {{ask_instruction}} whether you got it right.
-2. Otherwise, if you can't fully infer or your level of confidence is medium or lower, you MUST {{ask_instruction}} clarifying questions first to complete your context.
-
-Do NOT proceed until you have answers. Simplifying the wrong things destroys usability.
-
-### Use frontend-design skill
-
-Use the frontend-design skill for design principles and anti-patterns. Do NOT proceed until it has executed and you know all DO's and DON'Ts.
 
 ---
 
@@ -47,9 +31,9 @@ Analyze what makes the design feel complex or cluttered:
    - What can be removed, hidden, or combined?
    - What's the 20% that delivers 80% of value?
 
-If any of these are unclear from the codebase, {{ask_instruction}}
+If any of these are unclear from the codebase, STOP and {{ask_instruction}} to clarify.
 
-**CRITICAL**: Simplicity is not about removing features - it's about removing obstacles between users and their goals. Every element should justify its existence.
+**CRITICAL**: Simplicity is not about removing features. It's about removing obstacles between users and their goals. Every element should justify its existence.
 
 ## Plan Simplification
 
@@ -77,7 +61,7 @@ Systematically remove complexity across these dimensions:
 - **Reduce color palette**: Use 1-2 colors plus neutrals, not 5-7 colors
 - **Limit typography**: One font family, 3-4 sizes maximum, 2-3 weights
 - **Remove decorations**: Eliminate borders, shadows, backgrounds that don't serve hierarchy or function
-- **Flatten structure**: Reduce nesting, remove unnecessary containers—never nest cards inside cards
+- **Flatten structure**: Reduce nesting, remove unnecessary containers; never nest cards inside cards
 - **Remove unnecessary cards**: Cards aren't needed for basic layout; use spacing and alignment instead
 - **Consistent spacing**: Use one spacing scale, remove arbitrary gaps
 
@@ -134,4 +118,4 @@ If you removed features or options:
 - Consider if they need alternative access points
 - Note any user feedback to monitor
 
-Remember: You have great taste and judgment. Simplification is an act of confidence - knowing what to keep and courage to remove the rest. As Antoine de Saint-Exupéry said: "Perfection is achieved not when there is nothing more to add, but when there is nothing left to take away."
+When the cuts feel right, hand off to the `/polish` skill for the final pass. As Antoine de Saint-Exupéry put it: "Perfection is achieved not when there is nothing more to add, but when there is nothing left to take away."
