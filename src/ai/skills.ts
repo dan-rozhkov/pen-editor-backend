@@ -79,10 +79,11 @@ function processContent(content: string): string {
 }
 
 export async function loadSkills(): Promise<void> {
-  // Always read from src/skills regardless of whether we run via tsx or compiled dist/
+  // Resolve skills relative to this module: src/ai/../skills when running via
+  // tsx, dist/ai/../skills when running the compiled build (the build script
+  // copies src/skills → dist/skills so dist deploys are self-contained).
   const thisDir = fileURLToPath(new URL(".", import.meta.url));
-  const projectRoot = join(thisDir, "../..");
-  const dir = join(projectRoot, "src/skills");
+  const dir = join(thisDir, "../skills");
   let files: string[];
   try {
     files = await readdir(dir);
