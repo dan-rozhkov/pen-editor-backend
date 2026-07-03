@@ -41,13 +41,12 @@ The following node types exist in .pen files:
 | \`rectangle\` | Basic shape | \`cornerRadius\`, fill/stroke |
 | \`ellipse\` | Ellipse/arc/ring | \`innerRadius\`, \`startAngle\`, \`sweepAngle\` |
 | \`line\` | Line | fill/stroke |
-| \`polygon\` | Regular polygon | \`polygonCount\`, \`cornerRadius\` |
+| \`polygon\` | Regular polygon | \`sides\` (default 6), \`cornerRadius\` |
 | \`path\` | SVG path | \`geometry\` (SVG d attribute), \`fillRule\` |
 | \`text\` | Text content | \`content\`, \`fontSize\`, \`fontFamily\`, \`fontWeight\`, \`lineHeight\`, \`textAlign\`, \`textGrowth\` |
-| \`icon_font\` | Icon from font | \`iconFontName\`, \`iconFontFamily\`, \`weight\` |
 | \`embed\` | HTML embed node (also used for components) | \`name\`, \`htmlContent\`, \`width\`, \`height\`, \`isComponent\` |
-| \`note\` | Sticky note | \`content\` |
-| \`connection\` | Line between nodes | \`source\`, \`target\` (with path + anchor) |
+| \`ref\` | Component instance | \`componentId\` |
+| \`connector\` | Connector line between two nodes | \`startConnection\`, \`endConnection\` (\`{nodeId, anchor}\`) |
 
 ## Components
 
@@ -232,7 +231,7 @@ Skipping steps 1–3 is FORBIDDEN. If you jump straight to \`batch_design\` with
 - If no existing component matches, then build from native canvas nodes.
 
 ### Embed restriction
-Do NOT insert new \`embed\` nodes (\`type: "embed"\` in I() or R()). Reuse existing components only via Copy (C()). All new content must be built from native canvas node types (frame, text, rectangle, ellipse, polygon, path, icon_font, group, etc.).`;
+Do NOT insert new \`embed\` nodes (\`type: "embed"\` in I() or R()). Reuse existing components only via Copy (C()). All new content must be built from native canvas node types (frame, text, rectangle, ellipse, polygon, path, line, group, etc.).`;
 
 // ---------------------------------------------------------------------------
 // Prototype-mode prompt pieces (taste-skill integration)

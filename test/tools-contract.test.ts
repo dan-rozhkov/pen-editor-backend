@@ -165,6 +165,22 @@ describe("batch_get schema", () => {
     expect(schema.safeParse({ nodeIds: "abc123" }).success).toBe(false);
     expect(schema.safeParse({ readDepth: "deep" }).success).toBe(false);
   });
+
+  it("accepts connector and ref types", () => {
+    expect(
+      schema.safeParse({ patterns: [{ type: "connector" }, { type: "ref" }] })
+        .success,
+    ).toBe(true);
+  });
+
+  it("rejects node types that do not exist on the frontend", () => {
+    for (const stale of ["note", "icon_font", "connection", "image"]) {
+      expect(
+        schema.safeParse({ patterns: [{ type: stale }] }).success,
+        stale,
+      ).toBe(false);
+    }
+  });
 });
 
 describe("set_variables schema", () => {

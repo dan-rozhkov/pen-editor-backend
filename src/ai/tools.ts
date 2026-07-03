@@ -132,11 +132,9 @@ export const penTools = {
                 "polygon",
                 "path",
                 "text",
-                "connection",
-                "note",
-                "icon_font",
-                "image",
                 "embed",
+                "ref",
+                "connector",
               ])
               .optional()
               .describe("Only return nodes with this type"),
@@ -425,7 +423,7 @@ U(card+"/title", {content: "Account Details"})
           "RIGHT: `I(screen, {type: \"frame\", layout: \"vertical\", gap: 16, width: \"fill_container\", height: \"fit_content\"})`\n\n" +
           "## Component Usage\n" +
           "- Components are ALWAYS embed nodes (type: \"embed\") with isComponent: true. They are NOT native editor nodes.\n" +
-          "- Native nodes (frame, rectangle, text, icon_font, etc.) are canvas primitives — they are NOT components.\n" +
+          "- Native nodes (frame, rectangle, text, line, etc.) are canvas primitives — they are NOT components.\n" +
           "- Use `get_editor_state` to discover available components and their htmlContent.\n" +
           "- When creating new designs, reuse HTML snippets from component embeds rather than building from scratch.\n" +
           "- Do NOT recreate component UIs using frame/rect/text nodes — always use embed nodes with HTML.\n\n" +
