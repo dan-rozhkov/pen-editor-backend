@@ -20,6 +20,30 @@ const MCP_SERVERS: MCPServerEntry[] = [
   },
 ];
 
+/** Hard deadline for connecting to an MCP server and listing its tools. A hung
+ * upstream must not pin the shared in-flight cache entry forever — rejection
+ * evicts it (see pending.catch below) so the next request retries. */
+const MCP_CONNECT_TIMEOUT_MS = 10_000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`[mcp] ${label}: connect/tools timed out after ${ms}ms`)),
+      ms,
+    );
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
+
 type MCPClient = Awaited<ReturnType<typeof createMCPClient>>;
 
 interface CachedEntry {
@@ -110,19 +134,23 @@ function connectAndFetchTools(
   entry: MCPServerEntry,
   apiKey: string,
 ): Promise<CachedEntry> {
-  const pending = (async () => {
-    const client = await createMCPClient({
-      transport: {
-        type: "http",
-        url: entry.url,
-        headers: { Authorization: `Bearer ${apiKey}` },
-      },
-    });
-    const tools = await client.tools();
-    const wrappedTools = entry.name === "refero" ? wrapReferoTools(tools) : tools;
-    console.log(`[mcp] Connected to ${entry.name} at ${entry.url}`);
-    return { client, tools: wrappedTools };
-  })();
+  const pending = withTimeout(
+    (async () => {
+      const client = await createMCPClient({
+        transport: {
+          type: "http",
+          url: entry.url,
+          headers: { Authorization: `Bearer ${apiKey}` },
+        },
+      });
+      const tools = await client.tools();
+      const wrappedTools = entry.name === "refero" ? wrapReferoTools(tools) : tools;
+      console.log(`[mcp] Connected to ${entry.name} at ${entry.url}`);
+      return { client, tools: wrappedTools };
+    })(),
+    MCP_CONNECT_TIMEOUT_MS,
+    entry.name,
+  );
 
   pending.catch(() => {
     cache.delete(entry.name);
