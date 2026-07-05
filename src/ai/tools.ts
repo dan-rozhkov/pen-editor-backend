@@ -251,6 +251,7 @@ export const penTools = {
 - **Corner radius (frame/rectangle):** \`cornerRadius\` accepts either a single number for a uniform radius (\`U("abc", {cornerRadius: 12})\`) OR an array of per-corner radii in \`[topLeft, topRight, bottomRight, bottomLeft]\` order for independent corners (\`U("abc", {cornerRadius: [12, 12, 0, 0]})\`). CSS-style shorthand lengths (1, 2, or 3 values) are also accepted. Setting one form clears the other.
 - \`fill_container\` only valid when parent has flexbox layout
 - Variable references must use exact names from \`get_variables\` (including leading \`--\` and dashes), e.g. \`"$--ck-blue-500"\`
+- **Constraints (resize behavior, Figma-style):** \`constraints: {horizontal, vertical}\` on a child controls how it repositions/resizes when its parent frame is resized. Each axis is one of \`"min"\` (pinned to left/top, fixed size — the default when unset), \`"max"\` (pinned to right/bottom, fixed size), \`"center"\` (keeps its offset from the parent's center), \`"stretch"\` (left & right / top & bottom both pinned — size grows/shrinks with the parent), or \`"scale"\` (position and size both scale with the parent). Only meaningful for a direct child of a frame WITHOUT auto-layout — auto-layout frames size children via flex rules and ignore constraints. Example: \`U("abc", {constraints: {horizontal: "stretch", vertical: "min"}})\`
 
 **Example:**
 \`\`\`
