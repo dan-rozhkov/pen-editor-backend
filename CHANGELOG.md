@@ -8,6 +8,19 @@ While on `0.x`, minor bumps may include breaking changes.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-05
+
+Tool-schema support for the frontend P0 batch.
+
+### Added
+- **`boolean_operation` tool** — client-executed schema (`nodeIds` +
+  `operation` enum) so the AI can union/subtract/intersect/exclude/flatten
+  shapes.
+
+### Changed
+- `batch_design` description documents per-corner `cornerRadius` (number or
+  `[tl, tr, br, bl]` array) and per-child `constraints`.
+
 ## [0.4.0] - 2026-07-03
 
 First tracked release. Summarizes the features shipped up to this point.
@@ -37,5 +50,6 @@ First tracked release. Summarizes the features shipped up to this point.
 - Stop the agent echoing image URL/base64 in its reply.
 - `ENABLE_AGENT_LOGGING=false` now actually disables logging.
 
-[Unreleased]: https://github.com/dan-rozhkov/pen-editor-backend/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/dan-rozhkov/pen-editor-backend/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/dan-rozhkov/pen-editor-backend/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/dan-rozhkov/pen-editor-backend/releases/tag/v0.4.0
