@@ -571,13 +571,4 @@ U(card+"/title", {content: "Account Details"})
         .describe("ID of the frame whose fill should become the generated image"),
     }),
   }),
-  remove_background: tool({
-    description:
-      "Remove the background of a node's image fill, making the background transparent while keeping the subject. Runs client-side (no upload). Use when the user asks to cut out, isolate, or remove the background from a photo/image already applied to a shape or frame. Pass the id of the node carrying the image fill.",
-    inputSchema: z.object({
-      nodeId: z
-        .string()
-        .describe("ID of the node whose image fill should have its background removed"),
-    }),
-  }),
 };

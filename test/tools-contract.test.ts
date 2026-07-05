@@ -26,7 +26,6 @@ describe("penTools registry", () => {
         "get_style_guide",
         "get_style_guide_tags",
         "get_variables",
-        "remove_background",
         "rename_layers",
         "replace_all_matching_properties",
         "search_all_unique_properties",
@@ -55,7 +54,6 @@ describe("penTools registry", () => {
       "generate_image",
       "generate_frame_image",
       "boolean_operation",
-      "remove_background",
     ] as const) {
       expect(hasExecute(name), `${name} must be client-executed`).toBe(false);
     }
@@ -493,15 +491,5 @@ describe("get_style_guide schema + execute", () => {
     };
     expect(tagged.name).toBe("Generated Style Guide");
     expect(tagged.basedOn).toEqual(["minimal", "dark"]);
-  });
-});
-
-describe("remove_background schema", () => {
-  const schema = schemaOf("remove_background");
-
-  it("requires nodeId", () => {
-    expect(schema.safeParse({ nodeId: "rect1" }).success).toBe(true);
-    expect(schema.safeParse({}).success).toBe(false);
-    expect(schema.safeParse({ nodeId: 42 }).success).toBe(false);
   });
 });
