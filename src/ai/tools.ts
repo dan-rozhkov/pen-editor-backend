@@ -282,6 +282,20 @@ U(card+"/title", {content: "Account Details"})
     }),
   }),
 
+  boolean_operation: tool({
+    description:
+      "Combine 2+ selected shape nodes (rectangle/ellipse/polygon/path) into a single flattened path using a boolean operation, replacing the originals in one undoable step — useful for cutouts, icons, and complex silhouettes. `union` merges outlines, `subtract` cuts the upper shapes out of the bottom-most one, `intersect` keeps only the overlapping area, `exclude` keeps everything except the overlap (XOR), `flatten` merges outlines like union but is meant for normalizing a multi-shape selection into one editable path. Order matters for subtract/exclude — shapes are combined bottom-to-top by their current z-order (layer stacking), not by the order of nodeIds. All nodes must share the same parent.",
+    inputSchema: z.object({
+      nodeIds: z
+        .array(z.string())
+        .min(2)
+        .describe("IDs of the shape nodes to combine (2 or more, same parent)."),
+      operation: z
+        .enum(["union", "subtract", "intersect", "exclude", "flatten"])
+        .describe("Which boolean operation to apply."),
+    }),
+  }),
+
   set_variables: tool({
     description:
       "Add or update design variables and themes. Variables can reference theme axes for different values per theme. By default merges with existing variables; set replace=true to overwrite all.",

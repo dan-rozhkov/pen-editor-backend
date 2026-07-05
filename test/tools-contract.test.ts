@@ -17,6 +17,7 @@ describe("penTools registry", () => {
       [
         "batch_design",
         "batch_get",
+        "boolean_operation",
         "find_empty_space_on_canvas",
         "generate_frame_image",
         "generate_image",
@@ -52,6 +53,7 @@ describe("penTools registry", () => {
       "rename_layers",
       "generate_image",
       "generate_frame_image",
+      "boolean_operation",
     ] as const) {
       expect(hasExecute(name), `${name} must be client-executed`).toBe(false);
     }
