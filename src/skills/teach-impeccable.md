@@ -35,7 +35,7 @@ Before asking questions, scan what you can so you only ask about what you can't 
 
 - **Existing scene**: read the current design with `get_editor_state` / `batch_get` — what surfaces, flows, and content already exist.
 - **Design tokens**: `get_variables` — the color, typography, and spacing variables already defined.
-- **Components**: existing component embeds (`isComponent: true`) — the established building blocks.
+- **Components**: existing reusable components (native `frame` nodes with `reusable: true`, instantiated as `ref` nodes — not embeds) and any `properties` (variant/boolean/text) they declare — the established building blocks and their state axes.
 - **Any README, brand assets, style guide, or brand documentation** available for the project: purpose, target audience, logos, committed colors.
 
 Also form a **register hypothesis** from what you find:

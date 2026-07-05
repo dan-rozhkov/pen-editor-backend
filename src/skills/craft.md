@@ -33,13 +33,13 @@ When the harness lacks native image generation, gates 2-4 collapse into the brie
 
 Before shape, before code: figure out what kind of project you're working in.
 
-Review the project's design system: its design tokens/variables (via the `get_variables` tool), existing scene nodes, and reusable component embeds. Before adding anything new, understand:
+Review the project's design system: its design tokens/variables (via the `get_variables` tool), existing scene nodes, and reusable components. Before adding anything new, understand:
 
 - **The established visual conventions.** What tokens, variables, and spacing/type scales already exist? Respect them.
-- **The existing components.** Components live as reusable HTML embeds (`isComponent: true`). Read what's there before adding to it; reuse before inventing.
+- **The existing components.** A component is a native `frame` node with `reusable: true` (NOT an embed) — `get_editor_state` returns them under `reusableComponents`/`documentComponents`. Check whether one already declares `properties` (variant/boolean/text) before adding a near-duplicate frame — switch a variant on an instance (`propertyValues`) instead of building a new component for a state that's just a different value of an existing property. Read what's there before adding to it; reuse before inventing.
 - **The established iconography.** Use whatever icon approach the project already uses; don't introduce a second set.
 
-**Design-System-Lock:** respect existing tokens, variables, and components before inventing new ones. Reach for a new token or component only when nothing existing fits, and say so when you do.
+**Design-System-Lock:** respect existing tokens, variables, and components before inventing new ones. Reach for a new token, component, or component property only when nothing existing fits, and say so when you do.
 
 If the project is essentially empty (greenfield) and the foundation is genuinely undecided, don't pick a direction silently. {{ask_instruction}}, with sensible defaults framed by the brief. Ask once; don't re-ask mid-task.
 
@@ -102,7 +102,7 @@ Implement the feature following the design brief. Build in passes so structure, 
 - **Realistic state coverage.** Default, hover, focus-visible, active, disabled, loading, error, success, empty, overflow, long/short text, first-run.
 - **Finished interaction quality.** Keyboard paths, touch targets, feedback timing, scroll behavior, state transitions, no hover-only functionality.
 - **Coherent icon set.** Use the project's established set; otherwise pick one library or use accessible text. Don't mix.
-- **Respect the design system.** Reuse existing tokens/variables and component embeds; introduce new ones only when nothing existing fits, and keep them consistent with the established scale.
+- **Respect the design system.** Reuse existing tokens/variables and components; introduce new ones only when nothing existing fits, and keep them consistent with the established scale. When a state you need (hover/pressed/disabled/etc.) is a variant of an existing component, switch it via `propertyValues` on the instance instead of building a lookalike component.
 - **Verify image URLs before referencing them.** Use image-search or web-fetch when available; guessed photo IDs ship as broken-image placeholders. Without verification, prefer fewer images you're confident about.
 - **Optimized imagery and media.** Correct dimensions, useful alt text, lazy loading below the fold, modern formats when practical, responsive `srcset`/`picture` for raster, no referenced asset left missing.
 - **Premium motion.** Use atmospheric blur, filter, mask, shadow, reveal when they improve the experience. Avoid casual layout-property animation, bound expensive effects, verify smoothness in-browser, respect reduced motion, and avoid choreography that blocks task completion.

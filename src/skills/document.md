@@ -80,7 +80,7 @@ If a `DESIGN.md` already exists, **do not silently overwrite it**. Show the user
 
 ## Two paths
 
-- **Scan mode** (default): the project has design tokens, components, or rendered output. Extract, then confirm descriptive language. Use when there's a scene graph, design variables, or component embeds to analyze.
+- **Scan mode** (default): the project has design tokens, components, or rendered output. Extract, then confirm descriptive language. Use when there's a scene graph, design variables, or reusable components to analyze.
 - **Seed mode**: the project is pre-implementation (nothing built yet). Interview for five high-level answers, write a minimal DESIGN.md marked `<!-- SEED -->`. Re-run in scan mode once there's something to extract.
 
 Decide by scanning first (Scan mode Step 1). If the scan finds no tokens, no components, and no rendered output, offer seed mode; don't silently switch. The user can explicitly request seed mode to force it regardless of what's already built.
@@ -93,7 +93,7 @@ Survey the project in priority order:
 
 1. **Design tokens/variables**: read the project's design variables (via the `get_variables` tool). Record name, value, and role for each color, typography, spacing, radius, shadow, easing, and duration token. This is the primary source of truth for the design system.
 2. **Existing scene nodes**: inspect the current scene graph for established visual conventions — the colors, type sizes, radii, and spacing that recur across frames and text nodes.
-3. **Reusable component embeds**: scan the component embeds (`isComponent: true`, HTML in `htmlContent`) — the main button, card, input, navigation, dialog patterns. Note their variant structure and default styles.
+3. **Reusable components**: scan components — native `frame` nodes with `reusable: true` (`get_editor_state` returns them under `reusableComponents`, with an HTML snapshot for readability) — the main button, card, input, navigation, dialog patterns. Note any declared `properties` (variant/boolean/text axes) and default styles.
 4. **Rendered output**: if browser automation tools are available, sample computed styles from key rendered elements (body, h1, a, button, card). This catches values that tokens miss.
 
 ### Step 2: Auto-extract what can be auto-extracted
