@@ -8,6 +8,25 @@ While on `0.x`, minor bumps may include breaking changes.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-05
+
+Tool-schema and AI-doc support for the frontend effects/components/vector batch.
+
+### Added
+- **`remove_background` tool** — client-executed schema (`nodeId`) so the AI
+  can cut the subject out of a node's image fill (in-browser RMBG-1.4
+  inference on the frontend).
+
+### Changed
+- `batch_design` description documents the `effects` array (drop/inner
+  shadows via `shadowType`, layer blur) and the component **properties /
+  propertyValues** workflow (variant/boolean/text declarations on reusable
+  frames, value switching on instances, two-call binding sequencing).
+- **AI-facing component docs corrected** — system prompt, tool descriptions,
+  and design skills now describe the real component model (reusable `frame`
+  nodes instantiated as `ref` nodes with overrides), replacing the stale
+  "embed + isComponent" description.
+
 ## [0.5.0] - 2026-07-05
 
 Tool-schema support for the frontend P0 batch.
