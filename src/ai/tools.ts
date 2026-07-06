@@ -254,6 +254,7 @@ export const penTools = {
   - Layer blur: \`{type: "blur", radius}\`
   Multiple shadows (of either kind) and multiple blurs can coexist in the same stack; each entry accepts an optional \`visible: bool\` (defaults true). Setting \`effects\` replaces the whole stack. Example: \`U("abc", {effects: [{type: "shadow", shadowType: "outer", color: "#00000040", offset: {x: 0, y: 4}, blur: 8, spread: 0}, {type: "shadow", shadowType: "inner", color: "#00000080", offset: {x: 0, y: 2}, blur: 4, spread: 0}]})\`
 - **Corner radius (frame/rectangle):** \`cornerRadius\` accepts either a single number for a uniform radius (\`U("abc", {cornerRadius: 12})\`) OR an array of per-corner radii in \`[topLeft, topRight, bottomRight, bottomLeft]\` order for independent corners (\`U("abc", {cornerRadius: [12, 12, 0, 0]})\`). CSS-style shorthand lengths (1, 2, or 3 values) are also accepted. Setting one form clears the other.
+- **Corner smoothing / squircle (frame/rectangle):** \`cornerSmoothing\` is a single number, 0-1 (a fraction, NOT 0-100), applied uniformly to every rounded corner of the shape — it works alongside independent per-corner radii. \`0\` (or unset) is a plain circular-arc corner (default look). Higher values morph the corner into a continuous "squircle" curve; \`~0.6\` approximates the iOS app-icon look. Has no visible effect where \`cornerRadius\`/\`cornerRadiusPerCorner\` is 0. Example: \`U("abc", {cornerRadius: 24, cornerSmoothing: 0.6})\`.
 - \`fill_container\` only valid when parent has flexbox layout
 - **Wrap (card grids / tag lists):** set \`wrap: true\` on a frame with layout to let children flow onto new lines once the main axis runs out of space. Use \`rowGap\`/\`columnGap\` for independent spacing on each axis (row-gap = space between wrapped lines, column-gap = space between items in a row) — either falls back to \`gap\` when unset, so \`gap\` alone still applies to both axes. A wrapped frame typically has a fixed/fill \`width\` and \`height: "fit_content"\` so it hugs the total height of all wrapped rows. Example: \`U("cardGrid", {wrap: true, columnGap: 16, rowGap: 24})\`
 - **Min/max sizing (any child in an auto-layout frame):** \`minWidth\`/\`maxWidth\`/\`minHeight\`/\`maxHeight\` (numbers, in px) clamp a child's resolved size regardless of its sizing mode (fixed/fill_container/fit_content) — e.g. a \`width: "fill_container"\` card that shouldn't grow past 320px: \`U("card", {maxWidth: 320})\`
@@ -387,6 +388,9 @@ U(card+"/title", {content: "Account Details"})
               }),
             )
             .optional(),
+          cornerSmoothing: z
+            .array(z.object({ from: z.number(), to: z.number() }))
+            .optional(),
           padding: z
             .array(z.object({ from: z.number(), to: z.number() }))
             .optional(),
@@ -447,6 +451,7 @@ U(card+"/title", {content: "Account Details"})
             "strokeColor",
             "strokeThickness",
             "cornerRadius",
+            "cornerSmoothing",
             "padding",
             "gap",
             "fontSize",
