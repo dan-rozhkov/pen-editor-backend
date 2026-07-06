@@ -8,6 +8,22 @@ While on `0.x`, minor bumps may include breaking changes.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-06
+
+Tool-schema and AI-doc support for the frontend typography/layout batch
+(text styles, auto-layout wrap & min/max, corner smoothing).
+
+### Added
+- **Text-style tools** — client-executed schemas `get_text_styles`,
+  `set_text_styles` (create/update named styles), and `apply_text_style`
+  (bind a style to text nodes), plus a system-prompt nudge to prefer named
+  styles over hand-set typography values.
+
+### Changed
+- `batch_design` docs now cover auto-layout `wrap`, `rowGap`/`columnGap`,
+  per-child `minWidth`/`maxWidth`/`minHeight`/`maxHeight`, and
+  `cornerSmoothing` (squircle) on rectangles/frames.
+
 ## [0.6.0] - 2026-07-05
 
 Tool-schema and AI-doc support for the frontend effects/components/vector batch.
@@ -69,6 +85,8 @@ First tracked release. Summarizes the features shipped up to this point.
 - Stop the agent echoing image URL/base64 in its reply.
 - `ENABLE_AGENT_LOGGING=false` now actually disables logging.
 
-[Unreleased]: https://github.com/dan-rozhkov/pen-editor-backend/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/dan-rozhkov/pen-editor-backend/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/dan-rozhkov/pen-editor-backend/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/dan-rozhkov/pen-editor-backend/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/dan-rozhkov/pen-editor-backend/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/dan-rozhkov/pen-editor-backend/releases/tag/v0.4.0
