@@ -317,6 +317,45 @@ U(card+"/title", {content: "Account Details"})
     }),
   }),
 
+  get_text_styles: tool({
+    description:
+      "Read all named, reusable text styles (Figma-style 'Text styles') defined in the .pen file: fontFamily, fontSize, fontWeight, lineHeight, letterSpacing, textTransform.",
+    inputSchema: z.object({}),
+  }),
+
+  set_text_styles: tool({
+    description:
+      "Create or update named text styles. By default merges with existing styles by id/name (updating a style pushes the change to every text node bound to it, except locally-overridden properties); set replace=true to overwrite the whole set.",
+    inputSchema: z.object({
+      textStyles: z
+        .union([
+          z.array(z.record(z.unknown())),
+          z.record(z.unknown()),
+        ])
+        .describe(
+          "Text style definitions to add or merge. Either an array of {name, fontFamily, fontSize, fontWeight, lineHeight, letterSpacing, textTransform} objects, or an object keyed by style name.",
+        ),
+      replace: z
+        .boolean()
+        .optional()
+        .describe(
+          "If true, replaces all existing text styles. Default is merge.",
+        ),
+    }),
+  }),
+
+  apply_text_style: tool({
+    description:
+      "Bind one or more text nodes to a named text style (from get_text_styles / set_text_styles), copying the style's typography onto each node. Use instead of manually setting fontFamily/fontSize/etc. for design-system consistency.",
+    inputSchema: z.object({
+      nodeIds: z
+        .array(z.string())
+        .min(1)
+        .describe("IDs of the text nodes to bind to the style."),
+      textStyleId: z.string().describe("The id of the text style to apply."),
+    }),
+  }),
+
   replace_all_matching_properties: tool({
     description:
       "Recursively find-and-replace property values across the node tree. Useful for bulk color/font/spacing changes (e.g. rebranding, theme adjustments).",

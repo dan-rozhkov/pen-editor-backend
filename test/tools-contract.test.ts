@@ -26,6 +26,9 @@ describe("penTools registry", () => {
         "get_style_guide",
         "get_style_guide_tags",
         "get_variables",
+        "get_text_styles",
+        "set_text_styles",
+        "apply_text_style",
         "rename_layers",
         "replace_all_matching_properties",
         "search_all_unique_properties",
@@ -46,6 +49,9 @@ describe("penTools registry", () => {
       "get_editor_state",
       "get_variables",
       "set_variables",
+      "get_text_styles",
+      "set_text_styles",
+      "apply_text_style",
       "replace_all_matching_properties",
       "snapshot_layout",
       "find_empty_space_on_canvas",
@@ -329,6 +335,62 @@ describe("get_variables schema", () => {
     const result = schema.safeParse({});
     expect(result.success).toBe(true);
     expect(result.success && result.data).toEqual({});
+  });
+});
+
+describe("get_text_styles schema", () => {
+  const schema = schemaOf("get_text_styles");
+
+  it("accepts an empty object", () => {
+    const result = schema.safeParse({});
+    expect(result.success).toBe(true);
+    expect(result.success && result.data).toEqual({});
+  });
+});
+
+describe("set_text_styles schema", () => {
+  const schema = schemaOf("set_text_styles");
+
+  it("accepts an array of style definitions", () => {
+    expect(
+      schema.safeParse({
+        textStyles: [{ name: "Heading/L", fontFamily: "Inter", fontSize: 32 }],
+      }).success,
+    ).toBe(true);
+  });
+
+  it("accepts an object keyed by style name, with an optional replace flag", () => {
+    expect(
+      schema.safeParse({
+        textStyles: { "Heading/L": { fontSize: 32 } },
+        replace: true,
+      }).success,
+    ).toBe(true);
+  });
+
+  it("requires textStyles and rejects a non-boolean replace", () => {
+    expect(schema.safeParse({}).success).toBe(false);
+    expect(
+      schema.safeParse({ textStyles: [], replace: "yes" }).success,
+    ).toBe(false);
+  });
+});
+
+describe("apply_text_style schema", () => {
+  const schema = schemaOf("apply_text_style");
+
+  it("accepts nodeIds and a textStyleId", () => {
+    expect(
+      schema.safeParse({ nodeIds: ["text1", "text2"], textStyleId: "style1" })
+        .success,
+    ).toBe(true);
+  });
+
+  it("rejects an empty nodeIds array or a missing textStyleId", () => {
+    expect(
+      schema.safeParse({ nodeIds: [], textStyleId: "style1" }).success,
+    ).toBe(false);
+    expect(schema.safeParse({ nodeIds: ["text1"] }).success).toBe(false);
   });
 });
 

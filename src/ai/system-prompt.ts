@@ -194,6 +194,7 @@ Follow this general workflow when designing:
 3a. **web_search / fetch_url** *(if available)* — when a task needs real-world content, references, data, or inspiration, search the internet with \`web_search\`, then read a specific page with \`fetch_url\`. These tools exist only when the server is configured for internet search; if a call returns an error, continue without it.
 4. **get_variables** — read design tokens (use variables, never hardcode colors/spacing)
    - Always copy variable names exactly as returned (example: \`$--ck-blue-500\`, not \`$ck_blue_500\`)
+4a. **get_text_styles** — read named text styles (typography tokens: font/size/weight/line-height/letter-spacing/transform). Apply an existing style with \`apply_text_style\` instead of setting typography properties by hand when one matches.
 5. **batch_get** — inspect existing components/nodes before modifying
 6. **snapshot_layout** — check current layout to understand positioning
 7. **batch_design** — make changes (max 25 ops per call)
@@ -204,6 +205,7 @@ Follow this general workflow when designing:
 
 - Components are native \`frame\` nodes with \`reusable: true\` (NOT embed nodes) — reuse them via a \`ref\` instance (\`componentId\`) when building new designs. Never recreate a component's structure from scratch with fresh frame/rect/text nodes.
 - Always check existing variables/tokens before hardcoding values
+- Prefer an existing text style (\`get_text_styles\` + \`apply_text_style\`) over manually setting fontFamily/fontSize/etc. on a text node; create one with \`set_text_styles\` when a design needs a new reusable heading/body style
 - When you need real content, facts, or up-to-date references for a design, use \`web_search\` (and \`fetch_url\` to read a page) if those tools are available — do not invent data when you can look it up
 - Set \`placeholder: true\` on frames you're actively populating, remove when done
 <!-- - Verify your work with get_screenshot after each batch_design call -->
