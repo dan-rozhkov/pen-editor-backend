@@ -8,6 +8,20 @@ While on `0.x`, minor bumps may include breaking changes.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-07
+
+Tool-schema and AI-doc support for the frontend shapes/patterns/masks/lists
+batch.
+
+### Changed
+- `batch_design` docs now cover star polygons (`sides` +
+  `innerRadiusRatio`), ellipse arcs/donuts (`startAngle`/`sweepAngle`/
+  `innerRadiusRatio`), line arrowheads (`startCap`/`endCap`), pattern fills
+  (image tile with scale/spacing/row-offset on rectangles, frames, and
+  ellipses), layer masks (`isMask` masking siblings above in the same
+  group/frame), and text lists (per-paragraph `paragraphs` attributes with
+  list type and indent level).
+
 ## [0.7.0] - 2026-07-06
 
 Tool-schema and AI-doc support for the frontend typography/layout batch
@@ -85,7 +99,8 @@ First tracked release. Summarizes the features shipped up to this point.
 - Stop the agent echoing image URL/base64 in its reply.
 - `ENABLE_AGENT_LOGGING=false` now actually disables logging.
 
-[Unreleased]: https://github.com/dan-rozhkov/pen-editor-backend/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/dan-rozhkov/pen-editor-backend/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/dan-rozhkov/pen-editor-backend/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/dan-rozhkov/pen-editor-backend/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/dan-rozhkov/pen-editor-backend/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/dan-rozhkov/pen-editor-backend/compare/v0.4.0...v0.5.0
