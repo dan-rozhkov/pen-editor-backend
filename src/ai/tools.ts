@@ -366,6 +366,65 @@ U(card+"/title", {content: "Account Details"})
     }),
   }),
 
+  get_styles: tool({
+    description:
+      "Read all named, reusable fill (color/gradient/image/pattern paint) and effect (shadow/blur stack) styles defined in the .pen file (Figma-style 'Color styles' and 'Effect styles'). Unlike a plain variable, a style can hold a full gradient, image, or shadow/blur stack, and a fill style's solid color may itself reference a variable.",
+    inputSchema: z.object({}),
+  }),
+
+  set_styles: tool({
+    description: `Create or update named fill styles and/or effect styles. Editing an existing style (by id or name) live-updates every node currently applying it — no separate "propagate" step needed. By default merges with existing styles; set replace=true to overwrite the whole set (fillStyles and effectStyles are replaced independently — omit one to leave it untouched even with replace=true).
+
+- Fill style paint: either a full paint object \`{type: "solid"|"gradient"|"image"|"pattern", ...}\` (same shapes as a \`fills\` entry in \`batch_design\`, including \`"$--var"\` variable references in a solid's \`color\`), the shorthand \`{color: "#hex" | "$--var"}\` for a solid color style, or a paint object carrying just a \`gradient\`/\`image\`/\`pattern\` sub-object (the type is inferred). An ambiguous paint (no color and no gradient/image/pattern) is reported as an error rather than silently stored.
+- Effect style: \`{name, effects: [...]}\` — same shadow/blur objects as a node's \`effects\` array in \`batch_design\`.
+
+Returns the created/updated style ids and names (with a created|updated status) — pass those ids straight to \`apply_fill_style\`/\`apply_effect_style\` without a \`get_styles\` round-trip.`,
+    inputSchema: z.object({
+      fillStyles: z
+        .array(z.record(z.unknown()))
+        .optional()
+        .describe(
+          "Fill style definitions to add or merge: [{id?, name, paint?: {...}, color?: '#hex'|'$--var'}].",
+        ),
+      effectStyles: z
+        .array(z.record(z.unknown()))
+        .optional()
+        .describe(
+          "Effect style definitions to add or merge: [{id?, name, effects: [...]}].",
+        ),
+      replace: z
+        .boolean()
+        .optional()
+        .describe(
+          "If true, replaces the existing set for each of fillStyles/effectStyles that was provided. Default is merge.",
+        ),
+    }),
+  }),
+
+  apply_fill_style: tool({
+    description:
+      "Bind one or more nodes' fill to a named fill style (from get_styles / set_styles) — sets the node's topmost paint layer (or adds one if it has none) to reference the style, so future edits to the style live-update the node. Use for design-system-consistent color/gradient/image fills instead of a raw fill value.",
+    inputSchema: z.object({
+      nodeIds: z
+        .array(z.string())
+        .min(1)
+        .describe("IDs of the nodes to bind to the fill style."),
+      styleId: z.string().describe("The id of the fill style to apply."),
+    }),
+  }),
+
+  apply_effect_style: tool({
+    description:
+      "Bind one or more nodes' whole shadow/blur stack to a named effect style (from get_styles / set_styles) — replaces the node's own effects with a live reference to the style. Use for design-system-consistent shadows instead of raw effects values.",
+    inputSchema: z.object({
+      nodeIds: z
+        .array(z.string())
+        .min(1)
+        .describe("IDs of the nodes to bind to the effect style."),
+      styleId: z.string().describe("The id of the effect style to apply."),
+    }),
+  }),
+
   replace_all_matching_properties: tool({
     description:
       "Recursively find-and-replace property values across the node tree. Useful for bulk color/font/spacing changes (e.g. rebranding, theme adjustments).",
