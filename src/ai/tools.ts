@@ -247,6 +247,7 @@ export const penTools = {
   - Solid: \`{type: "solid", color: "#hex" | "$--var", opacity?: 0-1, visible?: bool, blendMode?: string}\`
   - Gradient: \`{type: "gradient", gradient: {type: "linear"|"radial", stops: [{color, position}], startX, startY, endX, endY}}\`
   - Image: \`{type: "image", url: "https://...", mode: "fill"|"fit"|"stretch"}\`
+  - Pattern (repeating image tile, for textures/grids/decorative backgrounds; rectangle/frame/ellipse only): \`{type: "pattern", url: "https://...", scale?: number (tile scale factor, default 1), spacingX?: px, spacingY?: px (gaps between tiles), offsetX?: px, offsetY?: px (whole-pattern shift), rowOffset?: 0-1 (fraction of a cell each row shifts horizontally — 0.5 gives a brick stagger)}\`
   Do NOT pass an \`id\` on paints — ids are generated automatically. When you set \`fills\`, it is the single source of truth and any single \`fill\` on that node is ignored. \`$--var\` references inside a solid paint's \`color\` resolve and bind exactly like a single \`fill\`. Example: \`U("abc", {fills: [{type: "solid", color: "$--background"}, {type: "image", url: "https://...", mode: "fill"}]})\`
 - **Effects (shadow/blur stack):** pass an \`effects\` array (bottom-to-top, like \`fills\`) on any node (rectangle/frame/ellipse/text) to add shadows and blur:
   - Drop shadow (cast outward, behind the node): \`{type: "shadow", shadowType: "outer", color: "#hex", offset: {x, y}, blur, spread}\`
