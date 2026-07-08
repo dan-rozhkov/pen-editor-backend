@@ -224,7 +224,7 @@ export const penTools = {
     description: `Execute batch operations on the .pen node tree. Accepts a mini-script string with operations:
 
 **Operations:**
-- \`binding=I(parent, nodeData)\` — Insert new node
+- \`binding=I(parent, nodeData)\` — Insert new node. Works both for a freshly-created parent binding AND for adding a child to an already-existing node: pass the existing node's id/path as \`parent\` (e.g. \`I("existingFrameId", {...})\` or \`I(card+"/body", {...})\`). This is the ONLY way to add children to an existing node — \`U()\` cannot add, remove, or reorder children.
 - \`binding=C(sourceId, parent, overrides)\` — Copy node (\`positionDirection\`/\`positionPadding\` for placement)
 - \`U(path, updateData)\` — Update properties (cannot change id, type, or children)
 - \`binding=R(path, newNodeData)\` — Replace node entirely
@@ -313,11 +313,19 @@ U(card+"/title", {content: "Account Details"})
 
   set_variables: tool({
     description:
-      "Add or update design variables and themes. Variables can reference theme axes for different values per theme. By default merges with existing variables; set replace=true to overwrite all.",
+      "Add or update design variables and themes. Variables can reference theme axes for different values per theme. By default merges with existing variables (matched by id or name); set replace=true to overwrite all.",
     inputSchema: z.object({
       variables: z
         .record(z.unknown())
-        .describe("Variable definitions to add or merge."),
+        .describe(
+          "Variable definitions, as an object keyed by variable name. Simplest form — a plain hex string per name: " +
+            '`{"--brand-primary": "#3b82f6", "--brand-bg": "#ffffff"}`. ' +
+            "Full form — an object per name with `type` (\"color\" | \"number\" | \"string\", default \"color\") and `value`: " +
+            '`{"--radius-lg": {"type": "number", "value": "16"}}`. ' +
+            "Per-theme values use `themeValues`: " +
+            '`{"--brand-bg": {"type": "color", "value": "#ffffff", "themeValues": {"dark": "#0b0b0b"}}}`. ' +
+            "Names may be given with or without a leading `--`/`$`. Nested token groups (e.g. `{colors: {primary: {$type, $value}}}`) are also accepted.",
+        ),
       replace: z
         .boolean()
         .optional()

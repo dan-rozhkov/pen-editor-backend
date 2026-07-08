@@ -2,6 +2,8 @@ import {
   streamText,
   convertToModelMessages,
   stepCountIs,
+  NoSuchToolError,
+  InvalidToolInputError,
   type UIMessage,
   type ToolSet,
   type DynamicToolUIPart,
@@ -25,6 +27,24 @@ import { detectSkillCommand, getAllSkills, getSkill } from "../ai/skills.js";
 
 // Maximum image parts per single message (not per conversation).
 const MAX_IMAGE_PARTS = 4;
+
+// pipeUIMessageStreamToResponse masks every stream error to a generic
+// "An error occurred." by default (so server internals never leak to the
+// client). But that also hides our own actionable tool-input validation
+// messages — e.g. batch_design's "Too many operations (30). Maximum is 25.
+// Split the work into multiple sequential batch_design calls." — from the
+// model, so it gets a dead-end instead of guidance it could act on. Surface the
+// message for tool-call validation errors only (safe, model-facing guidance);
+// keep the generic mask for everything else.
+export function streamErrorMessage(error: unknown): string {
+  if (
+    NoSuchToolError.isInstance(error) ||
+    InvalidToolInputError.isInstance(error)
+  ) {
+    return error.message;
+  }
+  return "An error occurred.";
+}
 const MAX_AGENT_STEPS = {
   research: 15,
   default: 12,
@@ -302,7 +322,9 @@ export async function chatRoutes(app: FastifyInstance, config: Config) {
 
     // Pipe the UI message stream directly to the raw Node.js response,
     // bypassing Fastify's send() which can't handle object streams.
-    result.pipeUIMessageStreamToResponse(reply.raw);
+    result.pipeUIMessageStreamToResponse(reply.raw, {
+      onError: streamErrorMessage,
+    });
 
     // Tell Fastify we already handled the response.
     reply.hijack();
