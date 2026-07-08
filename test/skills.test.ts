@@ -100,4 +100,34 @@ describe("loadSkills / getSkill", () => {
   it("returns undefined for unknown skills", () => {
     expect(getSkill("definitely-not-a-skill")).toBeUndefined();
   });
+
+  it("loads the first-draft skill with expected frontmatter", () => {
+    const firstDraft = getSkill("first-draft");
+    expect(firstDraft).toBeDefined();
+    expect(firstDraft!.name).toBe("first-draft");
+    expect(firstDraft!.description).toMatch(/first draft/i);
+    expect(firstDraft!.args).toEqual([
+      {
+        name: "description",
+        description: "One-sentence description of the screen to design (optional — will be asked for if omitted)",
+        required: false,
+      },
+      {
+        name: "platform",
+        description: "Target platform: mobile or desktop (optional — inferred from the description if omitted)",
+        required: false,
+      },
+    ]);
+  });
+
+  it("first-draft recipe drives native nodes, variables, and self-check", () => {
+    const firstDraft = getSkill("first-draft")!;
+    expect(firstDraft.content).not.toContain("user-invokable");
+    expect(firstDraft.content).toContain("get_variables");
+    expect(firstDraft.content).toContain("batch_design");
+    expect(firstDraft.content).toContain("get_screenshot");
+    expect(firstDraft.content).toMatch(/embed/i);
+    expect(firstDraft.content).toMatch(/390.*844|844.*390/);
+    expect(firstDraft.content).toMatch(/1440.*1024|1024.*1440/);
+  });
 });
