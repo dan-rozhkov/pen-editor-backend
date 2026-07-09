@@ -437,6 +437,39 @@ Returns the created/updated style ids and names (with a created|updated status) 
     }),
   }),
 
+  set_export_settings: tool({
+    description:
+      "Add (or replace) an export preset on one or more nodes — format, scale and an optional filename suffix (e.g. '@2x', '_dark'). This is how to configure or trigger an export with specific parameters: it writes to the node's `exportSettings` so the user's Export panel can run 'Export all' for those nodes. Does not itself produce a downloadable file.",
+    inputSchema: z.object({
+      nodeIds: z
+        .array(z.string())
+        .min(1)
+        .describe("IDs of the nodes to configure export settings on."),
+      format: z
+        .enum(["svg", "png", "jpg", "webp", "pdf"])
+        .describe("Export file format."),
+      scale: z
+        .number()
+        .positive()
+        .optional()
+        .describe("Export scale multiplier (e.g. 0.5, 1, 2, 3). Defaults to 1."),
+      suffix: z
+        .string()
+        .optional()
+        .describe("Filename suffix appended before the extension, e.g. '@2x' or '_dark'."),
+      quality: z
+        .number()
+        .min(0)
+        .max(1)
+        .optional()
+        .describe("Encoder quality 0-1, used for lossy raster formats (jpg/webp)."),
+      mode: z
+        .enum(["add", "replace"])
+        .optional()
+        .describe("'add' appends a new export setting (default); 'replace' replaces all existing settings on the node with this one."),
+    }),
+  }),
+
   replace_all_matching_properties: tool({
     description:
       "Recursively find-and-replace property values across the node tree. Useful for bulk color/font/spacing changes (e.g. rebranding, theme adjustments).",

@@ -36,6 +36,7 @@ describe("penTools registry", () => {
         "rename_layers",
         "replace_all_matching_properties",
         "search_all_unique_properties",
+        "set_export_settings",
         "set_variables",
         "snapshot_layout",
       ].sort(),
@@ -68,6 +69,7 @@ describe("penTools registry", () => {
       "generate_image",
       "generate_frame_image",
       "boolean_operation",
+      "set_export_settings",
     ] as const) {
       expect(hasExecute(name), `${name} must be client-executed`).toBe(false);
     }
@@ -270,6 +272,48 @@ describe("replace_all_matching_properties schema", () => {
         parents: ["rootId"],
         properties: { fontSize: [{ from: "14", to: "16" }] },
       }).success,
+    ).toBe(false);
+  });
+});
+
+describe("set_export_settings schema", () => {
+  const schema = schemaOf("set_export_settings");
+
+  it("accepts nodeIds + format with all optional fields", () => {
+    const result = schema.safeParse({
+      nodeIds: ["node1", "node2"],
+      format: "png",
+      scale: 2,
+      suffix: "@2x",
+      quality: 0.9,
+      mode: "add",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts just nodeIds + format (scale/suffix/quality/mode optional)", () => {
+    expect(
+      schema.safeParse({ nodeIds: ["node1"], format: "svg" }).success,
+    ).toBe(true);
+  });
+
+  it("requires nodeIds and a valid format", () => {
+    expect(schema.safeParse({}).success).toBe(false);
+    expect(schema.safeParse({ nodeIds: [] , format: "png" }).success).toBe(false);
+    expect(schema.safeParse({ nodeIds: ["n1"] }).success).toBe(false);
+    expect(
+      schema.safeParse({ nodeIds: ["n1"], format: "bmp" }).success,
+    ).toBe(false);
+  });
+
+  it("rejects out-of-range quality and unknown mode", () => {
+    expect(
+      schema.safeParse({ nodeIds: ["n1"], format: "jpg", quality: 1.5 })
+        .success,
+    ).toBe(false);
+    expect(
+      schema.safeParse({ nodeIds: ["n1"], format: "jpg", mode: "merge" })
+        .success,
     ).toBe(false);
   });
 });
