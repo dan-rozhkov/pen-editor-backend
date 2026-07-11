@@ -17,6 +17,7 @@ export function makeConfig(overrides: Partial<Config> = {}): Config {
     S3_ACCESS_KEY_ID: undefined,
     S3_SECRET_ACCESS_KEY: undefined,
     S3_REGION: "ru-1",
+    IMAGE_GENERATION_TIMEOUT_MS: 90_000,
     ...overrides,
   };
 }

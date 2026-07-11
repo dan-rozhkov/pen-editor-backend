@@ -3,6 +3,15 @@ import { createS3Client, uploadImage } from "./s3.js";
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 
+/** Thrown when the OpenRouter image request doesn't complete within the
+ * configured deadline. Routes should map this to HTTP 504. */
+export class ImageGenerationTimeoutError extends Error {
+  constructor(ms: number) {
+    super(`Image generation timed out after ${ms}ms`);
+    this.name = "ImageGenerationTimeoutError";
+  }
+}
+
 interface OpenRouterImageResponse {
   choices?: Array<{
     message?: {
@@ -33,26 +42,48 @@ function decodeDataUrl(dataUrl: string): { mimeType: string; buffer: Buffer } {
 export async function generateImage(
   config: Config,
   prompt: string,
+  // Optional signal (e.g. from a client-disconnect listener on the route)
+  // combined with the timeout signal below via AbortSignal.any.
+  externalSignal?: AbortSignal,
 ): Promise<{ url: string; mimeType: string }> {
-  const res = await fetch(OPENROUTER_URL, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${config.OPENROUTER_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: config.OPENROUTER_IMAGE_MODEL,
-      messages: [{ role: "user", content: prompt }],
-      modalities: ["image", "text"],
-    }),
-  });
+  const timeoutMs = config.IMAGE_GENERATION_TIMEOUT_MS;
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  const signal = externalSignal ? AbortSignal.any([timeoutSignal, externalSignal]) : timeoutSignal;
 
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`OpenRouter image request failed (${res.status}): ${text.slice(0, 200)}`);
+  // Wrap the whole network exchange — connect AND response-body read — so a
+  // timeout that fires mid-stream (headers arrived, body stalls) still maps to
+  // the 504 path, not a generic 500.
+  let data: OpenRouterImageResponse;
+  try {
+    const res = await fetch(OPENROUTER_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${config.OPENROUTER_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: config.OPENROUTER_IMAGE_MODEL,
+        messages: [{ role: "user", content: prompt }],
+        modalities: ["image", "text"],
+      }),
+      signal,
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`OpenRouter image request failed (${res.status}): ${text.slice(0, 200)}`);
+    }
+
+    data = (await res.json()) as OpenRouterImageResponse;
+  } catch (err) {
+    // Only the dedicated timeout signal firing means the deadline was hit;
+    // an externalSignal abort (client disconnect) surfaces as a plain abort.
+    if (timeoutSignal.aborted) {
+      throw new ImageGenerationTimeoutError(timeoutMs);
+    }
+    throw err;
   }
 
-  const data = (await res.json()) as OpenRouterImageResponse;
   const dataUrl = extractDataUrl(data);
   if (!dataUrl) throw new Error("OpenRouter response contained no image");
 

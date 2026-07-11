@@ -34,6 +34,10 @@ const envSchema = z.object({
   S3_ACCESS_KEY_ID: z.string().optional(),
   S3_SECRET_ACCESS_KEY: z.string().optional(),
   S3_REGION: z.string().default("ru-1"),
+  // Image generation is slow; a hung OpenRouter image endpoint must not hold
+  // the client connection/request context open forever (see withTimeout in
+  // src/ai/mcp.ts for the analogous MCP-side guard).
+  IMAGE_GENERATION_TIMEOUT_MS: z.coerce.number().default(90_000),
 });
 
 export type Config = z.infer<typeof envSchema>;

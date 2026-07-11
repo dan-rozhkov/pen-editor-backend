@@ -8,7 +8,7 @@ vi.mock("../src/services/s3.js", () => ({
 }));
 
 import { createS3Client, uploadImage } from "../src/services/s3.js";
-import { generateImage } from "../src/services/imageGen.js";
+import { generateImage, ImageGenerationTimeoutError } from "../src/services/imageGen.js";
 
 const DATA_URL = "data:image/png;base64,aGVsbG8="; // "hello"
 
@@ -119,5 +119,23 @@ describe("generateImage", () => {
 
     expect(result.url).toBe("data:image/png;base64,aGVsbG8=");
     expect(result.mimeType).toBe("image/png");
+  });
+
+  it("throws ImageGenerationTimeoutError when the OpenRouter request exceeds the configured timeout", async () => {
+    vi.mocked(createS3Client).mockReturnValue(null);
+    // Mimic real fetch's behavior of rejecting with the abort signal's reason
+    // once the signal fires, instead of ever resolving.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        (_url: string, init: RequestInit) =>
+          new Promise((_resolve, reject) => {
+            init.signal?.addEventListener("abort", () => reject(init.signal!.reason));
+          }),
+      ),
+    );
+
+    const config = makeConfig({ IMAGE_GENERATION_TIMEOUT_MS: 20 });
+    await expect(generateImage(config, "x")).rejects.toThrow(ImageGenerationTimeoutError);
   });
 });
