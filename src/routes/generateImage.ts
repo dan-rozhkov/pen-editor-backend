@@ -12,10 +12,12 @@ export async function generateImageRoutes(app: FastifyInstance, config: Config) 
       return reply.status(400).send({ error: "Missing or invalid 'prompt'" });
     }
 
-    // Abort the upstream request if the client disconnects before we're
-    // done, mirroring the chat route's abort-on-close behavior.
+    // Watch the response rather than the request. IncomingMessage emits
+    // "close" after an ordinary request body finishes, which would abort
+    // image generation immediately. A response close before writableEnded
+    // means the client actually disconnected while waiting for the image.
     const abortController = new AbortController();
-    request.raw.on("close", () => {
+    reply.raw.once("close", () => {
       if (!reply.raw.writableEnded) {
         abortController.abort();
       }

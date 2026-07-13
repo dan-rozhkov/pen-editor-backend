@@ -38,6 +38,19 @@ describe("POST /api/generate-image", () => {
     expect(generateImage).toHaveBeenCalledWith(expect.anything(), "a sunset", expect.any(AbortSignal));
   });
 
+  it("does not abort generation after a normal request completes", async () => {
+    vi.mocked(generateImage).mockImplementation(async (_config, _prompt, signal) => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      if (signal?.aborted) throw signal.reason;
+      return { url: "data:image/png;base64,AAAA", mimeType: "image/png" };
+    });
+
+    const res = await post({ prompt: "a sunset" });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ url: "data:image/png;base64,AAAA" });
+  });
+
   it("rejects a missing prompt with 400", async () => {
     const res = await post({});
     expect(res.status).toBe(400);
