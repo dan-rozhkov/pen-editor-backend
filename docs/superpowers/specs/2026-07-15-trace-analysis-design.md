@@ -12,7 +12,7 @@ Privacy model follows Anthropic's Clio: raw data is short-lived, everything perm
 ## Key architectural facts this design builds on
 
 - The agent uses split execution: tool schemas live on the backend, tool execution happens in the browser. A single `/api/chat` request therefore contains **no client-tool results**; results (and errors) come back embedded in the `messages` array of the *next* request. A "session trace" spans multiple requests and must be stitched.
-- There is currently no session identity: `chat.ts` generates a fresh random `sessionId` per request. Stitching requires a client-generated session ID.
+- Session identity already exists on the wire: `useDesignChat` passes `id` (the chat tab's session ID, format `tab-<timestamp>-<counter>`, stable for the lifetime of a chat tab) in every `/api/chat` body via `prepareSendMessagesRequest`. The backend currently ignores it; it just needs to start reading it. No frontend change is required.
 - `chat.ts` already assembles per-step logs (`LogStep`) in `onFinish` and writes local JSON files to `.logs/` when `ENABLE_AGENT_LOGGING=true` (`src/logging.ts`). This stays; Postgres tracing is additive.
 - The backend already has an OpenRouter LLM provider; the analysis pipeline reuses it.
 
@@ -25,13 +25,13 @@ Privacy model follows Anthropic's Clio: raw data is short-lived, everything perm
 
 ## Component 1 — Trace collection
 
-### Frontend (`pen-editor`, minimal change)
+### Frontend (`pen-editor`)
 
-- `useDesignChat` generates a `chatSessionId` (UUID) once per chat conversation lifetime and includes it in the `/api/chat` request body. Reset when the conversation is cleared/new chat started.
+- **No code change.** The `/api/chat` body already includes `id` — the chat tab session ID (`tab-<timestamp>-<counter>`), stable across all requests of one conversation. Only addition: a unit test in `useDesignChat.test.ts` pinning this contract (body contains a stable `id`), so a frontend refactor can't silently break trace stitching.
 
 ### Backend (`pen-editor-backend`)
 
-- `chatBodySchema` accepts optional `chatSessionId: z.string().uuid().optional()`. Absent → the request is still served; the trace row gets a generated fallback ID (such rows form single-request sessions).
+- `chatBodySchema` accepts optional `id: z.string().max(200).optional()` (already sent by the frontend). Absent → the request is still served; the trace row gets a generated fallback ID (such rows form single-request sessions).
 - In `onFinish`, in addition to the existing `.logs/` behavior, write one row to `raw_traces`:
   - `session_id`, `request_seq` (derived: count of prior rows for the session, or timestamp ordering), `model`, `agent_mode`, `payload` (jsonb: full incoming `messages`, system prompt hash — not the full system prompt, steps as `LogStep[]`, usage), `stream_error` (nullable text), `created_at`.
 - Server-side errors (invalid tool input, `NoSuchToolError`, stream failures, aborts) are recorded in the trace row (`stream_error` / step data). Client-tool errors need no special capture — they arrive as tool-result parts inside the next request's `messages` and are stored with the full history.
@@ -50,7 +50,7 @@ Extension: `vector` (pgvector, available on Aiven). Migrations are plain SQL fil
 |---|---|---|
 | `raw_traces` | `id`, `session_id`, `created_at`, `model`, `agent_mode`, `payload jsonb`, `stream_error text`, usage fields | deleted after `TRACE_RAW_TTL_DAYS` by the worker |
 | `session_summaries` | `id`, `session_id` (unique), `created_at`, `summary text`, `user_goal text`, `outcome` (`success \| partial \| failure \| unclear`), `tool_errors jsonb` (tool name + error kind, no payloads), `frustration bool`, `model`, `agent_mode`, `step_count`, `embedding vector(768) NULL`, `pii_check_passed bool` | permanent |
-| `analysis_runs` | `id`, `created_at`, `window_start/window_end`, `report_md text`, `summary_count`, `model` | permanent |
+| `analysis_runs` | `id`, `created_at`, `window_days` (NULL = all time), `report_md text`, `summary_count`, `model` | permanent |
 | `clusters` | `id`, `run_id` FK, `name`, `description`, `size` | permanent |
 | `summary_clusters` | `cluster_id` FK, `summary_id` FK | permanent |
 
@@ -89,7 +89,7 @@ Follows the repo's existing conventions (Vitest, no real LLM, no API keys):
 - **Summarizer & clusterer**: `MockLanguageModelV3` from `ai/test` (same pattern as existing chat tests), asserting prompt constraints are present and structured output is parsed/validated.
 - **DB layer**: kept thin (a module exposing typed query functions); tests mock the `pg` client. No real Postgres in CI.
 - **Trace write in `chat.ts`**: integration test via `buildApp()` + listen/fetch (existing pattern) with a mocked trace-store module, asserting fire-and-forget (a throwing store must not break the SSE response).
-- **Frontend**: `useDesignChat` test asserts `chatSessionId` is present and stable across messages in one conversation, and changes after reset.
+- **Frontend**: `useDesignChat` test asserts the request body contains a stable `id` across messages in one conversation (contract pin — no new frontend behavior).
 
 ## Out of scope (explicitly)
 
