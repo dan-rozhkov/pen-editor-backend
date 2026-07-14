@@ -151,6 +151,14 @@ describe("batch_design schema", () => {
     ].join("\n");
     expect(schema.safeParse({ operations: multiLine }).success).toBe(true);
   });
+
+  it("ignores wrapper/fence noise when counting operations", () => {
+    const body = Array.from({ length: 25 }, (_, i) => `D("node${i}")`);
+    const wrapped = ["<operations>", ...body, "</operations>"].join("\n");
+    expect(schema.safeParse({ operations: wrapped }).success).toBe(true);
+    const fenced = ["```pen", ...body, "```"].join("\n");
+    expect(schema.safeParse({ operations: fenced }).success).toBe(true);
+  });
 });
 
 describe("batch_get schema", () => {

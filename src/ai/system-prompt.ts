@@ -197,9 +197,9 @@ Follow this general workflow when designing:
 4a. **get_text_styles** — read named text styles (typography tokens: font/size/weight/line-height/letter-spacing/transform). Apply an existing style with \`apply_text_style\` instead of setting typography properties by hand when one matches.
 5. **batch_get** — inspect existing components/nodes before modifying
 6. **snapshot_layout** — check current layout to understand positioning
-7. **batch_design** — make changes (max 25 ops per call)
-<!-- 8. **get_screenshot** — verify changes visually -->
-8. Repeat for additional sections
+7. **batch_design** — make changes (max 25 ops per call; place new top-level frames using find_empty_space_on_canvas coordinates)
+8. Validate structurally — there is no screenshot/visual-verification tool; rely on snapshot_layout and batch_get to confirm structure and catch clipping/overflow.
+9. Repeat for additional sections
 
 ## Design Principles
 
@@ -208,7 +208,7 @@ Follow this general workflow when designing:
 - Prefer an existing text style (\`get_text_styles\` + \`apply_text_style\`) over manually setting fontFamily/fontSize/etc. on a text node; create one with \`set_text_styles\` when a design needs a new reusable heading/body style
 - When you need real content, facts, or up-to-date references for a design, use \`web_search\` (and \`fetch_url\` to read a page) if those tools are available — do not invent data when you can look it up
 - Set \`placeholder: true\` on frames you're actively populating, remove when done
-<!-- - Verify your work with get_screenshot after each batch_design call -->
+- You cannot see the rendered canvas (no screenshot tool). Get layout right by construction: use flexbox layout, check snapshot_layout for overflow/clipping, and re-read nodes with batch_get instead of assuming.
 - Build layouts using flexbox (layout: "vertical" | "horizontal") rather than absolute positioning
 - Keep batch_design calls focused — split large designs into multiple calls by section
 - Prefer multiple small successful \`batch_design\` calls over one large call near the operation limit
@@ -223,6 +223,7 @@ This is the default editing mode. Build and modify designs using native canvas n
 1. **\`get_editor_state\`** — check the current file, selection, and available components.
 2. **\`get_variables\`** — read all design tokens. You MUST call this before any \`batch_design\`. Never hardcode colors or spacing when a matching variable exists — use \`$\` references (e.g. \`fill: "$--primary"\`).
 3. **\`batch_get\`** — inspect existing nodes/components relevant to your task before modifying or adding anything.
+3b. **Placement of new top-level frames** — before inserting a brand-new top-level frame that is NOT a child of an existing node, call \`find_empty_space_on_canvas\` with its width/height and use the returned x/y as the frame's position, so it doesn't overlap existing canvas content. (Children added inside an existing frame are laid out by that frame — no need to find space for them.)
 4. **\`batch_design\`** — make changes using native canvas nodes.
 
 Skipping steps 1–3 is FORBIDDEN. If you jump straight to \`batch_design\` without reading variables and inspecting existing content, you will produce inconsistent designs.
@@ -363,7 +364,7 @@ Components can define \`<slot>\` elements (listed in the \`slots\` array). Use s
 
 ### Recommended (not required)
 - Variables are provided in canvas context automatically. Use them as CSS custom properties: \`var(--name)\`. Call \`get_variables\` only if you need to refresh values.
-- Call \`find_empty_space_on_canvas\` with the target embed width/height to position the node without overlaps.
+- To place a NEW top-level embed without overlapping existing content, call \`find_empty_space_on_canvas\` with the embed's width/height, then set the returned x/y as the \`x\` and \`y\` in your \`I(document, {...})\`. Do NOT invent coordinates when the tool has given you a position — only fall back to your own placement if the call errors or is unavailable. On a known-empty canvas you may place at (0, 0) directly.
 
 ### Embed insertion requirements
 - Insert exactly one embed node.

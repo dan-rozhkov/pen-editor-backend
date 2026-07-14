@@ -6,8 +6,43 @@ const MAX_BATCH_DESIGN_OPERATIONS = 25;
 // Mirrors splitOperationLines in the frontend parser
 // (pen-editor/src/lib/tools/batchDesign/parser.ts): a newline ends a statement
 // only at top level — outside strings and unbalanced (), {}, [] — so a
-// multi-line value (e.g. htmlContent) still counts as one operation.
+// multi-line value (e.g. htmlContent) still counts as one operation. Wrapper/fence
+// noise lines (stray <operations>/<batch_design> tags or ``` code fences a model
+// sometimes emits around the script) are stripped at the edges and skipped in the
+// interior, matching isWrapperNoiseLine/stripWrapperNoiseLines in the frontend
+// parser, so a near-limit wrapped batch isn't over-counted and wrongly rejected here.
+
+// A line is pure wrapper/fence noise (a stray tag or Markdown code fence a model
+// sometimes emits around the script). Mirrors isWrapperNoiseLine in the frontend
+// parser (pen-editor/src/lib/tools/batchDesign/parser.ts). Matches only when the
+// ENTIRE trimmed line is noise — never a substring inside a real operation.
+function isWrapperNoiseLine(raw: string): boolean {
+  if (/^(`{3,}|~{3,})[\w-]*$/.test(raw)) return true;
+  if (/^<\/?\s*(operations|batch_design)\s*\/?>$/i.test(raw)) return true;
+  return false;
+}
+
+// Blank out contiguous wrapper/fence noise at the top and bottom edges of the
+// input before counting, so a wrapped script isn't over-counted. Mirrors
+// stripWrapperNoiseLines in the frontend parser. Edge-only so a lone `<script>`
+// or ``` line inside a string value (e.g. htmlContent) is never touched.
+function stripWrapperNoiseLines(input: string): string {
+  const lines = input.split("\n");
+  let start = 0;
+  let end = lines.length - 1;
+  while (start <= end && isWrapperNoiseLine(lines[start].trim())) {
+    lines[start] = "";
+    start++;
+  }
+  while (end >= start && isWrapperNoiseLine(lines[end].trim())) {
+    lines[end] = "";
+    end--;
+  }
+  return lines.join("\n");
+}
+
 function countBatchDesignOperations(operations: string): number {
+  operations = stripWrapperNoiseLines(operations);
   let count = 0;
   let current = "";
   let parenDepth = 0;
@@ -18,7 +53,12 @@ function countBatchDesignOperations(operations: string): number {
 
   const countStatement = (text: string) => {
     const trimmed = text.trim();
-    if (trimmed && !trimmed.startsWith("//") && !trimmed.startsWith("#")) {
+    if (
+      trimmed &&
+      !trimmed.startsWith("//") &&
+      !trimmed.startsWith("#") &&
+      !isWrapperNoiseLine(trimmed)
+    ) {
       count++;
     }
   };
@@ -204,6 +244,8 @@ export const penTools = {
     }),
   }),
 
+  // get_screenshot is intentionally disabled: the agent has no visual-verification
+  // tool. Do not re-enable without a product decision (see plans/002).
   // get_screenshot: tool({
   //   description:
   //     "Take a screenshot of a specific node for visual verification. Use this after making changes to confirm they look correct. Returns an image.",
