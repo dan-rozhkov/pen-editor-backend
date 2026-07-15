@@ -15,6 +15,16 @@ export interface ReportInput {
   toolErrors: Array<{ tool: string; error: string; count: number }>;
 }
 
+/** Collapse newlines so LLM-derived text cannot start a new markdown line (e.g. a fake `#` heading). */
+function inline(text: string): string {
+  return text.replace(/\r?\n/g, " ");
+}
+
+/** Escape LLM-derived text for a markdown table cell: no pipes, no newlines. */
+function cell(text: string): string {
+  return inline(text).replace(/\|/g, "\\|");
+}
+
 function delta(cluster: ReportCluster, prev: Map<string, number>): string {
   if (!prev.size) return "";
   const before = prev.get(cluster.name);
@@ -39,7 +49,7 @@ export function renderReport(input: ReportInput): string {
     "|---|---|",
     ...Object.entries(input.outcomes)
       .sort((a, b) => b[1] - a[1])
-      .map(([k, v]) => `| ${k} | ${v} |`),
+      .map(([k, v]) => `| ${cell(k)} | ${v} |`),
     "",
     "## Top tool errors",
     "",
@@ -47,20 +57,20 @@ export function renderReport(input: ReportInput): string {
     "|---|---|---|",
     ...input.toolErrors
       .sort((a, b) => b.count - a.count)
-      .map((e) => `| ${e.tool} | ${e.error} | ${e.count} |`),
+      .map((e) => `| ${cell(e.tool)} | ${cell(e.error)} | ${e.count} |`),
     "",
     "# Clusters",
   ];
   for (const c of clusters) {
     lines.push(
       "",
-      `## ${c.name}`,
+      `## ${inline(c.name)}`,
       "",
       `**${c.size} session(s)**${delta(c, prev)}`,
       "",
-      c.description,
+      inline(c.description),
       "",
-      ...c.examples.map((e) => `- ${e}`),
+      ...c.examples.map((e) => `- ${inline(e)}`),
     );
   }
   return lines.join("\n") + "\n";

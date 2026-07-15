@@ -34,4 +34,40 @@ describe("renderReport", () => {
     expect(md).toContain("| batch_design | operation limit | 3 |");
     expect(md).toContain("- e2");
   });
+
+  it("escapes LLM-derived text so it cannot inject headings or break tables", () => {
+    const evil: ReportInput = {
+      date: "2026-07-15",
+      windowDays: 7,
+      summaryCount: 2,
+      clusters: [
+        {
+          name: "Evil | name\n# Fake Section",
+          description: "desc\n# Also Fake",
+          size: 2,
+          examples: ["ex\n# Fake Example Heading"],
+        },
+      ],
+      previousClusters: [],
+      outcomes: { "bad|outcome\n# Fake": 1 },
+      toolErrors: [{ tool: "t|ool\nx", error: "err | or\n# Nope", count: 1 }],
+    };
+    const md = renderReport(evil);
+    // No injected heading lines anywhere.
+    const headings = md.split("\n").filter((l) => l.startsWith("#"));
+    expect(headings).toEqual([
+      "# Agent Trace Analysis — 2026-07-15",
+      "## Outcomes",
+      "## Top tool errors",
+      "# Clusters",
+      "## Evil | name # Fake Section",
+    ]);
+    // Table rows stay well-formed: pipes in cells are escaped, no extra columns.
+    expect(md).toContain("| bad\\|outcome # Fake | 1 |");
+    expect(md).toContain("| t\\|ool x | err \\| or # Nope | 1 |");
+    for (const row of md.split("\n").filter((l) => l.startsWith("|"))) {
+      const cols = row.split(/(?<!\\)\|/).length - 2;
+      expect(cols === 2 || cols === 3).toBe(true);
+    }
+  });
 });
