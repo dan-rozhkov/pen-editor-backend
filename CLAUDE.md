@@ -18,6 +18,7 @@ CI (`.github/workflows/ci.yml`) runs lint + test + build on every push to `main`
 - The LLM is mocked: `vi.mock` `src/ai/provider.js` so `createModel` returns `MockLanguageModelV3` from `ai/test` with `simulateReadableStream`-scripted chunks; mock `src/ai/mcp.js` (`getMCPTools`) the same way. To assert on what the model received (skill injection, canvasContext), capture the `doStream` arguments.
 - The chat route uses `reply.hijack()` and pipes to `reply.raw`, so `app.inject()` does not return the stream — use `app.listen({ port: 0 })` + `fetch` and read the SSE body as text (terminated by `data: [DONE]`). See `test/chat-route.test.ts`.
 - Client-executed tools must have **no** `execute` in `penTools`; `test/tools-contract.test.ts` pins this and the tool-name list — update it when adding a tool (its frontend twin `toolContract.test.ts` in pen-editor checks cross-repo sync).
+- **Adding or removing a tool: land the schema here on `main` first, then the frontend handler, back-to-back.** This test is self-contained (the name list is hardcoded here) and this repo's CI never checks out pen-editor, so a schema change always lands green here. But pen-editor's `contract` job checks out *this* repo's `main` at run time and asserts every `penTools` entry has a handler — so between the two merges that job is red for every pen-editor push. Backend-first keeps the gap on the other side short and lets the handler's CI pass first try; handler-first fails that push outright.
 
 ## Trace analysis (`src/analysis/`, `src/tracing/`)
 
