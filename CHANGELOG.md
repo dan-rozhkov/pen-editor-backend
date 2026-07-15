@@ -38,6 +38,97 @@ While on `0.x`, minor bumps may include breaking changes.
 - The shared pg pool factory installs an idle-client error listener in the
   worker as well as the chat server.
 
+## [0.13.1] - 2026-07-11
+
+### Fixed
+- **Image generation could hang indefinitely (bug-11 / BE-01).** The OpenRouter
+  image-generation request had no timeout, so a stalled upstream endpoint held
+  the client connection and the Node request context open forever. The fetch
+  (connect *and* response-body read) is now bounded by `AbortSignal.timeout`
+  with `IMAGE_GENERATION_TIMEOUT_MS`, default 90s. A hit deadline raises
+  `ImageGenerationTimeoutError`, which `/api/generate-image` maps to **HTTP
+  504**. A client disconnect now also aborts the upstream request via
+  `AbortSignal.any`, mirroring the chat route.
+
+## [0.13.0] - 2026-07-09
+
+Tool-schema support for the frontend P2 batch (pen-editor v0.18.0).
+
+### Added
+- **`set_export_settings` tool (p2-05)** — client-executed schema so the agent
+  can configure per-node export presets (format / scale / suffix / quality),
+  kept in sync across `penTools`, the frontend `toolRegistry`, and both
+  name-list contract tests.
+
+### Changed
+- `batch_design` / `set_styles` docs now cover the background-blur effect
+  (`{type: "background-blur", radius}`) with a glassmorphism example (p2-04).
+  The `effects` field is free-form, so no schema change was needed.
+
+## [0.12.0] - 2026-07-09
+
+### Changed
+- `batch_design` docs note that a `video` paint's `src` may be a YouTube URL
+  (thumbnail on canvas, real `<iframe>` in export). Doc line only — no schema
+  or tool-name change. Pairs with pen-editor v0.17.0.
+
+## [0.11.0] - 2026-07-09
+
+Tool-schema docs for three frontend capabilities (pen-editor v0.16.0);
+execution stays browser-side. No tool-name changes.
+
+### Changed
+- `batch_design` docs now cover variable-font axes (`fontVariations`, p2-01),
+  text links (markdown `[text](url "title")` → `TextNode.link`, p2-02), and
+  video fill (`{type: "video", src, mode, crop, playback}`, p2-03).
+
+## [0.10.1] - 2026-07-08
+
+Tagged 2026-07-08, but the tag never reached GitHub; published retroactively on
+2026-07-16.
+
+### Fixed
+- **The agent dead-ended on tool-input errors instead of self-correcting.** The
+  chat route piped the UI message stream without an `onError` handler, so the
+  AI SDK masked every stream error as a generic "An error occurred." — hiding
+  actionable validation guidance (such as `batch_design`'s 25-operation limit)
+  from the model. `InvalidToolInputError` and `NoSuchToolError` now surface
+  their real message; anything else keeps the generic mask.
+
+### Changed
+- `set_variables` documents its accepted shapes in the schema (it was blank),
+  and the `batch_design` docs clarify that `I(existingParent, {...})` is the
+  only way to add children to an existing node — `U()` cannot change children.
+
+### Removed
+- The `/first-draft` skill from 0.10.0, reverted the same day.
+
+## [0.10.0] - 2026-07-08
+
+Figma-gap batch 7 (backend). Frontend counterpart: pen-editor v0.14.0.
+
+### Added
+- **`/first-draft` skill (p1-18)** — a directive recipe turning a one-sentence
+  description into a complete screen of native nodes with auto-layout and
+  variables: clarify the brief → check existing foundations → define variables →
+  build section-by-section via `batch_design` → self-check via
+  `snapshot_layout`. Explicitly forbids embed nodes, and ships through the
+  existing skill-injection mechanism, so it adds no tools.
+  **Reverted in 0.10.1.**
+
+## [0.9.0] - 2026-07-07
+
+Backend companion to pen-editor v0.12.0.
+
+### Added
+- **Shared-styles tools (p1-13)** — client-executed schemas `get_styles`,
+  `set_styles`, `apply_fill_style`, and `apply_effect_style`. `set_styles`
+  infers paint type from shape and returns created/updated style ids, so the
+  model can chain straight into the apply tools.
+
+### Changed
+- `batch_design` documents `paragraphSpacing` (p1-11).
+
 ## [0.8.0] - 2026-07-07
 
 Tool-schema and AI-doc support for the frontend shapes/patterns/masks/lists
