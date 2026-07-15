@@ -18,6 +18,11 @@ export function makeConfig(overrides: Partial<Config> = {}): Config {
     S3_SECRET_ACCESS_KEY: undefined,
     S3_REGION: "ru-1",
     IMAGE_GENERATION_TIMEOUT_MS: 90_000,
+    TRACE_DATABASE_URL: undefined,
+    TRACE_RAW_TTL_DAYS: 14,
+    ANALYSIS_MODEL: "google/gemini-2.5-flash",
+    EMBEDDINGS_API_KEY: undefined,
+    EMBEDDINGS_MODEL: "text-embedding-004",
     ...overrides,
   };
 }

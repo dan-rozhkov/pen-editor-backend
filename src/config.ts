@@ -38,6 +38,14 @@ const envSchema = z.object({
   // the client connection/request context open forever (see withTimeout in
   // src/ai/mcp.ts for the analogous MCP-side guard).
   IMAGE_GENERATION_TIMEOUT_MS: z.coerce.number().default(90_000),
+  // --- Trace analysis (all optional; chat server works without them) ---
+  // Postgres for raw traces + analysis artifacts (Aiven: append ?sslmode=no-verify —
+  // TLS-encrypted, skips CA verification of Aiven's project CA).
+  TRACE_DATABASE_URL: z.string().optional(),
+  TRACE_RAW_TTL_DAYS: z.coerce.number().default(14),
+  ANALYSIS_MODEL: z.string().default("google/gemini-2.5-flash"),
+  EMBEDDINGS_API_KEY: z.string().optional(),
+  EMBEDDINGS_MODEL: z.string().default("text-embedding-004"),
 });
 
 export type Config = z.infer<typeof envSchema>;

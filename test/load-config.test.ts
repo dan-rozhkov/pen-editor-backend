@@ -98,4 +98,22 @@ describe("loadConfig", () => {
     } as NodeJS.ProcessEnv;
     expect(loadConfig().S3_ENDPOINT).toBe("https://s3.example.test");
   });
+
+  it("defaults trace/analysis vars and accepts overrides", () => {
+    process.env = { OPENROUTER_API_KEY: "key" } as NodeJS.ProcessEnv;
+    const config = loadConfig();
+    expect(config.TRACE_DATABASE_URL).toBeUndefined();
+    expect(config.TRACE_RAW_TTL_DAYS).toBe(14);
+    expect(config.ANALYSIS_MODEL).toBe("google/gemini-2.5-flash");
+    expect(config.EMBEDDINGS_MODEL).toBe("text-embedding-004");
+
+    process.env = {
+      OPENROUTER_API_KEY: "key",
+      TRACE_RAW_TTL_DAYS: "7",
+      TRACE_DATABASE_URL: "postgres://u:p@h:5432/db?sslmode=no-verify",
+    } as NodeJS.ProcessEnv;
+    const overridden = loadConfig();
+    expect(overridden.TRACE_RAW_TTL_DAYS).toBe(7);
+    expect(overridden.TRACE_DATABASE_URL).toContain("postgres://");
+  });
 });
