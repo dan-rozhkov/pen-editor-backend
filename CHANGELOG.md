@@ -8,6 +8,36 @@ While on `0.x`, minor bumps may include breaking changes.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-07-15
+
+### Added
+- **Clio-style trace analysis (ai-01).** With `TRACE_DATABASE_URL` set, the chat
+  route fire-and-forget-writes raw session traces (messages, steps incl. tool
+  errors, token usage, stream errors) to Postgres (`raw_traces`, TTL
+  `TRACE_RAW_TTL_DAYS`, default 14 days); the feature is fully inert without the
+  env var and DB failures never affect chat responses. `npm run analyze`
+  (or `analyze:dist` from a production build) runs the worker: idempotent
+  pgvector migrations, session assembly (longest history + final-turn steps),
+  three-layer PII scrubbing (regex incl. AWS/Google/GitHub-PAT keys → prompt
+  constraints → output validation with retry and hard-scrub fallback),
+  structured summaries via `ANALYSIS_MODEL` (`generateObject`), optional Gemini
+  embeddings (768-dim guard), LLM clustering with hostile-output
+  post-processing, and a Markdown report (`reports/YYYY-MM-DD.md`, gitignored;
+  copy in `analysis_runs.report_md`) with cluster deltas vs the previous run,
+  outcome tallies, and top tool errors. Only `raw_traces` ever holds
+  unsanitized content — cluster names/descriptions are scrubbed too, and
+  LLM-derived text is escaped before landing in Markdown.
+
+### Fixed (post-review, same release)
+- Windowed queries use `make_interval(days => $1::int)` — the previous
+  `$1::int … $1 || ' days'` pattern failed with SQLSTATE 42883 on every run.
+- Migrations run on a single checked-out pool client (real transactions).
+- Per-session fault isolation in the summarize loop: one failing session no
+  longer blocks clustering or TTL cleanup.
+- Aborted streams persist their real completed steps instead of `[]`.
+- The shared pg pool factory installs an idle-client error listener in the
+  worker as well as the chat server.
+
 ## [0.8.0] - 2026-07-07
 
 Tool-schema and AI-doc support for the frontend shapes/patterns/masks/lists
