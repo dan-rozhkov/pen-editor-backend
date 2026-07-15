@@ -67,7 +67,13 @@ export function createTraceStore(
 }
 
 export function writeRawTraceSafe(store: TraceStore, row: RawTraceRow): void {
-  store.writeRawTrace(row).catch((err) => {
+  // Guard both a rejected promise and a synchronous throw — trace writing
+  // must never affect the chat response.
+  try {
+    store.writeRawTrace(row).catch((err) => {
+      console.error("[trace] failed to write raw trace:", err);
+    });
+  } catch (err) {
     console.error("[trace] failed to write raw trace:", err);
-  });
+  }
 }

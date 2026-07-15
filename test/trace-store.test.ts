@@ -59,4 +59,15 @@ describe("writeRawTraceSafe", () => {
     expect(() => writeRawTraceSafe(store, row)).not.toThrow();
     await vi.waitFor(() => expect(store.writeRawTrace).toHaveBeenCalled());
   });
+
+  it("swallows synchronous throws from writeRawTrace", () => {
+    const store = {
+      writeRawTrace: vi.fn((): Promise<void> => {
+        throw new Error("sync boom");
+      }),
+      close: async () => {},
+    };
+    expect(() => writeRawTraceSafe(store, row)).not.toThrow();
+    expect(store.writeRawTrace).toHaveBeenCalled();
+  });
 });
