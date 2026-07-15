@@ -22,8 +22,9 @@ import { AGENT_MODES, buildSystemPrompt } from "../ai/system-prompt.js";
 import { getMCPTools } from "../ai/mcp.js";
 import { getWebTools } from "../ai/web-search.js";
 import { logSession, type LogStep } from "../logging.js";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { detectSkillCommand, getAllSkills, getSkill } from "../ai/skills.js";
+import { writeRawTraceSafe, type TraceStore } from "../tracing/traceStore.js";
 
 // Maximum image parts per single message (not per conversation).
 const MAX_IMAGE_PARTS = 4;
@@ -51,6 +52,7 @@ const MAX_AGENT_STEPS = {
 } as const;
 
 const chatBodySchema = z.object({
+  id: z.string().max(200).optional(),
   messages: z.array(z.record(z.unknown())).min(1, "messages must not be empty"),
   canvasContext: z.string().optional(),
   model: z.string().optional(),
@@ -102,7 +104,11 @@ export function sanitizeMessagesForProvider(
   return { messages, removedReasoningParts };
 }
 
-export async function chatRoutes(app: FastifyInstance, config: Config) {
+export async function chatRoutes(
+  app: FastifyInstance,
+  config: Config,
+  traceStore: TraceStore | null = null,
+) {
   const allowedModels = getAllowedModels(config);
   const allowedOrigins = parseEnvList(config.CORS_ALLOWED_ORIGINS);
 
@@ -116,6 +122,7 @@ export async function chatRoutes(app: FastifyInstance, config: Config) {
     }
 
     const {
+      id: chatSessionId,
       messages,
       canvasContext,
       model: modelOverride,
@@ -216,6 +223,11 @@ export async function chatRoutes(app: FastifyInstance, config: Config) {
     const model = createModel(config, modelOverride);
     const system = buildSystemPrompt(canvasContext, agentMode);
     const selectedModelId = modelOverride ?? config.OPENROUTER_MODEL;
+    const traceSessionId = chatSessionId ?? `anon-${randomUUID()}`;
+    const systemPromptHash = createHash("sha256")
+      .update(system)
+      .digest("hex")
+      .slice(0, 16);
     const normalizedMessages = (() => {
       const sanitized = sanitizeMessagesForProvider(
         messages as Array<Record<string, unknown>>,
@@ -267,33 +279,49 @@ export async function chatRoutes(app: FastifyInstance, config: Config) {
         console.log(
           `[chat] Client disconnected; aborted stream after ${steps.length} step(s).`,
         );
+
+        if (traceStore) {
+          writeRawTraceSafe(traceStore, {
+            sessionId: traceSessionId,
+            model: selectedModelId,
+            agentMode,
+            payload: {
+              messages: messages as unknown[],
+              steps: [],
+              systemPromptHash,
+            },
+            streamError: "client-aborted",
+            inputTokens: 0,
+            outputTokens: 0,
+          });
+        }
       },
       onFinish({ usage, steps }) {
         console.log(
           `[tokens] input: ${usage.inputTokens}, output: ${usage.outputTokens}, cache read: ${usage.inputTokenDetails?.cacheReadTokens ?? "n/a"}`,
         );
 
-        if (config.ENABLE_AGENT_LOGGING) {
-          const logSteps: LogStep[] = steps.map((step, i) => ({
-            stepNumber: i,
-            text: step.text,
-            toolCalls: step.toolCalls.map((tc: Record<string, unknown>) => ({
-              toolName: String(tc.toolName ?? ""),
-              args: (tc.args ?? {}) as Record<string, unknown>,
-            })),
-            toolResults: step.toolResults.map(
-              (tr: Record<string, unknown>) => ({
-                toolName: String(tr.toolName ?? ""),
-                result: tr.result,
-              }),
-            ),
-            finishReason: step.finishReason,
-            usage: {
-              inputTokens: step.usage.inputTokens ?? 0,
-              outputTokens: step.usage.outputTokens ?? 0,
-            },
-          }));
+        const logSteps: LogStep[] = steps.map((step, i) => ({
+          stepNumber: i,
+          text: step.text,
+          toolCalls: step.toolCalls.map((tc: Record<string, unknown>) => ({
+            toolName: String(tc.toolName ?? ""),
+            args: (tc.args ?? {}) as Record<string, unknown>,
+          })),
+          toolResults: step.toolResults.map(
+            (tr: Record<string, unknown>) => ({
+              toolName: String(tr.toolName ?? ""),
+              result: tr.result,
+            }),
+          ),
+          finishReason: step.finishReason,
+          usage: {
+            inputTokens: step.usage.inputTokens ?? 0,
+            outputTokens: step.usage.outputTokens ?? 0,
+          },
+        }));
 
+        if (config.ENABLE_AGENT_LOGGING) {
           logSession({
             sessionId: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
             timestamp: new Date().toISOString(),
@@ -307,6 +335,25 @@ export async function chatRoutes(app: FastifyInstance, config: Config) {
             },
           }).catch((err) => {
             console.error("[logging] Failed to write session log:", err);
+          });
+        }
+
+        if (traceStore) {
+          writeRawTraceSafe(traceStore, {
+            sessionId: traceSessionId,
+            model: selectedModelId,
+            agentMode,
+            payload: {
+              // Full incoming history: client-tool results/errors from prior
+              // turns live here; storing the system prompt itself is redundant
+              // (hash identifies the prompt version).
+              messages: messages as unknown[],
+              steps: logSteps,
+              systemPromptHash,
+            },
+            streamError: null,
+            inputTokens: usage.inputTokens ?? 0,
+            outputTokens: usage.outputTokens ?? 0,
           });
         }
       },
@@ -323,7 +370,20 @@ export async function chatRoutes(app: FastifyInstance, config: Config) {
     // Pipe the UI message stream directly to the raw Node.js response,
     // bypassing Fastify's send() which can't handle object streams.
     result.pipeUIMessageStreamToResponse(reply.raw, {
-      onError: streamErrorMessage,
+      onError: (error) => {
+        if (traceStore) {
+          writeRawTraceSafe(traceStore, {
+            sessionId: traceSessionId,
+            model: selectedModelId,
+            agentMode,
+            payload: { messages: messages as unknown[], steps: [], systemPromptHash },
+            streamError: error instanceof Error ? error.message : String(error),
+            inputTokens: 0,
+            outputTokens: 0,
+          });
+        }
+        return streamErrorMessage(error);
+      },
     });
 
     // Tell Fastify we already handled the response.

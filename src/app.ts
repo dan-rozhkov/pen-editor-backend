@@ -9,9 +9,13 @@ import { chatRoutes } from "./routes/chat.js";
 import { generateImageRoutes } from "./routes/generateImage.js";
 import { modelsRoutes } from "./routes/models.js";
 import { uploadRoutes } from "./routes/upload.js";
+import { createTraceStore, type TraceStore } from "./tracing/traceStore.js";
 
 export interface BuildAppOptions {
   logger?: FastifyServerOptions["logger"];
+  // Test seam: inject a fake trace store. `undefined` = create from config,
+  // `null` = explicitly disabled.
+  traceStore?: TraceStore | null;
 }
 
 export async function buildApp(
@@ -25,7 +29,17 @@ export async function buildApp(
 
   await registerCors(app, config);
   await registerMultipart(app);
-  await chatRoutes(app, config);
+
+  const traceStore =
+    options.traceStore !== undefined
+      ? options.traceStore
+      : createTraceStore(config);
+  if (traceStore) {
+    app.addHook("onClose", async () => {
+      await traceStore.close();
+    });
+  }
+  await chatRoutes(app, config, traceStore);
   await modelsRoutes(app, config);
   await uploadRoutes(app, config);
   await generateImageRoutes(app, config);
