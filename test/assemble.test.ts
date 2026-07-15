@@ -126,6 +126,44 @@ describe("renderSessionText", () => {
     expect(text).toContain("ERROR: unknown error");
   });
 
+  it("renders the final turn's text and tool calls from the longest row's steps", () => {
+    const s = assembleSession([
+      row({
+        payload: {
+          messages: [userMsg],
+          steps: [
+            {
+              text: "Created a hero section.",
+              toolCalls: [{ toolName: "batch_design", args: { operations: [] } }],
+              toolResults: [{ toolName: "batch_design", result: { ok: true } }],
+            },
+            {
+              text: "",
+              toolCalls: [{ toolName: "generate_image", args: { prompt: "a cat" } }],
+              toolResults: [
+                { toolName: "generate_image", result: { error: "timed out" } },
+              ],
+            },
+          ],
+        },
+      }),
+    ]);
+    const text = renderSessionText(s);
+    expect(text).toContain("Final turn:");
+    expect(text).toContain("assistant: Created a hero section.");
+    expect(text).toContain("[tool batch_design]");
+    expect(text).toContain('input: {"operations":[]}');
+    expect(text).toContain('output: {"ok":true}');
+    expect(text).toContain("[tool generate_image]");
+    expect(text).toContain("ERROR: timed out");
+  });
+
+  it("omits the final-turn section when steps have no text or tool calls", () => {
+    const s = assembleSession([row({ payload: { messages: [userMsg], steps: [{}] } })]);
+    const text = renderSessionText(s);
+    expect(text).not.toContain("Final turn:");
+  });
+
   it("truncates to maxChars keeping head and tail", () => {
     const long = {
       role: "user",

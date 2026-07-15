@@ -7,6 +7,7 @@ import {
   type UIMessage,
   type ToolSet,
   type DynamicToolUIPart,
+  type StepResult,
 } from "ai";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
@@ -50,6 +51,28 @@ const MAX_AGENT_STEPS = {
   research: 15,
   default: 12,
 } as const;
+
+// Shared by onFinish/onAbort: turns AI SDK step results into the trimmed
+// shape used for both session logging (logSteps) and trace payloads.
+function mapSteps(steps: readonly StepResult<ToolSet>[]): LogStep[] {
+  return steps.map((step, i) => ({
+    stepNumber: i,
+    text: step.text,
+    toolCalls: step.toolCalls.map((tc: Record<string, unknown>) => ({
+      toolName: String(tc.toolName ?? ""),
+      args: (tc.args ?? {}) as Record<string, unknown>,
+    })),
+    toolResults: step.toolResults.map((tr: Record<string, unknown>) => ({
+      toolName: String(tr.toolName ?? ""),
+      result: tr.result,
+    })),
+    finishReason: step.finishReason,
+    usage: {
+      inputTokens: step.usage.inputTokens ?? 0,
+      outputTokens: step.usage.outputTokens ?? 0,
+    },
+  }));
+}
 
 const chatBodySchema = z.object({
   id: z.string().max(200).optional(),
@@ -268,6 +291,29 @@ export async function chatRoutes(
       }
     });
 
+    // Builds the trace-store row shape; the only bits that vary per callback
+    // are the mapped steps, the stream-error label, and token usage.
+    const buildTraceRow = (
+      steps: LogStep[],
+      streamError: string | null,
+      usage?: { inputTokens?: number; outputTokens?: number },
+    ) => ({
+      sessionId: traceSessionId,
+      model: selectedModelId,
+      agentMode,
+      payload: {
+        // Full incoming history: client-tool results/errors from prior turns
+        // live here; storing the system prompt itself is redundant (hash
+        // identifies the prompt version).
+        messages: messages as unknown[],
+        steps,
+        systemPromptHash,
+      },
+      streamError,
+      inputTokens: usage?.inputTokens ?? 0,
+      outputTokens: usage?.outputTokens ?? 0,
+    });
+
     const result = streamText({
       model,
       system,
@@ -281,19 +327,10 @@ export async function chatRoutes(
         );
 
         if (traceStore) {
-          writeRawTraceSafe(traceStore, {
-            sessionId: traceSessionId,
-            model: selectedModelId,
-            agentMode,
-            payload: {
-              messages: messages as unknown[],
-              steps: [],
-              systemPromptHash,
-            },
-            streamError: "client-aborted",
-            inputTokens: 0,
-            outputTokens: 0,
-          });
+          writeRawTraceSafe(
+            traceStore,
+            buildTraceRow(mapSteps(steps), "client-aborted"),
+          );
         }
       },
       onFinish({ usage, steps }) {
@@ -301,25 +338,9 @@ export async function chatRoutes(
           `[tokens] input: ${usage.inputTokens}, output: ${usage.outputTokens}, cache read: ${usage.inputTokenDetails?.cacheReadTokens ?? "n/a"}`,
         );
 
-        const logSteps: LogStep[] = steps.map((step, i) => ({
-          stepNumber: i,
-          text: step.text,
-          toolCalls: step.toolCalls.map((tc: Record<string, unknown>) => ({
-            toolName: String(tc.toolName ?? ""),
-            args: (tc.args ?? {}) as Record<string, unknown>,
-          })),
-          toolResults: step.toolResults.map(
-            (tr: Record<string, unknown>) => ({
-              toolName: String(tr.toolName ?? ""),
-              result: tr.result,
-            }),
-          ),
-          finishReason: step.finishReason,
-          usage: {
-            inputTokens: step.usage.inputTokens ?? 0,
-            outputTokens: step.usage.outputTokens ?? 0,
-          },
-        }));
+        // Only pay for the step-mapping work when something will consume it.
+        const logSteps =
+          traceStore || config.ENABLE_AGENT_LOGGING ? mapSteps(steps) : [];
 
         if (config.ENABLE_AGENT_LOGGING) {
           logSession({
@@ -339,22 +360,13 @@ export async function chatRoutes(
         }
 
         if (traceStore) {
-          writeRawTraceSafe(traceStore, {
-            sessionId: traceSessionId,
-            model: selectedModelId,
-            agentMode,
-            payload: {
-              // Full incoming history: client-tool results/errors from prior
-              // turns live here; storing the system prompt itself is redundant
-              // (hash identifies the prompt version).
-              messages: messages as unknown[],
-              steps: logSteps,
-              systemPromptHash,
-            },
-            streamError: null,
-            inputTokens: usage.inputTokens ?? 0,
-            outputTokens: usage.outputTokens ?? 0,
-          });
+          writeRawTraceSafe(
+            traceStore,
+            buildTraceRow(logSteps, null, {
+              inputTokens: usage.inputTokens ?? 0,
+              outputTokens: usage.outputTokens ?? 0,
+            }),
+          );
         }
       },
     });
@@ -372,15 +384,13 @@ export async function chatRoutes(
     result.pipeUIMessageStreamToResponse(reply.raw, {
       onError: (error) => {
         if (traceStore) {
-          writeRawTraceSafe(traceStore, {
-            sessionId: traceSessionId,
-            model: selectedModelId,
-            agentMode,
-            payload: { messages: messages as unknown[], steps: [], systemPromptHash },
-            streamError: error instanceof Error ? error.message : String(error),
-            inputTokens: 0,
-            outputTokens: 0,
-          });
+          writeRawTraceSafe(
+            traceStore,
+            buildTraceRow(
+              [],
+              error instanceof Error ? error.message : String(error),
+            ),
+          );
         }
         return streamErrorMessage(error);
       },

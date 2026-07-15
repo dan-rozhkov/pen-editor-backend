@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
+import { request as httpRequest } from "node:http";
 import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
 import type { LanguageModelV3StreamPart } from "@ai-sdk/provider";
 import { buildApp } from "../src/app.js";
@@ -43,6 +44,26 @@ function textStreamChunks(text: string): LanguageModelV3StreamPart[] {
     {
       type: "finish",
       finishReason: { unified: "stop", raw: "stop" },
+      usage: USAGE,
+    },
+  ];
+}
+
+// A tool-call step followed by a delayed text-only step, so a test can abort
+// the client fetch in the gap between them and land in onAbort with one
+// already-finished step on record.
+function toolThenSlowTextChunks(): LanguageModelV3StreamPart[] {
+  return [
+    { type: "stream-start", warnings: [] },
+    {
+      type: "tool-call",
+      toolCallId: "call-1",
+      toolName: "get_guidelines",
+      input: JSON.stringify({ topic: "table" }),
+    },
+    {
+      type: "finish",
+      finishReason: { unified: "tool-calls", raw: "tool_calls" },
       usage: USAGE,
     },
   ];
@@ -123,6 +144,94 @@ describe("chat route trace writing", () => {
     await (await postChat(url, { messages: [userMessage("hello")] })).text();
     await vi.waitFor(() => expect(store.rows).toHaveLength(1));
     expect(store.rows[0].sessionId).toMatch(/^anon-/);
+    await app.close();
+  });
+
+  it("records the real completed steps (not an empty array) when the client aborts mid-session", async () => {
+    // Step 1: a server-executed tool call (get_guidelines) that resolves and
+    // triggers a second model turn. Step 2's stream never finishes, giving
+    // the test a deterministic window to abort the client connection while
+    // step 1 is already on record — exercising the onAbort trace path with
+    // real steps instead of the historical `steps: []`.
+    let call = 0;
+    holders.model = new MockLanguageModelV3({
+      doStream: async ({ abortSignal }) => {
+        call += 1;
+        if (call === 1) {
+          return {
+            stream: simulateReadableStream({
+              chunks: toolThenSlowTextChunks(),
+              chunkDelayInMs: null,
+            }),
+          };
+        }
+        // Step 2: a stream that only ever settles by rejecting when the
+        // request's abortSignal fires — mirrors how a real HTTP-backed
+        // provider stream reacts to client disconnect, and is what actually
+        // drives the AI SDK's onAbort callback (it reacts to a read()
+        // rejecting with an AbortError, not to the signal directly).
+        return {
+          stream: new ReadableStream({
+            start(controller) {
+              abortSignal?.addEventListener("abort", () => {
+                controller.error(new DOMException("Aborted", "AbortError"));
+              });
+            },
+          }),
+        };
+      },
+    });
+    const store = recordingTraceStore();
+    const { app, url } = await startServer(makeConfig(), store);
+
+    // Use a raw http.request (not fetch) so the test can force-destroy the
+    // underlying TCP socket — that reliably fires Node's 'close' event on
+    // the server's reply.raw, which is what actually drives onAbort.
+    const body = JSON.stringify({
+      id: "tab-abort-1",
+      messages: [userMessage("do something")],
+    });
+    const { hostname, port } = new URL(url);
+    await new Promise<void>((resolve, reject) => {
+      const req = httpRequest(
+        {
+          hostname,
+          port,
+          path: "/api/chat",
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Content-Length": Buffer.byteLength(body),
+          },
+        },
+        (res) => {
+          // Wait long enough that step 1 (tool call + result) has definitely
+          // streamed and step 2 is stalled awaiting abort, then destroy the
+          // socket to simulate an abrupt client disconnect.
+          res.on("data", () => {});
+          setTimeout(() => {
+            req.destroy();
+            resolve();
+          }, 100);
+          res.on("error", () => resolve());
+        },
+      );
+      req.on("error", () => resolve());
+      req.write(body);
+      req.end();
+      setTimeout(() => reject(new Error("timed out waiting for response data")), 5000);
+    });
+
+    await vi.waitFor(() => expect(store.rows.length).toBeGreaterThan(0), {
+      timeout: 3000,
+    });
+    const row = store.rows.find((r) => r.streamError === "client-aborted")!;
+    expect(row).toBeDefined();
+    expect(row.payload.steps).not.toEqual([]);
+    const steps = row.payload.steps as Array<{
+      toolCalls: Array<{ toolName: string }>;
+    }>;
+    expect(steps[0].toolCalls[0].toolName).toBe("get_guidelines");
     await app.close();
   });
 

@@ -30,3 +30,8 @@ summarizes each session with `ANALYSIS_MODEL` via `generateObject`, LLM-clusters
 summaries, writes `reports/YYYY-MM-DD.md` (gitignored) and stores everything in
 `session_summaries`/`analysis_runs`/`clusters`. Only `raw_traces` ever holds
 unsanitized content. Spec: `docs/superpowers/specs/2026-07-15-trace-analysis-design.md`.
+`npm run analyze` (tsx over `src/`) is the dev/source path; after `npm run build`,
+production installs without `tsx` as a dependency should use `npm run analyze:dist`
+(`node dist/analysis/run.js`) instead — migrations resolve correctly either way
+since `DEFAULT_MIGRATIONS_DIR` is `import.meta.url`-relative and the build step
+copies `src/analysis/migrations/` into `dist/analysis/migrations/`.

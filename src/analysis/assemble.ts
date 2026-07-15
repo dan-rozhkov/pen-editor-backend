@@ -18,6 +18,10 @@ export interface AssembledSession {
   endedAt: Date;
   requestCount: number;
   messages: unknown[];
+  // The final turn's steps (text + tool calls the model produced in response
+  // to the last request) — `messages` only carries client history BEFORE that
+  // response, so the summarizer would otherwise never see it.
+  finalTurnSteps: unknown[];
   streamErrors: string[];
   stepCount: number;
   totalInputTokens: number;
@@ -46,6 +50,7 @@ export function assembleSession(rows: RawTraceDbRow[]): AssembledSession {
     endedAt: last.created_at,
     requestCount: sorted.length,
     messages: longest.payload.messages ?? [],
+    finalTurnSteps: longest.payload.steps ?? [],
     streamErrors: sorted
       .map((r) => r.stream_error)
       .filter((e): e is string => Boolean(e)),
@@ -85,6 +90,42 @@ function renderPart(part: Record<string, unknown>): string | null {
   return null;
 }
 
+// `finalTurnSteps` come from `LogStep` (src/logging.ts), a different shape
+// from message parts: { text, toolCalls: {toolName,args}[], toolResults:
+// {toolName,result}[] } with tool calls/results paired by array index.
+function renderFinalTurnStep(step: Record<string, unknown>): string[] {
+  const lines: string[] = [];
+  const text = typeof step.text === "string" ? step.text.trim() : "";
+  if (text) lines.push(`assistant: ${clip(text)}`);
+
+  const toolCalls = Array.isArray(step.toolCalls) ? step.toolCalls : [];
+  const toolResults = Array.isArray(step.toolResults) ? step.toolResults : [];
+  toolCalls.forEach((rawCall, i) => {
+    if (!rawCall || typeof rawCall !== "object") return;
+    const call = rawCall as Record<string, unknown>;
+    const name = String(call.toolName ?? "?");
+    const input = call.args === undefined ? "" : ` input: ${clip(call.args, 500)}`;
+
+    const rawResult = toolResults[i];
+    let outputPart = "";
+    if (rawResult && typeof rawResult === "object") {
+      const result = (rawResult as Record<string, unknown>).result;
+      const errorText =
+        result && typeof result === "object" &&
+        typeof (result as Record<string, unknown>).error === "string"
+          ? ((result as Record<string, unknown>).error as string)
+          : undefined;
+      if (errorText !== undefined) {
+        outputPart = ` ERROR: ${clip(errorText, 1000)}`;
+      } else if (result !== undefined) {
+        outputPart = ` output: ${clip(result, 1000)}`;
+      }
+    }
+    lines.push(`assistant: [tool ${name}]${input}${outputPart}`);
+  });
+  return lines;
+}
+
 export function renderSessionText(
   session: AssembledSession,
   maxChars = 60_000,
@@ -100,6 +141,15 @@ export function renderSessionText(
       const rendered = renderPart(part as Record<string, unknown>);
       if (rendered) lines.push(`${role}: ${rendered}`);
     }
+  }
+  const finalTurnLines = session.finalTurnSteps.flatMap((step) =>
+    step && typeof step === "object"
+      ? renderFinalTurnStep(step as Record<string, unknown>)
+      : [],
+  );
+  if (finalTurnLines.length > 0) {
+    lines.push("Final turn:");
+    lines.push(...finalTurnLines);
   }
   if (session.streamErrors.length > 0) {
     lines.push(`Stream errors:\n${session.streamErrors.join("\n")}`);

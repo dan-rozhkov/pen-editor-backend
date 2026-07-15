@@ -28,22 +28,22 @@ export interface TraceStore {
   close(): Promise<void>;
 }
 
+// Shared pool factory: idle-client errors must never crash whichever process
+// created the pool (chat server or the analyze worker), so every pool we
+// create gets an 'error' listener wired up from the start.
+export function createPgPool(connectionString: string, max = 3): pg.Pool {
+  const pool = new pg.Pool({ connectionString, max });
+  pool.on("error", (err) => console.error("[db] pool error:", err.message));
+  return pool;
+}
+
 export function createTraceStore(
   config: Config,
   pool?: TraceQueryable,
 ): TraceStore | null {
   if (!config.TRACE_DATABASE_URL) return null;
   const db: TraceQueryable =
-    pool ??
-    (() => {
-      const p = new pg.Pool({
-        connectionString: config.TRACE_DATABASE_URL,
-        max: 3,
-      });
-      // Idle-client errors must never crash the chat server.
-      p.on("error", (err) => console.error("[trace] pool error:", err.message));
-      return p;
-    })();
+    pool ?? createPgPool(config.TRACE_DATABASE_URL);
 
   return {
     async writeRawTrace(row) {

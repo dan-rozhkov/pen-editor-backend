@@ -1,14 +1,19 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import pg from "pg";
 import { loadConfig } from "../config.js";
 import { createModel } from "../ai/provider.js";
+import { createPgPool } from "../tracing/traceStore.js";
 import { migrate } from "./migrate.js";
 import { assembleSession, renderSessionText, type RawTraceDbRow } from "./assemble.js";
 import { summarizeWithPiiGuard } from "./summarize.js";
 import { createEmbedder } from "./embeddings.js";
 import { clusterSummaries } from "./cluster.js";
 import { renderReport } from "./report.js";
+import { scrubPii } from "./pii.js";
+
+// Must match migrations/001_init.sql's `embedding vector(768)` column and the
+// text-embedding-004 model's output dimension (see embeddings.ts).
+const EMBEDDING_DIMENSIONS = 768;
 
 export function parseWindowDays(argv: string[]): number | null {
   const arg = argv.find((a) => a.startsWith("--window-days="));
@@ -50,9 +55,17 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   const windowDays = parseWindowDays(process.argv);
-  const pool = new pg.Pool({ connectionString: config.TRACE_DATABASE_URL, max: 3 });
+  const pool = createPgPool(config.TRACE_DATABASE_URL);
   try {
-    const applied = await migrate(pool);
+    // migrate() issues BEGIN/COMMIT via client.query — those must run on one
+    // pinned connection, not a raw Pool (which round-robins across clients).
+    const migrationClient = await pool.connect();
+    let applied: string[];
+    try {
+      applied = await migrate(migrationClient);
+    } finally {
+      migrationClient.release();
+    }
     if (applied.length) console.log(`[analyze] applied migrations: ${applied.join(", ")}`);
     const model = createModel(config, config.ANALYSIS_MODEL);
     const embedder = createEmbedder(config);
@@ -68,45 +81,62 @@ async function main(): Promise<void> {
        ORDER BY 1`,
     );
     console.log(`[analyze] ${pending.length} session(s) to summarize`);
+    let failedSessions = 0;
     for (const { session_id } of pending) {
-      const { rows } = await pool.query<RawTraceDbRow>(
-        "SELECT * FROM raw_traces WHERE session_id = $1 ORDER BY created_at",
-        [session_id],
-      );
-      const session = assembleSession(rows);
-      const { summary, piiCheckPassed } = await summarizeWithPiiGuard(
-        model,
-        renderSessionText(session),
-      );
-      let embedding: string | null = null;
-      if (embedder && piiCheckPassed) {
-        try {
-          embedding = `[${(await embedder.embed(summary.summary)).join(",")}]`;
-        } catch (err) {
-          console.warn(`[analyze] embedding failed for ${session_id}:`, err);
+      try {
+        const { rows } = await pool.query<RawTraceDbRow>(
+          "SELECT * FROM raw_traces WHERE session_id = $1 ORDER BY created_at",
+          [session_id],
+        );
+        const session = assembleSession(rows);
+        const { summary, piiCheckPassed } = await summarizeWithPiiGuard(
+          model,
+          renderSessionText(session),
+        );
+        let embedding: string | null = null;
+        if (embedder && piiCheckPassed) {
+          try {
+            const values = await embedder.embed(summary.summary);
+            if (values.length !== EMBEDDING_DIMENSIONS) {
+              console.warn(
+                `[analyze] embedding for ${session_id} has ${values.length} dimensions, expected ${EMBEDDING_DIMENSIONS}; storing without embedding`,
+              );
+            } else {
+              embedding = `[${values.join(",")}]`;
+            }
+          } catch (err) {
+            console.warn(`[analyze] embedding failed for ${session_id}:`, err);
+          }
         }
+        await pool.query(
+          `INSERT INTO session_summaries
+             (session_id, user_goal, summary, outcome, tool_errors, frustration,
+              model, agent_mode, step_count, embedding, pii_check_passed)
+           VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10::vector,$11)
+           ON CONFLICT (session_id) DO NOTHING`,
+          [
+            session_id,
+            summary.user_goal,
+            summary.summary,
+            summary.outcome,
+            JSON.stringify(summary.tool_errors),
+            summary.frustration,
+            session.model,
+            session.agentMode,
+            session.stepCount,
+            embedding,
+            piiCheckPassed,
+          ],
+        );
+        console.log(`[analyze] summarized ${session_id}: ${summary.outcome}`);
+      } catch (err) {
+        failedSessions += 1;
+        console.error(`[analyze] session ${session_id} failed:`, err);
+        continue;
       }
-      await pool.query(
-        `INSERT INTO session_summaries
-           (session_id, user_goal, summary, outcome, tool_errors, frustration,
-            model, agent_mode, step_count, embedding, pii_check_passed)
-         VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10::vector,$11)
-         ON CONFLICT (session_id) DO NOTHING`,
-        [
-          session_id,
-          summary.user_goal,
-          summary.summary,
-          summary.outcome,
-          JSON.stringify(summary.tool_errors),
-          summary.frustration,
-          session.model,
-          session.agentMode,
-          session.stepCount,
-          embedding,
-          piiCheckPassed,
-        ],
-      );
-      console.log(`[analyze] summarized ${session_id}: ${summary.outcome}`);
+    }
+    if (failedSessions > 0) {
+      console.log(`[analyze] ${failedSessions} session(s) failed to summarize`);
     }
 
     // 2. Cluster the window and write a report.
@@ -116,19 +146,32 @@ async function main(): Promise<void> {
       outcome: string;
       tool_errors: Array<{ tool: string; error: string }>;
     }>(
+      // Gotcha: `$1::int IS NULL OR created_at > now() - ($1 || ' days')::interval`
+      // fails at PREPARE time (Postgres 42883) on every run — the explicit
+      // ::int cast fixes $1's type to int4, and Postgres then has no `||`
+      // operator for (integer, unknown). make_interval(days => ...) takes a
+      // plain int param and sidesteps the string-concat interval cast entirely.
       `SELECT id, summary, outcome, tool_errors FROM session_summaries
        WHERE pii_check_passed
-         AND ($1::int IS NULL OR created_at > now() - ($1 || ' days')::interval)
+         AND ($1::int IS NULL OR created_at > now() - make_interval(days => $1::int))
        ORDER BY id`,
       [windowDays],
     );
     if (summaries.length === 0) {
       console.log("[analyze] no summaries in window; skipping clustering");
     } else {
-      const clusters = await clusterSummaries(
+      // The clustering LLM's name/description are free text derived from
+      // summaries; scrub PII before anything touches permanent storage or
+      // the report (raw_traces is the only table allowed to hold raw content).
+      const rawClusters = await clusterSummaries(
         model,
         summaries.map((s) => ({ id: s.id, summary: s.summary })),
       );
+      const clusters = rawClusters.map((c) => ({
+        ...c,
+        name: scrubPii(c.name),
+        description: scrubPii(c.description),
+      }));
       const { rows: prevClusters } = await pool.query<{ name: string; size: number }>(
         `SELECT name, size FROM clusters
          WHERE run_id = (SELECT max(id) FROM analysis_runs)`,
@@ -187,7 +230,7 @@ async function main(): Promise<void> {
 
     // 3. TTL cleanup of raw traces.
     const del = await pool.query(
-      `DELETE FROM raw_traces WHERE created_at < now() - ($1 || ' days')::interval`,
+      `DELETE FROM raw_traces WHERE created_at < now() - make_interval(days => $1::int)`,
       [config.TRACE_RAW_TTL_DAYS],
     );
     console.log(`[analyze] deleted ${del.rowCount ?? 0} expired raw trace row(s)`);
