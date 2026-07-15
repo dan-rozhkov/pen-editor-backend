@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch --env-file=.env src/index.ts",
+    "analyze": "tsx --env-file=.env src/analysis/run.ts",
     "build": "tsc && rm -rf dist/skills && cp -R src/skills dist/skills && rm -rf dist/analysis/migrations && cp -R src/analysis/migrations dist/analysis/migrations",
     "start": "node dist/index.js",
     "test": "vitest run",

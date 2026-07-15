@@ -6,3 +6,6 @@ dist/
 
 # Vitest coverage output
 coverage/
+
+# Generated trace-analysis reports
+reports/
