@@ -83,6 +83,49 @@ describe("renderSessionText", () => {
     expect(text).not.toContain("data:");
   });
 
+  it("renders output-error tool parts with their errorText", () => {
+    const erroredMsg = {
+      role: "assistant",
+      parts: [
+        {
+          type: "tool-generate_image",
+          toolCallId: "c2",
+          state: "output-error",
+          input: { prompt: "a cat" },
+          errorText: "Image generation timed out",
+        },
+      ],
+    };
+    const s = assembleSession([
+      row({ payload: { messages: [erroredMsg], steps: [] } }),
+    ]);
+    const text = renderSessionText(s);
+    expect(text).toContain("[tool generate_image]");
+    expect(text).toContain('input: {"prompt":"a cat"}');
+    expect(text).toContain("ERROR: Image generation timed out");
+  });
+
+  it("renders errored parts with no output or errorText as unknown error", () => {
+    const erroredMsg = {
+      role: "assistant",
+      parts: [
+        {
+          type: "tool-get_guidelines",
+          toolCallId: "c3",
+          state: "output-error",
+          input: { topic: "layout" },
+        },
+      ],
+    };
+    const s = assembleSession([
+      row({ payload: { messages: [erroredMsg], steps: [] } }),
+    ]);
+    const text = renderSessionText(s);
+    expect(text).toContain("[tool get_guidelines]");
+    expect(text).toContain('input: {"topic":"layout"}');
+    expect(text).toContain("ERROR: unknown error");
+  });
+
   it("truncates to maxChars keeping head and tail", () => {
     const long = {
       role: "user",

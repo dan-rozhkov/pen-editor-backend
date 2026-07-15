@@ -71,6 +71,13 @@ function renderPart(part: Record<string, unknown>): string | null {
     const name =
       type === "dynamic-tool" ? String(part.toolName ?? "?") : type.slice(5);
     const input = part.input === undefined ? "" : ` input: ${clip(part.input, 500)}`;
+    const errorText =
+      typeof part.errorText === "string" && part.errorText.length > 0
+        ? part.errorText
+        : undefined;
+    if (part.state === "output-error" || errorText !== undefined) {
+      return `[tool ${name}]${input} ERROR: ${clip(errorText ?? "unknown error", 1000)}`;
+    }
     const output =
       part.output === undefined ? "" : ` output: ${clip(part.output, 1000)}`;
     return `[tool ${name}]${input}${output}`;
