@@ -6,6 +6,9 @@ const RULES: Array<{ re: RegExp; replacement: string }> = [
   { re: /data:[a-z]+\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]{50,}/gi, replacement: "[DATA_URL]" },
   { re: /(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, replacement: "$1[CREDENTIALS]@" },
   { re: /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, replacement: "[EMAIL]" },
+  // Canonical fixed-format keys shorter than the 64-char BLOB threshold:
+  // AWS access key IDs, Google API keys, GitHub fine-grained PATs
+  { re: /\b(?:AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z\-_]{35}|github_pat_[A-Za-z0-9_]{20,})\b/g, replacement: "[TOKEN]" },
   // Common secret prefixes (OpenAI/Stripe-style sk-, GitHub ghp_/gho_/ghs_, Slack xox*)
   { re: /\b(?:sk|pk|rk|ghp|gho|ghs|ghu|xox[bpas])[-_][A-Za-z0-9_-]{16,}\b/g, replacement: "[TOKEN]" },
   // Long unbroken base64-ish blobs (embedded images, signatures, keys)

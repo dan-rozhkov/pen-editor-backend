@@ -14,6 +14,21 @@ describe("scrubPii", () => {
     expect(scrubPii("use sk-abcdefghij1234567890abcd")).toBe("use [TOKEN]");
     expect(scrubPii("ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345")).toBe("[TOKEN]");
   });
+  it("replaces AWS access key IDs", () => {
+    expect(scrubPii("key AKIAIOSFODNN7EXAMPLE here")).toBe("key [TOKEN] here");
+  });
+  it("replaces Google API keys", () => {
+    expect(scrubPii(`use AIza${"Sy".repeat(17)}Q`)).toBe("use [TOKEN]");
+  });
+  it("replaces GitHub fine-grained tokens", () => {
+    expect(
+      scrubPii(`github_pat_11ABCDEFG0${"x".repeat(59)} end`),
+    ).toBe("[TOKEN] end");
+  });
+  it("does not redact a plain 20-char uppercase word", () => {
+    const text = "ABCDEFGHIJKLMNOPQRST is fine";
+    expect(scrubPii(text)).toBe(text);
+  });
   it("replaces credentials embedded in URLs, keeping the scheme", () => {
     expect(scrubPii("https://user:pass@db.example.com/x")).toBe(
       "https://[CREDENTIALS]@db.example.com/x",
