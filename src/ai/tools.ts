@@ -790,6 +790,43 @@ Returns the created/updated style ids and names (with a created|updated status) 
     }),
   }),
 
+  leave_comment: tool({
+    description:
+      "Drop one or more comment pins authored by you (the agent), each starting a new thread. Pass every comment you want to leave as a single batch in one call — this is the intended way to do design-review-style feedback (5-15 findings in one turn) without spending a tool call per pin. For each item: give nodeId to anchor the pin precisely to that node (the pin defaults to the node's center) — prefer this whenever a comment is about a specific layer, since it's what lets a later fix (yours or the user's) find the exact element. If there's no single node to anchor to, give x/y instead as a world-space canvas point. Every item needs nodeId OR both x and y; an item with neither is rejected. Returns the created thread numbers so you can cite them precisely in your reply (e.g. \"left 4 notes: #7-#10\").",
+    inputSchema: z.object({
+      comments: z
+        .array(
+          z
+            .object({
+              nodeId: z
+                .string()
+                .optional()
+                .describe(
+                  "Id of the node to anchor this comment to (pin defaults to the node's center). Omit if using x/y instead.",
+                ),
+              x: z
+                .number()
+                .optional()
+                .describe("World-space canvas x coordinate for the pin. Required together with y when nodeId is omitted."),
+              y: z
+                .number()
+                .optional()
+                .describe("World-space canvas y coordinate for the pin. Required together with x when nodeId is omitted."),
+              text: z
+                .string()
+                .min(1)
+                .describe("The comment body (non-empty). Be specific and actionable."),
+            })
+            .refine((item) => item.nodeId !== undefined || (item.x !== undefined && item.y !== undefined), {
+              message: "Each comment needs either nodeId, or both x and y.",
+            }),
+        )
+        .min(1)
+        .max(50)
+        .describe("Batch of comments to leave in this single call (1-50). Each item needs nodeId, or both x and y."),
+    }),
+  }),
+
   generate_image: tool({
     description:
       "Generate an image from a text prompt and show it in the chat. Use when the user asks for an illustration, photo, texture, or background that is NOT being applied to a specific frame. Returns the image URL, which is rendered inline in the chat.",

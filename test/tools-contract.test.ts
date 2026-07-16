@@ -36,6 +36,7 @@ describe("penTools registry", () => {
         "read_comments",
         "reply_comment",
         "resolve_comment",
+        "leave_comment",
         "rename_layers",
         "replace_all_matching_properties",
         "search_all_unique_properties",
@@ -76,6 +77,7 @@ describe("penTools registry", () => {
       "read_comments",
       "reply_comment",
       "resolve_comment",
+      "leave_comment",
     ] as const) {
       expect(hasExecute(name), `${name} must be client-executed`).toBe(false);
     }
@@ -586,6 +588,68 @@ describe("resolve_comment schema", () => {
   it("requires threadId", () => {
     expect(schema.safeParse({}).success).toBe(false);
     expect(schema.safeParse({ threadId: 1 }).success).toBe(false);
+  });
+});
+
+describe("leave_comment schema", () => {
+  const schema = schemaOf("leave_comment");
+
+  it("accepts a single comment anchored to a nodeId", () => {
+    expect(
+      schema.safeParse({ comments: [{ nodeId: "n1", text: "x" }] }).success,
+    ).toBe(true);
+  });
+
+  it("accepts a single comment anchored to x/y", () => {
+    expect(
+      schema.safeParse({ comments: [{ x: 10, y: 20, text: "x" }] }).success,
+    ).toBe(true);
+  });
+
+  it("accepts a multi-item batch", () => {
+    const result = schema.safeParse({
+      comments: [
+        { nodeId: "n1", text: "Contrast too low here." },
+        { x: 100, y: 200, text: "Spacing feels arbitrary." },
+        { nodeId: "n3", text: "Inconsistent corner radius." },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects an item with neither nodeId nor x/y", () => {
+    expect(schema.safeParse({ comments: [{ text: "x" }] }).success).toBe(false);
+  });
+
+  it("rejects an item with empty text", () => {
+    expect(
+      schema.safeParse({ comments: [{ nodeId: "n1", text: "" }] }).success,
+    ).toBe(false);
+  });
+
+  it("rejects an empty comments array", () => {
+    expect(schema.safeParse({ comments: [] }).success).toBe(false);
+  });
+
+  it("rejects an item with only x and no y", () => {
+    expect(
+      schema.safeParse({ comments: [{ x: 10, text: "x" }] }).success,
+    ).toBe(false);
+  });
+
+  it("rejects an item with only y and no x", () => {
+    expect(
+      schema.safeParse({ comments: [{ y: 10, text: "x" }] }).success,
+    ).toBe(false);
+  });
+
+  it("rejects missing comments field and more than 50 items", () => {
+    expect(schema.safeParse({}).success).toBe(false);
+    const many = Array.from({ length: 51 }, (_, i) => ({
+      nodeId: `n${i}`,
+      text: "x",
+    }));
+    expect(schema.safeParse({ comments: many }).success).toBe(false);
   });
 });
 
