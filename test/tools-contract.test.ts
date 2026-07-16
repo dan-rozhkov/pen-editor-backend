@@ -33,6 +33,9 @@ describe("penTools registry", () => {
         "set_styles",
         "apply_fill_style",
         "apply_effect_style",
+        "read_comments",
+        "reply_comment",
+        "resolve_comment",
         "rename_layers",
         "replace_all_matching_properties",
         "search_all_unique_properties",
@@ -70,6 +73,9 @@ describe("penTools registry", () => {
       "generate_frame_image",
       "boolean_operation",
       "set_export_settings",
+      "read_comments",
+      "reply_comment",
+      "resolve_comment",
     ] as const) {
       expect(hasExecute(name), `${name} must be client-executed`).toBe(false);
     }
@@ -526,6 +532,60 @@ describe("search_all_unique_properties schema", () => {
       schema.safeParse({ parents: "rootId", properties: ["fillColor"] })
         .success,
     ).toBe(false);
+  });
+});
+
+describe("read_comments schema", () => {
+  const schema = schemaOf("read_comments");
+
+  it("accepts an empty object (all fields optional)", () => {
+    expect(schema.safeParse({}).success).toBe(true);
+  });
+
+  it("accepts includeResolved", () => {
+    expect(schema.safeParse({ includeResolved: true }).success).toBe(true);
+  });
+
+  it("accepts threadId", () => {
+    expect(schema.safeParse({ threadId: "t1" }).success).toBe(true);
+  });
+
+  it("rejects wrongly typed fields", () => {
+    expect(schema.safeParse({ includeResolved: "yes" }).success).toBe(false);
+    expect(schema.safeParse({ threadId: 1 }).success).toBe(false);
+  });
+});
+
+describe("reply_comment schema", () => {
+  const schema = schemaOf("reply_comment");
+
+  it("accepts threadId and text", () => {
+    expect(
+      schema.safeParse({ threadId: "t1", text: "Fixed it." }).success,
+    ).toBe(true);
+  });
+
+  it("requires threadId and text", () => {
+    expect(schema.safeParse({}).success).toBe(false);
+    expect(schema.safeParse({ threadId: "t1" }).success).toBe(false);
+    expect(schema.safeParse({ text: "Fixed it." }).success).toBe(false);
+  });
+
+  it("rejects empty text", () => {
+    expect(schema.safeParse({ threadId: "t1", text: "" }).success).toBe(false);
+  });
+});
+
+describe("resolve_comment schema", () => {
+  const schema = schemaOf("resolve_comment");
+
+  it("accepts threadId", () => {
+    expect(schema.safeParse({ threadId: "t1" }).success).toBe(true);
+  });
+
+  it("requires threadId", () => {
+    expect(schema.safeParse({}).success).toBe(false);
+    expect(schema.safeParse({ threadId: 1 }).success).toBe(false);
   });
 });
 

@@ -756,6 +756,40 @@ Returns the created/updated style ids and names (with a created|updated status) 
     },
   }),
 
+  // ── Comments ──────────────────────────────────────────────────────
+
+  read_comments: tool({
+    description:
+      "Read canvas comment threads so you can act on them. Each thread carries a stable order number, its resolved state, and (when the thread is anchored to a node rather than a bare canvas point) the anchored nodeId and that node's name — a pin gives an exact node anchor that plain chat messages don't have, so use the nodeId to target your fix precisely. Returns each thread's messages (author 'me' or 'agent', plus text). Pass threadId to fetch a single thread, or omit it to list all threads.",
+    inputSchema: z.object({
+      includeResolved: z
+        .boolean()
+        .optional()
+        .describe("Whether to include resolved threads. Default false (only unresolved threads are returned)."),
+      threadId: z
+        .string()
+        .optional()
+        .describe("If given, return only this thread instead of the full list."),
+    }),
+  }),
+
+  reply_comment: tool({
+    description:
+      "Append a reply to an existing comment thread, authored by you (the agent). Use this to report back after acting on a comment, or to ask a clarifying question on the thread.",
+    inputSchema: z.object({
+      threadId: z.string().describe("The id of the thread to reply to."),
+      text: z.string().min(1).describe("The reply message body (non-empty)."),
+    }),
+  }),
+
+  resolve_comment: tool({
+    description:
+      "Mark a comment thread as resolved. Use after you've addressed what the thread asked for.",
+    inputSchema: z.object({
+      threadId: z.string().describe("The id of the thread to resolve."),
+    }),
+  }),
+
   generate_image: tool({
     description:
       "Generate an image from a text prompt and show it in the chat. Use when the user asks for an illustration, photo, texture, or background that is NOT being applied to a specific frame. Returns the image URL, which is rendered inline in the chat.",
