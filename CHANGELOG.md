@@ -8,6 +8,17 @@ While on `0.x`, minor bumps may include breaking changes.
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-07-16
+
+### Added
+- **Comment tool schemas (cmt-01).** Three new client-executed AI tools —
+  `read_comments`, `reply_comment`, `resolve_comment` — let the design agent
+  read canvas comment threads and act on them. A comment pin carries an exact
+  node anchor that plain chat messages lack, so the agent can target a fix
+  precisely. Schemas only (no `execute`): the tools run in the browser against
+  the local scene graph. Landed backend-first per the tool-contract merge order;
+  the frontend handlers ship in pen-editor.
+
 ## [0.14.0] - 2026-07-15
 
 ### Added
