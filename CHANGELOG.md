@@ -8,6 +8,22 @@ While on `0.x`, minor bumps may include breaking changes.
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-07-16
+
+### Added
+- **`leave_comment` tool + `/design-review` skill (cmt-02).** A new
+  client-executed `leave_comment` tool lets the agent drop comment pins of its
+  own — the reverse of cmt-01's read/reply/resolve loop, turning the agent into
+  a reviewer. It's a **batch** schema (`comments: [{ nodeId?, x?, y?, text }]`,
+  each item requires a `nodeId` or an `x`/`y` point, enforced by a zod refine)
+  so a whole review lands in one call rather than blowing the 12-step per-turn
+  budget one pin at a time; it returns the created thread numbers for the model
+  to cite. The `/design-review` skill drives it: read `get_guidelines` +
+  `get_style_guide` first, then file every finding as one batched
+  `leave_comment` anchored to the flagged node — never a finding without a rule
+  behind it. Schema only (client-executed); the browser handler ships in
+  pen-editor. Landed backend-first per the tool-contract merge order.
+
 ## [0.15.0] - 2026-07-16
 
 ### Added
