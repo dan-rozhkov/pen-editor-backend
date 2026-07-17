@@ -60,31 +60,51 @@ export function assembleSession(rows: RawTraceDbRow[]): AssembledSession {
   };
 }
 
-const MAX_PART_CHARS = 1_500;
+interface ClipLimits {
+  text: number;
+  toolInput: number;
+  toolOutput: number;
+}
 
-function clip(value: unknown, max = MAX_PART_CHARS): string {
+// Tried most-generous-first; the first tier whose render fits `maxChars`
+// wins. `text` never tightens across tiers: user messages ARE the
+// corrections we are mining for, and errors are the failures. Only tool
+// payloads give ground.
+const TIERS: ClipLimits[] = [
+  { text: 4000, toolInput: 2000, toolOutput: 2000 },
+  { text: 4000, toolInput: 500, toolOutput: 1000 },
+  { text: 4000, toolInput: 200, toolOutput: 200 },
+];
+
+const ERROR_CHARS = 1_000;
+
+function clip(value: unknown, max: number): string {
   const s = typeof value === "string" ? value : JSON.stringify(value);
   return s.length > max ? `${s.slice(0, max)}…` : s;
 }
 
-function renderPart(part: Record<string, unknown>): string | null {
+function renderPart(
+  part: Record<string, unknown>,
+  limits: ClipLimits,
+): string | null {
   const type = String(part.type ?? "");
-  if (type === "text") return clip(part.text);
+  if (type === "text") return clip(part.text, limits.text);
   if (type === "file" || type === "image") return "[image omitted]";
   if (type === "reasoning") return null;
   if (type.startsWith("tool-") || type === "dynamic-tool") {
     const name =
       type === "dynamic-tool" ? String(part.toolName ?? "?") : type.slice(5);
-    const input = part.input === undefined ? "" : ` input: ${clip(part.input, 500)}`;
+    const input =
+      part.input === undefined ? "" : ` input: ${clip(part.input, limits.toolInput)}`;
     const errorText =
       typeof part.errorText === "string" && part.errorText.length > 0
         ? part.errorText
         : undefined;
     if (part.state === "output-error" || errorText !== undefined) {
-      return `[tool ${name}]${input} ERROR: ${clip(errorText ?? "unknown error", 1000)}`;
+      return `[tool ${name}]${input} ERROR: ${clip(errorText ?? "unknown error", ERROR_CHARS)}`;
     }
     const output =
-      part.output === undefined ? "" : ` output: ${clip(part.output, 1000)}`;
+      part.output === undefined ? "" : ` output: ${clip(part.output, limits.toolOutput)}`;
     return `[tool ${name}]${input}${output}`;
   }
   return null;
@@ -93,10 +113,13 @@ function renderPart(part: Record<string, unknown>): string | null {
 // `finalTurnSteps` come from `LogStep` (src/logging.ts), a different shape
 // from message parts: { text, toolCalls: {toolName,args}[], toolResults:
 // {toolName,result}[] } with tool calls/results paired by array index.
-function renderFinalTurnStep(step: Record<string, unknown>): string[] {
+function renderFinalTurnStep(
+  step: Record<string, unknown>,
+  limits: ClipLimits,
+): string[] {
   const lines: string[] = [];
   const text = typeof step.text === "string" ? step.text.trim() : "";
-  if (text) lines.push(`assistant: ${clip(text)}`);
+  if (text) lines.push(`assistant: ${clip(text, limits.text)}`);
 
   const toolCalls = Array.isArray(step.toolCalls) ? step.toolCalls : [];
   const toolResults = Array.isArray(step.toolResults) ? step.toolResults : [];
@@ -104,7 +127,8 @@ function renderFinalTurnStep(step: Record<string, unknown>): string[] {
     if (!rawCall || typeof rawCall !== "object") return;
     const call = rawCall as Record<string, unknown>;
     const name = String(call.toolName ?? "?");
-    const input = call.args === undefined ? "" : ` input: ${clip(call.args, 500)}`;
+    const input =
+      call.args === undefined ? "" : ` input: ${clip(call.args, limits.toolInput)}`;
 
     const rawResult = toolResults[i];
     let outputPart = "";
@@ -116,9 +140,9 @@ function renderFinalTurnStep(step: Record<string, unknown>): string[] {
           ? ((result as Record<string, unknown>).error as string)
           : undefined;
       if (errorText !== undefined) {
-        outputPart = ` ERROR: ${clip(errorText, 1000)}`;
+        outputPart = ` ERROR: ${clip(errorText, ERROR_CHARS)}`;
       } else if (result !== undefined) {
-        outputPart = ` output: ${clip(result, 1000)}`;
+        outputPart = ` output: ${clip(result, limits.toolOutput)}`;
       }
     }
     lines.push(`assistant: [tool ${name}]${input}${outputPart}`);
@@ -126,10 +150,7 @@ function renderFinalTurnStep(step: Record<string, unknown>): string[] {
   return lines;
 }
 
-export function renderSessionText(
-  session: AssembledSession,
-  maxChars = 60_000,
-): string {
+function renderAtTier(session: AssembledSession, limits: ClipLimits): string {
   const lines: string[] = [];
   for (const msg of session.messages) {
     if (!msg || typeof msg !== "object") continue;
@@ -138,13 +159,13 @@ export function renderSessionText(
     const parts = Array.isArray(m.parts) ? m.parts : [];
     for (const part of parts) {
       if (!part || typeof part !== "object") continue;
-      const rendered = renderPart(part as Record<string, unknown>);
+      const rendered = renderPart(part as Record<string, unknown>, limits);
       if (rendered) lines.push(`${role}: ${rendered}`);
     }
   }
   const finalTurnLines = session.finalTurnSteps.flatMap((step) =>
     step && typeof step === "object"
-      ? renderFinalTurnStep(step as Record<string, unknown>)
+      ? renderFinalTurnStep(step as Record<string, unknown>, limits)
       : [],
   );
   if (finalTurnLines.length > 0) {
@@ -154,8 +175,21 @@ export function renderSessionText(
   if (session.streamErrors.length > 0) {
     lines.push(`Stream errors:\n${session.streamErrors.join("\n")}`);
   }
-  const text = lines.join("\n");
-  if (text.length <= maxChars) return text;
+  return lines.join("\n");
+}
+
+// 200k chars ≈ 50k tokens — comfortable for ANALYSIS_MODEL (gemini-2.5-flash,
+// 1M-token context) and far above any real session.
+export function renderSessionText(
+  session: AssembledSession,
+  maxChars = 200_000,
+): string {
+  let text = "";
+  for (const limits of TIERS) {
+    text = renderAtTier(session, limits);
+    if (text.length <= maxChars) return text;
+  }
+  // Last resort: even the tightest tier overflows.
   const half = Math.floor(maxChars / 2);
   return `${text.slice(0, half)}\n[...truncated...]\n${text.slice(-half)}`;
 }

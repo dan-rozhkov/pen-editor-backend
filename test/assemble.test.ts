@@ -177,3 +177,52 @@ describe("renderSessionText", () => {
     expect(text).toContain("[...truncated...]");
   });
 });
+
+describe("renderSessionText tiering", () => {
+  const longInput = { operations: ["x".repeat(3000)] };
+  const bigToolMsg = {
+    role: "assistant",
+    parts: [
+      {
+        type: "tool-batch_design",
+        toolCallId: "c1",
+        state: "output-available",
+        input: longInput,
+        output: "y".repeat(3000),
+      },
+    ],
+  };
+  const correction = {
+    role: "user",
+    parts: [{ type: "text", text: "no, put it inside the frame, not next to it" }],
+  };
+
+  it("tier 1: keeps generous tool payloads when the transcript fits", () => {
+    const session = assembleSession([
+      row({ payload: { messages: [correction, bigToolMsg], steps: [] } }),
+    ]);
+    const text = renderSessionText(session);
+    expect(text).toContain("no, put it inside the frame, not next to it");
+    // tier 1 allows 2000 chars of tool input: more than the old 500-char clip
+    expect(text.length).toBeGreaterThan(2500);
+  });
+
+  it("tightens tool payloads but never the user's text when over budget", () => {
+    const session = assembleSession([
+      row({ payload: { messages: [correction, bigToolMsg], steps: [] } }),
+    ]);
+    const text = renderSessionText(session, 1200);
+    expect(text).toContain("no, put it inside the frame, not next to it");
+    expect(text.length).toBeLessThanOrEqual(1200);
+  });
+
+  it("falls back to middle-truncation when even the tightest tier overflows", () => {
+    const many = Array.from({ length: 200 }, () => bigToolMsg);
+    const session = assembleSession([
+      row({ payload: { messages: [correction, ...many], steps: [] } }),
+    ]);
+    const text = renderSessionText(session, 2000);
+    expect(text).toContain("[...truncated...]");
+    expect(text.length).toBeLessThanOrEqual(2200);
+  });
+});
