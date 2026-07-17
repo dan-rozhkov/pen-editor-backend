@@ -211,7 +211,7 @@ describe("POST /api/chat — validation errors", () => {
   it("accepts an allowlisted model override", async () => {
     const res = await postChat(server.url, {
       messages: [userMessage("hi")],
-      model: "moonshotai/kimi-k2.6",
+      model: "moonshotai/kimi-k2.5",
     });
     expect(res.status).toBe(200);
     await res.text();

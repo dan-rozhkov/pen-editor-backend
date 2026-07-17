@@ -94,8 +94,15 @@ export const DEFAULT_MODELS: ModelOption[] = [
     label: "Gemini 2.5 Flash",
     supportsVision: true,
   },
-  { id: "moonshotai/kimi-k2.6", label: "Kimi K2.6", supportsVision: true },
+  { id: "z-ai/glm-5.2", label: "GLM 5.2", supportsVision: false },
+  { id: "moonshotai/kimi-k2.5", label: "Kimi K2.5", supportsVision: true },
   { id: "minimax/minimax-m3", label: "Minimax M3", supportsVision: true },
+  {
+    id: "xiaomi/mimo-v2.5-pro",
+    label: "MiMo V2.5 Pro",
+    supportsVision: false,
+  },
+  { id: "xiaomi/mimo-v2.5", label: "MiMo V2.5", supportsVision: true },
   // DeepSeek V4 (text-only — image parts are stripped before sending).
   {
     id: "deepseek/deepseek-v4-flash",
@@ -107,7 +114,6 @@ export const DEFAULT_MODELS: ModelOption[] = [
     label: "DeepSeek V4 Pro",
     supportsVision: false,
   },
-  { id: "qwen/qwen3.7-plus", label: "Qwen3.7 Plus", supportsVision: true },
 ];
 
 // Full model list for a config: the built-in models, plus any extra models an

@@ -45,6 +45,19 @@ describe("isOriginAllowed", () => {
 });
 
 describe("getAllowedModels", () => {
+  it("uses the curated design-agent model list", () => {
+    expect(DEFAULT_MODELS.map((model) => model.id)).toEqual([
+      "google/gemini-2.5-flash",
+      "z-ai/glm-5.2",
+      "moonshotai/kimi-k2.5",
+      "minimax/minimax-m3",
+      "xiaomi/mimo-v2.5-pro",
+      "xiaomi/mimo-v2.5",
+      "deepseek/deepseek-v4-flash",
+      "deepseek/deepseek-v4-pro",
+    ]);
+  });
+
   it("includes the built-in default models", () => {
     const allowed = getAllowedModels(makeConfig());
     for (const model of DEFAULT_MODELS) {
