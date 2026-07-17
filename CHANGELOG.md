@@ -8,6 +8,52 @@ While on `0.x`, minor bumps may include breaking changes.
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-07-18
+
+### Added
+- **Session insights — a second extraction pass over traces (`src/analysis/insights.ts`).**
+  Alongside the Clio summary, `npm run analyze` now extracts per-session
+  `session_insights`: tool errors with a `recovered` flag and what the agent did
+  next, user corrections (with the user's verbatim quote and whether the agent
+  complied), memory requests (verbatim, with an `honored` flag), and the agent's
+  own claims about itself (limitation / assumption / plan / conclusion). This is
+  the material the summarizer must discard — its no-quotes privacy rule strips
+  exactly the wording a self-improvement agent needs. Unlike the summarizer this
+  pass MAY quote the user, but only in the `user_quote`/`quote` fields, and every
+  stored string still passes through `scrubPii`; `raw_traces` remains the only
+  table holding unsanitized content. Stored in a new `session_insights` table
+  (migration `002_insights.sql`, FK to `session_summaries` with `ON DELETE
+  CASCADE`). Spec: `docs/superpowers/specs/2026-07-17-session-insights-design.md`.
+- **"Corrections & memory requests" report section.** `reports/YYYY-MM-DD.md`
+  now surfaces, between the tool-errors table and the clusters, the actionable
+  insight entries for the window — corrections the agent did **not** comply with,
+  memory requests **not** honored, and tool errors it did **not** recover from —
+  with totals. Omitted entirely when there is nothing actionable.
+
+### Changed
+- **Insight extraction runs as its own backfill loop.** It processes every
+  summarized session that lacks insights, independently of summarization, so it
+  backfills sessions summarized before the feature existed — but only while their
+  `raw_traces` rows survive `TRACE_RAW_TTL_DAYS`. Per-session try/catch keeps one
+  poisoned session from blocking the rest, the clustering step, or the TTL
+  cleanup.
+- **Transcript rendering (`assemble.ts`) is now budget-tiered.** The old flat
+  60k-char cap cut the middle out of long transcripts and clipped tool inputs at
+  500 chars — silently eating the corrections the extractor exists to find.
+  Rendering now tries generous limits first (default budget raised to 200k chars,
+  well within the analysis model's context) and tightens only tool payloads under
+  pressure; user/assistant text, tool errors, and stream errors are never
+  truncated more aggressively. Middle-truncation remains only as a last resort.
+
+### Fixed
+- **`mapSteps` now reads AI SDK v6 `input`/`output`.** It read the v4-era
+  `args`/`result`, which are always undefined on v6 step tool calls — so
+  `payload.steps` tool I/O was empty on every trace ever written, and the final
+  turn (taken from `payload.steps`, where a failing session usually fails)
+  rendered blind. Now `tc.input ?? tc.args` / `tr.output ?? tr.result`, so new
+  traces capture the last turn's tool calls and results. Traces written before
+  this fix keep a blind final turn.
+
 ## [0.16.0] - 2026-07-16
 
 ### Added
