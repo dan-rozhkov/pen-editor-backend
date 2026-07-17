@@ -5,6 +5,14 @@ export interface ReportCluster {
   examples: string[];
 }
 
+export interface ReportInsights {
+  corrections: number;
+  correctionsNotComplied: Array<{ what_agent_did: string; what_user_wanted: string }>;
+  memoryRequests: number;
+  memoryRequestsNotHonored: string[];
+  unrecoveredErrors: Array<{ tool: string; error: string }>;
+}
+
 export interface ReportInput {
   date: string;
   windowDays: number | null;
@@ -13,6 +21,7 @@ export interface ReportInput {
   previousClusters: Array<{ name: string; size: number }>;
   outcomes: Record<string, number>;
   toolErrors: Array<{ tool: string; error: string; count: number }>;
+  insights?: ReportInsights;
 }
 
 /** Collapse newlines so LLM-derived text cannot start a new markdown line (e.g. a fake `#` heading). */
@@ -32,6 +41,38 @@ function delta(cluster: ReportCluster, prev: Map<string, number>): string {
   const d = cluster.size - before;
   if (d === 0) return " (unchanged)";
   return ` (${d > 0 ? "+" : ""}${d} vs previous run)`;
+}
+
+const MAX_INSIGHT_LINES = 10;
+
+// Lists only what the agent got wrong: those are the entries a prompt fix acts on.
+function insightLines(i: ReportInsights): string[] {
+  const entries = [
+    ...i.correctionsNotComplied.map(
+      (c) =>
+        `- correction (not complied): ${inline(c.what_agent_did)} → ${inline(c.what_user_wanted)}`,
+    ),
+    ...i.memoryRequestsNotHonored.map((q) => `- memory request (not honored): ${inline(q)}`),
+    ...i.unrecoveredErrors.map(
+      (e) => `- unrecovered error: ${inline(e.tool)} — ${inline(e.error)}`,
+    ),
+  ];
+  if (entries.length === 0) return [];
+  const shown = entries.slice(0, MAX_INSIGHT_LINES);
+  const lines = [
+    "",
+    "## Corrections & memory requests",
+    "",
+    `**Corrections: ${i.corrections}** (${i.correctionsNotComplied.length} not complied) · ` +
+      `**Memory requests: ${i.memoryRequests}** (${i.memoryRequestsNotHonored.length} not honored) · ` +
+      `**Unrecovered tool errors: ${i.unrecoveredErrors.length}**`,
+    "",
+    ...shown,
+  ];
+  if (entries.length > shown.length) {
+    lines.push("", `_Showing ${shown.length} of ${entries.length}._`);
+  }
+  return lines;
 }
 
 export function renderReport(input: ReportInput): string {
@@ -58,6 +99,7 @@ export function renderReport(input: ReportInput): string {
     ...input.toolErrors
       .sort((a, b) => b.count - a.count)
       .map((e) => `| ${cell(e.tool)} | ${cell(e.error)} | ${e.count} |`),
+    ...(input.insights ? insightLines(input.insights) : []),
     "",
     "# Clusters",
   ];

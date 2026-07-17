@@ -82,3 +82,78 @@ describe("renderReport", () => {
     }
   });
 });
+
+describe("insights section", () => {
+  const withInsights: ReportInput = {
+    ...input,
+    insights: {
+      corrections: 4,
+      correctionsNotComplied: [
+        { what_agent_did: "used a 12px gap", what_user_wanted: "an 8px gap" },
+      ],
+      memoryRequests: 3,
+      memoryRequestsNotHonored: ["always use 8px spacing"],
+      unrecoveredErrors: [{ tool: "batch_design", error: "unknown node id" }],
+    },
+  };
+
+  it("renders counts and the actionable entries before the clusters", () => {
+    const md = renderReport(withInsights);
+    expect(md).toContain("## Corrections & memory requests");
+    expect(md).toContain("**Corrections: 4** (1 not complied)");
+    expect(md).toContain("**Memory requests: 3** (1 not honored)");
+    expect(md).toContain("**Unrecovered tool errors: 1**");
+    expect(md).toContain("- correction (not complied): used a 12px gap → an 8px gap");
+    expect(md).toContain("- memory request (not honored): always use 8px spacing");
+    expect(md).toContain("- unrecovered error: batch_design — unknown node id");
+    expect(md.indexOf("## Corrections & memory requests")).toBeLessThan(
+      md.indexOf("# Clusters"),
+    );
+  });
+
+  it("omits the section entirely when insights are absent", () => {
+    expect(renderReport(input)).not.toContain("## Corrections & memory requests");
+  });
+
+  it("omits the section when there is nothing to report", () => {
+    const empty = {
+      ...input,
+      insights: {
+        corrections: 0,
+        correctionsNotComplied: [],
+        memoryRequests: 0,
+        memoryRequestsNotHonored: [],
+        unrecoveredErrors: [],
+      },
+    };
+    expect(renderReport(empty)).not.toContain("## Corrections & memory requests");
+  });
+
+  it("neutralises newlines in LLM-derived quotes", () => {
+    const sneaky = {
+      ...withInsights,
+      insights: {
+        ...withInsights.insights!,
+        memoryRequestsNotHonored: ["line one\n# fake heading"],
+      },
+    };
+    const md = renderReport(sneaky);
+    expect(md).toContain("- memory request (not honored): line one # fake heading");
+    expect(md).not.toMatch(/^# fake heading$/m);
+  });
+
+  it("caps the list at 10 entries with a footer", () => {
+    const many = {
+      ...withInsights,
+      insights: {
+        ...withInsights.insights!,
+        memoryRequests: 14,
+        memoryRequestsNotHonored: Array.from({ length: 14 }, (_, i) => `rule ${i}`),
+      },
+    };
+    const md = renderReport(many);
+    // 1 not-complied correction + 14 memory rules + 1 unrecovered error = 16
+    expect(md).toContain("_Showing 10 of 16._");
+    expect(md).not.toContain("rule 13");
+  });
+});
