@@ -8,8 +8,9 @@ import { assembleSession, renderSessionText, type RawTraceDbRow } from "./assemb
 import { summarizeWithPiiGuard } from "./summarize.js";
 import { createEmbedder } from "./embeddings.js";
 import { clusterSummaries } from "./cluster.js";
-import { renderReport } from "./report.js";
+import { renderReport, type ReportInsights } from "./report.js";
 import { scrubPii } from "./pii.js";
+import { extractInsights } from "./insights.js";
 
 // Must match migrations/001_init.sql's `embedding vector(768)` column and the
 // text-embedding-004 model's output dimension (see embeddings.ts).
@@ -45,6 +46,41 @@ export function tally(rows: TallyRow[]): {
   return {
     outcomes,
     toolErrors: [...errCounts.values()].sort((a, b) => b.count - a.count),
+  };
+}
+
+export interface InsightRow {
+  errors: Array<{ tool: string; error: string; recovered: boolean }>;
+  corrections: Array<{
+    what_agent_did: string;
+    what_user_wanted: string;
+    agent_complied: boolean;
+  }>;
+  memory_requests: Array<{ quote: string; honored: boolean }>;
+}
+
+// The report lists what the agent got WRONG — a complied-with correction needs no
+// action, an ignored one is a prompt bug.
+export function tallyInsights(rows: InsightRow[]): ReportInsights {
+  return {
+    corrections: rows.reduce((n, r) => n + r.corrections.length, 0),
+    correctionsNotComplied: rows.flatMap((r) =>
+      r.corrections
+        .filter((c) => !c.agent_complied)
+        .map((c) => ({
+          what_agent_did: c.what_agent_did,
+          what_user_wanted: c.what_user_wanted,
+        })),
+    ),
+    memoryRequests: rows.reduce((n, r) => n + r.memory_requests.length, 0),
+    memoryRequestsNotHonored: rows.flatMap((r) =>
+      r.memory_requests.filter((m) => !m.honored).map((m) => m.quote),
+    ),
+    unrecoveredErrors: rows.flatMap((r) =>
+      r.errors
+        .filter((e) => !e.recovered)
+        .map((e) => ({ tool: e.tool, error: e.error })),
+    ),
   };
 }
 
@@ -139,6 +175,59 @@ async function main(): Promise<void> {
       console.log(`[analyze] ${failedSessions} session(s) failed to summarize`);
     }
 
+    // 1b. Extract insights for any summarized session that lacks them. Separate
+    // from summarization so it can fail, re-run and backfill independently — but
+    // only while the raw traces live (TRACE_RAW_TTL_DAYS, deleted in step 3).
+    const { rows: needInsights } = await pool.query<{ session_id: string }>(
+      `SELECT ss.session_id FROM session_summaries ss
+       WHERE NOT EXISTS (
+         SELECT 1 FROM session_insights si WHERE si.session_id = ss.session_id
+       )
+       ORDER BY ss.id`,
+    );
+    console.log(`[analyze] ${needInsights.length} session(s) to extract insights from`);
+    let failedInsights = 0;
+    for (const { session_id } of needInsights) {
+      try {
+        const { rows } = await pool.query<RawTraceDbRow>(
+          "SELECT * FROM raw_traces WHERE session_id = $1 ORDER BY created_at",
+          [session_id],
+        );
+        if (rows.length === 0) {
+          console.log(`[analyze] ${session_id}: raw traces expired, skipping insights`);
+          continue;
+        }
+        const insights = await extractInsights(
+          model,
+          renderSessionText(assembleSession(rows)),
+        );
+        await pool.query(
+          `INSERT INTO session_insights
+             (session_id, errors, corrections, memory_requests, agent_claims, model)
+           VALUES ($1,$2::jsonb,$3::jsonb,$4::jsonb,$5::jsonb,$6)
+           ON CONFLICT (session_id) DO NOTHING`,
+          [
+            session_id,
+            JSON.stringify(insights.errors),
+            JSON.stringify(insights.corrections),
+            JSON.stringify(insights.memory_requests),
+            JSON.stringify(insights.agent_claims),
+            config.ANALYSIS_MODEL,
+          ],
+        );
+        console.log(
+          `[analyze] insights for ${session_id}: ${insights.corrections.length} correction(s), ${insights.memory_requests.length} memory request(s)`,
+        );
+      } catch (err) {
+        failedInsights += 1;
+        console.error(`[analyze] insights for ${session_id} failed:`, err);
+        continue;
+      }
+    }
+    if (failedInsights > 0) {
+      console.log(`[analyze] ${failedInsights} session(s) failed insight extraction`);
+    }
+
     // 2. Cluster the window and write a report.
     const { rows: summaries } = await pool.query<{
       id: number;
@@ -177,6 +266,14 @@ async function main(): Promise<void> {
          WHERE run_id = (SELECT max(id) FROM analysis_runs)`,
       );
       const byId = new Map(summaries.map((s) => [s.id, s]));
+      const { rows: insightRows } = await pool.query<InsightRow>(
+        `SELECT si.errors, si.corrections, si.memory_requests
+         FROM session_insights si
+         JOIN session_summaries ss ON ss.session_id = si.session_id
+         WHERE ss.pii_check_passed
+           AND ($1::int IS NULL OR ss.created_at > now() - make_interval(days => $1::int))`,
+        [windowDays],
+      );
       const date = new Date().toISOString().slice(0, 10);
       const reportMd = renderReport({
         date,
@@ -190,6 +287,7 @@ async function main(): Promise<void> {
         })),
         previousClusters: prevClusters,
         ...tally(summaries),
+        insights: tallyInsights(insightRows),
       });
 
       const client = await pool.connect();
