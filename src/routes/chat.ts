@@ -58,13 +58,16 @@ function mapSteps(steps: readonly StepResult<ToolSet>[]): LogStep[] {
   return steps.map((step, i) => ({
     stepNumber: i,
     text: step.text,
+    // AI SDK v6 emits `input`/`output` on step tool calls/results; `args`/`result`
+    // are the v4-era names and are always undefined. The LogStep field names stay
+    // as-is so stored traces keep their shape.
     toolCalls: step.toolCalls.map((tc: Record<string, unknown>) => ({
       toolName: String(tc.toolName ?? ""),
-      args: (tc.args ?? {}) as Record<string, unknown>,
+      args: (tc.input ?? tc.args ?? {}) as Record<string, unknown>,
     })),
     toolResults: step.toolResults.map((tr: Record<string, unknown>) => ({
       toolName: String(tr.toolName ?? ""),
-      result: tr.result,
+      result: tr.output ?? tr.result,
     })),
     finishReason: step.finishReason,
     usage: {

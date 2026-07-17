@@ -250,4 +250,37 @@ describe("chat route trace writing", () => {
     expect(text).toContain("hi"); // stream completed normally
     await app.close();
   });
+
+  it("records v6 step tool input/output into payload.steps", async () => {
+    // Turn 1 calls the tool; turn 2 (after the tool result) finishes with text.
+    let call = 0;
+    holders.model = new MockLanguageModelV3({
+      doStream: async () => {
+        call += 1;
+        return {
+          stream: simulateReadableStream({
+            chunks: call === 1 ? toolThenSlowTextChunks() : textStreamChunks("done"),
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const store = recordingTraceStore();
+    const { app, url } = await startServer(makeConfig(), store);
+    await (
+      await postChat(url, {
+        id: "tab-args-1",
+        messages: [userMessage("give me table guidelines")],
+      })
+    ).text();
+    await vi.waitFor(() => expect(store.rows).toHaveLength(1));
+    const steps = store.rows[0].payload.steps as Array<{
+      toolCalls: Array<{ toolName: string; args: Record<string, unknown> }>;
+      toolResults: Array<{ toolName: string; result: unknown }>;
+    }>;
+    expect(steps[0].toolCalls[0].toolName).toBe("get_guidelines");
+    expect(steps[0].toolCalls[0].args).toEqual({ topic: "table" });
+    expect(steps[0].toolResults[0].result).toBeTruthy();
+    await app.close();
+  });
 });
