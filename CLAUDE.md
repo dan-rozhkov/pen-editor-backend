@@ -36,3 +36,12 @@ production installs without `tsx` as a dependency should use `npm run analyze:di
 (`node dist/analysis/run.js`) instead — migrations resolve correctly either way
 since `DEFAULT_MIGRATIONS_DIR` is `import.meta.url`-relative and the build step
 copies `src/analysis/migrations/` into `dist/analysis/migrations/`.
+
+A second pass (`src/analysis/insights.ts`) extracts per-session `session_insights`
+— tool errors with recovery status, user corrections, memory requests, and the
+agent's own claims — as input for prompt improvement. Unlike the Clio summarizer
+it MAY quote the user verbatim (in `user_quote`/`quote` only); everything stored
+still passes through `scrubPii`. It runs in its own loop, so it backfills sessions
+summarized before it existed — but only while their `raw_traces` rows survive
+`TRACE_RAW_TTL_DAYS`. The report gains a "Corrections & memory requests" section.
+Spec: `docs/superpowers/specs/2026-07-17-session-insights-design.md`.
