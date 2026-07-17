@@ -72,6 +72,9 @@ export function renderReport(input: ReportInput): string {
       "",
       ...c.examples.map((e) => `- ${inline(e)}`),
     );
+    if (c.examples.length < c.size) {
+      lines.push("", `_Showing ${c.examples.length} of ${c.size} examples._`);
+    }
   }
   return lines.join("\n") + "\n";
 }

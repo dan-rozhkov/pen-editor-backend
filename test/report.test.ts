@@ -35,6 +35,17 @@ describe("renderReport", () => {
     expect(md).toContain("- e2");
   });
 
+  it("notes when a cluster lists fewer examples than it has sessions", () => {
+    const md = renderReport(input);
+    expect(md).toContain("_Showing 2 of 4 examples._"); // "batch_design failures": 4 sessions, 2 examples
+  });
+
+  it("omits the note when every session is listed", () => {
+    const md = renderReport(input);
+    const small = md.slice(md.indexOf("## Small"));
+    expect(small).not.toContain("Showing"); // "Small": 1 session, 1 example
+  });
+
   it("escapes LLM-derived text so it cannot inject headings or break tables", () => {
     const evil: ReportInput = {
       date: "2026-07-15",
