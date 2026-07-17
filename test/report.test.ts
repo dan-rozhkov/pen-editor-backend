@@ -81,6 +81,13 @@ describe("renderReport", () => {
       expect(cols === 2 || cols === 3).toBe(true);
     }
   });
+
+  it("collapses a lone carriage return so it cannot split a line", () => {
+    const evil = { ...input, clusters: [{ name: "a\rb", description: "d", size: 1, examples: ["e"] }] };
+    const md = renderReport(evil);
+    expect(md).toContain("## a b");
+    expect(md).not.toMatch(/\r/);
+  });
 });
 
 describe("insights section", () => {

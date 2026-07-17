@@ -26,7 +26,7 @@ export interface ReportInput {
 
 /** Collapse newlines so LLM-derived text cannot start a new markdown line (e.g. a fake `#` heading). */
 function inline(text: string): string {
-  return text.replace(/\r?\n/g, " ");
+  return text.replace(/[\r\n]+/g, " ");
 }
 
 /** Escape LLM-derived text for a markdown table cell: no pipes, no newlines. */
