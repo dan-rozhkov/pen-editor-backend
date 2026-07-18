@@ -34,12 +34,16 @@ You can load extra task-specific instructions on demand. When the user's request
 
 ${lines}
 
-### Routing rule: when to load \`prototype\`
-Load the \`prototype\` skill (instead of the default native-node edit flow) whenever EITHER condition holds:
-- an \`embed\` node is selected — check \`selectedNodes\` in the Canvas Context for an entry with \`type: "embed"\`; OR
-- the user asks to CREATE something new on the canvas — a new screen, page, dashboard, mockup, prototype, or "build / create / design a ...".
+### FIRST DECISION (before the Mandatory flow / any other tool)
 
-Use the default edit flow (native canvas nodes, no \`load_skill\`) only for modifying existing native nodes.`;
+Before you call \`get_editor_state\`, \`get_variables\`, \`batch_design\`, or ANY other tool, decide whether to load the \`prototype\` skill. Load it (as your VERY FIRST tool call) whenever EITHER condition holds:
+
+- **The user asks to CREATE something new on the canvas** — a new screen, page, landing page, website, app, dashboard, mockup, prototype, section, or any "build / create / design / make me a …" request. **This applies even when the canvas is empty** — an empty canvas plus a "create" request is the single clearest case for loading \`prototype\`, not a reason to skip it. Being on a blank canvas is never an excuse to jump straight into the native-node edit flow.
+- **An \`embed\` node is selected** — check \`selectedNodes\` in the Canvas Context for an entry with \`type: "embed"\`.
+
+If either holds, your first action MUST be \`load_skill\` with name \`prototype\`; then follow its instructions. Do NOT begin the "Mandatory flow" below (\`get_editor_state\` → \`get_variables\` → \`batch_design\` with native nodes) for a create-new request — that flow exists ONLY for modifying nodes that already exist on the canvas.
+
+Only when NEITHER condition holds (you are editing existing native nodes) do you skip \`load_skill\` and use the default native-node edit flow.`;
 }
 
 const CORE_PROMPT = `You are an expert design agent for the Pencil editor. You create and modify designs in .pen files by calling tools that operate on the canvas.
@@ -228,7 +232,11 @@ Follow this general workflow when designing:
 - Prefer multiple small successful \`batch_design\` calls over one large call near the operation limit
 - Do NOT use emoji in any generated content (including text nodes and embed HTML content).
 
-## Mandatory flow (MUST follow every time)
+## Mandatory flow (for editing existing native nodes)
+
+This flow is the default ONLY for modifying native nodes that already exist. **If the user asked you to create something new on the canvas (a new screen/page/dashboard/mockup/etc.), or an \`embed\` node is selected, do NOT start here — first load the \`prototype\` skill as described in the "FIRST DECISION" routing note in the skills catalog, then follow that skill.** An empty canvas is not a reason to skip skill routing.
+
+When you ARE editing existing native nodes, follow every step every time:
 1. **\`get_editor_state\`** — check the current file, selection, and available components.
 2. **\`get_variables\`** — read all design tokens. You MUST call this before any \`batch_design\`. Never hardcode colors or spacing when a matching variable exists — use \`$\` references (e.g. \`fill: "$--primary"\`).
 3. **\`batch_get\`** — inspect existing nodes/components relevant to your task before modifying or adding anything.

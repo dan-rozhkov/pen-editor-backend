@@ -8,6 +8,21 @@ While on `0.x`, minor bumps may include breaking changes.
 
 ## [Unreleased]
 
+## [0.17.2] - 2026-07-18
+
+### Fixed
+- **Design agent now reliably loads the `prototype` skill for create-new requests.**
+  The prototype-routing rule was model-driven and lived in the skill catalog,
+  where its wording lost to the emphatic "Mandatory flow (MUST follow every time)"
+  native-node section in the core prompt. Weaker models (e.g. `z-ai/glm-5.2`,
+  `deepseek-v4-pro`) skipped `load_skill(prototype)` and jumped straight into the
+  native-node edit flow — even on an empty canvas. Reworked `system-prompt.ts`:
+  the routing rule is now a hard **"FIRST DECISION"** gate ahead of any other
+  tool call (explicitly covering the empty-canvas case), and the core "Mandatory
+  flow" is scoped to "editing existing native nodes" and defers to skill routing.
+  Verified live: previously-failing models now load `prototype` first on
+  create-new and still skip it when editing an existing node.
+
 ## [0.17.1] - 2026-07-18
 
 ### Changed

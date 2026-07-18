@@ -41,6 +41,24 @@ describe("buildSystemPrompt", () => {
     expect(prompt.toLowerCase()).toContain("create");
   });
 
+  it("renders a strong create-new routing gate ahead of the mandatory flow", () => {
+    // Regression: weaker models (glm/deepseek) skipped `load_skill(prototype)`
+    // on create-new requests and fell into the native-node "Mandatory flow"
+    // because the routing rule was softer than that flow. The catalog must now
+    // gate the mandatory flow on the skill-routing decision and explicitly cover
+    // the empty-canvas case.
+    const prompt = buildSystemPrompt(undefined, [
+      { name: "prototype", description: "Build a mockup." },
+    ]);
+    // The routing decision is framed as the FIRST action, before other tools.
+    expect(prompt).toContain("FIRST DECISION");
+    // Empty canvas is called out as a reason to load — not to skip.
+    expect(prompt.toLowerCase()).toContain("even when the canvas is empty");
+    // The mandatory flow is explicitly scoped to editing existing nodes and
+    // defers to skill routing.
+    expect(prompt).toContain("Mandatory flow (for editing existing native nodes)");
+  });
+
   it("omits the catalog section when no skills are provided", () => {
     const prompt = buildSystemPrompt();
     expect(prompt).not.toContain("Available Skills");
