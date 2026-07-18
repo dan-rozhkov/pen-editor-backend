@@ -1,6 +1,8 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { tool } from "ai";
+import { z } from "zod";
 
 export interface SkillArg {
   name: string;
@@ -117,6 +119,31 @@ export function getSkill(name: string): Skill | undefined {
 
 export function getAllSkills(): Skill[] {
   return [...skillsMap.values()];
+}
+
+export function getSkillTools(): Record<string, unknown> {
+  const load_skill = tool({
+    description:
+      "Load a skill's full instructions by name. Call this when the user's task matches a skill listed in the 'Available Skills' catalog in your system prompt. Returns the skill's instructions to follow for the current turn.",
+    inputSchema: z.object({
+      name: z
+        .string()
+        .describe("The exact skill name from the Available Skills catalog."),
+    }),
+    execute: async ({ name }: { name: string }) => {
+      const skill = getSkill(name);
+      if (!skill) {
+        const available = getAllSkills()
+          .map((s) => s.name)
+          .join(", ");
+        return {
+          error: `Unknown skill "${name}". Available skills: ${available}`,
+        };
+      }
+      return { name: skill.name, instructions: skill.content };
+    },
+  });
+  return { load_skill };
 }
 
 export function detectSkillCommand(

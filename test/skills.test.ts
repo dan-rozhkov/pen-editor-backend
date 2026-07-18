@@ -3,6 +3,7 @@ import {
   detectSkillCommand,
   getAllSkills,
   getSkill,
+  getSkillTools,
   loadSkills,
 } from "../src/ai/skills.js";
 
@@ -112,5 +113,32 @@ describe("loadSkills / getSkill", () => {
     const research = getSkill("research");
     expect(research).toBeDefined();
     expect(research!.content).toContain("design research agent");
+  });
+});
+
+describe("getSkillTools / load_skill", () => {
+  it("returns the skill instructions for a known skill", async () => {
+    await loadSkills();
+    const tools = getSkillTools() as {
+      load_skill: { execute: (a: { name: string }) => Promise<unknown> };
+    };
+    const out = (await tools.load_skill.execute({ name: "prototype" })) as {
+      name: string;
+      instructions: string;
+    };
+    expect(out.name).toBe("prototype");
+    expect(out.instructions).toContain("PROTOTYPE mode");
+  });
+
+  it("returns an error listing available skills for an unknown name", async () => {
+    await loadSkills();
+    const tools = getSkillTools() as {
+      load_skill: { execute: (a: { name: string }) => Promise<unknown> };
+    };
+    const out = (await tools.load_skill.execute({ name: "nope" })) as {
+      error: string;
+    };
+    expect(out.error).toContain("nope");
+    expect(out.error).toContain("prototype");
   });
 });
