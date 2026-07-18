@@ -1,62 +1,54 @@
-import { describe, expect, it } from "vitest";
+import { describe, it, expect } from "vitest";
 import { AGENT_MODES, buildSystemPrompt } from "../src/ai/system-prompt.js";
 
 describe("AGENT_MODES", () => {
-  it("declares exactly the three known modes", () => {
+  it("remains exported for legacy request-body validation", () => {
     expect(AGENT_MODES).toEqual(["edits", "prototype", "research"]);
   });
 });
 
 describe("buildSystemPrompt", () => {
-  it("defaults to edits mode", () => {
+  it("always returns the core prompt (no mode branching)", () => {
     const prompt = buildSystemPrompt();
-    expect(prompt).toContain("Agent Mode: edits");
-    expect(prompt).not.toContain("Agent Mode: prototype");
-  });
-
-  it("edits mode includes the core prompt and edits instructions", () => {
-    const prompt = buildSystemPrompt(undefined, "edits");
     expect(prompt).toContain("expert design agent for the Pencil editor");
-    expect(prompt).toContain("Agent Mode: edits");
+    // Mode-specific prompt blocks no longer live in the system prompt.
+    expect(prompt).not.toContain("## Agent Mode: prototype");
+    expect(prompt).not.toContain("You are in PROTOTYPE mode");
   });
 
-  it("prototype mode includes the core prompt and prototype instructions", () => {
-    const prompt = buildSystemPrompt(undefined, "prototype");
-    expect(prompt).toContain("expert design agent for the Pencil editor");
-    expect(prompt).toContain("Agent Mode: prototype");
-    expect(prompt).not.toContain("Agent Mode: edits");
+  it("carries the edits-flow rules that used to live in EDITS_MODE_PROMPT", () => {
+    const prompt = buildSystemPrompt();
+    expect(prompt).toContain("get_variables");
+    // Default behaviour still forbids inserting embeds unless a skill directs it.
+    expect(prompt.toLowerCase()).toContain("embed");
   });
 
-  it("research mode uses a standalone research prompt without the core prompt", () => {
-    const prompt = buildSystemPrompt(undefined, "research");
-    expect(prompt).toContain("design research agent");
-    expect(prompt).not.toContain("expert design agent for the Pencil editor");
-    expect(prompt).not.toContain("Agent Mode: edits");
+  it("renders a skill catalog when skills are provided", () => {
+    const prompt = buildSystemPrompt(undefined, [
+      { name: "prototype", description: "Build a mockup." },
+      { name: "polish", description: "Final visual pass." },
+    ]);
+    expect(prompt).toContain("Available Skills");
+    expect(prompt).toContain("load_skill");
+    expect(prompt).toContain("prototype");
+    expect(prompt).toContain("Build a mockup.");
+    expect(prompt).toContain("polish");
   });
 
-  it("appends canvas context in edits/prototype modes", () => {
-    for (const mode of ["edits", "prototype"] as const) {
-      const prompt = buildSystemPrompt("<canvas state here>", mode);
-      expect(prompt).toContain("## Current Canvas Context");
-      expect(prompt).toContain("<canvas state here>");
-      // Canvas context comes after the mode instructions.
-      expect(prompt.indexOf("## Current Canvas Context")).toBeGreaterThan(
-        prompt.indexOf(`Agent Mode: ${mode}`),
-      );
-    }
+  it("includes the prototype routing rule", () => {
+    const prompt = buildSystemPrompt();
+    expect(prompt).toContain('type: "embed"');
+    expect(prompt.toLowerCase()).toContain("create");
   });
 
-  it("appends canvas context in research mode", () => {
-    const prompt = buildSystemPrompt("research canvas ctx", "research");
+  it("omits the catalog section when no skills are provided", () => {
+    const prompt = buildSystemPrompt();
+    expect(prompt).not.toContain("Available Skills");
+  });
+
+  it("appends canvas context after the core prompt", () => {
+    const prompt = buildSystemPrompt("<canvas state here>");
     expect(prompt).toContain("## Current Canvas Context");
-    expect(prompt).toContain("research canvas ctx");
-  });
-
-  it("omits the canvas context section when no context is given", () => {
-    for (const mode of AGENT_MODES) {
-      expect(buildSystemPrompt(undefined, mode)).not.toContain(
-        "## Current Canvas Context",
-      );
-    }
+    expect(prompt).toContain("<canvas state here>");
   });
 });
