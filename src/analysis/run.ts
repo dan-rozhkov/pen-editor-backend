@@ -1,5 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { LanguageModel } from "ai";
 import { loadConfig } from "../config.js";
 import { createModel } from "../ai/provider.js";
 import { createPgPool } from "../tracing/traceStore.js";
@@ -10,7 +11,7 @@ import { createEmbedder } from "./embeddings.js";
 import { clusterSummaries } from "./cluster.js";
 import { renderReport, type ReportInsights } from "./report.js";
 import { scrubPii } from "./pii.js";
-import { extractInsights } from "./insights.js";
+import { extractInsights, type SessionInsights } from "./insights.js";
 
 // Must match migrations/001_init.sql's `embedding vector(768)` column and the
 // text-embedding-004 model's output dimension (see embeddings.ts).
@@ -82,6 +83,35 @@ export function tallyInsights(rows: InsightRow[]): ReportInsights {
         .map((e) => ({ tool: e.tool, error: e.error })),
     ),
   };
+}
+
+// Per-session insight building: the pure seam of the extraction loop, isolated
+// so it can be unit-tested with a mock model. Returns null when the session's
+// raw traces have expired (nothing to assemble), which the loop treats as skip.
+export async function buildInsightsForSession(
+  model: LanguageModel,
+  rows: RawTraceDbRow[],
+): Promise<SessionInsights | null> {
+  if (rows.length === 0) return null;
+  return extractInsights(model, renderSessionText(assembleSession(rows)));
+}
+
+// Positional bind values for the session_insights INSERT, matching the column
+// order (session_id, errors, corrections, memory_requests, agent_claims, model).
+// The four insight arrays are serialized to jsonb strings.
+export function insightInsertValues(
+  sessionId: string,
+  insights: SessionInsights,
+  model: string,
+): unknown[] {
+  return [
+    sessionId,
+    JSON.stringify(insights.errors),
+    JSON.stringify(insights.corrections),
+    JSON.stringify(insights.memory_requests),
+    JSON.stringify(insights.agent_claims),
+    model,
+  ];
 }
 
 async function main(): Promise<void> {
@@ -193,27 +223,17 @@ async function main(): Promise<void> {
           "SELECT * FROM raw_traces WHERE session_id = $1 ORDER BY created_at",
           [session_id],
         );
-        if (rows.length === 0) {
+        const insights = await buildInsightsForSession(model, rows);
+        if (insights === null) {
           console.log(`[analyze] ${session_id}: raw traces expired, skipping insights`);
           continue;
         }
-        const insights = await extractInsights(
-          model,
-          renderSessionText(assembleSession(rows)),
-        );
         await pool.query(
           `INSERT INTO session_insights
              (session_id, errors, corrections, memory_requests, agent_claims, model)
            VALUES ($1,$2::jsonb,$3::jsonb,$4::jsonb,$5::jsonb,$6)
            ON CONFLICT (session_id) DO NOTHING`,
-          [
-            session_id,
-            JSON.stringify(insights.errors),
-            JSON.stringify(insights.corrections),
-            JSON.stringify(insights.memory_requests),
-            JSON.stringify(insights.agent_claims),
-            config.ANALYSIS_MODEL,
-          ],
+          insightInsertValues(session_id, insights, config.ANALYSIS_MODEL),
         );
         console.log(
           `[analyze] insights for ${session_id}: ${insights.corrections.length} correction(s), ${insights.memory_requests.length} memory request(s)`,

@@ -83,6 +83,36 @@ describe("renderSessionText", () => {
     expect(text).not.toContain("data:");
   });
 
+  it("omits reasoning parts and renders dynamic-tool calls by their toolName", () => {
+    const s = assembleSession([
+      row({
+        payload: {
+          messages: [
+            { role: "assistant", parts: [{ type: "reasoning", text: "secret chain of thought" }] },
+            {
+              role: "assistant",
+              parts: [
+                {
+                  type: "dynamic-tool",
+                  toolName: "refero_search",
+                  state: "output-available",
+                  input: { query: "cards" },
+                  output: "3 results",
+                },
+              ],
+            },
+          ],
+          steps: [],
+        },
+      }),
+    ]);
+    const text = renderSessionText(s);
+    expect(text).not.toContain("secret chain of thought");
+    expect(text).toContain("[tool refero_search]");
+    expect(text).toContain('input: {"query":"cards"}');
+    expect(text).toContain("output: 3 results");
+  });
+
   it("renders output-error tool parts with their errorText", () => {
     const erroredMsg = {
       role: "assistant",
