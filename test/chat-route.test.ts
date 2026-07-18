@@ -264,16 +264,37 @@ describe("POST /api/chat — validation errors", () => {
   });
 });
 
-describe("POST /api/chat — research mode", () => {
-  it("returns 503 when no MCP tools are connected", async () => {
+describe("POST /api/chat — universal toolset", () => {
+  it("no longer 503s without MCP when a legacy research mode is requested", async () => {
     holders.mcpTools = {};
+    holders.model = mockModel(textStreamChunks("done"));
     const res = await postChat(server.url, {
       messages: [userMessage("research pricing pages")],
-      agentMode: "research",
+      agentMode: "research", // legacy field — ignored now
     });
-    expect(res.status).toBe(503);
-    const body = (await res.json()) as { error: string };
-    expect(body.error).toContain("Research mode is unavailable");
+    expect(res.status).toBe(200);
+    await res.text();
+  });
+
+  it("exposes the load_skill tool and the skill catalog to the model", async () => {
+    holders.mcpTools = {};
+    const model = mockModel(textStreamChunks("done"));
+    holders.model = model;
+    const res = await postChat(server.url, {
+      messages: [userMessage("make me a dashboard")],
+    });
+    expect(res.status).toBe(200);
+    await res.text();
+
+    const call = model.doStreamCalls[0];
+    // The catalog is injected into the system prompt.
+    const systemText = JSON.stringify(call.prompt).includes("Available Skills");
+    expect(systemText).toBe(true);
+    // load_skill is registered in the toolset.
+    const toolNames = (call.tools ?? []).map(
+      (t: { name?: string }) => t.name,
+    );
+    expect(toolNames).toContain("load_skill");
   });
 });
 

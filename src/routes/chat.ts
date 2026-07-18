@@ -24,7 +24,12 @@ import { getMCPTools } from "../ai/mcp.js";
 import { getWebTools } from "../ai/web-search.js";
 import { logSession, type LogStep } from "../logging.js";
 import { randomUUID, createHash } from "node:crypto";
-import { detectSkillCommand, getAllSkills, getSkill } from "../ai/skills.js";
+import {
+  detectSkillCommand,
+  getAllSkills,
+  getSkill,
+  getSkillTools,
+} from "../ai/skills.js";
 import { writeRawTraceSafe, type TraceStore } from "../tracing/traceStore.js";
 
 // Maximum image parts per single message (not per conversation).
@@ -47,10 +52,7 @@ export function streamErrorMessage(error: unknown): string {
   }
   return "An error occurred.";
 }
-const MAX_AGENT_STEPS = {
-  research: 15,
-  default: 12,
-} as const;
+const MAX_AGENT_STEPS = 12;
 
 // Shared by onFinish/onAbort: turns AI SDK step results into the trimmed
 // shape used for both session logging (logSteps) and trace payloads.
@@ -247,7 +249,11 @@ export async function chatRoutes(
     }
 
     const model = createModel(config, modelOverride);
-    const system = buildSystemPrompt(canvasContext, agentMode);
+    const skillCatalog = getAllSkills().map((s) => ({
+      name: s.name,
+      description: s.description,
+    }));
+    const system = buildSystemPrompt(canvasContext, skillCatalog);
     const selectedModelId = modelOverride ?? config.OPENROUTER_MODEL;
     const traceSessionId = chatSessionId ?? `anon-${randomUUID()}`;
     const systemPromptHash = createHash("sha256")
@@ -271,19 +277,13 @@ export async function chatRoutes(
     );
 
     const mcpTools = await getMCPTools(config);
-    const isResearch = agentMode === "research";
-    if (isResearch && Object.keys(mcpTools).length === 0) {
-      return reply.status(503).send({
-        error:
-          "Research mode is unavailable: no MCP tools are connected. Check REFERO_API_KEY and MCP connectivity.",
-      });
-    }
-    const tools = isResearch
-      ? (mcpTools as ToolSet)
-      : { ...penTools, ...getWebTools(config), ...mcpTools };
-    const maxSteps = isResearch
-      ? MAX_AGENT_STEPS.research
-      : MAX_AGENT_STEPS.default;
+    const tools = {
+      ...penTools,
+      ...getWebTools(config),
+      ...mcpTools,
+      ...getSkillTools(),
+    } as ToolSet;
+    const maxSteps = MAX_AGENT_STEPS;
 
     // Abort the LLM stream when the client disconnects mid-response, so we
     // stop paying for tokens nobody will receive.
