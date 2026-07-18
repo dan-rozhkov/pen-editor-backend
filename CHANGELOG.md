@@ -8,6 +8,13 @@ While on `0.x`, minor bumps may include breaking changes.
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-07-18
+
+### Changed
+- Test-only release: coverage for the session-insights seams
+  (`test/insights*`), and the `analyze` CLI entrypoint excluded from coverage
+  metrics. No runtime changes.
+
 ## [0.17.0] - 2026-07-18
 
 ### Added
