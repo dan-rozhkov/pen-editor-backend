@@ -100,4 +100,17 @@ describe("loadSkills / getSkill", () => {
   it("returns undefined for unknown skills", () => {
     expect(getSkill("definitely-not-a-skill")).toBeUndefined();
   });
+
+  it("loads the prototype and research mode skills", async () => {
+    await loadSkills();
+    const proto = getSkill("prototype");
+    expect(proto).toBeDefined();
+    expect(proto!.description.length).toBeGreaterThan(0);
+    // A distinctive snippet from the prototype mode content.
+    expect(proto!.content).toContain("PROTOTYPE mode");
+
+    const research = getSkill("research");
+    expect(research).toBeDefined();
+    expect(research!.content).toContain("design research agent");
+  });
 });
