@@ -114,6 +114,37 @@ export const DEFAULT_MODELS: ModelOption[] = [
     label: "DeepSeek V4 Pro",
     supportsVision: false,
   },
+  { id: "tencent/hy3", label: "Hy3", supportsVision: false },
+  {
+    id: "nvidia/nemotron-3-ultra-550b-a55b",
+    label: "Nemotron 3 Ultra",
+    supportsVision: false,
+  },
+  {
+    id: "stepfun/step-3.7-flash",
+    label: "Step 3.7 Flash",
+    supportsVision: true,
+  },
+  {
+    id: "x-ai/grok-build-0.1",
+    label: "Grok Build 0.1",
+    supportsVision: true,
+  },
+  {
+    id: "thinkingmachines/inkling",
+    label: "Inkling",
+    supportsVision: true,
+  },
+  {
+    id: "kwaipilot/kat-coder-pro-v2.5",
+    label: "KAT-Coder-Pro V2.5",
+    supportsVision: false,
+  },
+  {
+    id: "x-ai/grok-4.20",
+    label: "Grok 4.20",
+    supportsVision: false,
+  },
 ];
 
 // Full model list for a config: the built-in models, plus any extra models an

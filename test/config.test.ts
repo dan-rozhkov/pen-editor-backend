@@ -55,6 +55,13 @@ describe("getAllowedModels", () => {
       "xiaomi/mimo-v2.5",
       "deepseek/deepseek-v4-flash",
       "deepseek/deepseek-v4-pro",
+      "tencent/hy3",
+      "nvidia/nemotron-3-ultra-550b-a55b",
+      "stepfun/step-3.7-flash",
+      "x-ai/grok-build-0.1",
+      "thinkingmachines/inkling",
+      "kwaipilot/kat-coder-pro-v2.5",
+      "x-ai/grok-4.20",
     ]);
   });
 
