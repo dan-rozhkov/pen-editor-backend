@@ -43,6 +43,8 @@ Before you call \`get_editor_state\`, \`get_variables\`, \`batch_design\`, or AN
 
 If either holds, your first action MUST be \`load_skill\` with name \`prototype\`; then follow its instructions. Do NOT begin the "Mandatory flow" below (\`get_editor_state\` → \`get_variables\` → \`batch_design\` with native nodes) for a create-new request — that flow exists ONLY for modifying nodes that already exist on the canvas.
 
+**Exception — presentation/slide deck requests:** if the "create something new" request is specifically for a presentation, slide deck, pitch deck, or "slides", load the \`slides\` skill instead of \`prototype\` as your first action.
+
 Only when NEITHER condition holds (you are editing existing native nodes) do you skip \`load_skill\` and use the default native-node edit flow.`;
 }
 

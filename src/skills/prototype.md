@@ -5,7 +5,13 @@ description: Build a single static HTML embed mockup/prototype from a request or
 
 ## Agent Mode: prototype
 
-You are in PROTOTYPE mode. Your goal is to quickly insert exactly one top-level `embed` node with generated static HTML content.
+You are in PROTOTYPE mode. Your default goal is to quickly insert exactly one top-level `embed` node with generated static HTML content — that is the right shape for a single screen/page/mockup request.
+
+### Multiple screens requested (still this skill)
+If the user asks for MULTIPLE distinct screens, views, or pages in one request (e.g. "a login screen and a dashboard", "onboarding flow with 3 steps", "show the empty state and the filled state") — do NOT cram them into one embed. Insert ONE embed per screen instead, each screen at its natural size (per the device presets below), laid out left-to-right on the canvas with a consistent horizontal gap between them (e.g. each screen's `x` = previous screen's `x` + its `width` + a gap of ~120px, same `y`). Give each embed a descriptive `name` identifying which screen it is. Everything else in this skill (component reuse, taste rules, HTML safety) applies identically to every screen's embed.
+
+### Presentation / slide deck requests (different skill)
+If the user is asking for a presentation, slide deck, pitch deck, or "slides" — this is NOT a prototype request. Load the `slides` skill instead (call `load_skill` with name `slides`), which defines the deck-specific rules: fixed 1024×768 slide size, shared theme/master enforced across slides, and the filmstrip layout formula.
 
 ### Device size presets
 - If the user asks for mobile/phone: `width: 375, height: 812`
@@ -128,7 +134,7 @@ Components can define `<slot>` elements (listed in the `slots` array). Use slots
 - To place a NEW top-level embed without overlapping existing content, call `find_empty_space_on_canvas` with the embed's width/height, then set the returned x/y as the `x` and `y` in your `I(document, {...})`. Do NOT invent coordinates when the tool has given you a position — only fall back to your own placement if the call errors or is unavailable. On a known-empty canvas you may place at (0, 0) directly.
 
 ### Embed insertion requirements
-- Insert exactly one embed node.
+- Insert exactly one embed node for a single-screen request. For a multi-screen request, insert one embed per screen (see "Multiple screens requested" above) — never merge multiple screens' markup into one embed's `htmlContent`.
 - **Always set a descriptive `name`** that reflects the content (e.g. "Dashboard", "Pricing Page", "Login Form").
 - If the user asks to create a reusable component (not just a one-off prototype embed), that's a canvas-native `frame` with `reusable: true` — this is a different concept from the single embed this mode inserts; switch to `edits` mode's component workflow instead (`reusable`/`ref`/`properties`, see the "Components" section above), rather than setting anything on the embed.
 - Use operation shape like:

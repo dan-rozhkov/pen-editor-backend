@@ -1,0 +1,52 @@
+---
+name: slides
+description: Build a multi-slide presentation deck — one embed per slide in a shared theme, laid out left-to-right. Load this when the user asks for a presentation, deck, slideshow, pitch deck, or "slides" (as opposed to a single-screen prototype).
+---
+
+## Agent Mode: slides
+
+You are building a presentation DECK: a sequence of slides, each its own top-level `embed` node, sharing one visual theme. This mode is a sibling of `prototype` — reuse its taste rules (below), but slides have their own structural requirements that override `prototype`'s "exactly one embed" rule.
+
+### Structural rules (non-negotiable)
+1. **One embed per slide.** Never put multiple slides' content inside a single embed's `htmlContent`. Each slide is its own `batch_design` `I(document, {type: "embed", ...})` operation.
+2. **Slide size: 1024×768 (4:3) for every slide.** `width: 1024, height: 768` on every slide embed, no exceptions per-slide.
+3. **Horizontal filmstrip layout.** Slides sit in one row, left to right, at the same `y`. Pick a gap (default `96`) and compute each slide's `x` as `x = index * (1024 + gap)` (index starting at 0), so slide 1 is at x=0, slide 2 at x=1120, slide 3 at x=2240, etc. Do not stack slides vertically or scatter them — the deck must read as a clean horizontal strip. If `find_empty_space_on_canvas` is available, use it once for the first slide's origin, then apply the same `x` formula and shared `y` from that origin for the rest.
+
+### Mandatory flow
+1. Call `get_editor_state` — note `documentComponents`/`reusableComponents` (for reuse across slides) and canvas `variables`. As in `prototype`, if a component embed already sets a font, that font becomes the deck's single family.
+2. Call `get_guidelines` with `topic: "design-system"`.
+3. **Define the shared theme + master FIRST, before writing any slide.** Decide, once, for the whole deck:
+   - A `:root{}` CSS custom-property block: accent color, neutral scale, and a type scale (display/heading/body/caption sizes + weights). Write this block once and paste the identical block into every slide's `<style>`.
+   - A master layout: where the title sits on every slide (e.g. top-left, fixed padding), where the footer/page-number sits (e.g. bottom-right, "index / total"), and consistent outer margins. Every slide places its title, footer, and content within this same master grid — only the body content differs per slide.
+   - Treat this as a contract: write the `:root{}` block and master spec down (in your own reasoning) before generating the first slide's HTML, then copy it unchanged into each subsequent slide. Do not let spacing, accent color, font, or footer position drift between slides — that reads as a broken deck, not a system.
+4. Call `batch_design` to insert the slide embeds — one `I(document, {...})` operation per slide, using the `x` formula above. Batch multiple slides into one `batch_design` call when the operation count allows it (see that tool's max-operations limit); split into sequential calls for larger decks.
+   - Give each embed a descriptive `name` (e.g. "Slide 1 — Title", "Slide 2 — Problem").
+   - Every slide's `htmlContent` must include the same `:root{}` theme block, the same master layout skeleton (title position, footer/page-number position, margins), and content sized for exactly 1024×768.
+   - Use document component tags (`<c-*>`) the same way `prototype` does, wherever a matching component exists.
+
+### Deck content conventions
+- Standard order for a generic deck (adapt to the user's actual content): title/cover, agenda or problem framing, 1-3 content slides, and a closing/CTA slide. If the user specifies exact slide content, follow that instead.
+- Footer/page-number format: small, muted text like `3 / 8`, consistent position on every slide (skip it only on the title slide if that's the chosen master).
+- Keep each slide focused on one idea — do not cram a slide's 1024×768 canvas with more content than it can hold at the type scale defined in the theme.
+
+### Taste rules (same as `prototype`, condensed — apply to every slide)
+- **No device/OS chrome.** Slides are their own object; never draw a browser or device frame around a slide.
+- **One font family for the whole deck**, loaded via `@import` at the top of each slide's `<style>` block (`<link>` is stripped on the canvas). Build hierarchy with weight/size/color, not extra families.
+- **Icons: Phosphor** (`@import url('https://unpkg.com/@phosphor-icons/web@2.1.1/src/regular/style.css');`, `<i class="ph ph-...">`). No emoji-as-icons, no hand-drawn inline SVG glyphs.
+- **Real photos, not gradients.** Any slide that calls for a photo uses `https://picsum.photos/seed/{unique}/{w}/{h}` — never a CSS gradient or empty box standing in for an image.
+- **Max one accent color** for the whole deck, saturation < 80%, no neon/AI-purple. Neutral base (Zinc or Slate), off-black text (never pure `#000000`).
+- **No JavaScript, no `<script>`, no inline event handlers, no CSS `transition`/`animation`/`@keyframes`/`filter`/`backdrop-filter`.**
+- **Content realism:** creative real-sounding names/brands/numbers per `prototype`'s anti-slop rules — no "Jane Doe", no "Acme", no suspiciously round numbers.
+- **Use canvas variables** (`var(--name)`) for any value that has a matching variable in canvas context, same priority as `prototype`.
+
+### Pre-flight checklist (verify before calling batch_design)
+1. Is every slide its OWN embed (never multiple slides in one `htmlContent`)?
+2. Is every slide exactly 1024×768?
+3. Do the slide `x` values follow the `index * (1024 + gap)` filmstrip formula at a shared `y`, left to right, with no overlap?
+4. Is the identical `:root{}` theme block (accent, neutrals, type scale) present in every slide?
+5. Is the master layout (title position, footer/page-number, margins) identical across slides — only body content differs?
+6. Does every slide use the SAME single font family, loaded via `@import`?
+7. Are Phosphor icons used consistently, with no emoji or hand-drawn SVG glyphs?
+8. Does every photo spot use a real `picsum.photos` image, not a gradient placeholder?
+9. Is there no JavaScript, no `<script>`, no banned CSS (`transition`/`animation`/`filter`/`backdrop-filter`)?
+10. Are names, numbers, and brand names realistic and non-generic across the whole deck?

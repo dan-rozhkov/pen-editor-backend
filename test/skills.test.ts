@@ -115,6 +115,28 @@ describe("loadSkills / getSkill", () => {
     expect(research!.content).toContain("design research agent");
   });
 
+  it("loads the slides skill with its frontmatter", async () => {
+    await loadSkills();
+    const slides = getSkill("slides");
+    expect(slides).toBeDefined();
+    expect(slides!.name).toBe("slides");
+    expect(slides!.description.length).toBeGreaterThan(0);
+    expect(slides!.description.toLowerCase()).toContain("deck");
+  });
+
+  it("pins the deck-specific structural rules in the slides skill", () => {
+    const slides = getSkill("slides")!;
+    // One embed per slide, not one embed for the whole deck.
+    expect(slides.content).toContain("One embed per slide");
+    // Fixed 4:3 slide size.
+    expect(slides.content).toContain("1024");
+    expect(slides.content).toContain("768");
+    // Horizontal filmstrip layout formula.
+    expect(slides.content.toLowerCase()).toContain("filmstrip");
+    // Shared theme/master enforced across slides.
+    expect(slides.content).toContain(":root{}");
+  });
+
   it("pins the design-default prompt rules in the prototype skill", () => {
     const proto = getSkill("prototype")!;
     // Icons: Phosphor is the default icon system; emoji-as-icons banned.
@@ -129,6 +151,14 @@ describe("loadSkills / getSkill", () => {
     expect(proto.content).toContain("picsum.photos is reliable");
     // Device chrome: no unrequested status bar / device frame.
     expect(proto.content).toContain("NO device/OS chrome");
+  });
+
+  it("pins the multi-screen and slides-handoff rules in the prototype skill", () => {
+    const proto = getSkill("prototype")!;
+    // Multi-screen requests get one embed per screen, not one merged embed.
+    expect(proto.content).toContain("ONE embed per screen");
+    // Presentation/deck requests are handed off to the slides skill.
+    expect(proto.content).toContain("`slides` skill");
   });
 });
 

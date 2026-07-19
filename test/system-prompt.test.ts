@@ -59,6 +59,15 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("Mandatory flow (for editing existing native nodes)");
   });
 
+  it("routes presentation/slide-deck create requests to the slides skill", () => {
+    const prompt = buildSystemPrompt(undefined, [
+      { name: "prototype", description: "Build a mockup." },
+      { name: "slides", description: "Build a presentation deck." },
+    ]);
+    expect(prompt).toContain("`slides` skill");
+    expect(prompt.toLowerCase()).toContain("slide deck");
+  });
+
   it("omits the catalog section when no skills are provided", () => {
     const prompt = buildSystemPrompt();
     expect(prompt).not.toContain("Available Skills");

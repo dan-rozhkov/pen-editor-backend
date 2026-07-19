@@ -277,7 +277,7 @@ export const penTools = {
 **Rules:**
 - Max ${MAX_BATCH_DESIGN_OPERATIONS} operations per call
 - If the task needs more than ${MAX_BATCH_DESIGN_OPERATIONS} operations, split it into multiple sequential \`batch_design\` calls
-- Bindings (e.g. \`card=I(...)\`) only live within one call
+- Bindings (e.g. \`card=I(...)\`) only live within one call — assigned ONLY via the \`binding=I(...)\`/\`binding=R(...)\` prefix, never via an \`id\` field inside nodeData (any \`id\`/\`name\` you put in nodeData is cosmetic and is ignored for referencing — it is NOT usable as a binding)
 - Use \`+\` to build paths: \`U(card+"/title", {content: "Hello"})\`
 - If using existing node IDs from previous tool results, pass them as strings (e.g. \`U("abc123", {...})\`)
 - The "document" binding is predefined and references the document root
