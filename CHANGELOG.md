@@ -8,6 +8,36 @@ While on `0.x`, minor bumps may include breaking changes.
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-07-19
+
+### Fixed
+- **Prototype-routing regression: agent drifting into native nodes on
+  create-new (FIR-45).** Even after `load_skill(prototype)`, some models kept
+  building screens from native `frame`/`rect`/`text` nodes (via `batch_design`)
+  instead of a single HTML `embed` — partly because they read the user's
+  "separate frames / каждый отдельным фреймом" as a native `frame` node. Routing
+  was prompt-only, so wording alone couldn't guarantee it. Added a **structural
+  backstop** (backend only, no new client tool):
+  - `resolveTaskPolicy(messages, slashSkill)` → `prototype | slides | native`,
+    armed only by strong signals — a `/prototype`|`/slides` slash command, or a
+    prior `load_skill(prototype|slides)` in the message history — so native-edit
+    tasks are never wrongly restricted.
+  - A **per-request embed-only `batch_design` schema** (`makeBatchDesignTool` /
+    `makeBatchDesignInputSchema`): under prototype/slides policy, any `I()`/`R()`
+    operation whose top-level node `type` isn't `"embed"` is rejected with an
+    actionable `InvalidToolInputError` (already surfaced to the model). A
+    type-less insert is treated as its effective native `"frame"` default (the
+    frontend defaults a missing `type` to `frame`), closing that bypass.
+  - Prompt/skill hardening: `prototype.md` gains a "NATIVE NODES ARE FORBIDDEN"
+    blocker + a pre-flight embed-only check; the system prompt clarifies that
+    "frame"/"фрейм" in a create-new request means a **screen** (an `embed`).
+  - Observability: `resolvedTaskPolicy` is now recorded in the trace payload.
+
+  Known limits (deferred to a per-turn policy design): a `/prototype` slash guard
+  only persists on turn 1 (organic `load_skill` entry persists across turns);
+  policy is sticky per session once a policy skill loads; `C()` copy of a native
+  node isn't guarded.
+
 ## [0.19.0] - 2026-07-19
 
 ### Added
