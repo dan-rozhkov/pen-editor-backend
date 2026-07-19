@@ -115,11 +115,13 @@ describe("loadSkills / getSkill", () => {
     expect(research!.content).toContain("design research agent");
   });
 
-  it("pins the design-default prompt rules in the prototype skill", async () => {
-    await loadSkills();
+  it("pins the design-default prompt rules in the prototype skill", () => {
     const proto = getSkill("prototype")!;
-    // Icons: Material Symbols is the default icon system; emoji-as-icons banned.
-    expect(proto.content).toContain("Material Symbols");
+    // Icons: Phosphor is the default icon system; emoji-as-icons banned.
+    expect(proto.content).toContain("Phosphor");
+    // Fonts/icons load via @import — <link> is stripped on the canvas.
+    expect(proto.content).toContain("@import");
+    expect(proto.content).not.toContain('rel="stylesheet"');
     // Typography: single-family default, no multi-family primary stacks table.
     expect(proto.content).toContain("ONE font family per design");
     expect(proto.content).not.toContain("Recommended font stacks");

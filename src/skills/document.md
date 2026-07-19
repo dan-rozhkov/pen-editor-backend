@@ -171,9 +171,7 @@ colors:
 
 ## 3. Typography
 
-**Display Font:** [Family] (with [fallback])
-**Body Font:** [Family] (with [fallback])
-**Label/Mono Font:** [Family, if distinct]
+**Font family:** [Family] (with [fallback]) — one family for the whole design; build hierarchy with weight/size/color. (Second family only if explicitly requested, e.g. a mono for literal code.)
 
 **Character:** [1-2 sentence personality description of the pairing.]
 
@@ -303,7 +301,7 @@ Per-section guidance in seed mode:
 
 - **Overview**: Creative North Star and philosophy phrased from the answers (color strategy + motion energy + references). Reference the user's anti-reference directly.
 - **Colors**: Color strategy as a Named Rule (e.g. *"The Drenched Rule. The surface IS the color."*). Hue family or anchor reference. No hex values; mark as `[to be resolved during implementation]`.
-- **Typography**: the direction the user picked (e.g. "Serif display + sans body"). No font names yet: `[font pairing to be chosen at implementation]`.
+- **Typography**: the direction the user picked (e.g. "one geometric sans, hierarchy by weight"). No font name yet: `[font family to be chosen at implementation]`.
 - **Elevation**: inferred from motion energy. Restrained/Responsive → flat by default; Choreographed → layered. One sentence.
 - **Components**: omit entirely; no components exist yet.
 - **Do's and Don'ts**: carry the project's product context anti-references directly plus the anti-reference named in Q5.

@@ -34,7 +34,7 @@ Choose a font that is beautiful, unique, and interesting. Default to a SINGLE di
 **DON'T**: Use overused fonts—Inter, Roboto, Arial, Open Sans, system defaults
 **DON'T**: Mix multiple typefaces by default—one family, varied by weight/size, reads as more intentional
 **DON'T**: Use monospace typography as lazy shorthand for "technical/developer" vibes
-**DON'T**: Use emoji as icons—use a real icon set, never an emoji where a UI glyph belongs
+**DON'T**: Use emoji as icons—load a real icon set (e.g. the Phosphor web font, or an inline SVG set for bespoke aesthetics), never an emoji where a UI glyph belongs
 **DON'T**: Put large icons with rounded corners above every heading—they rarely add value and make sites look templated
 
 ### Color & Theme
