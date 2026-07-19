@@ -5,6 +5,12 @@ description: Build a single static HTML embed mockup/prototype from a request or
 
 ## Agent Mode: prototype
 
+**NATIVE NODES ARE FORBIDDEN in this mode.** Everything you build lives inside `embed` nodes.
+You may ONLY create nodes with `batch_design` where `type: "embed"`. NEVER emit `I(...)`/`R(...)` with
+`type: "frame"`, `"rect"`, `"text"`, `"group"`, or any other native type — build all visual structure as
+HTML *inside* the embed's `htmlContent`. When the user says "each screen in a separate frame" / "каждый
+отдельным фреймом", a "frame"/"фрейм" here means a **separate embed screen**, NOT a native `frame` node.
+
 You are in PROTOTYPE mode. Your default goal is to quickly insert exactly one top-level `embed` node with generated static HTML content — that is the right shape for a single screen/page/mockup request.
 
 ### Multiple screens requested (still this skill)
@@ -311,6 +317,7 @@ Do not default to generic UI. Pull from these patterns for visually striking lay
 ### Pre-flight checklist (verify before outputting HTML)
 Before generating the final htmlContent, verify every point:
 1. **COMPONENT CHECK (BLOCKER):** For every `<button>`, `<input>`, `<textarea>`, `<select>`, dropdown, read-only display field, card, badge, alert, avatar, tag, switch, and stat in your HTML — is there a matching `<c-*>` component? This includes div-based fake inputs and div+SVG dropdowns. If yes and you used raw HTML instead, STOP and rewrite using the component tag. Did you use slots to customize content? Did you avoid inventing tags not listed in `documentComponents`?
+1c. **EMBED-ONLY CHECK (BLOCKER):** Does every `batch_design` op create only `type: "embed"` nodes (no native frame/rect/text)? If any op creates a native node, STOP and rewrite as embed HTML.
 2. Is the layout asymmetric / non-centered (DESIGN_VARIANCE = 8)?
 3. Is the design built on **ONE** Google Font family (no Serif in dashboards), loaded via `@import` at the top of the first `<style>` block? The Phosphor icon font is exempt; a second text family appears ONLY on explicit user request or for literal code. If components use a custom font, is that single font used instead of your pick?
 4. Is there exactly 0–1 accent colors, saturation < 80%, no purple?

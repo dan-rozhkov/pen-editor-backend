@@ -18,8 +18,9 @@ import {
   type Config,
 } from "../config.js";
 import { createModel } from "../ai/provider.js";
-import { penTools } from "../ai/tools.js";
+import { penTools, makeBatchDesignTool } from "../ai/tools.js";
 import { AGENT_MODES, buildSystemPrompt } from "../ai/system-prompt.js";
+import { resolveTaskPolicy } from "../ai/taskPolicy.js";
 import { getMCPTools } from "../ai/mcp.js";
 import { getWebTools } from "../ai/web-search.js";
 import { logSession, type LogStep } from "../logging.js";
@@ -165,6 +166,10 @@ export async function chatRoutes(
 
     // Detect slash command skill in last user message and resolve it
     let skillContent: string | undefined;
+    // Name of the skill named by the CURRENT message's slash command (e.g.
+    // "/prototype ..."), regardless of whether it resolved to a known skill —
+    // used by resolveTaskPolicy below to route batch_design's embed-only guard.
+    let slashSkillName: string | undefined;
     const lastMsg = messages[messages.length - 1];
     if (lastMsg && lastMsg.role === "user") {
       const parts = lastMsg.parts ?? lastMsg.content;
@@ -197,6 +202,7 @@ export async function chatRoutes(
       if (rawText && setText) {
         const detected = detectSkillCommand(rawText);
         if (detected) {
+          slashSkillName = detected.skillName;
           const skill = getSkill(detected.skillName);
           // Unknown "/..." (a pasted path, "/как дела") is not an error —
           // the message passes through as plain text.
@@ -276,6 +282,14 @@ export async function chatRoutes(
       normalizedMessages as unknown as UIMessage[],
     );
 
+    // Structural backstop for prototype/slides: swap in the embed-only
+    // batch_design variant so a native frame/rect/text create op is rejected
+    // at the schema level instead of relying on prompting alone. Computed
+    // from the incoming message history (including the synthetic
+    // load_skill/lookup_skill pair injected above for a slash command) plus
+    // the current slash command name, if any.
+    const taskPolicy = resolveTaskPolicy({ messages, slashSkillName });
+
     const mcpTools = await getMCPTools(config);
     const tools = {
       ...penTools,
@@ -283,6 +297,9 @@ export async function chatRoutes(
       ...mcpTools,
       ...getSkillTools(),
     } as ToolSet;
+    if (taskPolicy !== "native") {
+      tools.batch_design = makeBatchDesignTool({ embedOnly: true });
+    }
     const maxSteps = MAX_AGENT_STEPS;
 
     // Abort the LLM stream when the client disconnects mid-response, so we
@@ -311,6 +328,7 @@ export async function chatRoutes(
         messages: messages as unknown[],
         steps,
         systemPromptHash,
+        resolvedTaskPolicy: taskPolicy,
       },
       streamError,
       inputTokens: usage?.inputTokens ?? 0,

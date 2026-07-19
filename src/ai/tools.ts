@@ -41,9 +41,15 @@ function stripWrapperNoiseLines(input: string): string {
   return lines.join("\n");
 }
 
-function countBatchDesignOperations(operations: string): number {
+// Splits a batch_design `operations` script into its individual top-level
+// statements (a newline ends a statement only at top level — outside strings
+// and unbalanced (), {}, [] — so a multi-line value still counts as one
+// statement), skipping blank/comment/wrapper-noise lines. Exported so both
+// the op-count check and the embed-only node-type guard (below) can walk the
+// same real statements without duplicating the scanner.
+export function splitBatchDesignStatements(operations: string): string[] {
   operations = stripWrapperNoiseLines(operations);
-  let count = 0;
+  const statements: string[] = [];
   let current = "";
   let parenDepth = 0;
   let braceDepth = 0;
@@ -51,7 +57,7 @@ function countBatchDesignOperations(operations: string): number {
   let escaped = false;
   let stringDelimiter: '"' | "'" | "`" | null = null;
 
-  const countStatement = (text: string) => {
+  const pushStatement = (text: string) => {
     const trimmed = text.trim();
     if (
       trimmed &&
@@ -59,7 +65,7 @@ function countBatchDesignOperations(operations: string): number {
       !trimmed.startsWith("#") &&
       !isWrapperNoiseLine(trimmed)
     ) {
-      count++;
+      statements.push(trimmed);
     }
   };
 
@@ -96,49 +102,343 @@ function countBatchDesignOperations(operations: string): number {
       braceDepth === 0 &&
       bracketDepth === 0
     ) {
-      countStatement(current);
+      pushStatement(current);
       current = "";
     }
   }
 
-  countStatement(current);
-  return count;
+  pushStatement(current);
+  return statements;
 }
 
-const batchDesignInputSchema = z
-  .object({
-    operations: z.string().optional(),
-    // Compatibility aliases for models that occasionally emit wrong key names.
-    design: z.string().optional(),
-    script: z.string().optional(),
-    batch: z.string().optional(),
-  })
-  .transform((input, ctx) => {
-    const operations = input.operations ?? input.design ?? input.script ?? input.batch;
+// ── Embed-only guard (prototype/slides task policy) ────────────────────────
+//
+// In prototype/slides task policy the agent must build screens as a single
+// `embed` node with HTML inside, never native frame/rect/text/etc nodes.
+// Prompting alone drifts, so this is a structural backstop: given one
+// statement from splitBatchDesignStatements, find the top-level node type an
+// I()/R() operation would create. Same-turn limitation: this only sees
+// operations inside ONE batch_design call — a model that creates a native
+// node from a *different* tool call (there isn't one) or re-declares intent
+// across calls isn't caught here; each batch_design call is validated
+// independently.
 
-    if (!operations || !operations.trim()) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'Required string field "operations" is missing or empty.',
-        path: ["operations"],
-      });
-      return z.NEVER;
+// Scans `text` from `fromIndex` (already inside an operator's open paren, so
+// parenDepth starts at 1) for the first unquoted top-level `{` — the start of
+// the operation's props object. Returns -1 if the call closes without one.
+function findFirstTopLevelBrace(text: string, fromIndex: number): number {
+  let parenDepth = 1;
+  let escaped = false;
+  let stringDelimiter: '"' | "'" | "`" | null = null;
+
+  for (let i = fromIndex; i < text.length; i++) {
+    const ch = text[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (stringDelimiter) {
+      if (ch === stringDelimiter) stringDelimiter = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      stringDelimiter = ch;
+      continue;
+    }
+    if (ch === "(") {
+      parenDepth++;
+      continue;
+    }
+    if (ch === ")") {
+      parenDepth--;
+      if (parenDepth <= 0) return -1;
+      continue;
+    }
+    if (ch === "{") return i;
+  }
+  return -1;
+}
+
+// Returns the index of the `}` matching the `{` at `openIndex`, scanning with
+// the same string/escape/paren/brace/bracket awareness as the statement
+// splitter above.
+function findMatchingBrace(text: string, openIndex: number): number {
+  // Only brace balance matters for finding the matching `}` — unbalanced
+  // (), [] inside the object (e.g. a function-call-shaped value) still nest
+  // inside braces, so tracking brace depth alone is sufficient once strings
+  // are excluded.
+  let braceDepth = 0;
+  let escaped = false;
+  let stringDelimiter: '"' | "'" | "`" | null = null;
+
+  for (let i = openIndex; i < text.length; i++) {
+    const ch = text[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (stringDelimiter) {
+      if (ch === stringDelimiter) stringDelimiter = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      stringDelimiter = ch;
+      continue;
+    }
+    if (ch === "{") braceDepth++;
+    else if (ch === "}") {
+      braceDepth--;
+      if (braceDepth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+// Splits `text` on top-level commas only — not commas nested inside a deeper
+// {}, [], () or string — so e.g. `type: "embed", fills: [{type: "solid"}]`
+// splits into two chunks (`type: "embed"` and `fills: [...]`), never
+// exposing the nested `type` inside the fills array as a top-level chunk.
+function splitTopLevelByComma(text: string): string[] {
+  const chunks: string[] = [];
+  let current = "";
+  let parenDepth = 0;
+  let braceDepth = 0;
+  let bracketDepth = 0;
+  let escaped = false;
+  let stringDelimiter: '"' | "'" | "`" | null = null;
+
+  for (const ch of text) {
+    if (!escaped && !stringDelimiter && ch === "," && parenDepth === 0 && braceDepth === 0 && bracketDepth === 0) {
+      chunks.push(current);
+      current = "";
+      continue;
+    }
+    current += ch;
+
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (stringDelimiter) {
+      if (ch === stringDelimiter) stringDelimiter = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      stringDelimiter = ch;
+      continue;
     }
 
-    const operationCount = countBatchDesignOperations(operations);
-    if (operationCount > MAX_BATCH_DESIGN_OPERATIONS) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message:
-          `Too many operations (${operationCount}). Maximum is ${MAX_BATCH_DESIGN_OPERATIONS}. ` +
-          `Split the work into multiple sequential batch_design calls.`,
-        path: ["operations"],
-      });
-      return z.NEVER;
-    }
+    if (ch === "(") parenDepth++;
+    else if (ch === ")") parenDepth--;
+    else if (ch === "{") braceDepth++;
+    else if (ch === "}") braceDepth--;
+    else if (ch === "[") bracketDepth++;
+    else if (ch === "]") bracketDepth--;
+  }
+  chunks.push(current);
+  return chunks;
+}
 
-    return { operations };
+const TOP_LEVEL_TYPE_KEY_RE =
+  /^\s*(?:"type"|'type'|type)\s*:\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/;
+
+// Shared by isCreateOp and nodeTypeOfCreateOp so the two can't drift: matches
+// an optional `binding=` prefix followed by the `I`/`R` operator and its
+// opening paren — the only operators that create a node.
+const CREATE_OP_RE = /^(?:[A-Za-z_$][\w$]*\s*=\s*)?(I|R)\s*\(/;
+
+// True iff `statement` is a node-creating `I(...)`/`R(...)` operation (with
+// or without a `binding=` prefix). C/U/D/M/G/snapshot/etc are all false —
+// this only tells you whether the statement CREATES a node, not what type;
+// see nodeTypeOfCreateOp for the (possibly absent) explicit type.
+export function isCreateOp(statement: string): boolean {
+  return CREATE_OP_RE.test(statement.trim());
+}
+
+// Given a single batch_design statement (as produced by
+// splitBatchDesignStatements), returns the top-level node `type` an
+// `I(...)`/`R(...)` create operation would produce, or null if the statement
+// isn't a node-creating I/R call (C/U/D/M/G/snapshot/etc), or has no
+// top-level `type` key. A `type` nested inside a paint/fill/effect object
+// (e.g. `fills: [{type: "solid", ...}]`) is deliberately NOT matched — only
+// the props object's OWN top-level `type` key counts. Note: a create op with
+// NO explicit type key returns null here — callers that need the EFFECTIVE
+// type (e.g. the embed-only guard, where the frontend executor defaults a
+// missing type to a native "frame") must apply that default themselves via
+// isCreateOp + `?? "frame"`; this function's contract is "the type as
+// literally written", not "the type that would end up on canvas".
+export function nodeTypeOfCreateOp(statement: string): string | null {
+  const trimmed = statement.trim();
+  const opMatch = trimmed.match(CREATE_OP_RE);
+  if (!opMatch) return null;
+
+  const objStart = findFirstTopLevelBrace(trimmed, opMatch[0].length);
+  if (objStart === -1) return null;
+
+  const objEnd = findMatchingBrace(trimmed, objStart);
+  if (objEnd === -1) return null;
+
+  const interior = trimmed.slice(objStart + 1, objEnd);
+  for (const chunk of splitTopLevelByComma(interior)) {
+    const match = chunk.match(TOP_LEVEL_TYPE_KEY_RE);
+    if (match) {
+      return match[1].slice(1, -1).replace(/\\(.)/g, "$1");
+    }
+  }
+  return null;
+}
+
+// Factory so a per-request variant (prototype/slides task policy) can add the
+// embed-only guard on top of the same validation the default tool uses,
+// without duplicating the alias/empty/op-count checks.
+export function makeBatchDesignInputSchema(opts?: { embedOnly?: boolean }) {
+  const embedOnly = opts?.embedOnly ?? false;
+
+  return z
+    .object({
+      operations: z.string().optional(),
+      // Compatibility aliases for models that occasionally emit wrong key names.
+      design: z.string().optional(),
+      script: z.string().optional(),
+      batch: z.string().optional(),
+    })
+    .transform((input, ctx) => {
+      const operations = input.operations ?? input.design ?? input.script ?? input.batch;
+
+      if (!operations || !operations.trim()) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Required string field "operations" is missing or empty.',
+          path: ["operations"],
+        });
+        return z.NEVER;
+      }
+
+      const statements = splitBatchDesignStatements(operations);
+      if (statements.length > MAX_BATCH_DESIGN_OPERATIONS) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            `Too many operations (${statements.length}). Maximum is ${MAX_BATCH_DESIGN_OPERATIONS}. ` +
+            `Split the work into multiple sequential batch_design calls.`,
+          path: ["operations"],
+        });
+        return z.NEVER;
+      }
+
+      // Structural backstop for prototype/slides task policy: the agent must
+      // build every screen as a single embed with HTML inside, never native
+      // frame/rect/text/etc nodes. Same-turn limitation: only statements
+      // inside THIS batch_design call are checked.
+      if (embedOnly) {
+        for (const statement of statements) {
+          if (!isCreateOp(statement)) continue; // U/D/G/C/M — never creates a node
+          // A create op with no explicit `type` key isn't "no type" on
+          // canvas — the frontend executor defaults a missing type to a
+          // native frame (nodeMapper.ts: `mapNodeType(data.type ?? "frame")`).
+          // So a type-less insert must be treated as creating a frame here too.
+          const effectiveType = nodeTypeOfCreateOp(statement) ?? "frame";
+          if (effectiveType !== "embed") {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message:
+                `Prototype/slides flow is embed-only: batch_design may not create a native "${effectiveType}" node. ` +
+                `Every screen must be a single top-level embed — I(document, {type: "embed", name: "...", htmlContent: "..."}). ` +
+                `Do not create frame/rect/text/etc. nodes; put all visual structure inside the embed's HTML. ` +
+                `If the user said "separate frames", make each screen its OWN embed, not a native frame.`,
+              path: ["operations"],
+            });
+            return z.NEVER;
+          }
+        }
+      }
+
+      return { operations };
+    });
+}
+
+const BATCH_DESIGN_DESCRIPTION = `Execute batch operations on the .pen node tree. Accepts a mini-script string with operations:
+
+**Operations:**
+- \`binding=I(parent, nodeData)\` — Insert new node. Works both for a freshly-created parent binding AND for adding a child to an already-existing node: pass the existing node's id/path as \`parent\` (e.g. \`I("existingFrameId", {...})\` or \`I(card+"/body", {...})\`). This is the ONLY way to add children to an existing node — \`U()\` cannot add, remove, or reorder children.
+- \`binding=C(sourceId, parent, overrides)\` — Copy node (\`positionDirection\`/\`positionPadding\` for placement)
+- \`U(path, updateData)\` — Update properties (cannot change id, type, or children)
+- \`binding=R(path, newNodeData)\` — Replace node entirely
+- \`M(nodeId, parent?, index?)\` — Move node
+- \`D(nodeId)\` — Delete node
+- \`G(nodeId, "ai"|"stock", prompt)\` — Generate/find image and apply as fill to frame/rectangle
+
+**Rules:**
+- Max ${MAX_BATCH_DESIGN_OPERATIONS} operations per call
+- If the task needs more than ${MAX_BATCH_DESIGN_OPERATIONS} operations, split it into multiple sequential \`batch_design\` calls
+- Bindings (e.g. \`card=I(...)\`) only live within one call — assigned ONLY via the \`binding=I(...)\`/\`binding=R(...)\` prefix, never via an \`id\` field inside nodeData (any \`id\`/\`name\` you put in nodeData is cosmetic and is ignored for referencing — it is NOT usable as a binding)
+- Use \`+\` to build paths: \`U(card+"/title", {content: "Hello"})\`
+- If using existing node IDs from previous tool results, pass them as strings (e.g. \`U("abc123", {...})\`)
+- The "document" binding is predefined and references the document root
+- Insert/Copy/Replace MUST have a binding name
+- No "image" node type — use G() on frame/rectangle to apply image fills
+- \`placeholder: true\` marks frames being actively designed
+- Text has no color by default — set \`fill\` property
+- **Text links (hyperlinks):** write a text node's \`content\` (or \`text\`) as a markdown link \`[label](https://...)\` — optionally \`[label](https://... "title")\` — to turn the WHOLE node into a hyperlink (Figma's Link attribute; there's no per-character sub-string link, only a whole text node). Renders with an underline and a default link-blue color, unless the node also has its own \`fill\`/\`fills\`, which takes precedence. In exported HTML it becomes a real \`<a href target="_blank" rel="noopener">\`. Example: \`I(parent, {type: "text", name: "CTA", content: "[Sign up now](https://example.com/signup)"})\`. Remove a link by re-setting \`content\`/\`text\` to plain (non-markdown) text, or clear it directly with \`U("abc", {link: null})\`.
+- **Fills (single vs stack):** A single \`fill: "#hex"\` or \`fill: "$--var"\` still works for one solid/variable color. For Figma-style multiple/layered fills, pass a \`fills\` array (bottom-to-top — last entry renders on top) of paint objects:
+  - Solid: \`{type: "solid", color: "#hex" | "$--var", opacity?: 0-1, visible?: bool, blendMode?: string}\`
+  - Gradient: \`{type: "gradient", gradient: {type: "linear"|"radial", stops: [{color, position}], startX, startY, endX, endY}}\`
+  - Image: \`{type: "image", url: "https://...", mode: "fill"|"fit"|"stretch"}\`
+  - Pattern (repeating image tile, for textures/grids/decorative backgrounds; rectangle/frame/ellipse only): \`{type: "pattern", url: "https://...", scale?: number (tile scale factor, default 1), spacingX?: px, spacingY?: px (gaps between tiles), offsetX?: px, offsetY?: px (whole-pattern shift), rowOffset?: 0-1 (fraction of a cell each row shifts horizontally — 0.5 gives a brick stagger)}\`
+  - Video (a playing .mp4/.webm video as the fill; rectangle/frame/ellipse only): \`{type: "video", src: "https://... or data:video/... — a YouTube URL (youtube.com/watch?v=, youtu.be/, youtube.com/shorts/) also works", mode: "fill"|"fit"|"stretch", autoplay?: bool (default true), loop?: bool (default true), muted?: bool (default true), crop?: {x, y, width, height} (0-1 normalized)}\`. Same fit/crop model as an image fill. NOTE: browsers block unmuted autoplay, so an autoplaying video is effectively muted unless the user unmutes it — keep \`muted: true\` (the default) when \`autoplay\` is on. A YouTube \`src\` renders as its static thumbnail on the canvas (YouTube can't be played inside the editor) but exports/previews as a real playing embedded player.
+  Do NOT pass an \`id\` on paints — ids are generated automatically. When you set \`fills\`, it is the single source of truth and any single \`fill\` on that node is ignored. \`$--var\` references inside a solid paint's \`color\` resolve and bind exactly like a single \`fill\`. Example: \`U("abc", {fills: [{type: "solid", color: "$--background"}, {type: "image", url: "https://...", mode: "fill"}]})\`
+- **Strokes (single vs stack):** a single \`stroke: "#hex" | "$--var"\` still works for one solid/variable stroke color (paired with \`strokeThickness\`/\`strokeWidth\`). For Figma-style multiple/layered strokes — most commonly a gradient border — pass a \`strokes\` array (bottom-to-top, same paint shapes as \`fills\`, but ONLY \`solid\` and \`gradient\` are supported on a stroke — no image/pattern/video): \`{type: "solid", color: "#hex" | "$--var", opacity?: 0-1, visible?: bool, blendMode?: string}\` or \`{type: "gradient", gradient: {type: "linear"|"radial", stops: [{color, position}], startX, startY, endX, endY}}\`. Stroke GEOMETRY (\`strokeThickness\`/\`strokeWidth\`, \`strokeAlign\`, per-side weights) is a single property of the node, not of each paint — Figma's model has one shared weight/align for all stroke paints, which composite in the same geometry (later paints drawn over earlier ones). Do NOT pass a per-side stroke together with a gradient paint — that combination is unsupported (undefined behavior). Do NOT pass an \`id\` on paints. When you set \`strokes\`, it is the single source of truth and any single \`stroke\` on that node is ignored. Example — a gradient border: \`U("abc", {strokes: [{type: "gradient", gradient: {type: "linear", stops: [{color: "#7c3aed", position: 0}, {color: "#06b6d4", position: 1}], startX: 0, startY: 0, endX: 1, endY: 0}}], strokeThickness: 2, strokeAlign: "inside"})\`
+- **Effects (shadow/blur stack):** pass an \`effects\` array (bottom-to-top, like \`fills\`) on any node (rectangle/frame/ellipse/text) to add shadows and blur:
+  - Drop shadow (cast outward, behind the node): \`{type: "shadow", shadowType: "outer", color: "#hex", offset: {x, y}, blur, spread}\`
+  - Inner shadow (cast inward from the edges, e.g. for pressed/inset states): \`{type: "shadow", shadowType: "inner", color: "#hex", offset: {x, y}, blur, spread}\` — renders as CSS \`box-shadow: inset ...\` on export
+  - Layer blur (blurs the node itself): \`{type: "blur", radius}\`
+  - Background blur (a.k.a. backdrop blur — blurs whatever is rendered BEHIND the node instead of the node itself; combine with a semi-transparent fill for a glassmorphism/iOS "frosted glass" card): \`{type: "background-blur", radius}\`
+  Multiple shadows (of either kind) and multiple blurs (layer and/or background) can coexist in the same stack; each entry accepts an optional \`visible: bool\` (defaults true). Setting \`effects\` replaces the whole stack. Example: \`U("abc", {effects: [{type: "shadow", shadowType: "outer", color: "#00000040", offset: {x: 0, y: 4}, blur: 8, spread: 0}, {type: "shadow", shadowType: "inner", color: "#00000080", offset: {x: 0, y: 2}, blur: 4, spread: 0}]})\`. Glassmorphism card example: \`U("abc", {fills: [{type: "solid", color: "#ffffff", opacity: 0.4}], effects: [{type: "background-blur", radius: 16}]})\`
+- **Corner radius (frame/rectangle):** \`cornerRadius\` accepts either a single number for a uniform radius (\`U("abc", {cornerRadius: 12})\`) OR an array of per-corner radii in \`[topLeft, topRight, bottomRight, bottomLeft]\` order for independent corners (\`U("abc", {cornerRadius: [12, 12, 0, 0]})\`). CSS-style shorthand lengths (1, 2, or 3 values) are also accepted. Setting one form clears the other.
+- **Corner smoothing / squircle (frame/rectangle):** \`cornerSmoothing\` is a single number, 0-1 (a fraction, NOT 0-100), applied uniformly to every rounded corner of the shape — it works alongside independent per-corner radii. \`0\` (or unset) is a plain circular-arc corner (default look). Higher values morph the corner into a continuous "squircle" curve; \`~0.6\` approximates the iOS app-icon look. Has no visible effect where \`cornerRadius\`/\`cornerRadiusPerCorner\` is 0. Example: \`U("abc", {cornerRadius: 24, cornerSmoothing: 0.6})\`.
+- **Star (polygon node):** a \`type: "polygon"\` node with \`innerRadiusRatio\` set (0-1, exclusive of 1) renders as a star instead of a regular polygon — \`sides\` becomes the number of rays. Only \`sides\`/\`innerRadiusRatio\` need to be given; \`points\` is auto-generated (regenerated on update too, as long as \`points\` itself isn't also passed). \`innerRadiusRatio\` close to 0 gives long thin spikes; close to 1 gives a barely-notched polygon; \`0.5\` is a typical 5-point star look. Example: \`I("abc", {type: "polygon", name: "Rating Star", width: 24, height: 24, sides: 5, innerRadiusRatio: 0.5, fill: "#f5b700"})\`. A plain regular polygon (hexagon, etc.) just omits \`innerRadiusRatio\`, same as before.
+- **Ellipse arc / donut (pie charts, progress rings):** an ellipse accepts \`startAngle\` (degrees, 0 = rightmost point, clockwise, default 0), \`sweepAngle\` (degrees, clamped to [-360, 360], default 360 = full ellipse), and \`innerRadiusRatio\` (0-1, donut hole radius as a ratio of the outer radius, default 0 = solid pie/full ellipse). A 90° pie wedge: \`{startAngle: 0, sweepAngle: 90}\`. A full donut ring: \`{innerRadiusRatio: 0.6}\` (sweepAngle stays 360). A partial "thick arc" (donut + partial sweep): combine both. Example: \`I("abc", {type: "ellipse", name: "Progress Ring", width: 100, height: 100, startAngle: -90, sweepAngle: 240, innerRadiusRatio: 0.7, fill: "#3366ff"})\`.
+- **Line arrowheads:** a line accepts \`startCap\`/\`endCap\`, each one of \`"none"\` (default), \`"arrow"\` (open chevron), \`"triangle"\` (filled arrowhead), \`"circle"\`, or \`"bar"\` (perpendicular stop, like a dimension line), sized relative to \`strokeWidth\`. \`startCap\` is at \`(points[0], points[1])\`, \`endCap\` at \`(points[2], points[3])\`. Example, a one-way arrow: \`U("abc", {endCap: "triangle"})\`; a dimension line: \`U("abc", {startCap: "bar", endCap: "bar"})\`.
+- \`fill_container\` only valid when parent has flexbox layout
+- **Wrap (card grids / tag lists):** set \`wrap: true\` on a frame with layout to let children flow onto new lines once the main axis runs out of space. Use \`rowGap\`/\`columnGap\` for independent spacing on each axis (row-gap = space between wrapped lines, column-gap = space between items in a row) — either falls back to \`gap\` when unset, so \`gap\` alone still applies to both axes. A wrapped frame typically has a fixed/fill \`width\` and \`height: "fit_content"\` so it hugs the total height of all wrapped rows. Example: \`U("cardGrid", {wrap: true, columnGap: 16, rowGap: 24})\`
+- **Min/max sizing (any child in an auto-layout frame):** \`minWidth\`/\`maxWidth\`/\`minHeight\`/\`maxHeight\` (numbers, in px) clamp a child's resolved size regardless of its sizing mode (fixed/fill_container/fit_content) — e.g. a \`width: "fill_container"\` card that shouldn't grow past 320px: \`U("card", {maxWidth: 320})\`
+- Variable references must use exact names from \`get_variables\` (including leading \`--\` and dashes), e.g. \`"$--ck-blue-500"\`
+- **Constraints (resize behavior, Figma-style):** \`constraints: {horizontal, vertical}\` on a child controls how it repositions/resizes when its parent frame is resized. Each axis is one of \`"min"\` (pinned to left/top, fixed size — the default when unset), \`"max"\` (pinned to right/bottom, fixed size), \`"center"\` (keeps its offset from the parent's center), \`"stretch"\` (left & right / top & bottom both pinned — size grows/shrinks with the parent), or \`"scale"\` (position and size both scale with the parent). Only meaningful for a direct child of a frame WITHOUT auto-layout — auto-layout frames size children via flex rules and ignore constraints. Example: \`U("abc", {constraints: {horizontal: "stretch", vertical: "min"}})\`
+- **Layer masks (Figma-style):** set \`isMask: true\` on a node inside a frame/group to turn it into a mask that clips its siblings rendered ABOVE it (later in that same parent's children — the mask must be created/moved BEFORE the content it should clip so it ends up lower in z-order) up to the next masking sibling or the end of the group. The masker itself is not drawn — only its shape clips. Works for vector shapes (rectangle/ellipse/path/polygon — clips to their outline) as well as text/image-filled nodes (clips to that node's own rendered bounds/shape; soft per-pixel transparency is not yet respected, so prefer a vector shape when you need a precise cutout). Unset with \`isMask: false\` (or omit) to restore normal rendering. Example — a photo cropped to a circle: \`g=I("abc", {type: "frame", name: "Avatar", width: 80, height: 80, children: [{type: "ellipse", name: "Mask", width: 80, height: 80, isMask: true}, {type: "rectangle", name: "Photo", width: 80, height: 80}]})\` then \`G(photoId, "stock", "portrait photo")\`.
+- **Lists (bullet/numbered) on a text node:** a text node's \`text\` is \`\\n\`-joined paragraphs; give it a parallel \`paragraphs\` array (same length as the number of \`\\n\`-separated lines — pad plain paragraphs with \`{}\`) where each entry is \`{listType?: "bullet"|"number"|"none", indentLevel?: number}\`. \`indentLevel\` (0 = top level) nests the item and restarts numbered counters per nested level (a bullet/plain paragraph at the same or shallower level resets a deeper numbered run; returning to a shallower level resumes its own counter). Omit \`paragraphs\`, or use \`{}\`/\`{listType: "none"}\`, for plain (non-list) paragraphs. Example — a heading, a 3-item bullet list, another heading, then a numbered list with one nested sub-step: \`I("doc", {type: "text", name: "Notes", text: "Groceries\\nMilk\\nEggs\\nBread\\nSteps\\nMix\\nDetails\\nBake", paragraphs: [{}, {listType:"bullet"}, {listType:"bullet"}, {listType:"bullet"}, {}, {listType:"number"}, {listType:"number", indentLevel:1}, {listType:"number"}]})\` (paragraphs one-to-one with the 8 \`\\n\`-separated lines). \`U("abc", {paragraphs: [...]})\` re-tags an existing text node's paragraphs the same way (array length should match the node's current line count).
+- **Paragraph spacing (text node):** \`paragraphSpacing\` (number, px, default 0) adds extra vertical gap after every \`\\n\`-separated paragraph but the last (a 3-paragraph node gets 2 gaps). Included in auto-size/hug height measurement, so a text node with \`textWidthMode: "auto"\` or \`"fixed"\` (auto-height) grows to fit it automatically. Example: \`U("abc", {paragraphSpacing: 16})\`.
+- **Variable font axes (text node):** for a variable font (e.g. \`"Inter"\`, \`"Roboto Flex"\`, \`"Recursive"\`, \`"Fraunces"\`, \`"Source Sans 3"\`, \`"Source Serif 4"\`, \`"Newsreader"\`), \`fontVariations\` is an object of OpenType axis tag → numeric value, e.g. \`{wght: 530}\` for a fine-grained weight between the standard 100-900 steps, or \`{wght: 700, wdth: 87, opsz: 24}\` to combine weight/width/optical-size on a font that exposes those axes. Values are clamped by the browser to each axis's registered min/max. When \`wght\` is set it takes precedence over the static \`fontWeight\` field. Example: \`U("abc", {fontVariations: {wght: 450}})\`.
+
+**Example:**
+\`\`\`
+card=I("parentId", {type: "frame", name: "Account Card", layout: "vertical", padding: 16, gap: 12, width: 300, height: "fit_content"})
+U(card+"/title", {content: "Account Details"})
+\`\`\``;
+
+// Factory so a per-request embed-only variant (prototype/slides task policy)
+// can be built with the SAME description/behavior as the default tool, just
+// swapping the input schema. No `execute` here either — batch_design stays
+// client-executed regardless of variant.
+export function makeBatchDesignTool(opts?: { embedOnly?: boolean }) {
+  return tool({
+    description: BATCH_DESIGN_DESCRIPTION,
+    inputSchema: makeBatchDesignInputSchema(opts).describe(
+      'Tool input object. Required canonical field: {"operations":"..."}; aliases design/script/batch are accepted for robustness.',
+    ),
   });
+}
 
 export const penTools = {
   // ── Reading & Navigation ──────────────────────────────────────────
@@ -262,68 +562,7 @@ export const penTools = {
 
   // ── Modification ──────────────────────────────────────────────────
 
-  batch_design: tool({
-    description: `Execute batch operations on the .pen node tree. Accepts a mini-script string with operations:
-
-**Operations:**
-- \`binding=I(parent, nodeData)\` — Insert new node. Works both for a freshly-created parent binding AND for adding a child to an already-existing node: pass the existing node's id/path as \`parent\` (e.g. \`I("existingFrameId", {...})\` or \`I(card+"/body", {...})\`). This is the ONLY way to add children to an existing node — \`U()\` cannot add, remove, or reorder children.
-- \`binding=C(sourceId, parent, overrides)\` — Copy node (\`positionDirection\`/\`positionPadding\` for placement)
-- \`U(path, updateData)\` — Update properties (cannot change id, type, or children)
-- \`binding=R(path, newNodeData)\` — Replace node entirely
-- \`M(nodeId, parent?, index?)\` — Move node
-- \`D(nodeId)\` — Delete node
-- \`G(nodeId, "ai"|"stock", prompt)\` — Generate/find image and apply as fill to frame/rectangle
-
-**Rules:**
-- Max ${MAX_BATCH_DESIGN_OPERATIONS} operations per call
-- If the task needs more than ${MAX_BATCH_DESIGN_OPERATIONS} operations, split it into multiple sequential \`batch_design\` calls
-- Bindings (e.g. \`card=I(...)\`) only live within one call — assigned ONLY via the \`binding=I(...)\`/\`binding=R(...)\` prefix, never via an \`id\` field inside nodeData (any \`id\`/\`name\` you put in nodeData is cosmetic and is ignored for referencing — it is NOT usable as a binding)
-- Use \`+\` to build paths: \`U(card+"/title", {content: "Hello"})\`
-- If using existing node IDs from previous tool results, pass them as strings (e.g. \`U("abc123", {...})\`)
-- The "document" binding is predefined and references the document root
-- Insert/Copy/Replace MUST have a binding name
-- No "image" node type — use G() on frame/rectangle to apply image fills
-- \`placeholder: true\` marks frames being actively designed
-- Text has no color by default — set \`fill\` property
-- **Text links (hyperlinks):** write a text node's \`content\` (or \`text\`) as a markdown link \`[label](https://...)\` — optionally \`[label](https://... "title")\` — to turn the WHOLE node into a hyperlink (Figma's Link attribute; there's no per-character sub-string link, only a whole text node). Renders with an underline and a default link-blue color, unless the node also has its own \`fill\`/\`fills\`, which takes precedence. In exported HTML it becomes a real \`<a href target="_blank" rel="noopener">\`. Example: \`I(parent, {type: "text", name: "CTA", content: "[Sign up now](https://example.com/signup)"})\`. Remove a link by re-setting \`content\`/\`text\` to plain (non-markdown) text, or clear it directly with \`U("abc", {link: null})\`.
-- **Fills (single vs stack):** A single \`fill: "#hex"\` or \`fill: "$--var"\` still works for one solid/variable color. For Figma-style multiple/layered fills, pass a \`fills\` array (bottom-to-top — last entry renders on top) of paint objects:
-  - Solid: \`{type: "solid", color: "#hex" | "$--var", opacity?: 0-1, visible?: bool, blendMode?: string}\`
-  - Gradient: \`{type: "gradient", gradient: {type: "linear"|"radial", stops: [{color, position}], startX, startY, endX, endY}}\`
-  - Image: \`{type: "image", url: "https://...", mode: "fill"|"fit"|"stretch"}\`
-  - Pattern (repeating image tile, for textures/grids/decorative backgrounds; rectangle/frame/ellipse only): \`{type: "pattern", url: "https://...", scale?: number (tile scale factor, default 1), spacingX?: px, spacingY?: px (gaps between tiles), offsetX?: px, offsetY?: px (whole-pattern shift), rowOffset?: 0-1 (fraction of a cell each row shifts horizontally — 0.5 gives a brick stagger)}\`
-  - Video (a playing .mp4/.webm video as the fill; rectangle/frame/ellipse only): \`{type: "video", src: "https://... or data:video/... — a YouTube URL (youtube.com/watch?v=, youtu.be/, youtube.com/shorts/) also works", mode: "fill"|"fit"|"stretch", autoplay?: bool (default true), loop?: bool (default true), muted?: bool (default true), crop?: {x, y, width, height} (0-1 normalized)}\`. Same fit/crop model as an image fill. NOTE: browsers block unmuted autoplay, so an autoplaying video is effectively muted unless the user unmutes it — keep \`muted: true\` (the default) when \`autoplay\` is on. A YouTube \`src\` renders as its static thumbnail on the canvas (YouTube can't be played inside the editor) but exports/previews as a real playing embedded player.
-  Do NOT pass an \`id\` on paints — ids are generated automatically. When you set \`fills\`, it is the single source of truth and any single \`fill\` on that node is ignored. \`$--var\` references inside a solid paint's \`color\` resolve and bind exactly like a single \`fill\`. Example: \`U("abc", {fills: [{type: "solid", color: "$--background"}, {type: "image", url: "https://...", mode: "fill"}]})\`
-- **Strokes (single vs stack):** a single \`stroke: "#hex" | "$--var"\` still works for one solid/variable stroke color (paired with \`strokeThickness\`/\`strokeWidth\`). For Figma-style multiple/layered strokes — most commonly a gradient border — pass a \`strokes\` array (bottom-to-top, same paint shapes as \`fills\`, but ONLY \`solid\` and \`gradient\` are supported on a stroke — no image/pattern/video): \`{type: "solid", color: "#hex" | "$--var", opacity?: 0-1, visible?: bool, blendMode?: string}\` or \`{type: "gradient", gradient: {type: "linear"|"radial", stops: [{color, position}], startX, startY, endX, endY}}\`. Stroke GEOMETRY (\`strokeThickness\`/\`strokeWidth\`, \`strokeAlign\`, per-side weights) is a single property of the node, not of each paint — Figma's model has one shared weight/align for all stroke paints, which composite in the same geometry (later paints drawn over earlier ones). Do NOT pass a per-side stroke together with a gradient paint — that combination is unsupported (undefined behavior). Do NOT pass an \`id\` on paints. When you set \`strokes\`, it is the single source of truth and any single \`stroke\` on that node is ignored. Example — a gradient border: \`U("abc", {strokes: [{type: "gradient", gradient: {type: "linear", stops: [{color: "#7c3aed", position: 0}, {color: "#06b6d4", position: 1}], startX: 0, startY: 0, endX: 1, endY: 0}}], strokeThickness: 2, strokeAlign: "inside"})\`
-- **Effects (shadow/blur stack):** pass an \`effects\` array (bottom-to-top, like \`fills\`) on any node (rectangle/frame/ellipse/text) to add shadows and blur:
-  - Drop shadow (cast outward, behind the node): \`{type: "shadow", shadowType: "outer", color: "#hex", offset: {x, y}, blur, spread}\`
-  - Inner shadow (cast inward from the edges, e.g. for pressed/inset states): \`{type: "shadow", shadowType: "inner", color: "#hex", offset: {x, y}, blur, spread}\` — renders as CSS \`box-shadow: inset ...\` on export
-  - Layer blur (blurs the node itself): \`{type: "blur", radius}\`
-  - Background blur (a.k.a. backdrop blur — blurs whatever is rendered BEHIND the node instead of the node itself; combine with a semi-transparent fill for a glassmorphism/iOS "frosted glass" card): \`{type: "background-blur", radius}\`
-  Multiple shadows (of either kind) and multiple blurs (layer and/or background) can coexist in the same stack; each entry accepts an optional \`visible: bool\` (defaults true). Setting \`effects\` replaces the whole stack. Example: \`U("abc", {effects: [{type: "shadow", shadowType: "outer", color: "#00000040", offset: {x: 0, y: 4}, blur: 8, spread: 0}, {type: "shadow", shadowType: "inner", color: "#00000080", offset: {x: 0, y: 2}, blur: 4, spread: 0}]})\`. Glassmorphism card example: \`U("abc", {fills: [{type: "solid", color: "#ffffff", opacity: 0.4}], effects: [{type: "background-blur", radius: 16}]})\`
-- **Corner radius (frame/rectangle):** \`cornerRadius\` accepts either a single number for a uniform radius (\`U("abc", {cornerRadius: 12})\`) OR an array of per-corner radii in \`[topLeft, topRight, bottomRight, bottomLeft]\` order for independent corners (\`U("abc", {cornerRadius: [12, 12, 0, 0]})\`). CSS-style shorthand lengths (1, 2, or 3 values) are also accepted. Setting one form clears the other.
-- **Corner smoothing / squircle (frame/rectangle):** \`cornerSmoothing\` is a single number, 0-1 (a fraction, NOT 0-100), applied uniformly to every rounded corner of the shape — it works alongside independent per-corner radii. \`0\` (or unset) is a plain circular-arc corner (default look). Higher values morph the corner into a continuous "squircle" curve; \`~0.6\` approximates the iOS app-icon look. Has no visible effect where \`cornerRadius\`/\`cornerRadiusPerCorner\` is 0. Example: \`U("abc", {cornerRadius: 24, cornerSmoothing: 0.6})\`.
-- **Star (polygon node):** a \`type: "polygon"\` node with \`innerRadiusRatio\` set (0-1, exclusive of 1) renders as a star instead of a regular polygon — \`sides\` becomes the number of rays. Only \`sides\`/\`innerRadiusRatio\` need to be given; \`points\` is auto-generated (regenerated on update too, as long as \`points\` itself isn't also passed). \`innerRadiusRatio\` close to 0 gives long thin spikes; close to 1 gives a barely-notched polygon; \`0.5\` is a typical 5-point star look. Example: \`I("abc", {type: "polygon", name: "Rating Star", width: 24, height: 24, sides: 5, innerRadiusRatio: 0.5, fill: "#f5b700"})\`. A plain regular polygon (hexagon, etc.) just omits \`innerRadiusRatio\`, same as before.
-- **Ellipse arc / donut (pie charts, progress rings):** an ellipse accepts \`startAngle\` (degrees, 0 = rightmost point, clockwise, default 0), \`sweepAngle\` (degrees, clamped to [-360, 360], default 360 = full ellipse), and \`innerRadiusRatio\` (0-1, donut hole radius as a ratio of the outer radius, default 0 = solid pie/full ellipse). A 90° pie wedge: \`{startAngle: 0, sweepAngle: 90}\`. A full donut ring: \`{innerRadiusRatio: 0.6}\` (sweepAngle stays 360). A partial "thick arc" (donut + partial sweep): combine both. Example: \`I("abc", {type: "ellipse", name: "Progress Ring", width: 100, height: 100, startAngle: -90, sweepAngle: 240, innerRadiusRatio: 0.7, fill: "#3366ff"})\`.
-- **Line arrowheads:** a line accepts \`startCap\`/\`endCap\`, each one of \`"none"\` (default), \`"arrow"\` (open chevron), \`"triangle"\` (filled arrowhead), \`"circle"\`, or \`"bar"\` (perpendicular stop, like a dimension line), sized relative to \`strokeWidth\`. \`startCap\` is at \`(points[0], points[1])\`, \`endCap\` at \`(points[2], points[3])\`. Example, a one-way arrow: \`U("abc", {endCap: "triangle"})\`; a dimension line: \`U("abc", {startCap: "bar", endCap: "bar"})\`.
-- \`fill_container\` only valid when parent has flexbox layout
-- **Wrap (card grids / tag lists):** set \`wrap: true\` on a frame with layout to let children flow onto new lines once the main axis runs out of space. Use \`rowGap\`/\`columnGap\` for independent spacing on each axis (row-gap = space between wrapped lines, column-gap = space between items in a row) — either falls back to \`gap\` when unset, so \`gap\` alone still applies to both axes. A wrapped frame typically has a fixed/fill \`width\` and \`height: "fit_content"\` so it hugs the total height of all wrapped rows. Example: \`U("cardGrid", {wrap: true, columnGap: 16, rowGap: 24})\`
-- **Min/max sizing (any child in an auto-layout frame):** \`minWidth\`/\`maxWidth\`/\`minHeight\`/\`maxHeight\` (numbers, in px) clamp a child's resolved size regardless of its sizing mode (fixed/fill_container/fit_content) — e.g. a \`width: "fill_container"\` card that shouldn't grow past 320px: \`U("card", {maxWidth: 320})\`
-- Variable references must use exact names from \`get_variables\` (including leading \`--\` and dashes), e.g. \`"$--ck-blue-500"\`
-- **Constraints (resize behavior, Figma-style):** \`constraints: {horizontal, vertical}\` on a child controls how it repositions/resizes when its parent frame is resized. Each axis is one of \`"min"\` (pinned to left/top, fixed size — the default when unset), \`"max"\` (pinned to right/bottom, fixed size), \`"center"\` (keeps its offset from the parent's center), \`"stretch"\` (left & right / top & bottom both pinned — size grows/shrinks with the parent), or \`"scale"\` (position and size both scale with the parent). Only meaningful for a direct child of a frame WITHOUT auto-layout — auto-layout frames size children via flex rules and ignore constraints. Example: \`U("abc", {constraints: {horizontal: "stretch", vertical: "min"}})\`
-- **Layer masks (Figma-style):** set \`isMask: true\` on a node inside a frame/group to turn it into a mask that clips its siblings rendered ABOVE it (later in that same parent's children — the mask must be created/moved BEFORE the content it should clip so it ends up lower in z-order) up to the next masking sibling or the end of the group. The masker itself is not drawn — only its shape clips. Works for vector shapes (rectangle/ellipse/path/polygon — clips to their outline) as well as text/image-filled nodes (clips to that node's own rendered bounds/shape; soft per-pixel transparency is not yet respected, so prefer a vector shape when you need a precise cutout). Unset with \`isMask: false\` (or omit) to restore normal rendering. Example — a photo cropped to a circle: \`g=I("abc", {type: "frame", name: "Avatar", width: 80, height: 80, children: [{type: "ellipse", name: "Mask", width: 80, height: 80, isMask: true}, {type: "rectangle", name: "Photo", width: 80, height: 80}]})\` then \`G(photoId, "stock", "portrait photo")\`.
-- **Lists (bullet/numbered) on a text node:** a text node's \`text\` is \`\\n\`-joined paragraphs; give it a parallel \`paragraphs\` array (same length as the number of \`\\n\`-separated lines — pad plain paragraphs with \`{}\`) where each entry is \`{listType?: "bullet"|"number"|"none", indentLevel?: number}\`. \`indentLevel\` (0 = top level) nests the item and restarts numbered counters per nested level (a bullet/plain paragraph at the same or shallower level resets a deeper numbered run; returning to a shallower level resumes its own counter). Omit \`paragraphs\`, or use \`{}\`/\`{listType: "none"}\`, for plain (non-list) paragraphs. Example — a heading, a 3-item bullet list, another heading, then a numbered list with one nested sub-step: \`I("doc", {type: "text", name: "Notes", text: "Groceries\\nMilk\\nEggs\\nBread\\nSteps\\nMix\\nDetails\\nBake", paragraphs: [{}, {listType:"bullet"}, {listType:"bullet"}, {listType:"bullet"}, {}, {listType:"number"}, {listType:"number", indentLevel:1}, {listType:"number"}]})\` (paragraphs one-to-one with the 8 \`\\n\`-separated lines). \`U("abc", {paragraphs: [...]})\` re-tags an existing text node's paragraphs the same way (array length should match the node's current line count).
-- **Paragraph spacing (text node):** \`paragraphSpacing\` (number, px, default 0) adds extra vertical gap after every \`\\n\`-separated paragraph but the last (a 3-paragraph node gets 2 gaps). Included in auto-size/hug height measurement, so a text node with \`textWidthMode: "auto"\` or \`"fixed"\` (auto-height) grows to fit it automatically. Example: \`U("abc", {paragraphSpacing: 16})\`.
-- **Variable font axes (text node):** for a variable font (e.g. \`"Inter"\`, \`"Roboto Flex"\`, \`"Recursive"\`, \`"Fraunces"\`, \`"Source Sans 3"\`, \`"Source Serif 4"\`, \`"Newsreader"\`), \`fontVariations\` is an object of OpenType axis tag → numeric value, e.g. \`{wght: 530}\` for a fine-grained weight between the standard 100-900 steps, or \`{wght: 700, wdth: 87, opsz: 24}\` to combine weight/width/optical-size on a font that exposes those axes. Values are clamped by the browser to each axis's registered min/max. When \`wght\` is set it takes precedence over the static \`fontWeight\` field. Example: \`U("abc", {fontVariations: {wght: 450}})\`.
-
-**Example:**
-\`\`\`
-card=I("parentId", {type: "frame", name: "Account Card", layout: "vertical", padding: 16, gap: 12, width: 300, height: "fit_content"})
-U(card+"/title", {content: "Account Details"})
-\`\`\``,
-    inputSchema: batchDesignInputSchema.describe(
-      'Tool input object. Required canonical field: {"operations":"..."}; aliases design/script/batch are accepted for robustness.',
-    ),
-  }),
+  batch_design: makeBatchDesignTool(),
 
   rename_layers: tool({
     description:
