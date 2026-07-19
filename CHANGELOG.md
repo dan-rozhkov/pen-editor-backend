@@ -8,6 +8,35 @@ While on `0.x`, minor bumps may include breaking changes.
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-07-19
+
+### Added
+- **New `slides` skill for multi-slide decks (FIR-52).** Presentation / deck /
+  slideshow / pitch-deck requests now load a dedicated `slides` skill instead of
+  `prototype`. It builds each slide as its **own** top-level `embed` node (never
+  several slides crammed into one embed — the recurring user correction that
+  motivated this), fixes every slide at **1024×768 (4:3)**, lays them out as a
+  **horizontal filmstrip** (`x = index * (1024 + gap)`, shared `y`), and enforces
+  a **shared theme + master**: one `:root{}` CSS-variable block and one master
+  layout (title/footer/page-number/margins) copied unchanged into every slide so
+  the deck reads as one system. Inherits `prototype`'s taste rules (no device
+  chrome, single font via `@import`, Phosphor icons, real `picsum.photos`
+  images, one accent color, anti-slop content). Discoverable via `/slides` and
+  the `load_skill` catalog; routed from the system prompt's first-decision block
+  (`src/skills/slides.md`, `src/ai/system-prompt.ts`).
+
+### Changed
+- **`prototype` skill relaxed for multi-screen requests (FIR-52).** Single embed
+  stays the default, but a request for multiple screens/views/pages now creates
+  **one embed per screen** laid out left-to-right instead of cramming them into a
+  single embed; actual presentation/deck requests hand off to the `slides` skill
+  (`src/skills/prototype.md`).
+- **`batch_design` binding docs clarified (FIR-51).** The tool description now
+  states that bindings come **only** from the `binding=I(...)`/`binding=R(...)`
+  prefix — an `id`/`name` field inside `nodeData` is cosmetic and never usable as
+  a binding — matching the frontend handler fix that strips such stray `id`
+  fields (`src/ai/tools.ts`).
+
 ## [0.18.0] - 2026-07-19
 
 ### Changed
