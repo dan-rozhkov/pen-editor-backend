@@ -8,6 +8,36 @@ While on `0.x`, minor bumps may include breaking changes.
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-07-19
+
+### Changed
+- **Design-default prompt rules reworked from trace-analysis findings (FIR-47/48/49).**
+  - **Icons:** the prototype skill now mandates Phosphor Icons as the default
+    icon system for embed UI glyphs; emoji-as-icons and ad-hoc hand-drawn inline
+    `<svg>` glyphs are banned (inline SVG stays allowed for logos/illustrations).
+    `frontend-design` gains the matching DON'T.
+  - **Fonts: `@import` instead of `<link>`.** Investigation of the frontend
+    renderer showed embed `htmlContent` is sanitized with DOMPurify, which
+    strips ALL `<link>` tags on the live canvas — the previously mandated Google
+    Fonts `<link>` only ever worked in Play/export/convert paths. All external
+    fonts/stylesheets (text font, Phosphor, optional mono) are now loaded via
+    `@import` at the top of the first `<style>` block, which survives
+    sanitization in every render path.
+  - **One font family per design** by default (hierarchy via weight/size/color);
+    a second family only on explicit user request or for literal code content
+    (`'JetBrains Mono', ui-monospace, monospace`); the icon font is exempt.
+    `document`'s visual-spec template no longer hardcodes a display/body font
+    pairing; `frontend-design` no longer recommends pairing by default.
+  - **Real photos, never gradient stand-ins:** picsum.photos is documented as
+    reliable inside embeds; substituting CSS gradients or empty divs where a
+    photo belongs is banned. `brand` now defaults to picsum seeds instead of
+    guessed Unsplash URLs (which 404).
+  - **No device/OS chrome** (iOS/Android status bar, notch/Dynamic Island, home
+    indicator, browser chrome) unless explicitly requested — in both the
+    prototype skill and the core system prompt.
+- Content-pin test added (`test/skills.test.ts`) so the new rules can't silently
+  regress.
+
 ## [0.17.2] - 2026-07-18
 
 ### Fixed
