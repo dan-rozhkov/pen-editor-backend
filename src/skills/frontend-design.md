@@ -27,12 +27,14 @@ Then implement working code that is:
 ### Typography
 → *Consult [typography reference](reference/typography.md) for scales, pairing, and loading strategies.*
 
-Choose fonts that are beautiful, unique, and interesting. Pair a distinctive display font with a refined body font.
+Choose a font that is beautiful, unique, and interesting. Default to a SINGLE distinctive family for the whole design and build hierarchy with weight, size, and color. Add a second family only when the user explicitly asks or the content genuinely justifies it (e.g. literal code needing a mono face).
 
 **DO**: Use a modular type scale with fluid sizing (clamp)
 **DO**: Vary font weights and sizes to create clear visual hierarchy
 **DON'T**: Use overused fonts—Inter, Roboto, Arial, Open Sans, system defaults
+**DON'T**: Mix multiple typefaces by default—one family, varied by weight/size, reads as more intentional
 **DON'T**: Use monospace typography as lazy shorthand for "technical/developer" vibes
+**DON'T**: Use emoji as icons—use a real icon set, never an emoji where a UI glyph belongs
 **DON'T**: Put large icons with rounded corners above every heading—they rarely add value and make sites look templated
 
 ### Color & Theme

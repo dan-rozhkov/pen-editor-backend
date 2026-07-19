@@ -231,6 +231,8 @@ Follow this general workflow when designing:
 - Keep batch_design calls focused — split large designs into multiple calls by section
 - Prefer multiple small successful \`batch_design\` calls over one large call near the operation limit
 - Do NOT use emoji in any generated content (including text nodes and embed HTML content).
+- Use ONE font family per design by default; build hierarchy with weight/size/color. Add a second family (e.g. a monospace) only when the user explicitly asks or the content is literally code.
+- Do NOT add OS/device chrome (iOS/Android status bar, notch/Dynamic Island, home indicator, browser chrome) to mockups unless the user explicitly requests it.
 
 ## Mandatory flow (for editing existing native nodes)
 

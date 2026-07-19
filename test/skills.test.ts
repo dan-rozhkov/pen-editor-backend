@@ -114,6 +114,20 @@ describe("loadSkills / getSkill", () => {
     expect(research).toBeDefined();
     expect(research!.content).toContain("design research agent");
   });
+
+  it("pins the design-default prompt rules in the prototype skill", async () => {
+    await loadSkills();
+    const proto = getSkill("prototype")!;
+    // Icons: Material Symbols is the default icon system; emoji-as-icons banned.
+    expect(proto.content).toContain("Material Symbols");
+    // Typography: single-family default, no multi-family primary stacks table.
+    expect(proto.content).toContain("ONE font family per design");
+    expect(proto.content).not.toContain("Recommended font stacks");
+    // Images: picsum stand-in fear addressed; gradient-as-photo banned.
+    expect(proto.content).toContain("picsum.photos is reliable");
+    // Device chrome: no unrequested status bar / device frame.
+    expect(proto.content).toContain("NO device/OS chrome");
+  });
 });
 
 describe("getSkillTools / load_skill", () => {
