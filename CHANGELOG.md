@@ -8,6 +8,32 @@ While on `0.x`, minor bumps may include breaking changes.
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-07-20
+
+### Added
+- **Fit-to-canvas prompt rules for embeds and slides (FIR-54).** Agents kept
+  generating embed/slide HTML that overflowed the fixed canvas size (bottom
+  cutoff, horizontal scrollbars) and only fixed it after user pushback. The
+  `prototype` and `slides` skills now carry a dedicated "Fit to canvas" section
+  — hard no-overflow rule, CSS mechanics (`box-sizing: border-box`, root sized
+  to the declared dimensions with `margin: 0; overflow: hidden`, no fixed child
+  widths past the canvas, `overflow-wrap` for long strings), a content-density
+  budget (a 1024×768 slide ≈ title + 4-6 bullets; split slides instead of
+  shrinking fonts), a pre-emit vertical-sum self-check, and a new pre-flight
+  checklist item in each skill. `CORE_PROMPT` gains a concise always-on fit
+  rule so skill-less `edits`-mode sessions get it too.
+
+### Fixed
+- **`refero_get_style` INVALID_STYLE_UUIDS ergonomics (FIR-53).** The Refero
+  MCP tool rejects calls that pass several style UUIDs at once; models burned a
+  round-trip rediscovering this. The MCP wrapper (`ai/mcp.ts`) now augments the
+  tool's description ("pass exactly one style UUID per call") and, when the
+  upstream error matches `invalid style uuids` (any spelling/separator,
+  singular or plural), appends a deterministic retry hint to the error the
+  model sees. Results are sanitized like `refero_get_screen`; enrichment skips
+  `isError: false` results and clones nothing when no hint applies.
+  `wrapReferoTools` was generalized into a per-tool `wrapReferoTool` helper.
+
 ## [0.20.1] - 2026-07-20
 
 ### Changed
