@@ -5,6 +5,8 @@ import {
   wrapReferoTools,
 } from "../src/ai/mcp.js";
 
+type ToolExecute = (input: unknown, options: unknown) => Promise<unknown>;
+
 describe("removeBase64Fields", () => {
   it("drops a top-level base64 key while keeping siblings", () => {
     expect(removeBase64Fields({ url: "x", base64: "SECRET" })).toEqual({ url: "x" });
@@ -147,5 +149,125 @@ describe("wrapReferoTools", () => {
 
     await exec(undefined, {});
     expect(original).toHaveBeenCalledWith({ image_size: "none" }, {});
+  });
+
+  it("leaves the tool map unchanged (by reference) when neither refero tool is present", () => {
+    const tools = { other_tool: { execute: vi.fn() } };
+    expect(wrapReferoTools(tools)).toBe(tools);
+  });
+
+  it("leaves refero_get_screen's wrapping unaffected when refero_get_style is absent", async () => {
+    const original = vi.fn(async () => ({ ok: true }));
+    const tools = { refero_get_screen: { description: "d", execute: original } };
+    const wrapped = wrapReferoTools(tools);
+    expect(wrapped.refero_get_style).toBeUndefined();
+    const exec = (wrapped.refero_get_screen as { execute: ToolExecute }).execute;
+    await exec({}, {});
+    expect(original).toHaveBeenCalledWith({ image_size: "none" }, {});
+  });
+
+  it("appends the one-UUID sentence to refero_get_style's description and sanitizes results", async () => {
+    const original = vi.fn(async () => ({
+      base64: "TOP",
+      content: [{ type: "text", text: JSON.stringify({ ok: true, base64: "INNER" }) }],
+    }));
+    const tools = {
+      refero_get_style: { description: "Fetch a style.", execute: original },
+    };
+
+    const wrapped = wrapReferoTools(tools);
+    const tool = wrapped.refero_get_style as {
+      description: string;
+      execute: (i: unknown, o: unknown) => Promise<unknown>;
+    };
+
+    expect(tool.description).toBe(
+      "Fetch a style. Pass exactly one valid style UUID (from refero_search_styles results) per call; multiple UUIDs are rejected.",
+    );
+
+    const result = (await tool.execute({ style_uuid: "abc" }, {})) as {
+      base64?: string;
+      content: { text: string }[];
+    };
+    expect(original).toHaveBeenCalledWith({ style_uuid: "abc" }, {});
+    expect(result.base64).toBeUndefined();
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed).toEqual({ ok: true });
+  });
+
+  it("uses a bare description when refero_get_style has none", () => {
+    const wrapped = wrapReferoTools({
+      refero_get_style: { execute: vi.fn() },
+    });
+    const tool = wrapped.refero_get_style as { description: string };
+    expect(tool.description).toBe(
+      "Pass exactly one valid style UUID (from refero_search_styles results) per call; multiple UUIDs are rejected.",
+    );
+  });
+
+  it.each([
+    ["INVALID_STYLE_UUIDS", "invalid_style_uuids"],
+    ["invalid style uuids (mixed case)", "Invalid Style UUIDs"],
+  ])(
+    "appends the retry hint when the result content indicates %s",
+    async (_label, errorText) => {
+      const original = vi.fn(async () => ({
+        content: [{ type: "text", text: `Error: ${errorText}` }],
+      }));
+      const wrapped = wrapReferoTools({ refero_get_style: { execute: original } });
+      const tool = wrapped.refero_get_style as {
+        execute: (i: unknown, o: unknown) => Promise<unknown>;
+      };
+
+      const result = (await tool.execute({}, {})) as { content: { text: string }[] };
+      expect(result.content[0].text).toBe(
+        `Error: ${errorText} Pass exactly one valid style UUID from refero_search_styles results per call.`,
+      );
+    },
+  );
+
+  it("appends the retry hint when execute throws an invalid-style-uuids error", async () => {
+    const original = vi.fn(async () => {
+      throw new Error("Request failed: invalid_style_uuids");
+    });
+    const wrapped = wrapReferoTools({ refero_get_style: { execute: original } });
+    const tool = wrapped.refero_get_style as {
+      execute: (i: unknown, o: unknown) => Promise<unknown>;
+    };
+
+    await expect(tool.execute({}, {})).rejects.toThrow(
+      "Request failed: invalid_style_uuids Pass exactly one valid style UUID from refero_search_styles results per call.",
+    );
+  });
+
+  it("leaves unrelated errors and results untouched", async () => {
+    const original = vi.fn(async () => {
+      throw new Error("network timeout");
+    });
+    const wrapped = wrapReferoTools({ refero_get_style: { execute: original } });
+    const tool = wrapped.refero_get_style as {
+      execute: (i: unknown, o: unknown) => Promise<unknown>;
+    };
+
+    await expect(tool.execute({}, {})).rejects.toThrow("network timeout");
+  });
+
+  it("wraps both refero_get_screen and refero_get_style without affecting each other", async () => {
+    const screenOriginal = vi.fn(async () => ({ ok: "screen" }));
+    const styleOriginal = vi.fn(async () => ({ ok: "style" }));
+    const tools = {
+      refero_get_screen: { description: "screens", execute: screenOriginal },
+      refero_get_style: { description: "styles", execute: styleOriginal },
+    };
+
+    const wrapped = wrapReferoTools(tools);
+    const screenExec = (wrapped.refero_get_screen as { execute: ToolExecute }).execute;
+    const styleExec = (wrapped.refero_get_style as { execute: ToolExecute }).execute;
+
+    await screenExec({}, {});
+    expect(screenOriginal).toHaveBeenCalledWith({ image_size: "none" }, {});
+
+    await styleExec({ style_uuid: "abc" }, {});
+    expect(styleOriginal).toHaveBeenCalledWith({ style_uuid: "abc" }, {});
   });
 });

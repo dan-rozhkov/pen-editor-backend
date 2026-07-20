@@ -95,39 +95,119 @@ export function sanitizeMcpToolResult(result: unknown): unknown {
   return output;
 }
 
-export function wrapReferoTools(tools: Record<string, unknown>): Record<string, unknown> {
-  const tool = tools.refero_get_screen as {
-    description?: string;
-    title?: string;
-    inputSchema?: unknown;
-    toModelOutput?: unknown;
-    type?: unknown;
-    _meta?: unknown;
-    execute?: (input: unknown, options: unknown) => Promise<unknown>;
-  } | undefined;
+interface ReferoTool {
+  description?: string;
+  title?: string;
+  inputSchema?: unknown;
+  toModelOutput?: unknown;
+  type?: unknown;
+  _meta?: unknown;
+  execute?: (input: unknown, options: unknown) => Promise<unknown>;
+}
 
+type ToolExecute = (input: unknown, options: unknown) => Promise<unknown>;
+
+/** Wraps a single named Refero tool (no-op if absent or execute-less), optionally
+ * rewriting its description and always rewriting its execute function. Keeps the
+ * tool-map reference unchanged (`===`) when the named tool isn't present, so
+ * composing several wraps over an unaffected map is still an identity op. */
+function wrapReferoTool(
+  tools: Record<string, unknown>,
+  name: string,
+  options: {
+    describe?: (description: string | undefined) => string;
+    transformExecute: (originalExecute: ToolExecute) => ToolExecute;
+  },
+): Record<string, unknown> {
+  const tool = tools[name] as ReferoTool | undefined;
   if (!tool || typeof tool.execute !== "function") {
     return tools;
   }
 
   const originalExecute = tool.execute.bind(tool);
-  const wrapped = {
-    ...tool,
+  return {
+    ...tools,
+    [name]: {
+      ...tool,
+      ...(options.describe ? { description: options.describe(tool.description) } : {}),
+      execute: options.transformExecute(originalExecute),
+    },
+  };
+}
+
+const INVALID_STYLE_UUIDS_PATTERN = /invalid[_ ]style[_ ]uuids/i;
+const STYLE_UUID_DESCRIPTION_HINT =
+  "Pass exactly one valid style UUID (from refero_search_styles results) per call; multiple UUIDs are rejected.";
+const STYLE_UUID_ERROR_HINT =
+  "Pass exactly one valid style UUID from refero_search_styles results per call.";
+
+function withStyleUuidHint(text: string): string {
+  return INVALID_STYLE_UUIDS_PATTERN.test(text) ? `${text} ${STYLE_UUID_ERROR_HINT}` : text;
+}
+
+/** Appends the deterministic retry hint to any text content part whose text
+ * indicates invalid style UUIDs (case-insensitive, either spelling). */
+function enrichStyleUuidResult(result: unknown): unknown {
+  if (!result || typeof result !== "object") return result;
+  const output = result as Record<string, unknown>;
+  const content = output.content;
+  if (!Array.isArray(content)) return result;
+
+  return {
+    ...output,
+    content: content.map((part) => {
+      if (!part || typeof part !== "object") return part;
+      const typed = part as Record<string, unknown>;
+      if (typeof typed.text !== "string") return part;
+      return { ...typed, text: withStyleUuidHint(typed.text) };
+    }),
+  };
+}
+
+/** Same hint, applied when Refero signals the error by throwing instead of
+ * returning an error result. */
+function enrichStyleUuidThrownError(err: unknown): unknown {
+  const message = err instanceof Error ? err.message : String(err);
+  if (!INVALID_STYLE_UUIDS_PATTERN.test(message)) return err;
+
+  const hinted = withStyleUuidHint(message);
+  if (err instanceof Error) {
+    const wrapped = new Error(hinted);
+    wrapped.cause = err;
+    return wrapped;
+  }
+  return new Error(hinted);
+}
+
+export function wrapReferoTools(tools: Record<string, unknown>): Record<string, unknown> {
+  let result = wrapReferoTool(tools, "refero_get_screen", {
     // Force no binary payloads from Refero and sanitize any accidental base64 in result.
-    execute: async (input: unknown, options: unknown) => {
+    transformExecute: (originalExecute) => async (input, options) => {
       const normalizedInput =
         input && typeof input === "object"
           ? { ...(input as Record<string, unknown>), image_size: "none" }
           : { image_size: "none" };
-      const result = await originalExecute(normalizedInput, options);
-      return sanitizeMcpToolResult(result);
+      const res = await originalExecute(normalizedInput, options);
+      return sanitizeMcpToolResult(res);
     },
-  };
+  });
 
-  return {
-    ...tools,
-    refero_get_screen: wrapped,
-  };
+  result = wrapReferoTool(result, "refero_get_style", {
+    // Steer the model toward a single valid UUID up front, and give it a
+    // deterministic hint to retry with if it still sends several/invalid ones.
+    describe: (description) =>
+      description ? `${description} ${STYLE_UUID_DESCRIPTION_HINT}` : STYLE_UUID_DESCRIPTION_HINT,
+    transformExecute: (originalExecute) => async (input, options) => {
+      try {
+        const res = await originalExecute(input, options);
+        return enrichStyleUuidResult(sanitizeMcpToolResult(res));
+      } catch (err) {
+        throw enrichStyleUuidThrownError(err);
+      }
+    },
+  });
+
+  return result;
 }
 
 function connectAndFetchTools(
