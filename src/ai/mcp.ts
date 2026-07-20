@@ -135,7 +135,7 @@ function wrapReferoTool(
   };
 }
 
-const INVALID_STYLE_UUIDS_PATTERN = /invalid[_ ]style[_ ]uuids/i;
+const INVALID_STYLE_UUIDS_PATTERN = /invalid[-_ ]?style[-_ ]?uuids?/i;
 const STYLE_UUID_DESCRIPTION_HINT =
   "Pass exactly one valid style UUID (from refero_search_styles results) per call; multiple UUIDs are rejected.";
 const STYLE_UUID_ERROR_HINT =
@@ -146,12 +146,29 @@ function withStyleUuidHint(text: string): string {
 }
 
 /** Appends the deterministic retry hint to any text content part whose text
- * indicates invalid style UUIDs (case-insensitive, either spelling). */
+ * indicates invalid style UUIDs (case-insensitive, either spelling). Skips
+ * enrichment entirely for results explicitly marked `isError: false` (a
+ * benign success payload should never gain a retry hint, even if its text
+ * happens to contain the phrase); Refero's exact error shape is otherwise
+ * unverified, so `isError` being true or absent still allows matching.
+ * Returns the input object unchanged (`===`) when nothing matches, avoiding
+ * a needless clone of the already-sanitized payload. */
 function enrichStyleUuidResult(result: unknown): unknown {
   if (!result || typeof result !== "object") return result;
   const output = result as Record<string, unknown>;
+  if (output.isError === false) return result;
+
   const content = output.content;
   if (!Array.isArray(content)) return result;
+
+  const hasMatch = content.some(
+    (part) =>
+      part &&
+      typeof part === "object" &&
+      typeof (part as Record<string, unknown>).text === "string" &&
+      INVALID_STYLE_UUIDS_PATTERN.test((part as Record<string, unknown>).text as string),
+  );
+  if (!hasMatch) return result;
 
   return {
     ...output,

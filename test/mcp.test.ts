@@ -208,6 +208,8 @@ describe("wrapReferoTools", () => {
   it.each([
     ["INVALID_STYLE_UUIDS", "invalid_style_uuids"],
     ["invalid style uuids (mixed case)", "Invalid Style UUIDs"],
+    ["hyphenated", "invalid-style-uuid"],
+    ["camelCase singular, no separator", "InvalidStyleUuid"],
   ])(
     "appends the retry hint when the result content indicates %s",
     async (_label, errorText) => {
@@ -225,6 +227,35 @@ describe("wrapReferoTools", () => {
       );
     },
   );
+
+  it("does not append the retry hint to a benign isError:false result even if the text mentions invalid style uuids", async () => {
+    const original = vi.fn(async () => ({
+      isError: false,
+      content: [{ type: "text", text: "Docs: avoid invalid style uuids by using search first." }],
+    }));
+    const wrapped = wrapReferoTools({ refero_get_style: { execute: original } });
+    const tool = wrapped.refero_get_style as {
+      execute: (i: unknown, o: unknown) => Promise<unknown>;
+    };
+
+    const result = (await tool.execute({}, {})) as { content: { text: string }[] };
+    expect(result.content[0].text).toBe(
+      "Docs: avoid invalid style uuids by using search first.",
+    );
+  });
+
+  it("leaves the result untouched when no content part matches the invalid-uuid hint", async () => {
+    const original = vi.fn(async () => ({
+      content: [{ type: "text", text: "all good, nothing to see here" }],
+    }));
+    const wrapped = wrapReferoTools({ refero_get_style: { execute: original } });
+    const tool = wrapped.refero_get_style as {
+      execute: (i: unknown, o: unknown) => Promise<unknown>;
+    };
+
+    const result = (await tool.execute({}, {})) as { content: { text: string }[] };
+    expect(result.content[0].text).toBe("all good, nothing to see here");
+  });
 
   it("appends the retry hint when execute throws an invalid-style-uuids error", async () => {
     const original = vi.fn(async () => {
