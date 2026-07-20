@@ -8,6 +8,20 @@ While on `0.x`, minor bumps may include breaking changes.
 
 ## [Unreleased]
 
+## [0.20.1] - 2026-07-20
+
+### Changed
+- **Internal: deduplicated the batch_design parser helpers in `ai/tools.ts`.**
+  The four character-scanning functions (`splitBatchDesignStatements`,
+  `findFirstTopLevelBrace`, `findMatchingBrace`, `splitTopLevelByComma`)
+  repeated the same escape/string-literal handling and bracket-depth tracking;
+  extracted shared `createQuoteScanner()` and `createDepthTracker()` helpers
+  (mirroring the frontend's parser extraction). jscpd: 4 clones / 85 duplicated
+  lines → 0. No behavior changes.
+- **CI: added a jscpd duplication gate** — `npm run check:dup` (config in
+  `.jscpd.json`: min 70 tokens, 0.1% threshold, `src/` minus `skills/`) runs
+  after lint and fails the build if code duplication creeps back in.
+
 ## [0.20.0] - 2026-07-19
 
 ### Fixed
