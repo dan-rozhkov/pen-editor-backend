@@ -148,6 +148,17 @@ Components can define `<slot>` elements (listed in the `slots` array). Use slots
 - The `htmlContent` must be complete static HTML/CSS markup for the user's request (or use document component tags for reusable parts).
 - **CRITICAL:** The `htmlContent` value MUST be a single continuous string. Do NOT use string concatenation (`+`) to build it. Write the entire HTML as one unbroken string literal.
 
+### Fit to canvas (CRITICAL)
+- **Hard rule:** ALL content MUST fit inside the embed's declared `width`×`height` — no vertical cutoff, no horizontal scrollbar. The canvas renders the embed as a fixed-size viewport with NO scrolling; anything past the edge is simply lost, not scrollable.
+- **CSS mechanics (build this in from the start, not as a fix after the fact):**
+  - Start every `<style>` block with `*, *::before, *::after { box-sizing: border-box; }`.
+  - Size the root/body element to the embed's exact `width`/`height` (or `100%`), with `margin: 0; overflow: hidden;`. Never rely on scrolling to reveal overflow content.
+  - `padding` on a fixed-height body/root WITHOUT `border-box` is the classic cause of bottom cutoff — with `border-box` in place, padding stays inside the declared height instead of adding to it.
+  - Never give a child element a fixed width that can exceed the embed's width (e.g. `width: 1100px` inside a 1024-wide embed). Long unbroken strings (URLs, IDs, long words) need `overflow-wrap: break-word` so they don't push layout wider than the canvas.
+- **Content-density heuristic:** budget content BEFORE writing HTML. At a normal type scale, a typical screen fits a header plus a handful of primary sections/cards — if the request wants noticeably more than that, trim copy or split into an additional screen (see "Multiple screens requested" above). Do NOT shrink fonts below the Typography rules' size scale or cut padding below the Form/Materiality rules to force everything to fit.
+- **Self-check before emitting HTML:** mentally sum the vertical blocks (padding + heading + gaps + content rows) against the fixed height. If the sum lands within ~10% of the limit, cut content — don't hope it fits.
+
+
 ### HTML safety constraints
 - HTML/CSS only. Do NOT include JavaScript.
 - Do NOT use `<script>` tags.
@@ -332,3 +343,4 @@ Before generating the final htmlContent, verify every point:
 13. Is the HTML self-contained, complete, and renderable standalone?
 14. If reference images were provided, is their style influence visible in the output (palette, typography, layout feel)?
 15. If variables were provided in canvas context, are they defined in a `:root {}` block and referenced via `var()` throughout the HTML?
+16. **FIT-TO-CANVAS CHECK (BLOCKER):** Does the content fit exactly within the embed's declared `width`×`height` — no horizontal scroll, no bottom cutoff? Is `box-sizing: border-box` set at the top of the `<style>` block, and is `overflow: hidden` set on the root/body?

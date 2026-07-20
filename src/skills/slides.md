@@ -29,6 +29,17 @@ You are building a presentation DECK: a sequence of slides, each its own top-lev
 - Footer/page-number format: small, muted text like `3 / 8`, consistent position on every slide (skip it only on the title slide if that's the chosen master).
 - Keep each slide focused on one idea — do not cram a slide's 1024×768 canvas with more content than it can hold at the type scale defined in the theme.
 
+### Fit to canvas (1024×768, CRITICAL)
+- **Hard rule:** every slide's content MUST fit inside its fixed 1024×768 canvas — no vertical cutoff, no horizontal scroll. Slides render as a fixed-size viewport with NO scrolling; content past the edge is simply lost, not scrollable.
+- **CSS mechanics, baked into the shared theme block from the start:**
+  - `*, *::before, *::after { box-sizing: border-box; }` at the top of every slide's `<style>`.
+  - Root/body sized to exactly `width: 1024px; height: 768px;` (or `100%`), `margin: 0; overflow: hidden;`. Never rely on scrolling.
+  - `padding` on the fixed-height root WITHOUT `border-box` is the classic cause of bottom cutoff — `border-box` keeps padding inside the 768px height instead of adding to it.
+  - No child element wider than 1024px (e.g. no `width: 1100px` block inside a slide), and no unbroken long strings — apply `overflow-wrap: break-word` to copy-heavy elements so they can't push past the edge.
+- **Content-density budget:** decide content BEFORE writing HTML. At the deck's type scale, a 1024×768 slide fits roughly a title plus 4-6 bullets, or 3-4 short sections/cards — not more. If the outline wants more than that for one slide, split it into two slides or tighten the copy. Do NOT shrink fonts below the theme's type scale or cut padding below the master layout's margins to squeeze extra content in.
+- **Self-check before calling `batch_design`:** for each slide, sum the vertical blocks (title + margins + gaps + body rows) against 768px. If the sum is within ~10% of the limit, cut content — don't hope it fits.
+
+
 ### Taste rules (same as `prototype`, condensed — apply to every slide)
 - **No device/OS chrome.** Slides are their own object; never draw a browser or device frame around a slide.
 - **One font family for the whole deck**, loaded via `@import` at the top of each slide's `<style>` block (`<link>` is stripped on the canvas). Build hierarchy with weight/size/color, not extra families.
@@ -50,3 +61,4 @@ You are building a presentation DECK: a sequence of slides, each its own top-lev
 8. Does every photo spot use a real `picsum.photos` image, not a gradient placeholder?
 9. Is there no JavaScript, no `<script>`, no banned CSS (`transition`/`animation`/`filter`/`backdrop-filter`)?
 10. Are names, numbers, and brand names realistic and non-generic across the whole deck?
+11. **FIT-TO-CANVAS CHECK (BLOCKER):** Does every slide's content fit exactly within the fixed 1024×768 canvas — no horizontal scroll, no bottom cutoff? Is `box-sizing: border-box` set at the top of every slide's `<style>` block, and is `overflow: hidden` set on the root/body?

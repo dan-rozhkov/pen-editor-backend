@@ -68,6 +68,12 @@ describe("buildSystemPrompt", () => {
     expect(prompt.toLowerCase()).toContain("slide deck");
   });
 
+  it("includes fit-to-canvas guidance for embed htmlContent authoring", () => {
+    const prompt = buildSystemPrompt();
+    expect(prompt).toContain("overflow: hidden");
+    expect(prompt).toContain("box-sizing: border-box");
+  });
+
   it("omits the catalog section when no skills are provided", () => {
     const prompt = buildSystemPrompt();
     expect(prompt).not.toContain("Available Skills");

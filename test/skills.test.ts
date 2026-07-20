@@ -160,6 +160,23 @@ describe("loadSkills / getSkill", () => {
     // Presentation/deck requests are handed off to the slides skill.
     expect(proto.content).toContain("`slides` skill");
   });
+
+  it("pins the fit-to-canvas rules in the prototype skill", () => {
+    const proto = getSkill("prototype")!;
+    expect(proto.content).toContain("Fit to canvas");
+    expect(proto.content).toContain("overflow: hidden");
+    expect(proto.content).toContain("box-sizing: border-box");
+    // Checklist item to catch overflow before emitting HTML.
+    expect(proto.content).toContain("FIT-TO-CANVAS CHECK");
+  });
+
+  it("pins the fit-to-canvas rules in the slides skill", () => {
+    const slides = getSkill("slides")!;
+    expect(slides.content).toContain("Fit to canvas");
+    expect(slides.content).toContain("overflow: hidden");
+    expect(slides.content).toContain("box-sizing: border-box");
+    expect(slides.content).toContain("FIT-TO-CANVAS CHECK");
+  });
 });
 
 describe("getSkillTools / load_skill", () => {
