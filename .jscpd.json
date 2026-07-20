@@ -1,0 +1,7 @@
+{
+  "minTokens": 70,
+  "threshold": 0.1,
+  "ignore": ["**/skills/**"],
+  "reporters": ["consoleFull"],
+  "gitignore": true
+}

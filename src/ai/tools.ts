@@ -41,6 +41,59 @@ function stripWrapperNoiseLines(input: string): string {
   return lines.join("\n");
 }
 
+// Tracks backslash-escapes and string-literal state while scanning character
+// by character. consume(ch) returns true when the char belongs to an escape
+// sequence or string literal and the caller should skip structural handling.
+function createQuoteScanner() {
+  let escaped = false;
+  let stringDelimiter: '"' | "'" | "`" | null = null;
+  return {
+    consume(ch: string): boolean {
+      if (escaped) {
+        escaped = false;
+        return true;
+      }
+      if (ch === "\\") {
+        escaped = true;
+        return true;
+      }
+      if (stringDelimiter) {
+        if (ch === stringDelimiter) stringDelimiter = null;
+        return true;
+      }
+      if (ch === '"' || ch === "'" || ch === "`") {
+        stringDelimiter = ch;
+        return true;
+      }
+      return false;
+    },
+    get inString(): boolean {
+      return escaped || stringDelimiter !== null;
+    },
+  };
+}
+
+// Tracks (), {}, [] nesting depth for chars the quote scanner did not consume;
+// atTopLevel is true when all three depths are balanced.
+function createDepthTracker() {
+  let parenDepth = 0;
+  let braceDepth = 0;
+  let bracketDepth = 0;
+  return {
+    track(ch: string): void {
+      if (ch === "(") parenDepth++;
+      else if (ch === ")") parenDepth--;
+      else if (ch === "{") braceDepth++;
+      else if (ch === "}") braceDepth--;
+      else if (ch === "[") bracketDepth++;
+      else if (ch === "]") bracketDepth--;
+    },
+    get atTopLevel(): boolean {
+      return parenDepth === 0 && braceDepth === 0 && bracketDepth === 0;
+    },
+  };
+}
+
 // Splits a batch_design `operations` script into its individual top-level
 // statements (a newline ends a statement only at top level — outside strings
 // and unbalanced (), {}, [] — so a multi-line value still counts as one
@@ -51,11 +104,8 @@ export function splitBatchDesignStatements(operations: string): string[] {
   operations = stripWrapperNoiseLines(operations);
   const statements: string[] = [];
   let current = "";
-  let parenDepth = 0;
-  let braceDepth = 0;
-  let bracketDepth = 0;
-  let escaped = false;
-  let stringDelimiter: '"' | "'" | "`" | null = null;
+  const depth = createDepthTracker();
+  const scanner = createQuoteScanner();
 
   const pushStatement = (text: string) => {
     const trimmed = text.trim();
@@ -72,36 +122,11 @@ export function splitBatchDesignStatements(operations: string): string[] {
   for (const ch of operations) {
     current += ch;
 
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (ch === "\\") {
-      escaped = true;
-      continue;
-    }
-    if (stringDelimiter) {
-      if (ch === stringDelimiter) stringDelimiter = null;
-      continue;
-    }
-    if (ch === '"' || ch === "'" || ch === "`") {
-      stringDelimiter = ch;
-      continue;
-    }
+    if (scanner.consume(ch)) continue;
 
-    if (ch === "(") parenDepth++;
-    else if (ch === ")") parenDepth--;
-    else if (ch === "{") braceDepth++;
-    else if (ch === "}") braceDepth--;
-    else if (ch === "[") bracketDepth++;
-    else if (ch === "]") bracketDepth--;
+    depth.track(ch);
 
-    if (
-      ch === "\n" &&
-      parenDepth === 0 &&
-      braceDepth === 0 &&
-      bracketDepth === 0
-    ) {
+    if (ch === "\n" && depth.atTopLevel) {
       pushStatement(current);
       current = "";
     }
@@ -128,27 +153,11 @@ export function splitBatchDesignStatements(operations: string): string[] {
 // the operation's props object. Returns -1 if the call closes without one.
 function findFirstTopLevelBrace(text: string, fromIndex: number): number {
   let parenDepth = 1;
-  let escaped = false;
-  let stringDelimiter: '"' | "'" | "`" | null = null;
+  const scanner = createQuoteScanner();
 
   for (let i = fromIndex; i < text.length; i++) {
     const ch = text[i];
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (ch === "\\") {
-      escaped = true;
-      continue;
-    }
-    if (stringDelimiter) {
-      if (ch === stringDelimiter) stringDelimiter = null;
-      continue;
-    }
-    if (ch === '"' || ch === "'" || ch === "`") {
-      stringDelimiter = ch;
-      continue;
-    }
+    if (scanner.consume(ch)) continue;
     if (ch === "(") {
       parenDepth++;
       continue;
@@ -172,27 +181,11 @@ function findMatchingBrace(text: string, openIndex: number): number {
   // inside braces, so tracking brace depth alone is sufficient once strings
   // are excluded.
   let braceDepth = 0;
-  let escaped = false;
-  let stringDelimiter: '"' | "'" | "`" | null = null;
+  const scanner = createQuoteScanner();
 
   for (let i = openIndex; i < text.length; i++) {
     const ch = text[i];
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (ch === "\\") {
-      escaped = true;
-      continue;
-    }
-    if (stringDelimiter) {
-      if (ch === stringDelimiter) stringDelimiter = null;
-      continue;
-    }
-    if (ch === '"' || ch === "'" || ch === "`") {
-      stringDelimiter = ch;
-      continue;
-    }
+    if (scanner.consume(ch)) continue;
     if (ch === "{") braceDepth++;
     else if (ch === "}") {
       braceDepth--;
@@ -209,43 +202,20 @@ function findMatchingBrace(text: string, openIndex: number): number {
 function splitTopLevelByComma(text: string): string[] {
   const chunks: string[] = [];
   let current = "";
-  let parenDepth = 0;
-  let braceDepth = 0;
-  let bracketDepth = 0;
-  let escaped = false;
-  let stringDelimiter: '"' | "'" | "`" | null = null;
+  const depth = createDepthTracker();
+  const scanner = createQuoteScanner();
 
   for (const ch of text) {
-    if (!escaped && !stringDelimiter && ch === "," && parenDepth === 0 && braceDepth === 0 && bracketDepth === 0) {
+    if (!scanner.inString && ch === "," && depth.atTopLevel) {
       chunks.push(current);
       current = "";
       continue;
     }
     current += ch;
 
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (ch === "\\") {
-      escaped = true;
-      continue;
-    }
-    if (stringDelimiter) {
-      if (ch === stringDelimiter) stringDelimiter = null;
-      continue;
-    }
-    if (ch === '"' || ch === "'" || ch === "`") {
-      stringDelimiter = ch;
-      continue;
-    }
+    if (scanner.consume(ch)) continue;
 
-    if (ch === "(") parenDepth++;
-    else if (ch === ")") parenDepth--;
-    else if (ch === "{") braceDepth++;
-    else if (ch === "}") braceDepth--;
-    else if (ch === "[") bracketDepth++;
-    else if (ch === "]") bracketDepth--;
+    depth.track(ch);
   }
   chunks.push(current);
   return chunks;
