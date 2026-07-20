@@ -8,6 +8,17 @@ While on `0.x`, minor bumps may include breaking changes.
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-07-21
+
+### Added
+- **Noise effect documented in `batch_design` effects (pairs with frontend
+  0.54.0).** The effects bullet now describes the Figma-parity noise shape —
+  `{type: "noise", noiseType: "mono"|"duo"|"multi", color, secondaryColor?,
+  opacity?, noiseSize, noiseSizeY?, density, blendMode?}` — with the 2-per-node
+  render cap and export behavior (raster yes, HTML drop), plus an example and
+  the noise mention in the effect-style bullet. Execution is frontend-side as
+  usual; no tool names changed, so the cross-repo contract is unaffected.
+
 ## [0.21.0] - 2026-07-20
 
 ### Added
