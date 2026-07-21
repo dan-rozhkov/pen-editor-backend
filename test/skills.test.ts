@@ -124,6 +124,50 @@ describe("loadSkills / getSkill", () => {
     expect(slides!.description.toLowerCase()).toContain("deck");
   });
 
+  it("loads the plugin skill with its frontmatter and args", async () => {
+    await loadSkills();
+    const plugin = getSkill("plugin");
+    expect(plugin).toBeDefined();
+    expect(plugin!.name).toBe("plugin");
+    expect(plugin!.description.length).toBeGreaterThan(0);
+    expect(plugin!.description.toLowerCase()).toContain("plugin");
+    expect(plugin!.args).toEqual([
+      {
+        name: "request",
+        description:
+          "What the plugin should do (optional — the user's message usually already says this)",
+        required: false,
+      },
+    ]);
+  });
+
+  it("documents the pen.* API and rules in the plugin skill", () => {
+    const plugin = getSkill("plugin")!;
+    // The pen.* surface documented accurately from the real implementation.
+    expect(plugin.content).toContain("pen.tools.run");
+    expect(plugin.content).toContain("pen.scene.batch");
+    expect(plugin.content).toContain("pen.scene.get");
+    expect(plugin.content).toContain("pen.selection.get");
+    expect(plugin.content).toContain("pen.selection.set");
+    expect(plugin.content).toContain("pen.viewport.zoomTo");
+    expect(plugin.content).toContain("pen.notify");
+    expect(plugin.content).toContain("pen.storage.get");
+    expect(plugin.content).toContain("pen.storage.set");
+    expect(plugin.content).toContain('pen.on("selectionchange"');
+    expect(plugin.content).toContain("pen.close()");
+    // Allowlist and cap called out.
+    expect(plugin.content).toContain("rename_layers");
+    expect(plugin.content).toContain("25 operations");
+    // Code-size limit.
+    expect(plugin.content).toContain("100 KB");
+    // Iteration convention.
+    expect(plugin.content).toContain("list_plugins");
+    expect(plugin.content).toContain("update_plugin");
+    // At least one headless and one UI example.
+    expect(plugin.content.toLowerCase()).toContain("headless");
+    expect(plugin.content).toContain("ui: { width: 200, height: 120 }");
+  });
+
   it("pins the deck-specific structural rules in the slides skill", () => {
     const slides = getSkill("slides")!;
     // One embed per slide, not one embed for the whole deck.

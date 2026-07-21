@@ -1037,6 +1037,78 @@ Returns the created/updated style ids and names (with a created|updated status) 
     }),
   }),
 
+  // ── Plugins ───────────────────────────────────────────────────────
+  // Client-executed like every other tool above. Schemas are deliberately
+  // minimal — the full pen.* API reference, rules and examples live in the
+  // `plugin` skill (call load_skill with name "plugin"), not here, so the
+  // system prompt stays small and prompt caching isn't disturbed.
+
+  create_plugin: tool({
+    description:
+      "Install a new AI-authored plugin: sandboxed JavaScript that runs in the editor and can call editor tools through the pen.* API. Load the `plugin` skill FIRST for the full API reference, rules, and examples before writing `code`.",
+    inputSchema: z.object({
+      name: z
+        .string()
+        .min(1)
+        .describe("Short plugin name shown in the command palette and plugin manager."),
+      description: z
+        .string()
+        .min(1)
+        .describe("One-sentence description of what the plugin does."),
+      icon: z
+        .string()
+        .optional()
+        .describe("Optional single emoji shown next to the plugin name."),
+      code: z
+        .string()
+        .min(1)
+        .describe(
+          "Plugin JavaScript source, run as an ES module inside a sandboxed iframe. See the `plugin` skill for the pen.* API before writing this.",
+        ),
+      ui: z
+        .object({
+          width: z.number().positive(),
+          height: z.number().positive(),
+        })
+        .nullish()
+        .describe(
+          "Panel size for a UI plugin. Omit or pass null for a headless plugin with no visible panel.",
+        ),
+    }),
+  }),
+
+  update_plugin: tool({
+    description:
+      "Update an existing plugin's code or metadata — the way to iterate on a plugin after the user asks for a change or reports a bug. Pass only the fields you want to change. Call list_plugins first if you don't already have the plugin's id.",
+    inputSchema: z.object({
+      id: z
+        .string()
+        .min(1)
+        .describe("Id of the plugin to update (from list_plugins or a prior create_plugin result)."),
+      name: z.string().min(1).optional().describe("New plugin name."),
+      description: z.string().min(1).optional().describe("New description."),
+      icon: z.string().optional().describe("New icon (single emoji)."),
+      code: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("Replacement plugin source. See the `plugin` skill for the pen.* API."),
+      ui: z
+        .object({
+          width: z.number().positive(),
+          height: z.number().positive(),
+        })
+        .nullish()
+        .describe("New panel size, or null to make the plugin headless."),
+    }),
+  }),
+
+  list_plugins: tool({
+    description:
+      "List installed plugins (id, name, description). Call this before update_plugin if you don't already know the target plugin's id.",
+    inputSchema: z.object({}),
+  }),
+
   generate_image: tool({
     description:
       "Generate an image from a text prompt and show it in the chat. Use when the user asks for an illustration, photo, texture, or background that is NOT being applied to a specific frame. Returns the image URL, which is rendered inline in the chat.",

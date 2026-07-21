@@ -342,6 +342,32 @@ describe("POST /api/chat — skill command injection", () => {
     expect(skillCallIndex).toBeLessThan(lastUserIndex);
   });
 
+  it("injects the plugin skill instructions for a /plugin command", async () => {
+    const model = mockModel(textStreamChunks("done"));
+    holders.model = model;
+
+    const skill = getSkill("plugin");
+    expect(skill).toBeDefined();
+
+    const res = await postChat(server.url, {
+      messages: [userMessage("/plugin make a tool that renames my selection")],
+    });
+    expect(res.status).toBe(200);
+    await res.text();
+
+    const promptJson = JSON.stringify(model.doStreamCalls[0].prompt);
+    expect(promptJson).toContain("lookup_skill");
+    // A distinctive snippet of the plugin skill body made it into the prompt.
+    expect(promptJson).toContain("pen.tools.run");
+
+    const userMessages = (
+      model.doStreamCalls[0].prompt as Array<{ role: string; content: unknown }>
+    ).filter((m) => m.role === "user");
+    const lastUserJson = JSON.stringify(userMessages[userMessages.length - 1]);
+    expect(lastUserJson).toContain("make a tool that renames my selection");
+    expect(lastUserJson).not.toContain("/plugin");
+  });
+
   it("passes unknown slash commands through as plain text", async () => {
     const model = mockModel(textStreamChunks("ok"));
     holders.model = model;

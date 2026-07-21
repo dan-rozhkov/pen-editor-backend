@@ -43,6 +43,9 @@ describe("penTools registry", () => {
         "set_export_settings",
         "set_variables",
         "snapshot_layout",
+        "create_plugin",
+        "update_plugin",
+        "list_plugins",
       ].sort(),
     );
   });
@@ -78,6 +81,9 @@ describe("penTools registry", () => {
       "reply_comment",
       "resolve_comment",
       "leave_comment",
+      "create_plugin",
+      "update_plugin",
+      "list_plugins",
     ] as const) {
       expect(hasExecute(name), `${name} must be client-executed`).toBe(false);
     }
@@ -737,5 +743,117 @@ describe("get_style_guide schema + execute", () => {
     };
     expect(tagged.name).toBe("Generated Style Guide");
     expect(tagged.basedOn).toEqual(["minimal", "dark"]);
+  });
+});
+
+describe("create_plugin schema", () => {
+  const schema = schemaOf("create_plugin");
+
+  it("accepts the minimal required fields (headless plugin)", () => {
+    const result = schema.safeParse({
+      name: "Renamer",
+      description: "Renames the selection sequentially.",
+      code: "pen.notify('hi')",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts an explicit null ui (headless) and an object ui (panel size)", () => {
+    expect(
+      schema.safeParse({
+        name: "Renamer",
+        description: "d",
+        code: "c",
+        ui: null,
+      }).success,
+    ).toBe(true);
+    expect(
+      schema.safeParse({
+        name: "Renamer",
+        description: "d",
+        code: "c",
+        icon: "✏️",
+        ui: { width: 320, height: 240 },
+      }).success,
+    ).toBe(true);
+  });
+
+  it("requires non-empty name, description and code", () => {
+    expect(schema.safeParse({}).success).toBe(false);
+    expect(
+      schema.safeParse({ name: "", description: "d", code: "c" }).success,
+    ).toBe(false);
+    expect(
+      schema.safeParse({ name: "n", description: "", code: "c" }).success,
+    ).toBe(false);
+    expect(
+      schema.safeParse({ name: "n", description: "d", code: "" }).success,
+    ).toBe(false);
+  });
+
+  it("rejects a malformed ui", () => {
+    expect(
+      schema.safeParse({
+        name: "n",
+        description: "d",
+        code: "c",
+        ui: { width: 320 },
+      }).success,
+    ).toBe(false);
+    expect(
+      schema.safeParse({
+        name: "n",
+        description: "d",
+        code: "c",
+        ui: { width: -1, height: 240 },
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe("update_plugin schema", () => {
+  const schema = schemaOf("update_plugin");
+
+  it("accepts just an id (no-op patch shape-wise)", () => {
+    expect(schema.safeParse({ id: "plugin-1" }).success).toBe(true);
+  });
+
+  it("accepts any subset of patch fields", () => {
+    expect(
+      schema.safeParse({ id: "plugin-1", name: "New name" }).success,
+    ).toBe(true);
+    expect(
+      schema.safeParse({ id: "plugin-1", code: "pen.close()" }).success,
+    ).toBe(true);
+    expect(
+      schema.safeParse({ id: "plugin-1", ui: null }).success,
+    ).toBe(true);
+    expect(
+      schema.safeParse({ id: "plugin-1", ui: { width: 100, height: 100 } })
+        .success,
+    ).toBe(true);
+  });
+
+  it("requires id", () => {
+    expect(schema.safeParse({}).success).toBe(false);
+    expect(schema.safeParse({ name: "New name" }).success).toBe(false);
+  });
+
+  it("rejects empty-string patch fields", () => {
+    expect(schema.safeParse({ id: "plugin-1", name: "" }).success).toBe(false);
+    expect(
+      schema.safeParse({ id: "plugin-1", description: "" }).success,
+    ).toBe(false);
+    expect(schema.safeParse({ id: "plugin-1", code: "" }).success).toBe(false);
+  });
+});
+
+describe("list_plugins schema", () => {
+  const schema = schemaOf("list_plugins");
+
+  it("accepts an empty object", () => {
+    const result = schema.safeParse({});
+    expect(result.success).toBe(true);
+    expect(result.success && result.data).toEqual({});
   });
 });
