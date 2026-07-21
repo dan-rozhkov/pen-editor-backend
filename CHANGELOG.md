@@ -8,6 +8,16 @@ While on `0.x`, minor bumps may include breaking changes.
 
 ## [Unreleased]
 
+## [0.23.2] - 2026-07-21
+
+### Changed
+- **`/plugin` skill: UI-kit class catalog (pairs with frontend 0.57.0).** The
+  skill now documents the `.pen-*` primitive classes baked into every plugin
+  iframe (button/input/textarea/select/label/checkbox/row/stack) with the rule
+  to use them instead of hand-rolled CSS; the Counter example is rewritten on
+  them. The catalog section is machine-checkable and guarded by the frontend's
+  cross-repo contract test.
+
 ## [0.23.1] - 2026-07-21
 
 ### Changed
