@@ -8,6 +8,16 @@ While on `0.x`, minor bumps may include breaking changes.
 
 ## [Unreleased]
 
+## [0.23.1] - 2026-07-21
+
+### Changed
+- **`/plugin` skill updated for live UI panels (pairs with frontend 0.56.0).**
+  Removed the "headless-only" limitation notes: the skill now documents the
+  floating panel (initial size from `ui`, `pen.ui.resize` clamping, close =
+  teardown), the injected theme CSS variables (`--color-surface-panel`,
+  `--color-text-primary`, …) with live light/dark updates, and the Dev Mode
+  read-only rule (mutating calls reject while Dev/Inspect Mode is active).
+
 ## [0.23.0] - 2026-07-21
 
 ### Added
