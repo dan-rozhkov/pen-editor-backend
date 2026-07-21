@@ -42,10 +42,13 @@ self-contained `code`, not to run it yourself.
   family) — e.g. `body { background: var(--color-surface-panel); color:
   var(--color-text-primary); }`.
 - A base stylesheet with editor-matching primitives is already loaded in
-  every plugin iframe (`.pen-button`, `.pen-input`, ... — see "UI-kit
-  classes" below). **For standard controls, use the `.pen-*` classes
-  instead of hand-rolled CSS** — they match the editor's look and follow
-  theme switches automatically.
+  every plugin iframe (`.pen-button`, `.pen-input`, `.pen-card`, `.pen-tabs`,
+  `.pen-table`, ... — see "UI-kit classes" below). It covers every app
+  primitive that a static sandboxed iframe (no framework, no popovers/portals)
+  can faithfully reproduce — controls, containers (card, alert, table,
+  field), and text helpers (heading, muted, kbd, link). **For standard
+  controls, use the `.pen-*` classes instead of hand-rolled CSS** — they
+  match the editor's look and follow theme switches automatically.
 - While the editor's Dev/Inspect Mode is active the scene is read-only:
   mutating `pen.tools.run`/`pen.scene.batch` calls reject with an error
   (read-only tools like `batch_get`/`get_editor_state` still work). Handle
@@ -156,13 +159,30 @@ live. Use them for standard controls instead of writing your own CSS:
 
 - `.pen-button` — default (secondary-looking) button
 - `.pen-button-primary` — high-emphasis button (the app's primary button color, not the accent blue), add alongside `.pen-button` for the main/confirm action
+- `.pen-icon-button` — square 28×28 icon-only button, add alongside `.pen-button`
 - `.pen-input` — single-line text input
 - `.pen-textarea` — multi-line text input
 - `.pen-select` — native `<select>`
 - `.pen-label` — form field label
 - `.pen-checkbox` — native checkbox (`<input type="checkbox">`)
+- `.pen-slider` — native range input (`<input type="range">`), accent-colored
+- `.pen-tabs` — tab strip container; hold `.pen-tab` children
+- `.pen-tab` — a single tab; add `aria-selected="true"` on the active one
+- `.pen-button-group` — joins adjacent `.pen-button`s into one row (shared borders, outer corners only rounded)
+- `.pen-input-group` — bordered row combining `.pen-input` with a leading/trailing addon (icon, button, text)
 - `.pen-row` — horizontal flex layout with gap, for inline groups of controls
 - `.pen-stack` — vertical flex layout with gap, for stacked form fields
+- `.pen-badge` — small pill label, for status/count tags
+- `.pen-card` — bordered, elevated container with padding, for grouping related controls
+- `.pen-field` — vertical group for one form field (label + control + help text)
+- `.pen-alert` — bordered inline alert/notice banner
+- `.pen-table` — data table (`<table>` with `.pen-table th`/`.pen-table td` cells)
+- `.pen-separator` — 1px horizontal rule, for dividing sections
+- `.pen-heading` — section heading text
+- `.pen-muted` — secondary/de-emphasized text
+- `.pen-help` — small help/description text under a field
+- `.pen-kbd` — inline keycap, for showing a keyboard shortcut
+- `.pen-link` — text link (underlines on hover)
 
 ## Examples
 
@@ -212,3 +232,21 @@ document.getElementById("inc").addEventListener("click", async () => {
 counter."`, `ui: { width: 200, height: 120 }`. The panel opens at 200×120;
 the `.pen-*` classes above already follow the editor's light/dark theme, so
 there's no manual color CSS to write here.
+
+### 3. UI-declared: a card-wrapped field with help text
+
+```js
+document.body.innerHTML = `
+  <div class="pen-card">
+    <div class="pen-field">
+      <label class="pen-label" for="prefix">Layer prefix</label>
+      <input id="prefix" class="pen-input" placeholder="e.g. icon/" />
+      <div class="pen-help">Prepended to every selected layer's name.</div>
+    </div>
+  </div>
+`;
+```
+
+Shows `.pen-card` grouping a `.pen-field` (label + input + `.pen-help`) —
+the same nesting a settings panel would use, all still theme-following with
+no hand-written colors.
