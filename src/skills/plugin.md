@@ -155,7 +155,7 @@ from the theme tokens above so they match `src/components/ui/` and re-theme
 live. Use them for standard controls instead of writing your own CSS:
 
 - `.pen-button` — default (secondary-looking) button
-- `.pen-button-primary` — accent-colored button, add alongside `.pen-button` for the main/confirm action
+- `.pen-button-primary` — high-emphasis button (the app's primary button color, not the accent blue), add alongside `.pen-button` for the main/confirm action
 - `.pen-input` — single-line text input
 - `.pen-textarea` — multi-line text input
 - `.pen-select` — native `<select>`
