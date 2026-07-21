@@ -77,18 +77,40 @@ pen.close();
 
 ### Allowed tools for `pen.tools.run`
 
-Only these tool names are allowed (calling anything else rejects the
-Promise): `batch_design`, `batch_get`, `get_editor_state`, `snapshot_layout`,
-`get_variables`, `set_variables`, `get_text_styles`, `set_text_styles`,
-`apply_text_style`, `get_styles`, `set_styles`, `apply_fill_style`,
-`apply_effect_style`, `replace_all_matching_properties`,
-`search_all_unique_properties`, `find_empty_space_on_canvas`,
-`rename_layers`, `boolean_operation`, `set_export_settings`,
-`generate_image`. (Comments, `get_screenshot`, the backend-only guideline
-tools, and `generate_frame_image` are intentionally not available to
-plugins.) Use `pen.scene.batch`/`pen.scene.get` for `batch_design`/reads
+Only the tool names listed below are allowed (calling anything else rejects
+the Promise). Use `pen.scene.batch`/`pen.scene.get` for `batch_design`/reads
 instead of calling `pen.tools.run` with those names directly — they're
 equivalent, but the shorthands are less to type and less to get wrong.
+(Comments, `get_screenshot`, the backend-only guideline tools, and
+`generate_frame_image` are intentionally not available to plugins.)
+
+#### Allowlist
+
+This list must be kept identical (as a set) to
+`pen-editor/src/lib/plugins/toolAllowlist.ts`'s `PLUGIN_ALLOWED_TOOLS` —
+`pen-editor/src/lib/__tests__/toolContract.test.ts` parses the backticked
+names directly out of this section and fails if the two drift.
+
+- `batch_design`
+- `batch_get`
+- `get_editor_state`
+- `snapshot_layout`
+- `get_variables`
+- `set_variables`
+- `get_text_styles`
+- `set_text_styles`
+- `apply_text_style`
+- `get_styles`
+- `set_styles`
+- `apply_fill_style`
+- `apply_effect_style`
+- `replace_all_matching_properties`
+- `search_all_unique_properties`
+- `find_empty_space_on_canvas`
+- `rename_layers`
+- `boolean_operation`
+- `set_export_settings`
+- `generate_image`
 
 Every `pen.tools.run`/`pen.scene.*` call goes through the exact same
 `batch_design` DSL and cap (25 operations per call) that you use directly in

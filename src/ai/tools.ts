@@ -411,6 +411,15 @@ export function makeBatchDesignTool(opts?: { embedOnly?: boolean }) {
   });
 }
 
+// Shared by create_plugin/update_plugin so the panel-size shape can't drift
+// between the two tools.
+const pluginUiSchema = z
+  .object({
+    width: z.number().positive(),
+    height: z.number().positive(),
+  })
+  .nullish();
+
 export const penTools = {
   // ── Reading & Navigation ──────────────────────────────────────────
 
@@ -1065,15 +1074,9 @@ Returns the created/updated style ids and names (with a created|updated status) 
         .describe(
           "Plugin JavaScript source, run as an ES module inside a sandboxed iframe. See the `plugin` skill for the pen.* API before writing this.",
         ),
-      ui: z
-        .object({
-          width: z.number().positive(),
-          height: z.number().positive(),
-        })
-        .nullish()
-        .describe(
-          "Panel size for a UI plugin. Omit or pass null for a headless plugin with no visible panel.",
-        ),
+      ui: pluginUiSchema.describe(
+        "Panel size for a UI plugin. Omit or pass null for a headless plugin with no visible panel.",
+      ),
     }),
   }),
 
@@ -1093,13 +1096,7 @@ Returns the created/updated style ids and names (with a created|updated status) 
         .min(1)
         .optional()
         .describe("Replacement plugin source. See the `plugin` skill for the pen.* API."),
-      ui: z
-        .object({
-          width: z.number().positive(),
-          height: z.number().positive(),
-        })
-        .nullish()
-        .describe("New panel size, or null to make the plugin headless."),
+      ui: pluginUiSchema.describe("New panel size, or null to make the plugin headless."),
     }),
   }),
 
