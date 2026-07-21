@@ -8,6 +8,23 @@ While on `0.x`, minor bumps may include breaking changes.
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-07-21
+
+### Added
+- **AI plugin generation tools (plg-03, pairs with frontend 0.55.0).** Three
+  new client-executed tools in `penTools`: `create_plugin({name, description,
+  icon?, code, ui?})`, `update_plugin({id, ...patch})` and `list_plugins()` —
+  the agent can now write, install and iterate on generative plugins from chat.
+  Schemas are minimal (shared `pluginUiSchema` for the panel size); the full
+  `pen.*` API documentation lives in the new skill, not in the schemas, to
+  preserve prompt caching.
+- **`/plugin` skill (`src/skills/plugin.md`).** Reference for writing plugin
+  code: the `pen.*` API v1 (tools.run, scene.batch/get, selection, viewport,
+  notify, storage, ui.resize, selectionchange, close), rules (all-async,
+  batch_design cap 25 ops, 100 KB code limit, headless-only until plugin
+  panels ship) and worked examples. The allowed-tools section is
+  machine-checkable and guarded by a cross-repo contract test on the frontend.
+
 ## [0.22.0] - 2026-07-21
 
 ### Added
