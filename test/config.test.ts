@@ -62,6 +62,8 @@ describe("getAllowedModels", () => {
       "thinkingmachines/inkling",
       "kwaipilot/kat-coder-pro-v2.5",
       "x-ai/grok-4.20",
+      "google/gemini-3.5-flash-lite",
+      "google/gemini-3.6-flash",
     ]);
   });
 

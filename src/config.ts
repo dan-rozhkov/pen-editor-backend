@@ -145,6 +145,16 @@ export const DEFAULT_MODELS: ModelOption[] = [
     label: "Grok 4.20",
     supportsVision: false,
   },
+  {
+    id: "google/gemini-3.5-flash-lite",
+    label: "Gemini 3.5 Flash-Lite",
+    supportsVision: true,
+  },
+  {
+    id: "google/gemini-3.6-flash",
+    label: "Gemini 3.6 Flash",
+    supportsVision: true,
+  },
 ];
 
 // Full model list for a config: the built-in models, plus any extra models an
