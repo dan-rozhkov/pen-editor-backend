@@ -26,17 +26,25 @@ self-contained `code`, not to run it yourself.
   RPC timeout). Always `await` it or `.then()`/`.catch()`.
 - Only one instance of a given plugin runs at a time — starting it again
   (or the user re-running it) stops the previous instance first.
-- `ui` (passed to `create_plugin`/`update_plugin`) declares a desired panel
-  size for a plugin with a visible interface. **Current limitation:** every
-  plugin iframe renders headless (hidden) right now, regardless of `ui` —
-  visible floating panels are a separate, not-yet-shipped piece of work.
-  Setting `ui` is safe (it's just stored), but don't tell the user they'll
-  see a panel yet, and don't make a plugin's core behavior depend on the
-  user interacting with on-screen UI until you've confirmed panels are live.
-  A UI plugin can still build its DOM in `document.body` now — that code
-  keeps working once panels render, nothing to rewrite later.
-- No theme CSS custom properties are injected into the iframe yet either —
-  a UI plugin should bring its own colors rather than assume host theme vars
+- `ui` (passed to `create_plugin`/`update_plugin`) declares the initial panel
+  size for a plugin with a visible interface. A `ui` plugin opens in a
+  draggable, resizable floating panel (titlebar with the plugin's icon, name
+  and a close button; closing it stops the instance). The plugin's DOM in
+  `document.body` fills the panel. `pen.ui.resize(w, h)` resizes the panel
+  from inside (clamped to sane min/max). Omit `ui` (or pass `null`) for
+  headless plugins — they run invisibly and should `pen.close()` when done.
+- Theme: the host injects the editor's theme tokens as CSS custom properties
+  plus a `data-theme` attribute on the iframe's `<html>`, and pushes updates
+  live when the user switches light/dark. UI plugins should use them instead
+  of hardcoding colors: `--color-surface-panel`, `--color-surface-elevated`,
+  `--color-border-default`, `--color-text-primary`, `--color-text-secondary`,
+  `--color-text-muted`, `--color-accent-primary` (and more of the same
+  family) — e.g. `body { background: var(--color-surface-panel); color:
+  var(--color-text-primary); }`.
+- While the editor's Dev/Inspect Mode is active the scene is read-only:
+  mutating `pen.tools.run`/`pen.scene.batch` calls reject with an error
+  (read-only tools like `batch_get`/`get_editor_state` still work). Handle
+  the rejection gracefully
   are present.
 
 ## The `pen.*` API (v1)
@@ -131,7 +139,7 @@ rejection silently stop it.
 2. **Mutate the scene only through `pen.scene.batch`/`pen.tools.run`.** There is no other way to touch the document from inside the sandbox — direct DOM/canvas access to the host app is impossible by design.
 3. **Respect the 25-operations-per-`batch_design`-call cap.** Split larger mutations into sequential `pen.scene.batch` calls (with `await` between them so operations don't race).
 4. **Code size limit: 100 KB.** `create_plugin`/`update_plugin` reject larger `code`.
-5. **UI plugins render their own DOM inside their iframe** (`document.body`, plain DOM/CSS — no framework is bundled for you). See the panel-rendering limitation above.
+5. **UI plugins render their own DOM inside their iframe** (`document.body`, plain DOM/CSS — no framework is bundled for you), styled with the injected theme variables.
 6. **Iterate via `list_plugins` → `update_plugin`.** Don't `create_plugin` a near-duplicate when the user is asking for a change to an existing plugin — call `list_plugins` to find its id, then `update_plugin` with just the changed fields.
 7. Keep `name`/`description` short and user-facing — they're shown verbatim in the command palette and plugin manager.
 
@@ -180,6 +188,6 @@ document.getElementById("inc").addEventListener("click", async () => {
 ```
 
 `create_plugin` call: `name: "Counter"`, `description: "A small persistent
-counter."`, `ui: { width: 200, height: 120 }`. Remember: until the
-floating-panel host lands, this code installs and runs correctly but its DOM
-isn't shown to the user yet.
+counter."`, `ui: { width: 200, height: 120 }`. The panel opens at 200×120;
+use the theme variables (`var(--color-surface-panel)` etc.) for colors so the
+plugin follows the editor's light/dark theme.
