@@ -8,6 +8,19 @@ While on `0.x`, minor bumps may include breaking changes.
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-07-21
+
+### Changed
+- **`/plugin` skill: expanded UI-kit catalog (pairs with frontend 0.59.0).** The
+  skill now documents the full set of `.pen-*` primitives a plugin can use —
+  adding `badge`, `card`, `separator`, `slider`, `tabs`/`tab`, `alert`, `table`,
+  `field`, `help`, `icon-button`, `button-group`, `input-group`, `heading`,
+  `muted`, `kbd` and `link` on top of the original controls — so the design
+  agent has an editor-matching, live-theming analog for every app UI element
+  that renders faithfully in a sandboxed static plugin iframe. A new example
+  demonstrates a card + labelled field. The catalog stays machine-checkable and
+  is guarded by the frontend's cross-repo contract test.
+
 ## [0.23.2] - 2026-07-21
 
 ### Changed
