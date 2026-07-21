@@ -41,6 +41,11 @@ self-contained `code`, not to run it yourself.
   `--color-text-muted`, `--color-accent-primary` (and more of the same
   family) — e.g. `body { background: var(--color-surface-panel); color:
   var(--color-text-primary); }`.
+- A base stylesheet with editor-matching primitives is already loaded in
+  every plugin iframe (`.pen-button`, `.pen-input`, ... — see "UI-kit
+  classes" below). **For standard controls, use the `.pen-*` classes
+  instead of hand-rolled CSS** — they match the editor's look and follow
+  theme switches automatically.
 - While the editor's Dev/Inspect Mode is active the scene is read-only:
   mutating `pen.tools.run`/`pen.scene.batch` calls reject with an error
   (read-only tools like `batch_get`/`get_editor_state` still work). Handle
@@ -143,6 +148,22 @@ rejection silently stop it.
 6. **Iterate via `list_plugins` → `update_plugin`.** Don't `create_plugin` a near-duplicate when the user is asking for a change to an existing plugin — call `list_plugins` to find its id, then `update_plugin` with just the changed fields.
 7. Keep `name`/`description` short and user-facing — they're shown verbatim in the command palette and plugin manager.
 
+## UI-kit classes
+
+Every plugin iframe already loads a stylesheet with these classes, styled
+from the theme tokens above so they match `src/components/ui/` and re-theme
+live. Use them for standard controls instead of writing your own CSS:
+
+- `.pen-button` — default (secondary-looking) button
+- `.pen-button-primary` — accent-colored button, add alongside `.pen-button` for the main/confirm action
+- `.pen-input` — single-line text input
+- `.pen-textarea` — multi-line text input
+- `.pen-select` — native `<select>`
+- `.pen-label` — form field label
+- `.pen-checkbox` — native checkbox (`<input type="checkbox">`)
+- `.pen-row` — horizontal flex layout with gap, for inline groups of controls
+- `.pen-stack` — vertical flex layout with gap, for stacked form fields
+
 ## Examples
 
 ### 1. Headless: rename the selection sequentially
@@ -168,11 +189,11 @@ if (selected.length === 0) {
 ```js
 let count = (await pen.storage.get("count")) ?? 0;
 
-const root = document.body;
-root.style.cssText = "margin:0;font:14px system-ui;padding:12px;";
-root.innerHTML = `
-  <div id="count" style="font-size:24px;margin-bottom:8px;"></div>
-  <button id="inc">+1</button>
+document.body.innerHTML = `
+  <div class="pen-stack">
+    <div id="count" style="font-size:24px;"></div>
+    <button id="inc" class="pen-button pen-button-primary">+1</button>
+  </div>
 `;
 
 function render() {
@@ -189,5 +210,5 @@ document.getElementById("inc").addEventListener("click", async () => {
 
 `create_plugin` call: `name: "Counter"`, `description: "A small persistent
 counter."`, `ui: { width: 200, height: 120 }`. The panel opens at 200×120;
-use the theme variables (`var(--color-surface-panel)` etc.) for colors so the
-plugin follows the editor's light/dark theme.
+the `.pen-*` classes above already follow the editor's light/dark theme, so
+there's no manual color CSS to write here.
