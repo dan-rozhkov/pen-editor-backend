@@ -1106,6 +1106,55 @@ Returns the created/updated style ids and names (with a created|updated status) 
     inputSchema: z.object({}),
   }),
 
+  ask_user: tool({
+    description:
+      "Ask the user structured clarifying questions and get answers back as an interactive form in the chat, instead of guessing. " +
+      "MANDATORY before you create anything new on the canvas (a new screen/page/mockup/deck/etc.): call ask_user FIRST — before get_editor_state/batch_design — to gather the brief (audience, platform/size, tone/style, scope, brand constraints such as whether to reuse existing variables/fonts). " +
+      "You may also call it mid-task for a genuine fork in direction. Do NOT ask about things you can infer from the Canvas Context. Pack all questions into ONE call. " +
+      "Each option-based question may offer a 'Decide for me' choice (the user delegates — its answer value is the string \"__auto__\", meaning YOU pick a sensible default) and an 'Other…' free-text field (returned in the answer's `note`). " +
+      "Your turn PAUSES until the user submits; the answers come back as the tool result, then you continue.",
+    inputSchema: z.object({
+      title: z
+        .string()
+        .optional()
+        .describe("Optional heading shown above the questions."),
+      questions: z
+        .array(
+          z.object({
+            id: z.string().min(1).describe("Stable machine id for this question; the answer is keyed by it."),
+            label: z.string().min(1).describe("The question, shown in bold."),
+            hint: z.string().optional().describe("Optional secondary line under the label."),
+            type: z
+              .enum(["single", "multi", "select", "text"])
+              .describe("single = one chip; multi = checkboxes; select = dropdown; text = free input."),
+            options: z
+              .array(
+                z.object({
+                  value: z.string().min(1),
+                  label: z.string().min(1),
+                  description: z.string().optional(),
+                }),
+              )
+              .optional()
+              .describe("Choices for single/multi/select. Omit for text."),
+            required: z.boolean().optional().describe("If true, the user must answer before submitting."),
+            allowOther: z
+              .boolean()
+              .optional()
+              .describe("Show an 'Other…' free-text field beside the options (default true for option questions)."),
+            allowDecideForMe: z
+              .boolean()
+              .optional()
+              .describe("Show a 'Decide for me' choice that delegates to you (default true for option questions)."),
+            placeholder: z.string().optional().describe("Placeholder for text / Other input."),
+          }),
+        )
+        .min(1, "Provide at least one question")
+        .max(8, "Too many questions — keep it focused")
+        .describe("The questions to ask, all shown in one form."),
+    }),
+  }),
+
   generate_image: tool({
     description:
       "Generate an image from a text prompt and show it in the chat. Use when the user asks for an illustration, photo, texture, or background that is NOT being applied to a specific frame. Returns the image URL, which is rendered inline in the chat.",

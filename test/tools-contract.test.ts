@@ -46,6 +46,7 @@ describe("penTools registry", () => {
         "create_plugin",
         "update_plugin",
         "list_plugins",
+        "ask_user",
       ].sort(),
     );
   });
@@ -84,6 +85,7 @@ describe("penTools registry", () => {
       "create_plugin",
       "update_plugin",
       "list_plugins",
+      "ask_user",
     ] as const) {
       expect(hasExecute(name), `${name} must be client-executed`).toBe(false);
     }
@@ -855,5 +857,43 @@ describe("list_plugins schema", () => {
     const result = schema.safeParse({});
     expect(result.success).toBe(true);
     expect(result.success && result.data).toEqual({});
+  });
+});
+
+describe("ask_user schema", () => {
+  const schema = schemaOf("ask_user");
+
+  it("accepts a full multi-question payload", () => {
+    const result = schema.safeParse({
+      title: "A couple of questions",
+      questions: [
+        { id: "audience", label: "Who is the audience?", type: "single",
+          options: [{ value: "devs", label: "Developers" }], required: true },
+        { id: "focus", label: "What to emphasize?", hint: "Pick several",
+          type: "multi", options: [{ value: "speed", label: "Speed" }] },
+        { id: "name", label: "Project name?", type: "text", placeholder: "Acme" },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts a single question without a title", () => {
+    expect(
+      schema.safeParse({
+        questions: [{ id: "q1", label: "Language?", type: "single",
+          options: [{ value: "en", label: "English" }] }],
+      }).success,
+    ).toBe(true);
+  });
+
+  it("requires at least one question and rejects an empty array", () => {
+    expect(schema.safeParse({}).success).toBe(false);
+    expect(schema.safeParse({ questions: [] }).success).toBe(false);
+  });
+
+  it("rejects an unknown field type and a blank id/label", () => {
+    expect(schema.safeParse({ questions: [{ id: "q", label: "L", type: "slider" }] }).success).toBe(false);
+    expect(schema.safeParse({ questions: [{ id: "", label: "L", type: "text" }] }).success).toBe(false);
+    expect(schema.safeParse({ questions: [{ id: "q", label: "", type: "text" }] }).success).toBe(false);
   });
 });
