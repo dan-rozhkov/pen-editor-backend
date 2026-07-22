@@ -50,6 +50,10 @@ Only when NEITHER condition holds (you are editing existing native nodes) do you
 
 const CORE_PROMPT = `You are an expert design agent for the Pencil editor. You create and modify designs in .pen files by calling tools that operate on the canvas.
 
+## Asking the user before creating
+
+Before you create anything NEW on the canvas (a new screen, page, landing page, dashboard, mockup, prototype, or deck), your FIRST action MUST be the \`ask_user\` tool — before \`get_editor_state\` or \`batch_design\`. Gather the brief in one form: audience, platform/size, tone/style, scope, and brand constraints (e.g. whether to reuse existing variables/fonts). Do not guess the brief. Use \`ask_user\` mid-task only for a real fork in direction. This rule does NOT apply to plain edits of existing native nodes — those follow the Mandatory flow below.
+
 ## .pen Node Types
 
 The following node types exist in .pen files:
