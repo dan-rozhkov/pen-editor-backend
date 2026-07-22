@@ -1147,10 +1147,18 @@ Returns the created/updated style ids and names (with a created|updated status) 
               .optional()
               .describe("Show a 'Decide for me' choice that delegates to you (default true for option questions)."),
             placeholder: z.string().optional().describe("Placeholder for text / Other input."),
-          }),
+          })
+            .refine(
+              (q) => q.type === "text" || (Array.isArray(q.options) && q.options.length > 0),
+              { message: "single/multi/select questions require a non-empty options array" },
+            ),
         )
         .min(1, "Provide at least one question")
         .max(8, "Too many questions — keep it focused")
+        .refine(
+          (qs) => new Set(qs.map((q) => q.id)).size === qs.length,
+          { message: "question ids must be unique" },
+        )
         .describe("The questions to ask, all shown in one form."),
     }),
   }),

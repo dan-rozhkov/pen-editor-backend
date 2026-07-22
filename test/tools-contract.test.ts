@@ -896,4 +896,34 @@ describe("ask_user schema", () => {
     expect(schema.safeParse({ questions: [{ id: "", label: "L", type: "text" }] }).success).toBe(false);
     expect(schema.safeParse({ questions: [{ id: "q", label: "", type: "text" }] }).success).toBe(false);
   });
+
+  it("rejects single/multi/select questions without options", () => {
+    for (const type of ["single", "multi", "select"] as const) {
+      expect(
+        schema.safeParse({ questions: [{ id: "q", label: "L", type }] }).success,
+        `${type} without options`,
+      ).toBe(false);
+      expect(
+        schema.safeParse({ questions: [{ id: "q", label: "L", type, options: [] }] }).success,
+        `${type} with empty options`,
+      ).toBe(false);
+    }
+  });
+
+  it("allows a text question without options", () => {
+    expect(
+      schema.safeParse({ questions: [{ id: "q", label: "L", type: "text" }] }).success,
+    ).toBe(true);
+  });
+
+  it("rejects duplicate question ids", () => {
+    expect(
+      schema.safeParse({
+        questions: [
+          { id: "dup", label: "A", type: "text" },
+          { id: "dup", label: "B", type: "text" },
+        ],
+      }).success,
+    ).toBe(false);
+  });
 });
