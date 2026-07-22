@@ -8,6 +8,12 @@ While on `0.x`, minor bumps may include breaking changes.
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-07-23
+
+### Added
+- **`ask_user` — the agent asks clarifying questions as an in-chat form.** New client-executed tool `ask_user` whose schema describes a list of questions (single/multi chips, select, text), each with optional "Decide for me" (delegates the choice back to the agent, value `"__auto__"`) and "Other…" free-text. Questions require options for choice types and unique ids. The agent's turn pauses until the user submits; answers come back as the tool result. Pairs with frontend 0.63.0.
+- **Mandatory "ask before creating" rule.** `CORE_PROMPT`, the `prototype` skill, and the `slides` skill now instruct the agent to call `ask_user` **first** — before `get_editor_state`/`batch_design` — whenever it is creating something new on the canvas (screen, page, mockup, deck), to gather the brief (audience, platform/size, tone, scope, brand constraints). Plain edits of existing nodes are unaffected.
+
 ## [0.24.0] - 2026-07-21
 
 ### Changed
