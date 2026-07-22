@@ -13,13 +13,14 @@ You are building a presentation DECK: a sequence of slides, each its own top-lev
 3. **Horizontal filmstrip layout.** Slides sit in one row, left to right, at the same `y`. Pick a gap (default `96`) and compute each slide's `x` as `x = index * (1024 + gap)` (index starting at 0), so slide 1 is at x=0, slide 2 at x=1120, slide 3 at x=2240, etc. Do not stack slides vertically or scatter them — the deck must read as a clean horizontal strip. If `find_empty_space_on_canvas` is available, use it once for the first slide's origin, then apply the same `x` formula and shared `y` from that origin for the rest.
 
 ### Mandatory flow
-1. Call `get_editor_state` — note `documentComponents`/`reusableComponents` (for reuse across slides) and canvas `variables`. As in `prototype`, if a component embed already sets a font, that font becomes the deck's single family.
-2. Call `get_guidelines` with `topic: "design-system"`.
-3. **Define the shared theme + master FIRST, before writing any slide.** Decide, once, for the whole deck:
+1. **Ask first (`ask_user`).** A deck is new content — before anything else, call `ask_user` with a short brief form (audience/occasion, topic scope, number of slides or length, tone/style, whether to reuse existing variables/fonts). Use `single`/`multi` chips with a "Decide for me" option so the user can delegate. Wait for the answers, then proceed. Skip this only if the user's message already pins down every one of these.
+2. Call `get_editor_state` — note `documentComponents`/`reusableComponents` (for reuse across slides) and canvas `variables`. As in `prototype`, if a component embed already sets a font, that font becomes the deck's single family.
+3. Call `get_guidelines` with `topic: "design-system"`.
+4. **Define the shared theme + master FIRST, before writing any slide.** Decide, once, for the whole deck:
    - A `:root{}` CSS custom-property block: accent color, neutral scale, and a type scale (display/heading/body/caption sizes + weights). Write this block once and paste the identical block into every slide's `<style>`.
    - A master layout: where the title sits on every slide (e.g. top-left, fixed padding), where the footer/page-number sits (e.g. bottom-right, "index / total"), and consistent outer margins. Every slide places its title, footer, and content within this same master grid — only the body content differs per slide.
    - Treat this as a contract: write the `:root{}` block and master spec down (in your own reasoning) before generating the first slide's HTML, then copy it unchanged into each subsequent slide. Do not let spacing, accent color, font, or footer position drift between slides — that reads as a broken deck, not a system.
-4. Call `batch_design` to insert the slide embeds — one `I(document, {...})` operation per slide, using the `x` formula above. Batch multiple slides into one `batch_design` call when the operation count allows it (see that tool's max-operations limit); split into sequential calls for larger decks.
+5. Call `batch_design` to insert the slide embeds — one `I(document, {...})` operation per slide, using the `x` formula above. Batch multiple slides into one `batch_design` call when the operation count allows it (see that tool's max-operations limit); split into sequential calls for larger decks.
    - Give each embed a descriptive `name` (e.g. "Slide 1 — Title", "Slide 2 — Problem").
    - Every slide's `htmlContent` must include the same `:root{}` theme block, the same master layout skeleton (title position, footer/page-number position, margins), and content sized for exactly 1024×768.
    - Use document component tags (`<c-*>`) the same way `prototype` does, wherever a matching component exists.
