@@ -46,6 +46,14 @@ const envSchema = z.object({
   ANALYSIS_MODEL: z.string().default("google/gemini-2.5-flash"),
   EMBEDDINGS_API_KEY: z.string().optional(),
   EMBEDDINGS_MODEL: z.string().default("text-embedding-004"),
+  // --- MCP server (optional) ---
+  // Shared bearer secret gating /api/mcp (streamable HTTP) and /api/mcp/ws
+  // (browser bridge). Unset = the whole /api/mcp* surface returns 503,
+  // mirroring the S3/Refero optional-feature gating pattern above.
+  MCP_AUTH_TOKEN: z
+    .string()
+    .min(16, "MCP_AUTH_TOKEN must be at least 16 characters")
+    .optional(),
 });
 
 export type Config = z.infer<typeof envSchema>;

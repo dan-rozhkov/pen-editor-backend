@@ -23,6 +23,7 @@ export function makeConfig(overrides: Partial<Config> = {}): Config {
     ANALYSIS_MODEL: "google/gemini-2.5-flash",
     EMBEDDINGS_API_KEY: undefined,
     EMBEDDINGS_MODEL: "text-embedding-004",
+    MCP_AUTH_TOKEN: undefined,
     ...overrides,
   };
 }
