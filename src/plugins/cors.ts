@@ -8,7 +8,14 @@ export async function registerCors(app: FastifyInstance, config: Config) {
   await app.register(cors, {
     // Empty allowlist = reflect any origin (local development only).
     origin: allowedOrigins.length > 0 ? allowedOrigins : true,
-    methods: ["GET", "POST", "OPTIONS"],
-    allowedHeaders: ["Content-Type"],
+    // DELETE and the extra headers are for /api/mcp (src/mcp/routes.ts):
+    // @fastify/cors answers every OPTIONS preflight itself via a global
+    // onRequest hook (strictPreflight) before any route handler — including
+    // mcpRoutes' own OPTIONS handler — ever runs, so this plugin-level
+    // config is what a real cross-origin MCP client (e.g. the MCP
+    // Inspector) actually sees on preflight.
+    methods: ["GET", "POST", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", "Mcp-Session-Id"],
+    exposedHeaders: ["Mcp-Session-Id"],
   });
 }

@@ -7,6 +7,7 @@ import { registerCors } from "./plugins/cors.js";
 import { registerMultipart } from "./plugins/multipart.js";
 import { chatRoutes } from "./routes/chat.js";
 import { generateImageRoutes } from "./routes/generateImage.js";
+import { mcpRoutes } from "./mcp/routes.js";
 import { modelsRoutes } from "./routes/models.js";
 import { uploadRoutes } from "./routes/upload.js";
 import { createTraceStore, type TraceStore } from "./tracing/traceStore.js";
@@ -54,6 +55,14 @@ export async function buildApp(
       error instanceof Error ? error.message : "Internal Server Error";
     reply.status(statusCode).send({ error: message });
   });
+
+  // Registered after setErrorHandler: @fastify/websocket (used by mcpRoutes)
+  // decorates the root instance and, if registered first, causes routes
+  // registered earlier on this instance to fall back to Fastify's default
+  // {statusCode, error, message} error shape instead of ours — verified via
+  // test/upload-route.test.ts's thrown-Error path (see mcp-server task 6
+  // report for the repro).
+  await mcpRoutes(app, config);
 
   return app;
 }
