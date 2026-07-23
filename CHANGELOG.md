@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While on `0.x`, minor bumps may include breaking changes.
 
+## [0.27.2] - 2026-07-23
+
+### Fixed
+- **Prototype linking still produced nothing on real app screens** (e.g. a plant card → detail flow). Root cause was upstream of the model: the frontend only extracted semantic clickables (`<a>`/`<button>`/`role`), but real design embeds mark navigational cards, tabs, and list rows as styled `<div>`s, so those screens yielded zero candidates and there was nothing to link. The link-graph prompt now also surfaces each candidate's `class` names (`<tag.class...>`) — a strong intent signal when text is icon-only or generic — and gained guidance for item cards/tiles → detail screens and tab-bar entries → their section. The route accepts an optional `classHint` per candidate.
+
 ## [0.27.1] - 2026-07-23
 
 ### Fixed

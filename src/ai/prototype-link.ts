@@ -9,6 +9,9 @@ export interface PrototypeCandidate {
   text: string;
   ariaLabel?: string;
   href?: string;
+  /** The element's `class` attribute — an intent signal when text is thin
+   * (icon-only buttons) or generic (`plant-card` → a plant detail screen). */
+  classHint?: string;
 }
 export interface PrototypeScreenInput {
   id: string;
@@ -39,7 +42,7 @@ function buildPrompt(screens: PrototypeScreenInput[]): string {
         ? s.candidates
             .map(
               (c) =>
-                `    - ${c.protoId}: <${c.tag}> "${c.text}"${c.ariaLabel ? ` [aria: ${c.ariaLabel}]` : ""}${c.href ? ` (href=${c.href})` : ""}`,
+                `    - ${c.protoId}: <${c.tag}${c.classHint ? `.${c.classHint.split(" ").join(".")}` : ""}> "${c.text}"${c.ariaLabel ? ` [aria: ${c.ariaLabel}]` : ""}${c.href ? ` (href=${c.href})` : ""}`,
             )
             .join("\n")
         : "    (no clickable elements)";
@@ -54,10 +57,13 @@ function buildPrompt(screens: PrototypeScreenInput[]): string {
     "This is a clickable prototype: for EVERY clickable element that plausibly navigates to another screen, pick the target screen.",
     "Prefer linking over leaving unlinked when a reasonable destination exists — under-linking makes the prototype feel broken.",
     "Use the screen id EXACTLY as given below (the id is a short slug like 'dashboard', not the screen name).",
-    "Use the element label, the content excerpt, AND the screen names to reason about intent, for example:",
+    "Each element is shown as `<tag.class...>` — the class names (e.g. `plant-card`, `tab`, `back`, `list-item`) are a strong hint about what the element is, even when its text is empty (icon-only controls).",
+    "Use the element label, its classes, the content excerpt, AND the screen names to reason about intent, for example:",
     "  - a 'Pricing' link/button anywhere → the pricing screen.",
     "  - a primary 'Sign in' / 'Log in' / 'Get started' / 'Continue' CTA on an auth or landing screen → the main app/dashboard screen.",
-    "  - 'Back' / 'Cancel' → the previous/parent screen the user came from.",
+    "  - an item card/row/tile (a `card`/`item`/`tile` element whose text names a specific thing, e.g. a 'Monstera' plant card) → that thing's detail screen (e.g. a 'Plant Detail - Monstera' screen).",
+    "  - a bottom-nav / tab-bar entry (`tab`, `nav-item`) whose label matches a section → that section's screen.",
+    "  - a `back` control or 'Back' / 'Cancel' → the previous/parent screen the user came from.",
     "Only skip elements that are truly non-navigational (form toggles/checkboxes, 'Delete', theme switch, and similar in-place controls).",
     "Do NOT invent screens — every targetScreenId must be one of the ids listed below.",
     "",

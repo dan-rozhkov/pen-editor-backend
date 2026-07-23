@@ -123,6 +123,39 @@ describe("generatePrototypeLinks", () => {
     ]);
   });
 
+  it("includes each candidate's classHint in the prompt sent to the model", async () => {
+    let captured = "";
+    createModel.mockReturnValueOnce(
+      new MockLanguageModelV3({
+        doGenerate: async (opts: { prompt: unknown }) => {
+          captured = JSON.stringify(opts.prompt);
+          return {
+            finishReason: "stop",
+            usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+            warnings: [],
+            content: [{ type: "text", text: JSON.stringify({ links: [] }) }],
+          };
+        },
+      }),
+    );
+    await generatePrototypeLinks(
+      [
+        {
+          id: "home",
+          name: "Home",
+          candidates: [
+            { protoId: "p0", tag: "div", text: "Monstera Deliciosa", classHint: "plant-card" },
+          ],
+        },
+        { id: "detail", name: "Plant Detail", candidates: [] },
+      ],
+      makeConfig(),
+    );
+    // The class hint must reach the model so it can reason that a `plant-card`
+    // navigates to a plant detail screen even when its text is just a name.
+    expect(captured).toContain("plant-card");
+  });
+
   it("accepts an optional content excerpt on screens without affecting resolution", async () => {
     const res = await generatePrototypeLinks(
       [
@@ -169,7 +202,9 @@ describe("POST /api/prototype-link", () => {
           {
             id: "login",
             name: "Login",
-            candidates: [{ protoId: "p0", tag: "button", text: "Sign in" }],
+            candidates: [
+              { protoId: "p0", tag: "button", text: "Sign in", classHint: "btn primary" },
+            ],
           },
           { id: "dashboard", name: "Dashboard", candidates: [] },
         ],

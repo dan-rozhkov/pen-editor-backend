@@ -17,6 +17,7 @@ const bodySchema = z.object({
             text: z.string(),
             ariaLabel: z.string().optional(),
             href: z.string().optional(),
+            classHint: z.string().optional(),
           }),
         ),
       }),
