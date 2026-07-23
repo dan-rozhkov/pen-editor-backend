@@ -9,6 +9,7 @@ import { chatRoutes } from "./routes/chat.js";
 import { generateImageRoutes } from "./routes/generateImage.js";
 import { mcpRoutes } from "./mcp/routes.js";
 import { modelsRoutes } from "./routes/models.js";
+import { prototypeLinkRoutes } from "./routes/prototype-link.js";
 import { uploadRoutes } from "./routes/upload.js";
 import { createTraceStore, type TraceStore } from "./tracing/traceStore.js";
 
@@ -67,6 +68,7 @@ export async function buildApp(
   await modelsRoutes(app, config);
   await uploadRoutes(app, config);
   await generateImageRoutes(app, config);
+  await prototypeLinkRoutes(app, config);
 
   app.setErrorHandler((error, _request, reply) => {
     app.log.error(error);
