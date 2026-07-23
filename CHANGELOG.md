@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While on `0.x`, minor bumps may include breaking changes.
 
+## [0.26.0] - 2026-07-23
+
+### Added
+- **MCP server** (`/api/mcp`, streamable HTTP + `/api/mcp/ws` WebSocket): external MCP clients (Claude Code, claude.ai, Cursor) can read and edit the live editor document. Curated 10-tool surface — 7 tools bridged to a connected pen-editor tab (`get_editor_state`, `batch_get`, `snapshot_layout`, `get_variables`, `get_screenshot`, `batch_design`, `set_variables`) + 3 static (`get_guidelines`, `get_style_guide_tags`, `get_style_guide`). Gated by `MCP_AUTH_TOKEN` (unset → 503), constant-time token compare, per-request `McpServer` (stateless), most-recently-active tab routing, 30s bridged-call timeout, WS keepalive ping, token redaction in request logs.
+- `get_screenshot` results are returned as MCP image content (base64 PNG).
+
+### Changed
+- `src/ai/tools.ts` now exports its raw zod shapes and static-tool implementations for reuse by the MCP server (no behavior change).
+- CORS: `DELETE` method and `Authorization`/`Mcp-Session-Id` headers allowed.
+
 ## [Unreleased]
 
 ## [0.25.0] - 2026-07-23
