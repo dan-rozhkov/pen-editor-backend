@@ -42,20 +42,24 @@ export async function mcpRoutes(app: FastifyInstance, config: Config): Promise<v
     reply.status(204).send();
   });
 
-  app.post("/api/mcp", async (request, reply) => {
+  // A new McpServer + transport per request: Protocol.connect() throws
+  // "Already connected to a transport..." if a second request overlaps
+  // the first on a shared server instance (e.g. a GET SSE stream held
+  // open alongside a POST, or two concurrent POSTs) — and since that
+  // throw happens after reply.hijack(), the request would just hang.
+  // Matches the SDK's own stateless example
+  // (examples/server/simpleStatelessStreamableHttp.js), which builds a
+  // fresh server per request and closes both server and transport on
+  // response close.
+  async function handleStreamableRequest(
+    request: FastifyRequest,
+    reply: FastifyReply,
+    body?: unknown,
+  ): Promise<void> {
     setCorsHeaders(request, reply);
     if (!requireAuth(request, reply)) return;
 
     reply.hijack();
-    // A new McpServer + transport per request: Protocol.connect() throws
-    // "Already connected to a transport..." if a second request overlaps
-    // the first on a shared server instance (e.g. a GET SSE stream held
-    // open alongside a POST, or two concurrent POSTs) — and since that
-    // throw happens after reply.hijack(), the request would just hang.
-    // Matches the SDK's own stateless example
-    // (examples/server/simpleStatelessStreamableHttp.js), which builds a
-    // fresh server per request and closes both server and transport on
-    // response close.
     const server = buildMcpServer();
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     reply.raw.on("close", () => {
@@ -63,26 +67,12 @@ export async function mcpRoutes(app: FastifyInstance, config: Config): Promise<v
       server.close();
     });
     await server.connect(transport);
-    await transport.handleRequest(request.raw, reply.raw, request.body);
-  });
+    await transport.handleRequest(request.raw, reply.raw, body);
+  }
 
-  app.get("/api/mcp", async (request, reply) => {
-    setCorsHeaders(request, reply);
-    if (!requireAuth(request, reply)) return;
+  app.post("/api/mcp", (request, reply) => handleStreamableRequest(request, reply, request.body));
 
-    reply.hijack();
-    // See the POST handler above: a fresh McpServer per request avoids
-    // Protocol.connect()'s "Already connected" throw when this GET stream
-    // overlaps another concurrent request.
-    const server = buildMcpServer();
-    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-    reply.raw.on("close", () => {
-      transport.close();
-      server.close();
-    });
-    await server.connect(transport);
-    await transport.handleRequest(request.raw, reply.raw);
-  });
+  app.get("/api/mcp", (request, reply) => handleStreamableRequest(request, reply));
 
   app.delete("/api/mcp", async (request, reply) => {
     setCorsHeaders(request, reply);
