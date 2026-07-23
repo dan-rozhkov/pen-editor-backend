@@ -5,24 +5,47 @@ import { makeConfig } from "./helpers.js";
 // The real provider export is `createModel(config, modelOverride?)`, not a
 // zero-arg `getModel()` — mock that name so generatePrototypeLinks (and the
 // route/buildApp that call it) get a scripted mock model regardless of args.
-vi.mock("../src/ai/provider.js", () => ({
-  createModel: () =>
-    new MockLanguageModelV3({
-      doGenerate: async () => ({
-        finishReason: "stop",
-        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-        warnings: [],
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({
-              links: [{ screenId: "a", protoId: "p0", targetScreenId: "b" }],
-            }),
-          },
-        ],
-      }),
+// `createModel` is a vi.fn so individual tests can script a different
+// response via mockReturnValueOnce.
+const createModel = vi.fn(() =>
+  new MockLanguageModelV3({
+    doGenerate: async () => ({
+      finishReason: "stop",
+      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+      warnings: [],
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            links: [
+              { screenId: "login", protoId: "p0", targetScreenId: "dashboard" },
+            ],
+          }),
+        },
+      ],
     }),
+  }),
+);
+
+vi.mock("../src/ai/provider.js", () => ({
+  createModel: (...args: unknown[]) => createModel(...args),
 }));
+
+function modelReturning(links: unknown[]): MockLanguageModelV3 {
+  return new MockLanguageModelV3({
+    doGenerate: async () => ({
+      finishReason: "stop",
+      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+      warnings: [],
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({ links }),
+        },
+      ],
+    }),
+  });
+}
 
 const { generatePrototypeLinks } = await import(
   "../src/ai/prototype-link.js"
@@ -34,16 +57,16 @@ describe("generatePrototypeLinks", () => {
     const res = await generatePrototypeLinks(
       [
         {
-          id: "a",
+          id: "login",
           name: "Login",
           candidates: [{ protoId: "p0", tag: "button", text: "Sign in" }],
         },
-        { id: "b", name: "Dashboard", candidates: [] },
+        { id: "dashboard", name: "Dashboard", candidates: [] },
       ],
       makeConfig(),
     );
     expect(res.links).toEqual([
-      { screenId: "a", protoId: "p0", targetScreenId: "b" },
+      { screenId: "login", protoId: "p0", targetScreenId: "dashboard" },
     ]);
   });
 
@@ -51,22 +74,76 @@ describe("generatePrototypeLinks", () => {
     const res = await generatePrototypeLinks(
       [
         {
-          id: "a",
+          id: "login",
           name: "Login",
           candidates: [{ protoId: "p0", tag: "button", text: "Sign in" }],
         },
-        { id: "b", name: "Dashboard", candidates: [] },
+        { id: "dashboard", name: "Dashboard", candidates: [] },
       ],
       makeConfig(),
     );
-    // model returned a→b/p0 which is valid; a link to unknown target must be filtered.
+    // model returned login→dashboard/p0 which is valid; a link to unknown
+    // target must be filtered.
     expect(
       res.links.every(
         (l) =>
-          ["a", "b"].includes(l.screenId) &&
-          ["a", "b"].includes(l.targetScreenId),
+          ["login", "dashboard"].includes(l.screenId) &&
+          ["login", "dashboard"].includes(l.targetScreenId),
       ),
     ).toBe(true);
+  });
+
+  it("resolves a targetScreenId returned as a screen name or wrong case to the correct slug", async () => {
+    createModel.mockReturnValueOnce(
+      modelReturning([
+        // model echoed the screen's display NAME instead of its slug id
+        { screenId: "login", protoId: "p0", targetScreenId: "Dashboard" },
+        // model echoed the id with wrong case
+        { screenId: "login", protoId: "p1", targetScreenId: "PRICING" },
+      ]),
+    );
+    const res = await generatePrototypeLinks(
+      [
+        {
+          id: "login",
+          name: "Login",
+          candidates: [
+            { protoId: "p0", tag: "button", text: "Sign in" },
+            { protoId: "p1", tag: "a", text: "Pricing" },
+          ],
+        },
+        { id: "dashboard", name: "Dashboard", candidates: [] },
+        { id: "pricing", name: "Pricing", candidates: [] },
+      ],
+      makeConfig(),
+    );
+    expect(res.links).toEqual([
+      { screenId: "login", protoId: "p0", targetScreenId: "dashboard" },
+      { screenId: "login", protoId: "p1", targetScreenId: "pricing" },
+    ]);
+  });
+
+  it("accepts an optional content excerpt on screens without affecting resolution", async () => {
+    const res = await generatePrototypeLinks(
+      [
+        {
+          id: "login",
+          name: "Login",
+          content: "Welcome back. Email, password, Sign in.",
+          candidates: [{ protoId: "p0", tag: "button", text: "Sign in" }],
+        },
+        {
+          id: "dashboard",
+          name: "Dashboard",
+          content: "Your projects. Recent activity.",
+          candidates: [],
+        },
+      ],
+      makeConfig(),
+    );
+    expect(res.links).toEqual([
+      { screenId: "login", protoId: "p0", targetScreenId: "dashboard" },
+    ]);
   });
 });
 
@@ -90,17 +167,17 @@ describe("POST /api/prototype-link", () => {
       payload: {
         screens: [
           {
-            id: "a",
+            id: "login",
             name: "Login",
             candidates: [{ protoId: "p0", tag: "button", text: "Sign in" }],
           },
-          { id: "b", name: "Dashboard", candidates: [] },
+          { id: "dashboard", name: "Dashboard", candidates: [] },
         ],
       },
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().links).toEqual([
-      { screenId: "a", protoId: "p0", targetScreenId: "b" },
+      { screenId: "login", protoId: "p0", targetScreenId: "dashboard" },
     ]);
     await app.close();
   });

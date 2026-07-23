@@ -9,6 +9,7 @@ const bodySchema = z.object({
       z.object({
         id: z.string().min(1),
         name: z.string(),
+        content: z.string().optional(),
         candidates: z.array(
           z.object({
             protoId: z.string().min(1),

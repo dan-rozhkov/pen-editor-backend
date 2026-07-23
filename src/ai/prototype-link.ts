@@ -14,6 +14,7 @@ export interface PrototypeScreenInput {
   id: string;
   name: string;
   candidates: PrototypeCandidate[];
+  content?: string;
 }
 export interface PrototypeLink {
   screenId: string;
@@ -42,20 +43,46 @@ function buildPrompt(screens: PrototypeScreenInput[]): string {
             )
             .join("\n")
         : "    (no clickable elements)";
-      return `- screen "${s.name}" (id: ${s.id}):\n${cands}`;
+      const content = s.content
+        ? `    Content excerpt: "${s.content}"\n`
+        : "";
+      return `- screen "${s.name}" (id: ${s.id}):\n${content}    Clickable elements:\n${cands}`;
     })
     .join("\n");
   return [
     "You are wiring a clickable prototype from a set of app screens.",
-    "Each screen has clickable elements (buttons/links/cards) identified by protoId.",
-    "For each element that logically navigates somewhere, decide which screen it should open.",
-    "Only link to screens in the provided set. Use the element label AND the screen names to reason",
-    "(e.g. a 'Sign in' button on a Login screen → the Dashboard/Home screen; 'Pricing' → the Pricing screen).",
-    "Do NOT invent screens. Skip elements that are not navigational (e.g. 'Delete', form toggles).",
+    "This is a clickable prototype: for EVERY clickable element that plausibly navigates to another screen, pick the target screen.",
+    "Prefer linking over leaving unlinked when a reasonable destination exists — under-linking makes the prototype feel broken.",
+    "Use the screen id EXACTLY as given below (the id is a short slug like 'dashboard', not the screen name).",
+    "Use the element label, the content excerpt, AND the screen names to reason about intent, for example:",
+    "  - a 'Pricing' link/button anywhere → the pricing screen.",
+    "  - a primary 'Sign in' / 'Log in' / 'Get started' / 'Continue' CTA on an auth or landing screen → the main app/dashboard screen.",
+    "  - 'Back' / 'Cancel' → the previous/parent screen the user came from.",
+    "Only skip elements that are truly non-navigational (form toggles/checkboxes, 'Delete', theme switch, and similar in-place controls).",
+    "Do NOT invent screens — every targetScreenId must be one of the ids listed below.",
     "",
     "Screens:",
     lines,
   ].join("\n");
+}
+
+/**
+ * Resolve a model-returned targetScreenId against the known screen id set.
+ * Models sometimes echo the screen's display name instead of its id, or get
+ * the id's case wrong — salvage those instead of silently dropping the link.
+ */
+function resolveTargetScreenId(
+  raw: string,
+  screens: PrototypeScreenInput[],
+  ids: Set<string>,
+): string | undefined {
+  if (ids.has(raw)) return raw;
+  const lower = raw.toLowerCase();
+  const byId = screens.find((s) => s.id.toLowerCase() === lower);
+  if (byId) return byId.id;
+  const byName = screens.find((s) => s.name.toLowerCase() === lower);
+  if (byName) return byName.id;
+  return undefined;
 }
 
 export async function generatePrototypeLinks(
@@ -74,13 +101,16 @@ export async function generatePrototypeLinks(
   });
 
   // Defensive filter: keep only links referencing known screens + real candidates,
-  // and never link a screen to itself.
-  const links = object.links.filter(
-    (l) =>
-      ids.has(l.screenId) &&
-      ids.has(l.targetScreenId) &&
-      l.screenId !== l.targetScreenId &&
-      candByScreen.get(l.screenId)?.has(l.protoId),
-  );
+  // resolving a mistyped/name-echoed targetScreenId where possible, and never
+  // link a screen to itself.
+  const links: PrototypeLink[] = [];
+  for (const l of object.links) {
+    if (!ids.has(l.screenId)) continue;
+    if (!candByScreen.get(l.screenId)?.has(l.protoId)) continue;
+    const targetScreenId = resolveTargetScreenId(l.targetScreenId, screens, ids);
+    if (!targetScreenId) continue;
+    if (targetScreenId === l.screenId) continue;
+    links.push({ ...l, targetScreenId });
+  }
   return { links };
 }
