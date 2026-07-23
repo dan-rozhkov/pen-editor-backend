@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While on `0.x`, minor bumps may include breaking changes.
 
+## [0.28.0] - 2026-07-24
+
+### Changed
+- **Design-agent skills upgraded from Impeccable v3.9.1 to v4.0.1.** The 20 command skills (`polish`, `critique`, `bolder`, `typeset`, …) were re-ported to v4's leaner bodies, each carrying a self-contained quality-floor tail. The new v4 **craft-floor** (Verify / Refuse / Calibration) is folded into the shared `frontend-design` hub.
+- **Register model replaced by v4's four visitor modes** — `Persuade` / `Operate` / `Read` / `Experience`, chosen from the requested surface. The `brand` and `product` register skills are retired; the create-new brief now gathers the visitor mode instead of "brand constraints".
+- **Prototyping now applies the v4 quality bar automatically.** The auto-loaded `prototype` skill inlines the full craft-floor plus a "commit the world first" (visual-world + direction contract) and prove-don't-claim step, so every create-new run is held to the v4 bar without an explicit `/`-command. `slides` references the same floor.
+
+### Added
+- New v4 playbooks as skills: **`new-work`** (pick a committed visual world + write a direction contract; upstream's dice/CLI machinery stripped for our static-injection model), **`operate`** (deeper Operate/Read guidance), and **`visualize`** (optional pre-build compositional options, non-blocking).
+
+### Removed
+- `brand` and `product` register skills (superseded by the four visitor modes). `craft` is now a thin deprecated alias for the prototype/new-work flow.
+
 ## [0.27.4] - 2026-07-23
 
 ### Changed
