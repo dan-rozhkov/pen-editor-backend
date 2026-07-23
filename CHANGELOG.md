@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While on `0.x`, minor bumps may include breaking changes.
 
+## [0.27.3] - 2026-07-23
+
+### Changed
+- **Prototype linking now wires light/dark theme switching.** When the screens come in light/dark pairs (same screen twice, names differing only by a `Dark`/`Light`/`Night`/`Day` marker, e.g. `Settings` and `Settings Dark`) and a screen has a theme / dark-mode / appearance control (a toggle or an element labeled "Dark mode"/"Theme", often with a moon/sun icon), the link-graph prompt now instructs the model to link that control to the same screen's opposite-theme variant — but only when that variant actually exists. Previously the prompt told the model to unconditionally skip theme switches.
+
 ## [0.27.2] - 2026-07-23
 
 ### Fixed

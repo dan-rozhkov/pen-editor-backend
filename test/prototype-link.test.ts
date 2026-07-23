@@ -156,6 +156,39 @@ describe("generatePrototypeLinks", () => {
     expect(captured).toContain("plant-card");
   });
 
+  it("instructs the model to wire a theme toggle to the opposite-theme screen variant", async () => {
+    let captured = "";
+    createModel.mockReturnValueOnce(
+      new MockLanguageModelV3({
+        doGenerate: async (opts: { prompt: unknown }) => {
+          captured = JSON.stringify(opts.prompt);
+          return {
+            finishReason: "stop",
+            usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+            warnings: [],
+            content: [{ type: "text", text: JSON.stringify({ links: [] }) }],
+          };
+        },
+      }),
+    );
+    await generatePrototypeLinks(
+      [
+        {
+          id: "settings",
+          name: "Settings",
+          candidates: [
+            { protoId: "p0", tag: "div", text: "Dark mode", classHint: "setting-row" },
+          ],
+        },
+        { id: "settings-dark", name: "Settings Dark", candidates: [] },
+      ],
+      makeConfig(),
+    );
+    expect(captured.toLowerCase()).toContain("dark mode");
+    // The prompt must NOT tell the model to unconditionally skip theme switches.
+    expect(captured.toLowerCase()).not.toContain("theme switch, and similar");
+  });
+
   it("accepts an optional content excerpt on screens without affecting resolution", async () => {
     const res = await generatePrototypeLinks(
       [
