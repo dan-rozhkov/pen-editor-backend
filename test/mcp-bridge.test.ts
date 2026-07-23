@@ -148,6 +148,22 @@ describe("mcp bridge", () => {
     expect(sessionCount()).toBe(0);
   });
 
+  it("rejects (and clears the pending entry/timer) when socket.send throws synchronously", async () => {
+    vi.useFakeTimers();
+    const socket = new FakeSocket();
+    registerSession(socket);
+    socket.send = () => {
+      throw new Error("socket is closing");
+    };
+
+    await expect(callTool("get_editor_state", {})).rejects.toThrow("socket is closing");
+
+    // The 30s call-timeout timer must have been cleared on the synchronous
+    // send() failure — a leaked timer would otherwise fire later (a no-op
+    // since the promise already settled, but a real leak nonetheless).
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("skips a closed session when picking the most-recently-active one", () => {
     const closed = new FakeSocket();
     const open = new FakeSocket();

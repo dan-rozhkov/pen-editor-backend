@@ -46,10 +46,35 @@ function errorResult(message: string) {
 async function callBridged(tool: string, args: Record<string, unknown>) {
   try {
     const result = await callBridgedTool(tool, args);
-    return textResult(result);
+    const errorMessage = bridgedErrorMessage(result);
+    return errorMessage !== undefined ? errorResult(errorMessage) : textResult(result);
   } catch (err) {
     return errorResult(err instanceof Error ? err.message : String(err));
   }
+}
+
+// The frontend's executeToolCall() (useDesignChat.ts) never rejects — a
+// handler exception is caught there and returned as a resolved result whose
+// body is `JSON.stringify({ error: message })`. That means a resolved
+// callBridgedTool() promise can still represent a tool failure, not just a
+// successful "tool_result". Without this check, that error shape would be
+// wrapped in textResult() and reported to the MCP client as isError:false.
+function bridgedErrorMessage(raw: string): string | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  if (
+    parsed &&
+    typeof parsed === "object" &&
+    "error" in parsed &&
+    typeof (parsed as { error: unknown }).error === "string"
+  ) {
+    return (parsed as { error: string }).error;
+  }
+  return undefined;
 }
 
 const GET_SCREENSHOT_DESCRIPTION =

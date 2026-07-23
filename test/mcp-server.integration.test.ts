@@ -23,7 +23,11 @@ function wsUrlFor(httpUrl: string, token: string | null): string {
 // Connects a fake editor tab and answers every tool_call with a canned
 // result recognizable by tool name, so tests can assert the round trip
 // without a real browser.
-function connectFakeEditor(httpUrl: string, token: string): Promise<WebSocket> {
+function connectFakeEditor(
+  httpUrl: string,
+  token: string,
+  resultOverrides: Record<string, string> = {},
+): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(wsUrlFor(httpUrl, token));
     socket.on("open", () => resolve(socket));
@@ -32,9 +36,10 @@ function connectFakeEditor(httpUrl: string, token: string): Promise<WebSocket> {
       const message = JSON.parse(raw.toString()) as { id: string; type: string; tool: string };
       if (message.type !== "tool_call") return;
       const result =
-        message.tool === "get_editor_state"
+        resultOverrides[message.tool] ??
+        (message.tool === "get_editor_state"
           ? JSON.stringify({ file: "demo.pen" })
-          : "{}";
+          : "{}");
       socket.send(JSON.stringify({ id: message.id, type: "tool_result", result }));
     });
   });
@@ -105,6 +110,28 @@ describe("MCP server integration", () => {
     });
     expect(staticResult.isError).toBeFalsy();
     expect(JSON.stringify(staticResult.content)).toContain("Auto-Layout");
+
+    await client.close();
+    editor.close();
+    await waitForSessionCount(0);
+  });
+
+  it("maps a resolved-but-failed bridged result (executeToolCall's JSON error shape) to isError:true", async () => {
+    // The frontend's executeToolCall() never rejects a bridged call — a
+    // thrown handler error is caught there and resolved as
+    // `JSON.stringify({ error: message })` (see pen-editor's
+    // useDesignChat.ts). callBridged() must detect that shape and report it
+    // as an MCP error result instead of a fake success.
+    const editor = await connectFakeEditor(server.url, TEST_TOKEN, {
+      batch_get: JSON.stringify({ error: "Node not found: xyz" }),
+    });
+    await waitForSessionCount(1);
+
+    const client = await connectMcpClient(server.url, TEST_TOKEN);
+    const result = await client.callTool({ name: "batch_get", arguments: {} });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toContain("Node not found: xyz");
 
     await client.close();
     editor.close();

@@ -19,12 +19,35 @@ export interface BuildAppOptions {
   traceStore?: TraceStore | null;
 }
 
+// The MCP WS upgrade (GET /api/mcp/ws?token=...) carries the auth token in
+// the query string. Fastify's default request logging (pino) logs req.url
+// verbatim, which would put the secret in plaintext logs. This serializer
+// masks any `token=...` query param on the logged url; only applied when we
+// build the default logger (options.logger left unset) so explicit caller
+// configs (including `logger: false` in tests) are untouched.
+export function maskTokenInUrl(url: string): string {
+  return url.replace(/token=[^&]+/, "token=[redacted]");
+}
+
+function buildDefaultLogger(): FastifyServerOptions["logger"] {
+  return {
+    serializers: {
+      req(request: { method?: string; url?: string }) {
+        return {
+          method: request.method,
+          url: request.url ? maskTokenInUrl(request.url) : request.url,
+        };
+      },
+    },
+  };
+}
+
 export async function buildApp(
   config: Config,
   options: BuildAppOptions = {},
 ): Promise<FastifyInstance> {
   const app = Fastify({
-    logger: options.logger ?? true,
+    logger: options.logger ?? buildDefaultLogger(),
     bodyLimit: 10 * 1024 * 1024, // 10 MB — base64 images can be 2-5 MB each
   });
 

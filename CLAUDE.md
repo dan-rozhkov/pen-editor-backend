@@ -66,3 +66,8 @@ claude mcp add --transport http pen-editor http://localhost:3001/api/mcp \
 
 Then open the editor with `VITE_MCP_WS_TOKEN=$MCP_AUTH_TOKEN` set (see
 `pen-editor/CLAUDE.md`) so a tab is connected for bridged tools to reach.
+
+**`VITE_MCP_WS_TOKEN` is baked into the public JS bundle at build time —
+local/dev builds only. Never set it on a publicly deployed frontend build:**
+every visitor's tab would get the secret and silently register itself as a
+bridge session that anyone holding the token can drive.

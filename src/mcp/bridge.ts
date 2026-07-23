@@ -134,7 +134,17 @@ export function callTool(tool: string, args: Record<string, unknown>): Promise<s
     }, CALL_TIMEOUT_MS);
 
     session.pending.set(id, { resolve, reject, timer });
-    session.socket.send(JSON.stringify({ id, type: "tool_call", tool, args }));
+    try {
+      session.socket.send(JSON.stringify({ id, type: "tool_call", tool, args }));
+    } catch (err) {
+      // A synchronous throw from send() (e.g. socket already closing) means
+      // the call never went out — clear the timer and pending entry so
+      // reject() below is the only settlement, instead of also firing the
+      // 30s timeout later.
+      clearTimeout(timer);
+      session.pending.delete(id);
+      reject(err instanceof Error ? err : new Error(String(err)));
+    }
   });
 }
 

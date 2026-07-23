@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import websocketPlugin from "@fastify/websocket";
+import websocketPlugin, { type WebSocket } from "@fastify/websocket";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isOriginAllowed, parseEnvList, type Config } from "../config.js";
 import { buildMcpServer } from "./server.js";
@@ -113,6 +113,36 @@ export async function mcpRoutes(app: FastifyInstance, config: Config): Promise<v
     },
     (socket) => {
       registerSession(socket);
+      startKeepalive(socket);
     },
   );
+}
+
+export const KEEPALIVE_INTERVAL_MS = 30_000;
+
+// Server-side ping/pong keepalive: browsers (and some proxies) don't always
+// surface a dead TCP connection as a 'close' event, which would leave a
+// dead session in the bridge registry forever answering "connected" while
+// silently dropping every call. Every 30s, ping connections that answered
+// the previous ping; terminate ones that didn't.
+// Exported for unit testing with a fake socket + fake timers.
+export function startKeepalive(socket: WebSocket): void {
+  let isAlive = true;
+  socket.on("pong", () => {
+    isAlive = true;
+  });
+
+  const interval = setInterval(() => {
+    if (!isAlive) {
+      clearInterval(interval);
+      socket.terminate();
+      return;
+    }
+    isAlive = false;
+    socket.ping();
+  }, KEEPALIVE_INTERVAL_MS);
+
+  socket.on("close", () => {
+    clearInterval(interval);
+  });
 }
