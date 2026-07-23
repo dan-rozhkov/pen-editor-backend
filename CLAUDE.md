@@ -45,3 +45,24 @@ still passes through `scrubPii`. It runs in its own loop, so it backfills sessio
 summarized before it existed — but only while their `raw_traces` rows survive
 `TRACE_RAW_TTL_DAYS`. The report gains a "Corrections & memory requests" section.
 Spec: `docs/superpowers/specs/2026-07-17-session-insights-design.md`.
+
+## MCP server (`src/mcp/`)
+
+`/api/mcp` (streamable HTTP, `@modelcontextprotocol/sdk`) and `/api/mcp/ws`
+(WebSocket, `@fastify/websocket`) expose a curated 10-tool MCP surface —
+7 tools bridged live to a connected `pen-editor` browser tab
+(`src/mcp/bridge.ts`, most-recently-active session wins, 30s timeout) plus
+3 static tools executed directly on the server. Gated by `MCP_AUTH_TOKEN`
+(unset = 503 on the whole `/api/mcp*` surface). See
+`docs/superpowers/specs/2026-07-23-mcp-server-design.md` for the full design.
+
+To connect Claude Code locally:
+
+```bash
+export MCP_AUTH_TOKEN=$(openssl rand -hex 24)   # add to .env, then restart `npm run dev`
+claude mcp add --transport http pen-editor http://localhost:3001/api/mcp \
+  --header "Authorization: Bearer $MCP_AUTH_TOKEN"
+```
+
+Then open the editor with `VITE_MCP_WS_TOKEN=$MCP_AUTH_TOKEN` set (see
+`pen-editor/CLAUDE.md`) so a tab is connected for bridged tools to reach.
