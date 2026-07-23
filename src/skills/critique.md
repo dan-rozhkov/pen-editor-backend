@@ -737,3 +737,19 @@ If the project's product context describes the target audience and brand, derive
 ```
 
 Only generate project-specific personas when real audience/brand data is available. Don't invent audience details; use the 5 predefined personas when no context exists.
+
+## Quality floor
+
+**Verify**
+- Contrast: flag any body/placeholder text below 4.5:1 or large text below 3:1; flag gray-on-color where secondary text should be tinted from the surface hue instead.
+- Depth: flag shadows with no offset or blur (a zero-offset colored halo is not a shadow).
+- Spacing: flag flat rhythm — no tight-group/generous-separation contrast, or less space above a heading than below it.
+- Type: flag body measure outside 65–75ch and tracking looser than -0.04em where it should be tighter.
+- Motion: flag decoration repeated on every section instead of one authored moment; flag missing `prefers-reduced-motion` handling.
+- States: flag missing or copy-pasted hover/disabled/loading/error/empty states.
+- Copy: flag vague or dishonest copy — controls that don't name their action, errors without a stated recovery.
+
+**Refuse**
+- Softening a verdict to avoid an uncomfortable finding, or skipping the anti-pattern scan to save time — a critique that can't say "this looks AI-generated" plainly is not a critique.
+
+Full floor lives in the `frontend-design` skill.

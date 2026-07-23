@@ -241,4 +241,12 @@ Test with real users:
 - **Completion rate**: Are users completing? (If low, simplify)
 - **Time to value**: How long until users get first value?
 
-When users hit the aha moment fast and don't drop off, hand off to the `/polish` skill for the final pass.
+When users hit the aha moment fast and don't drop off, hand off to `/polish` for the final pass.
+
+## Quality floor
+
+Verify before shipping: contrast (body/placeholder ≥4.5:1, large ≥3:1; tint secondary text from the surface hue, never gray); depth (shadows carry offset + soft blur, never a zero-offset colored halo); spacing (tight groups, generous separation, more space above a heading than below it); type (measure 65–75ch, display ≤6rem, tracking floor −0.04em, real copy at every breakpoint with no overflow); one authored motion (exponential ease-out from an already-visible default, not scattered effects); real states (hover/disabled/loading/error/empty); honest copy (product's own language; controls name their action, errors name problem + recovery).
+
+Refuse by default (the brief can earn any of them): identical-card grids, the hero-metric template, an eyebrow over every section, decorative section numbers, a reflexive modal, gradient text, glassmorphism-as-decoration, colored side-stripe borders over 1px, decorative sparklines/progress-rings/soft-shadow rounded-rects standing in for content, mono-as-"technical", theme picked by category instead of use-scene, the ghost card (1px border under a wide soft shadow), sketchy/doodle SVG grain, and animating an image on hover instead of its container.
+
+Full floor lives in the `frontend-design` skill.

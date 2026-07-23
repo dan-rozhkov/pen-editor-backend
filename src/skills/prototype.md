@@ -26,7 +26,12 @@ If the user is asking for a presentation, slide deck, pitch deck, or "slides" �
 - **NO device/OS chrome (BANNED unless explicitly requested):** Never draw an iOS/Android status bar (time, battery, signal, carrier), notch / Dynamic Island, home indicator bar, or browser chrome (URL bar, tabs). The mobile preset (375×812) is **app content only** — start directly with the app's own header/nav. Add device chrome ONLY when the user explicitly asks for a "device frame", "status bar", or similar.
 
 ### Mandatory flow
-1. **Ask first (`ask_user`).** Before anything else, call `ask_user` with a short brief form (audience, platform/size preset, tone/style, scope, whether to reuse existing variables/fonts). Use `single`/`multi` chips with a "Decide for me" option so the user can delegate. Wait for the answers, then proceed. Skip this only if the user's message already pins down every one of these.
+1. **Ask first (`ask_user`).** Before anything else, call `ask_user` with a short brief form (audience, platform/size preset, the visitor mode for this surface — Persuade / Operate / Read / Experience — tone/style, scope, whether to reuse existing variables/fonts). Use `single`/`multi` chips with a "Decide for me" option so the user can delegate. Wait for the answers, then proceed. Skip this only if the user's message already pins down every one of these.
+1a. **Commit the world first (before any HTML).**
+   - **Pick the visitor mode** for this surface (already gathered in the brief above): Persuade (visitor decides/acts — landing, marketing, pricing), Operate (visitor completes a task — app UI, dashboard, editor, settings), Read (visitor understands — docs, guide), or Experience (visitor is inside the work — portfolio, gallery). Choose it from the surface requested, not the product category.
+   - **Name the visual world and write a one-paragraph direction contract** in the embed's opening HTML comment (`<!-- ... -->`, before the `<style>` block), in four short blocks totalling no more than ~150 words: **THESIS** (the one idea this surface owns and the category-default arrangement it refuses), **OWN-WORLD** (the palette and component language, specific enough to be recognizable with all content removed), **STORY** (what the visitor understands, believes, and does), **FIRST VIEWPORT** (the exact composition — what is where, at what scale, where the primary action sits). For a genuinely open new surface with no established look to inherit, consult the `/new-work` skill before committing.
+   - **Prove, don't claim.** Show the subject doing its job — the interface at work, the mechanism dramatized, specifics generic enough copy could not fake. Author demonstration content (names, entries, copy, thumbnails) at full production fidelity and label it synthetic where a visitor could mistake it for real; never invent prices, customers, benchmarks, or capabilities that aren't in the brief.
+   - Every other rule in this skill still applies on top of this: embed-only, device presets, no device chrome, component mapping, fixed-viewport sizing, HTML safety.
 2. Call `get_editor_state` — check for existing components and note available variables from canvas context. The response includes:
    - `reusableComponents` — full HTML of each component (for reference/inspection)
    - `documentComponents` — compact list with `tag`, `name`, `width`, `height` for each component
@@ -289,6 +294,40 @@ You MUST avoid these generic AI design signatures:
 - NO filler copywriting: "Elevate", "Seamless", "Unleash", "Next-Gen", "Supercharge" are BANNED. Use concrete verbs and specific descriptions.
 - NO broken image links. Use `https://picsum.photos/seed/{unique_string}/{width}/{height}` for photo placeholders.
 
+
+### Quality floor — Verify, Refuse, Calibration
+Load-bearing on every prototype; a pinned brief or the committed visual world above overrides anything here, but your own habit does not.
+
+**Verify** — each of these is a check on the built result, not an intention:
+- **Contrast:** body and placeholder text ≥4.5:1, large text ≥3:1. On colored surfaces tint secondary text from that hue or the foreground; never gray.
+- **Depth:** shadows carry an offset and a soft blur. A zero-offset colored halo is decoration, not depth.
+- **Spacing:** tight groups, generous separation, more space above a heading than below it. Check the actual computed values.
+- **Type:** body measure 65–75ch, display max 6rem, tracking floor -0.04em (-0.02 to -0.03em usually reads better), balanced headings, an obvious scale/weight step between levels. Run the real copy at every breakpoint and fix what overflows.
+- **Motion:** none in this mode — static HTML/CSS only (see Design baseline above); this floor's "one authored moment" rule does not apply here.
+- **States:** hover, disabled, loading, error, empty — plus real content, working controls, responsive composition, visible keyboard focus.
+- **Copy:** the product's own language. Controls name their action; errors name the problem and the recovery.
+- **Coverage:** every brief requirement present and findable within seconds.
+
+**Refuse** — these are the category's defaults, not hard bans: the brief's own words can earn any of them, but reaching for one when the axis is free means you weren't deciding.
+- Same-size cards of icon + heading + text as the page structure; nested cards are always wrong.
+- The hero-metric template: big number, small label, supporting stats, accent.
+- A tracked uppercase eyebrow over every section (one named kicker is a system; an eyebrow everywhere is grammar you didn't choose).
+- Section numbers (01 / 02 / 03) unless the sequence itself carries information the reader needs.
+- A modal for a task that needs neither interruption nor protected focus.
+- Gradient text — emphasis comes from weight or size.
+- Glass/blur as decoration rather than a specific, deliberate effect.
+- A colored side-stripe border (`border-left`/`border-right`) above 1px on cards, list items, callouts, or alerts.
+- Sparklines, progress rings, and soft-shadowed rounded rectangles standing in for real content.
+- Monospace as a costume for "technical" rather than for code, data, or measurement.
+- Light or dark theme picked by category — pick it from the use scene: who, where, under what ambient light.
+- Declare elevation once (border OR shadow, not both) — a 1px border under a wide soft shadow is the "ghost card." Card radii stay 12–16px; pills are for small controls only.
+- Real illustration or none — sketch-style/"loose-sketch"/doodle SVG scenes and `feTurbulence` grain read as amateur.
+- Backgrounds are surfaces textured only from the subject's world — `repeating-linear-gradient` stripes or two-axis grid overlays need an actual canvas, map, blueprint, or measuring tool under them, not decoration for its own sake.
+- Never animate an image on hover, directly or through its parent — it is not an action target; give the container the feedback instead. (Moot here since this mode is static/no-transition, but keep it in mind if a future request allows motion.)
+
+**Calibration (self-check against AI-cluster looks)** — name it if you're about to ship it: warm cream ground + high-contrast serif display + terracotta/signal-red accent; near-black + one neon accent + glowing edges; broadsheet-editorial hairlines + italic serif + tracked mono labels. All are legitimate when the brief calls for them — the brief always wins. Where the brief leaves the aesthetic free, landing in one of these means the self-check failed: if someone could guess your aesthetic from the category alone, rework it. A bookish, warm, or child-facing subject does NOT license cream+serif by default — its material world is wider than that. A brief-pinned world pins the world, not its softest, safest rendition.
+
+The floor holds the mechanics; it never picks the direction. With every check above green, spend the page on the committed world from step 1a — when torn between refined and committed, commit.
 
 ### Creative layout arsenal (static CSS only)
 Do not default to generic UI. Pull from these patterns for visually striking layouts:

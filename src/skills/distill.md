@@ -76,8 +76,8 @@ Systematically remove complexity across these dimensions:
 - **Reduce choices**: Fewer buttons, fewer options, clearer path forward (paradox of choice is real)
 - **Smart defaults**: Make common choices automatic, only ask when necessary
 - **Inline actions**: Replace modal flows with inline editing where possible
-- **Remove steps**: Can signup be one step instead of three? Can checkout be simplified?
-- **Clear CTAs**: ONE obvious next step, not five competing actions
+- **Remove steps**: Can the flow lose a step?
+- **Clear next action**: ONE obvious next action, not five competing ones
 
 ### Content Simplification
 - **Shorter copy**: Cut every sentence in half, then do it again
@@ -118,4 +118,12 @@ If you removed features or options:
 - Consider if they need alternative access points
 - Note any user feedback to monitor
 
-When the cuts feel right, hand off to the `/polish` skill for the final pass. As Antoine de Saint-Exupéry put it: "Perfection is achieved not when there is nothing more to add, but when there is nothing left to take away."
+When the cuts feel right, hand off to `/polish` for the final pass. As Antoine de Saint-Exupéry put it: "Perfection is achieved not when there is nothing more to add, but when there is nothing left to take away."
+
+## Quality floor
+
+Verify before shipping: contrast (body/placeholder ≥4.5:1, large ≥3:1; tint secondary text from the surface hue, never gray); depth (shadows carry offset + soft blur, never a zero-offset colored halo); spacing (tight groups, generous separation, more space above a heading than below it); type (measure 65–75ch, display ≤6rem, tracking floor −0.04em, real copy at every breakpoint with no overflow); one authored motion (exponential ease-out from an already-visible default, not scattered effects); real states (hover/disabled/loading/error/empty); honest copy (product's own language; controls name their action, errors name problem + recovery).
+
+Refuse by default (the brief can earn any of them): identical-card grids, the hero-metric template, an eyebrow over every section, decorative section numbers, a reflexive modal, gradient text, glassmorphism-as-decoration, colored side-stripe borders over 1px, decorative sparklines/progress-rings/soft-shadow rounded-rects standing in for content, mono-as-"technical", theme picked by category instead of use-scene, the ghost card (1px border under a wide soft shadow), sketchy/doodle SVG grain, and animating an image on hover instead of its container.
+
+Full floor lives in the `frontend-design` skill.

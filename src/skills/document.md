@@ -1,6 +1,6 @@
 ---
 name: document
-description: Generate a DESIGN.md design-system document that captures the project's existing visual system.
+description: Generate a design-system summary that captures the project's existing visual system.
 args:
   - name: target
     description: Optional area or path to document (optional)
@@ -8,16 +8,15 @@ args:
 user-invokable: true
 ---
 
-Generate a `DESIGN.md` file at the project root that captures the current visual design system, so AI agents generating new screens stay on-brand.
+Capture the current visual design system as a summary, so future turns and collaborators stay on-brand. There is no project filesystem: the deliverable is a design summary returned in chat, condensed into the opening HTML comment of the design's primary embed.
 
-DESIGN.md follows the [official DESIGN.md format spec](https://raw.githubusercontent.com/google-labs-code/design.md/main/docs/spec.md): YAML frontmatter carrying machine-readable design tokens, followed by a markdown body with exactly six sections in a fixed order. **Tokens are normative; prose provides context for how to apply them.** Sections may be omitted when not relevant, but **do not reorder them and do not rename them**. Section headers must match the spec character-for-character so the file stays parseable by other DESIGN.md-aware tools (Stitch itself, awesome-design-md, skill-rest, etc.).
+The summary follows the same shape as the community DESIGN.md format: an optional YAML-style token block, followed by up to eight markdown sections in a fixed order. **Tokens are normative; prose provides context for how to apply them.** Sections may be omitted when not relevant, but those present stay in the specified order and keep the canonical headings below.
 
-## The frontmatter: token schema
+## The token block: schema
 
-The YAML frontmatter is the machine-readable layer. It's what Stitch's linter validates. Keep it tight; every entry should correspond to a token the project actually uses.
+The token block is the machine-readable layer. Keep it tight; every entry should correspond to a token the project actually uses.
 
 ```yaml
----
 name: <project title>
 description: <one-line tagline>
 colors:
@@ -47,43 +46,44 @@ components:
     padding: "16px 48px"
   button-primary-hover:
     backgroundColor: "{colors.primary-deep}"
----
 ```
 
 Rules that matter:
 
 - **Token refs** use `{path.to.token}` (e.g. `{colors.primary}`, `{rounded.md}`). Components may reference primitives; primitives may not reference each other.
-- **Stitch validates colors as hex sRGB only** (`#RGB` / `#RGBA` / `#RRGGBB` / `#RRGGBBAA`); OKLCH/HSL/P3 trigger a linter warning, not a hard error. YAML accepts the string either way and our own parser is format-agnostic. Choose based on project posture: (a) if the project has an "OKLCH-only" doctrine or uses Display-P3 values that don't round-trip through sRGB, put OKLCH directly in the frontmatter and accept the Stitch linter warning; (b) if the project wants strict Stitch compliance or plans to use their Tailwind/DTCG export pipeline, put hex in the frontmatter and keep OKLCH in prose as the canonical reference. Never split the source of truth without explicit reason.
-- **Component sub-tokens** are limited to 8 props: `backgroundColor`, `textColor`, `typography`, `rounded`, `padding`, `size`, `height`, `width`. Shadows, motion, focus rings, backdrop-filter: none of those fit. Describe them in prose in the Components section instead.
-- **Scale keys are open-ended.** Use whatever names the project already uses (`oxblood-deep`, `surface-container-low`). Don't rename to Material defaults.
+- **Colors accept any valid CSS color string.** Hex is the recommended default for portability, but preserve an incumbent `rgb()`, `hsl()`, `oklch()`, wide-gamut, or mixed-color value when it is the project's normative source. Never split the source of truth without explicit reason.
+- **Component sub-tokens** are limited to 8 props: `backgroundColor`, `textColor`, `typography`, `rounded`, `padding`, `size`, `height`, `width`. Shadows, motion, focus rings, backdrop-filter: describe those in prose in the Components section instead.
+- **Scale keys are open-ended.** Use whatever names the project already uses (`oxblood-deep`, `surface-container-low`). Don't rename to generic defaults.
 - **Variants are naming convention, not schema.** `button-primary` / `button-primary-hover` / `button-primary-active` as sibling keys.
 
-## The markdown body: six sections (exact order)
+## The markdown body: eight sections (canonical order)
 
 1. `## Overview`
 2. `## Colors`
 3. `## Typography`
-4. `## Elevation`
-5. `## Components`
-6. `## Do's and Don'ts`
+4. `## Layout`
+5. `## Elevation & Depth`
+6. `## Shapes`
+7. `## Components`
+8. `## Do's and Don'ts`
 
-Optional evocative subtitles are allowed in the form `## 2. Colors: The [Name] Palette` (Stitch's own outputs do this), but the literal word in each header (Overview, Colors, Typography, Elevation, Components, Do's and Don'ts) must be present. Do NOT add extra top-level sections (Layout Principles, Responsive Behavior, Motion, Agent Prompt Guide). Fold that content into the six spec sections where it naturally belongs.
+Omit irrelevant sections rather than filling them with invented rules. Put responsive layout in Layout, depth in Elevation & Depth, radius and form language in Shapes, and per-component behavior in Components.
 
 ## When to run
 
-- The user is setting up the project and needs the visual side documented.
-- No `DESIGN.md` exists yet and the visual system is worth capturing.
-- An existing `DESIGN.md` is stale (the design has drifted).
+- A new-work exploration found a coherent incumbent visual system but no captured summary yet.
+- The first implementation of a new world is complete and its provisional decisions need to be locked in.
+- An existing summary (visible in an earlier chat turn or an embed's opening comment) is stale — the design has drifted.
 - Before a large redesign, to capture the current state as a reference.
 
-If a `DESIGN.md` already exists, **do not silently overwrite it**. Show the user the existing file and STOP and {{ask_instruction}} to clarify whether to refresh, overwrite, or merge.
+If a summary already exists (in the conversation or in an embed's opening comment), **do not silently overwrite it**. Show the user the existing summary and {{ask_instruction}} whether to refresh, overwrite, or merge.
 
 ## Two paths
 
-- **Scan mode** (default): the project has design tokens, components, or rendered output. Extract, then confirm descriptive language. Use when there's a scene graph, design variables, or reusable components to analyze.
-- **Seed mode**: the project is pre-implementation (nothing built yet). Interview for five high-level answers, write a minimal DESIGN.md marked `<!-- SEED -->`. Re-run in scan mode once there's something to extract.
+- **Scan mode** (default): the design has variables, reusable components, or rendered nodes. Extract, then confirm descriptive language. Use when there's something on the canvas to analyze.
+- **Seed mode**: the canvas is pre-implementation (nothing built yet). Gather five high-level answers, produce a minimal summary marked as a seed. Re-run in scan mode once there's something to extract.
 
-Decide by scanning first (Scan mode Step 1). If the scan finds no tokens, no components, and no rendered output, offer seed mode; don't silently switch. The user can explicitly request seed mode to force it regardless of what's already built.
+Decide by scanning first (Scan mode Step 1). If the scan finds no variables, no reusable components, and no rendered nodes, offer seed mode; don't silently switch.
 
 ## Scan mode (approach C: auto-extract, then confirm descriptive language)
 
@@ -91,7 +91,7 @@ Decide by scanning first (Scan mode Step 1). If the scan finds no tokens, no com
 
 Survey the project in priority order:
 
-1. **Design tokens/variables**: read the project's design variables (via the `get_variables` tool). Record name, value, and role for each color, typography, spacing, radius, shadow, easing, and duration token. This is the primary source of truth for the design system.
+1. **Design variables**: read the project's design variables (via the `get_variables` tool). Record name, value, and role for each color, typography, spacing, radius, shadow, easing, and duration token. This is the primary source of truth for the design system.
 2. **Existing scene nodes**: inspect the current scene graph for established visual conventions — the colors, type sizes, radii, and spacing that recur across frames and text nodes.
 3. **Reusable components**: scan components — native `frame` nodes with `reusable: true` (`get_editor_state` returns them under `reusableComponents`, with an HTML snapshot for readability) — the main button, card, input, navigation, dialog patterns. Note any declared `properties` (variant/boolean/text axes) and default styles.
 4. **Rendered output**: if browser automation tools are available, sample computed styles from key rendered elements (body, h1, a, button, card). This catches values that tokens miss.
@@ -100,56 +100,55 @@ Survey the project in priority order:
 
 Build a structured draft from the discovered tokens. For each token class:
 
-- **Colors**: Group into Primary / Secondary / Tertiary / Neutral (the Material-derived roles Stitch uses). If the project only has one accent, express it as Primary + Neutral; omit Secondary and Tertiary rather than inventing them.
-- **Typography**: Map observed sizes and weights to the Material hierarchy (display / headline / title / body / label). Note font-family stacks and the scale ratio.
+- **Colors**: Group into Primary / Secondary / Tertiary / Neutral. If the project only has one accent, express it as Primary + Neutral; omit Secondary and Tertiary rather than inventing them.
+- **Typography**: Map observed sizes and weights to a display / headline / title / body / label hierarchy. Note font-family stacks and the scale ratio.
 - **Elevation**: Catalogue the shadow vocabulary. If the project is flat and uses tonal layering instead, that's a valid answer; state it explicitly.
 - **Components**: For each common component (button, card, input, chip, list item, tooltip, nav), extract shape (radius), color assignment, hover/focus treatment, internal padding.
-- **Spacing + layout**: Fold into Overview or relevant Components. The spec does NOT have a Layout section.
+- **Layout + spacing**: Extract grid, container, breakpoint, rhythm, and density behavior into Layout.
+- **Shapes**: Extract radius, corner, border, clipping, and recurring form behavior into Shapes.
 
-### Step 2b: Stage the frontmatter
+### Step 2b: Stage the token block
 
-From the auto-extracted tokens, draft the YAML frontmatter now (you'll write it at the top of DESIGN.md in Step 4). This is the machine-readable layer that Stitch's linter consumes.
+From the auto-extracted tokens, draft the token block now (you'll open the summary with it in Step 4).
 
-- **Colors**: one entry per extracted color. Key = descriptive slug (`oxblood-deep`, `editorial-magenta`, not `blue-800`). Value = whichever format the project treats as canonical (OKLCH or hex; see the frontmatter rules above). Don't split the source of truth: one format in the frontmatter, don't redefine the same token in prose with a different value.
-- **Typography**: one entry per role (`display`, `headline`, `title`, `body`, `label`). Typography is an object; include only the props that are real for the project (`fontFamily`, `fontSize`, `fontWeight`, `lineHeight`, `letterSpacing`, `fontFeature`, `fontVariation`).
-- **Rounded / Spacing**: whatever scale steps the project actually uses, keyed by whatever scale name the project uses (`sm` / `md` / `lg`, or `surface-sm`, or numeric steps).
-- **Components**: one entry per variant (`button-primary`, `button-primary-hover`, `button-ghost`). Reference primitives via `{colors.X}`, `{rounded.Y}`. If a variant needs a property Stitch's 8-prop set doesn't cover (shadow, focus ring, backdrop-filter), describe it in the Components prose section instead.
+- **Colors**: one entry per extracted color. Key = descriptive slug (`oxblood-deep`, `editorial-magenta`, not `blue-800`). Value = whichever format the project treats as canonical. Don't split the source of truth.
+- **Typography**: one entry per role (`display`, `headline`, `title`, `body`, `label`). Include only the props that are real for the project (`fontFamily`, `fontSize`, `fontWeight`, `lineHeight`, `letterSpacing`, `fontFeature`, `fontVariation`).
+- **Rounded / Spacing**: whatever scale steps the project actually uses, keyed by whatever scale name the project uses.
+- **Components**: one entry per variant (`button-primary`, `button-primary-hover`, `button-ghost`). Reference primitives via `{colors.X}`, `{rounded.Y}`. If a variant needs a property the 8-prop set doesn't cover, describe it in the Components prose section instead.
 
-Skip anything the project doesn't have. Empty scale keys or fabricated tokens pollute the spec.
+Skip anything the project doesn't have. Empty scale keys or fabricated tokens pollute the summary.
 
 ### Step 3: Ask the user for qualitative language
 
-The following require creative input that cannot be auto-extracted. Gather them in one pass; {{ask_instruction}} for all of them together:
+The following require creative input that cannot be auto-extracted. Gather them together with {{ask_instruction}}:
 
-- **Creative North Star**: a single named metaphor for the whole system ("The Editorial Sanctuary", "The Golden State Curator", "The Lab Notebook"). Offer 2-3 options that honor the brand personality in the project's product context.
-- **Overview voice**: mood adjectives, aesthetic philosophy in 2-3 sentences, anti-references (what the system should not feel like).
+- **Creative North Star**: a single named metaphor for the whole system ("The Editorial Sanctuary", "The Golden State Curator", "The Lab Notebook"). Offer 2-3 options that honor the visitor mode and audience.
+- **Overview voice**: mood adjectives, aesthetic philosophy in 2-3 sentences, and any confirmed visual anti-reference.
 - **Color character** (for auto-extracted colors): descriptive names ("Deep Muted Teal-Navy", not "blue-800"). Suggest 2-3 options per key color based on hue/saturation.
 - **Elevation philosophy**: flat/layered/lifted. If shadows exist, is their role ambient or structural?
 - **Component philosophy**: the feel of buttons, cards, inputs in one phrase ("tactile and confident" vs. "refined and restrained").
 
-Quote a line from the project's product context when possible so the user sees their own strategic language carry forward.
+Carry a line from an earlier brief only when it is a durable commitment that actually constrains the visual system.
 
-### Step 4: Write DESIGN.md
+### Step 4: Write the summary
 
-The file opens with the YAML frontmatter staged in Step 2b (schema documented at the top of this reference), then the markdown body using the structure below. Headers must match character-for-character. Optional evocative subtitles (e.g. `## 2. Colors: The Coastal Palette`) are allowed.
+Open with the token block staged in Step 2b, then the markdown body using the canonical structure below.
 
 ```markdown
----
 name: [Project Title]
 description: [one-line tagline]
 colors:
-  # ... staged frontmatter from Step 2b
----
+  # ... staged token block from Step 2b
 
 # Design System: [Project Title]
 
-## 1. Overview
+## Overview
 
 **Creative North Star: "[Named metaphor in quotes]"**
 
-[2-3 paragraph holistic description: personality, density, aesthetic philosophy. Start from the North Star and work outward. State what this system explicitly rejects (pulled from the project's product context anti-references). End with a short **Key Characteristics:** bullet list.]
+[2-3 paragraph holistic description: personality, density, and aesthetic philosophy. Start from the North Star and work outward. State only confirmed visual rejections. End with a short **Key Characteristics:** bullet list.]
 
-## 2. Colors
+## Colors
 
 [Describe the palette character in one sentence.]
 
@@ -169,9 +168,11 @@ colors:
 ### Named Rules (optional, powerful)
 **The [Rule Name] Rule.** [Short, forceful prohibition or doctrine, e.g. "The One Voice Rule. The primary accent is used on ≤10% of any given screen. Its rarity is the point."]
 
-## 3. Typography
+## Typography
 
-**Font family:** [Family] (with [fallback]) — one family for the whole design; build hierarchy with weight/size/color. (Second family only if explicitly requested, e.g. a mono for literal code.)
+**Display Font:** [Family] (with [fallback])
+**Body Font:** [Family] (with [fallback])
+**Label/Mono Font:** [Family, if distinct]
 
 **Character:** [1-2 sentence personality description of the pairing.]
 
@@ -185,7 +186,11 @@ colors:
 ### Named Rules (optional)
 **The [Rule Name] Rule.** [Short doctrine about type use.]
 
-## 4. Elevation
+## Layout
+
+[Describe the grid or spatial model, container behavior, density, responsive changes, and the spacing rhythm. Include exact values only when observed.]
+
+## Elevation & Depth
 
 [One paragraph: does this system use shadows, tonal layering, or a hybrid? If "no shadows", say so explicitly and describe how depth is conveyed instead.]
 
@@ -196,7 +201,11 @@ colors:
 ### Named Rules (optional)
 **The [Rule Name] Rule.** [e.g. "The Flat-By-Default Rule. Surfaces are flat at rest. Shadows appear only as a response to state (hover, elevation, focus)."]
 
-## 5. Components
+## Shapes
+
+[Describe the form language: corner/radius strategy, borders, clipping, and any recurring silhouette or geometry.]
+
+## Components
 
 For each component, lead with a short character line, then specify shape, color assignment, states, and any distinctive behavior.
 
@@ -228,115 +237,95 @@ For each component, lead with a short character line, then specify shape, color 
 ### [Signature Component] (optional; if the project has a distinctive custom component worth documenting)
 [Description.]
 
-## 6. Do's and Don'ts
+## Do's and Don'ts
 
-Concrete, forceful guardrails. Lead each with "Do" or "Don't". Be specific: include exact colors, pixel values, and named anti-patterns the user mentioned in the project's product context. **Every anti-reference in the project's product context should show up here as a "Don't" with the same language**, so the visual spec carries the strategic line through. Quote the product context directly where possible: if it says *"avoid dark mode with purple gradients, neon accents, glassmorphism"*, the Don'ts here should repeat that by name.
+Concrete visual guardrails grounded in the incumbent implementation or the user's chosen world. Lead each with "Do" or "Don't" and include exact values only when established.
 
 ### Do:
 - **Do** [specific prescription with exact values / named rule].
 - **Do** [...]
 
 ### Don't:
-- **Don't** [specific prohibition, e.g. "use border-left greater than 1px as a colored stripe"].
+- **Don't** [specific prohibition confirmed by the incumbent system or the user].
 - **Don't** [...]
 - **Don't** [...]
 ```
 
-### Step 5: Confirm and refine
+### Step 5: Deliver and confirm
 
-1. Show the user the full DESIGN.md you wrote. Briefly highlight the non-obvious creative choices (descriptive color names, atmosphere language, named rules).
-2. Offer to refine any section: "Want me to revise a section, add component patterns I missed, or adjust the atmosphere language?"
+1. Show the user the full summary you wrote in chat. Briefly highlight the non-obvious creative choices (descriptive color names, atmosphere language, named rules).
+2. Condense the token block plus the Overview and Do's and Don'ts into the opening HTML comment of the design's primary embed, so the next turn (yours or another agent's) sees it without a reload.
+3. Offer to refine any section: "Want me to revise a section, add component patterns I missed, or adjust the atmosphere language?"
 
 Your own write is the freshest source; subsequent commands in this session don't need a reload.
 
 ## Seed mode
 
-For projects with no visual system to extract yet. Produces a minimal scaffold, not a full spec.
+For projects with no visual system to extract yet. Produces a user-chosen visual-world scaffold, not a fabricated token spec.
 
-### Step 1: Confirm seed mode
+### Step 1: Route through new-work's workshop
 
-Before interviewing: "There's no existing visual system to scan. I'll ask five quick questions to seed a starter DESIGN.md. You can re-run `/document` once there's something built, to capture the real tokens and components. OK?"
+If the target surface has no established visual direction yet, load `/new-work` and resolve visual authority there first: run its **Create or replace the visual world** flow, then **Commit the world**, so the visual world and its first expression are chosen together. Stop after the directional summary; do not implement.
 
-If the user prefers to skip, stop. No file.
+If `/new-work` already completed the workshop in this session, use its chosen direction directly. Do not ask again.
 
-### Step 2: Five questions
+### Step 2: Write the seed summary
 
-Gather these in one pass. Options must be concrete.
+Use the canonical section order from Scan mode. Populate the selected workshop direction and leave unresolved implementation facts as honest placeholders. The seed commits a world and its invariants; it does not pretend implementation tokens already exist.
 
-1. **Color strategy.** Pick one:
-   - Restrained: tinted neutrals + one accent ≤10%
-   - Committed: one saturated color carries 30–60% of the surface
-   - Full palette: 3–4 named color roles, each deliberate
-   - Drenched: the surface IS the color
-   
-   Then: one hue family or anchor reference ("deep teal", "mustard", "Klim #ff4500 orange").
-
-2. **Typography direction.** Pick one (specific fonts come later):
-   - Serif display + sans body
-   - Single sans (warm / technical / geometric / humanist; pick a feel)
-   - Display + mono
-   - Mono-forward
-   - Editorial script + sans
-
-3. **Motion energy.** Pick one:
-   - Restrained: state changes only
-   - Responsive: feedback + transitions, no choreography
-   - Choreographed: orchestrated entrances, scroll-driven sequences
-
-4. **Three named references.** Brands, products, printed objects. Not adjectives.
-
-5. **One anti-reference.** What it should NOT feel like. Also named.
-
-### Step 3: Write seed DESIGN.md
-
-Use the six-section spec from Scan mode. Populate what the interview answers; leave the rest as honest placeholders. The seed is a scaffold, not a fabricated spec.
-
-Lead the file with:
+Lead the summary with:
 
 ```markdown
-<!-- SEED: re-run /document once there's something built to capture the actual tokens and components. -->
+<!-- SEED: established with the user before implementation; re-run /document once there's something built to capture the actual tokens and components. -->
 ```
 
 Per-section guidance in seed mode:
 
-- **Overview**: Creative North Star and philosophy phrased from the answers (color strategy + motion energy + references). Reference the user's anti-reference directly.
-- **Colors**: Color strategy as a Named Rule (e.g. *"The Drenched Rule. The surface IS the color."*). Hue family or anchor reference. No hex values; mark as `[to be resolved during implementation]`.
-- **Typography**: the direction the user picked (e.g. "one geometric sans, hierarchy by weight"). No font name yet: `[font family to be chosen at implementation]`.
-- **Elevation**: inferred from motion energy. Restrained/Responsive → flat by default; Choreographed → layered. One sentence.
+- **Overview**: the chosen design thesis, layout behavior, material character, imagery stance, motion grammar, and reusable signature.
+- **Colors**: the selected palette strategy and roles. Include values only when the user or `/new-work`'s exploration established them; otherwise mark them `[to be resolved during implementation]`.
+- **Typography**: the selected type character and role relationship. Include font names only when established; otherwise mark the pairing `[to be resolved during implementation]`.
+- **Layout**: the selected spatial grammar and responsive behavior, without pretending exact measurements are settled.
+- **Elevation & Depth**: the selected material and depth behavior, stated as an invariant rather than inferred from a generic preset.
+- **Shapes**: the selected form and corner language.
 - **Components**: omit entirely; no components exist yet.
-- **Do's and Don'ts**: carry the project's product context anti-references directly plus the anti-reference named in Q5.
+- **Do's and Don'ts**: record the durable guardrails confirmed during the world choice, not task-local refusals.
 
-Seed mode writes a minimal frontmatter with `name` and `description` only; no colors, typography, rounded, spacing, or components yet. Real tokens land on the next Scan-mode run.
+Seed mode writes a minimal token block with `name` and `description` only; no colors, typography, rounded, spacing, or components yet. Real tokens land on the next Scan-mode run.
 
-### Step 4: Confirm
+### Step 3: Confirm
 
-1. Show the seed DESIGN.md. Call out that it is a seed (the marker is the literal commitment).
-2. Tell the user: "Re-run `/document` once you have something built. That pass will extract the real tokens."
+1. Show the seed summary in chat. Call out that it is a seed (the marker is the literal commitment).
+2. Tell the user: "Re-run `/document` once you have some code. That pass will extract real tokens."
 
 Your own write is the freshest source; no reload needed.
 
 ## Style guidelines
 
-- **Frontmatter first, prose second.** Tokens go in the YAML frontmatter; prose contextualizes them. Don't redefine a token value in two places; the frontmatter is normative.
-- **Cite the product context's anti-references by name** in the Do's and Don'ts section. If the product context lists "SaaS landing-page clichés" or "generic AI tool marketing" as anti-references, the DESIGN.md Don'ts should repeat those phrases verbatim so the visual spec enforces the strategic line.
-- **Match the spec, don't invent new sections.** The six section names are fixed. If you have Layout/Motion/Responsive content to document, fold it into Overview (philosophy-level rules) or Components (per-component behavior).
+- **Tokens first, prose second.** Tokens go in the token block; prose contextualizes them. Don't redefine a token value in two places; the token block is normative.
+- **Carry only durable constraints.** A binding logo, identity asset, accessibility need, or brand commitment from an earlier brief may constrain the summary. Task-specific strategy stays local to that task.
+- **Match the canonical structure.** Use the eight sections in order and omit any that are irrelevant. Put motion guidance with the world or component it affects rather than creating a section the structure does not support.
 - **Descriptive > technical**: "Gently curved edges (8px radius)" > "rounded-lg". Include the technical value in parens, lead with the description.
 - **Functional > decorative**: for each token, explain WHERE and WHY it's used, not just WHAT it is.
 - **Exact values in parens**: hex codes, px/rem values, font weights; always the number in parens alongside the description.
-- **Use Named Rules**: `**The [Name] Rule.** [short doctrine]`. These are memorable, citable, and much stickier for AI consumers than bullet lists. Stitch's own outputs use them heavily ("The No-Line Rule", "The Ghost Border Fallback"). Aim for 1-3 per section.
-- **Be forceful**. The voice of a design director. "Prohibited", "forbidden", "never", "always", not "consider", "might", "prefer". Match the product context's tone.
-- **Concrete anti-pattern tests**. Stitch writes things like *"If it looks like a 2014 app, the shadow is too dark and the blur is too small."* A one-sentence audit test beats a paragraph of principle.
-- **Reference the product context**. The anti-references in the project's product context should directly inform the Do's and Don'ts section here. Quote or paraphrase.
-- **Group colors by role**, not by hex-order or hue-order. Primary / Secondary / Tertiary / Neutral is the spec ordering.
+- **Use Named Rules**: `**The [Name] Rule.** [short doctrine]`. These are memorable, citable, and much stickier for AI consumers than bullet lists. Aim for 1-3 per section.
+- **Be decisive where evidence is decisive.** Use hard language for actual invariants and softer language for provisional guidance.
+- **Use concrete audit tests only when they are grounded in the observed system or a confirmed user decision.** A one-sentence test beats a paragraph of principle.
+- **Group colors by role**, not by hex-order or hue-order. Primary / Secondary / Tertiary / Neutral is the canonical ordering.
 
 ## Pitfalls
 
 - Don't paste raw CSS class names. Translate to descriptive language.
 - Don't extract every token. Stop at what's actually reused; one-offs pollute the system.
 - Don't invent components that don't exist. If the project only has buttons and cards, only document those.
-- Don't overwrite an existing DESIGN.md without asking.
-- Don't duplicate content from the project's product context. DESIGN.md is strictly visual.
-- Don't add a "Layout Principles" or "Motion" or "Responsive Behavior" top-level section. The spec has six, not nine. Fold that content where it belongs.
-- Don't rename sections even slightly. "Colors" not "Color Palette & Roles". "Typography" not "Typography Rules". Tooling parsing depends on exact headers.
-- Don't duplicate token values between frontmatter and prose. If a color is in `colors.primary` as hex, the prose can name it and describe its role but should not reassert a different hex. The frontmatter is normative.
-- Don't invent frontmatter token groups outside Stitch's schema (no `motion:`, `breakpoints:`, `shadows:` at the top level). Stitch's Zod schema only accepts `colors`, `typography`, `rounded`, `spacing`, `components`. Anything else (motion, breakpoints, shadows) belongs in the prose body, described in the relevant section, not the top-level frontmatter.
+- Don't overwrite an existing summary without asking.
+- Don't rename sections even slightly. "Colors" not "Color Palette & Roles". "Typography" not "Typography Rules".
+- Don't duplicate token values between the token block and prose. If a color is in `colors.primary` as hex, the prose can name it and describe its role but should not reassert a different hex. The token block is normative.
+- Don't invent token groups outside the schema (no `motion:`, `breakpoints:`, `shadows:` at the top level). Carry those in prose, in the relevant section, instead.
+
+## Quality floor
+
+Verify before shipping: contrast (body/placeholder ≥4.5:1, large ≥3:1; tint secondary text from the surface hue, never gray); depth (shadows carry offset + soft blur, never a zero-offset colored halo); spacing (tight groups, generous separation, more space above a heading than below it); type (measure 65–75ch, display ≤6rem, tracking floor −0.04em, real copy at every breakpoint with no overflow); one authored motion (exponential ease-out from an already-visible default, not scattered effects); real states (hover/disabled/loading/error/empty); honest copy (product's own language; controls name their action, errors name problem + recovery).
+
+Refuse by default (the brief can earn any of them): identical-card grids, the hero-metric template, an eyebrow over every section, decorative section numbers, a reflexive modal, gradient text, glassmorphism-as-decoration, colored side-stripe borders over 1px, decorative sparklines/progress-rings/soft-shadow rounded-rects standing in for content, mono-as-"technical", theme picked by category instead of use-scene, the ghost card (1px border under a wide soft shadow), sketchy/doodle SVG grain, and animating an image on hover instead of its container.
+
+Full floor lives in the `frontend-design` skill.

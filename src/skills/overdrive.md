@@ -138,3 +138,17 @@ The gap between "cool" and "extraordinary" is in the last 20% of refinement: the
 - **The context test**: Does this make sense for THIS brand and audience?
 
 "Technically extraordinary" isn't about using the newest API. It's about making an interface do something users didn't think a website could do.
+
+## Quality floor
+
+Technical ambition never gets a pass on the baseline every surface holds to:
+
+- **Contrast**: body/placeholder text ≥4.5:1, large text ≥3:1; tint secondary text from the surface hue, never plain gray.
+- **Depth**: shadows carry an offset and a soft blur — a zero-offset colored halo is decoration, not elevation.
+- **Spacing**: tight groups, generous separation, more space above a heading than below it.
+- **Type**: measure 65–75ch, display ≤6rem, tracking floor −0.04em (−0.02 to −0.03em usually reads better).
+- **Motion**: one authored moment, exponential ease-out from an already-visible default — the extraordinary technique IS the one authored moment, not a pile of competing ones.
+- **States**: hover, disabled, loading, error, empty all implemented with real content, and reachable even when the flashy effect fails to load.
+- **Copy**: the product's own language; controls name their action, errors name the problem and the recovery.
+
+Full floor lives in the `frontend-design` skill.

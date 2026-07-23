@@ -12,11 +12,11 @@ Quiet design is harder than bold design. Subtlety needs precision. Reduce visual
 
 ---
 
-## Register
+## Visitor mode
 
-Brand: "quieter" means more restrained palette, more whitespace, more typographic air. Drama is reduced, not eliminated; the POV stays intact.
+Persuade + Experience: "quieter" means more restrained palette, more whitespace, more typographic air. Drama is reduced, not eliminated; the POV stays intact.
 
-Product: "quieter" means reducing visual noise. Fewer background accents, flatter cards, less color, less motion. The tool should disappear more completely into the task.
+Operate + Read: "quieter" means reducing visual noise. Fewer background accents, flatter cards, less color, less motion. The tool should disappear more completely into the task.
 
 ---
 
@@ -107,3 +107,17 @@ Ensure refinement maintains quality:
 - **Restrained, not absent**: Does the POV survive the cuts?
 
 When the result feels right, hand off to the `/polish` skill for the final pass.
+
+## Quality floor
+
+Quieting a design never drops it below the baseline every surface holds to:
+
+- **Contrast**: body/placeholder text ≥4.5:1, large text ≥3:1; tint secondary text from the surface hue, never plain gray — restraint is not an excuse for washed-out gray-on-gray.
+- **Depth**: shadows carry an offset and a soft blur — a zero-offset colored halo is decoration, not elevation.
+- **Spacing**: tight groups, generous separation, more space above a heading than below it.
+- **Type**: measure 65–75ch, display ≤6rem, tracking floor −0.04em (−0.02 to −0.03em usually reads better).
+- **Motion**: one authored moment, exponential ease-out from an already-visible default — quieter reduces the count and distance of motion, not its intent.
+- **States**: hover, disabled, loading, error, empty all implemented with real content.
+- **Copy**: the product's own language; controls name their action, errors name the problem and the recovery.
+
+Full floor lives in the `frontend-design` skill.

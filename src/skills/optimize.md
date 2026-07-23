@@ -266,3 +266,17 @@ Test that optimizations worked:
 - **User perception**: Does it *feel* faster?
 
 When the user-facing numbers move, hand off to the `/polish` skill for the final pass.
+
+## Quality floor
+
+Performance work must still clear the baseline every surface holds to before shipping:
+
+- **Contrast**: body/placeholder text ≥4.5:1, large text ≥3:1; tint secondary text from the surface hue, never plain gray.
+- **Depth**: shadows carry an offset and a soft blur — a zero-offset colored halo is decoration, not elevation.
+- **Spacing**: tight groups, generous separation, more space above a heading than below it.
+- **Type**: measure 65–75ch, display ≤6rem, tracking floor −0.04em (−0.02 to −0.03em usually reads better).
+- **Motion**: one authored moment, exponential ease-out from an already-visible default — not scattered effects. Optimizing for frame rate must not strip the one moment that earns its cost.
+- **States**: hover, disabled, loading, error, empty all implemented with real content.
+- **Copy**: the product's own language; controls name their action, errors name the problem and the recovery.
+
+Full floor lives in the `frontend-design` skill.

@@ -10,7 +10,7 @@ user-invokable: true
 
 Run systematic **technical** quality checks and generate a comprehensive report. Don't fix issues; document them for other commands to address.
 
-This is a code-level audit, not a design critique. Check what's measurable and verifiable in the implementation.
+This is a code-level, web-only audit, not a design critique.
 
 ## Diagnostic Scan
 
@@ -20,6 +20,7 @@ Run comprehensive checks across 5 dimensions. Score each dimension 0-4 using the
 
 **Check for**:
 - **Contrast issues**: Text contrast ratios < 4.5:1 (or 7:1 for AAA)
+- **Motion sensitivity**: `prefers-reduced-motion` needs an intentional alternative that preserves state change and hierarchy; flag a global `0.01ms` kill that destroys useful feedback, flashing above threshold, or motion that blocks focus, reading, or task completion
 - **Missing ARIA**: Interactive elements without proper roles, labels, or states
 - **Keyboard navigation**: Missing focus indicators, illogical tab order, keyboard traps
 - **Semantic HTML**: Improper heading hierarchy, missing landmarks, divs instead of buttons
@@ -60,11 +61,11 @@ Run comprehensive checks across 5 dimensions. Score each dimension 0-4 using the
 
 **Score 0-4**: 0=Desktop-only (breaks on mobile), 1=Major issues (some breakpoints, many failures), 2=Partial (works on mobile, rough edges), 3=Good (responsive, minor touch target or overflow issues), 4=Excellent (fluid, all viewports, proper touch targets)
 
-### 5. Anti-Patterns (CRITICAL)
+### 5. Anti-Patterns / Implementation Integrity (CRITICAL)
 
-Check against ALL the **DON'T** guidelines from the frontend-design skill. Look for AI slop tells (AI color palette, gradient text, glassmorphism, hero metrics, card grids, generic fonts) and general design anti-patterns (gray on color, nested cards, bounce easing, redundant copy).
+Check against ALL the **DON'T** guidelines from the frontend-design skill: AI-slop tells (AI color palette, gradient text, glassmorphism, hero metrics, card grids, generic fonts) and general design anti-patterns (gray on color, nested cards, bounce easing, redundant copy). Also look for repeated implementation shortcuts, design-system drift (values reinvented instead of reused from tokens/components), misleading or decorative content standing in for real data, and structure that reads as interchangeable with an unrelated product. Keep verified findings separate from visual judgment and call out any false positives.
 
-**Score 0-4**: 0=AI slop gallery (5+ tells), 1=Heavy AI aesthetic (3-4 tells), 2=Some tells (1-2 noticeable), 3=Mostly clean (subtle issues only), 4=No AI tells (distinctive, intentional design)
+**Score 0-4**: 0=AI slop gallery / systemic drift (5+ tells), 1=Heavy AI aesthetic or major repeated failures (3-4 tells), 2=Some tells (1-2 noticeable), 3=Mostly clean (subtle issues only), 4=No AI tells, coherent and intentional
 
 ## Generate Report
 
@@ -76,13 +77,13 @@ Check against ALL the **DON'T** guidelines from the frontend-design skill. Look 
 | 2 | Performance | ? | |
 | 3 | Responsive Design | ? | |
 | 4 | Theming | ? | |
-| 5 | Anti-Patterns | ? | |
+| 5 | Anti-Patterns / Implementation Integrity | ? | |
 | **Total** | | **??/20** | **[Rating band]** |
 
 **Rating bands**: 18-20 Excellent (minor polish), 14-17 Good (address weak dimensions), 10-13 Acceptable (significant work needed), 6-9 Poor (major overhaul), 0-5 Critical (fundamental issues)
 
 ### Anti-Patterns Verdict
-**Start here.** Pass/fail: Does this look AI-generated? List specific tells. Be brutally honest.
+**Start here.** Pass/fail: Does this look AI-generated, or express a coherent product-specific system? List specific tells and cite verified evidence. Be brutally honest.
 
 ### Executive Summary
 - Audit Health Score: **??/20** ([rating band])
@@ -140,3 +141,19 @@ After presenting the summary, tell the user:
 - Skip positive findings (celebrate what works)
 - Forget to prioritize (everything can't be P0)
 - Report false positives without verification
+
+## Quality floor
+
+**Verify**
+- Contrast: body/placeholder text ≥4.5:1, large text ≥3:1; secondary text tinted from the surface hue, never generic gray.
+- Depth: shadows need an offset plus soft blur; a zero-offset colored halo is not a shadow.
+- Spacing: tight groups, generous separation between groups, more space above a heading than below it.
+- Type: measure 65–75ch, tracking floor -0.04em (usually -0.02 to -0.03em reads better).
+- Motion: one authored moment per surface, not decoration repeated on every section; `prefers-reduced-motion` has a real alternative.
+- States: hover, disabled, loading, error, and empty states all exist and are real, not implied.
+- Copy: honest, specific, in the product's own language — controls name their action, errors name problem + recovery.
+
+**Refuse**
+- Reporting an issue without impact, skipping positive findings, or flagging false positives without verification — an audit that can't distinguish real drift from stylistic taste is not actionable.
+
+Full floor lives in the `frontend-design` skill.

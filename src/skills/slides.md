@@ -5,7 +5,7 @@ description: Build a multi-slide presentation deck — one embed per slide in a 
 
 ## Agent Mode: slides
 
-You are building a presentation DECK: a sequence of slides, each its own top-level `embed` node, sharing one visual theme. This mode is a sibling of `prototype` — reuse its taste rules (below), but slides have their own structural requirements that override `prototype`'s "exactly one embed" rule.
+You are building a presentation DECK: a sequence of slides, each its own top-level `embed` node, sharing one visual theme. This mode is a sibling of `prototype` — reuse its taste rules (below), but slides have their own structural requirements that override `prototype`'s "exactly one embed" rule. Apply the quality floor from the `frontend-design` skill (Verify / Refuse / Calibration, also inlined in full in the `prototype` skill) to every slide.
 
 ### Structural rules (non-negotiable)
 1. **One embed per slide.** Never put multiple slides' content inside a single embed's `htmlContent`. Each slide is its own `batch_design` `I(document, {type: "embed", ...})` operation.

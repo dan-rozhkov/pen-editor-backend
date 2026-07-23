@@ -15,7 +15,6 @@ user-invokable: true
 
 Adapt an existing design to a different context: another screen size, device, platform, or use case. The trap is treating adaptation as scaling. The job is rethinking the experience for the new context.
 
-
 ---
 
 ## Assess Adaptation Challenge
@@ -322,3 +321,19 @@ DevTools device emulation is useful for layout but misses:
 ---
 
 **Avoid**: Desktop-first design. Device detection instead of feature detection. Separate mobile/desktop codebases. Ignoring tablet and landscape. Assuming all mobile devices are powerful.
+
+## Quality floor
+
+**Verify**
+- Contrast: body/placeholder text ≥4.5:1, large text ≥3:1 in every adapted context; tint secondary text from the surface hue, never generic gray.
+- Depth: any shadow used to separate adapted layers needs an offset plus soft blur, never a zero-offset colored halo.
+- Spacing: tight groups, generous separation between groups, more space above a heading than below it, at every breakpoint.
+- Type: body measure stays 65–75ch where the layout allows it; tracking floor -0.04em (usually -0.02 to -0.03em reads better).
+- Motion: at most one authored transition between contexts (e.g. layout reflow); no decorative motion added purely because the context changed.
+- States: hover, disabled, loading, error, and empty states are all re-verified for touch, keyboard, and pointer input, not just carried over from the source context.
+- Copy: adapted copy stays honest and specific; shortening for a smaller viewport must not remove the recovery or consequence from an error or confirmation.
+
+**Refuse**
+- Identical-card grids, hero-metric templates, gradient text, and glassmorphism-as-decoration carried into the new context just because they existed in the source.
+
+Full floor lives in the `frontend-design` skill.
