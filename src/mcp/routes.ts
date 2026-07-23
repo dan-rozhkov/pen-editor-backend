@@ -10,7 +10,6 @@ export async function mcpRoutes(app: FastifyInstance, config: Config): Promise<v
   await app.register(websocketPlugin);
 
   const allowedOrigins = parseEnvList(config.CORS_ALLOWED_ORIGINS);
-  const mcpServer = buildMcpServer();
 
   function setCorsHeaders(request: FastifyRequest, reply: FastifyReply): void {
     const origin = request.headers.origin;
@@ -48,11 +47,22 @@ export async function mcpRoutes(app: FastifyInstance, config: Config): Promise<v
     if (!requireAuth(request, reply)) return;
 
     reply.hijack();
+    // A new McpServer + transport per request: Protocol.connect() throws
+    // "Already connected to a transport..." if a second request overlaps
+    // the first on a shared server instance (e.g. a GET SSE stream held
+    // open alongside a POST, or two concurrent POSTs) — and since that
+    // throw happens after reply.hijack(), the request would just hang.
+    // Matches the SDK's own stateless example
+    // (examples/server/simpleStatelessStreamableHttp.js), which builds a
+    // fresh server per request and closes both server and transport on
+    // response close.
+    const server = buildMcpServer();
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     reply.raw.on("close", () => {
       transport.close();
+      server.close();
     });
-    await mcpServer.connect(transport);
+    await server.connect(transport);
     await transport.handleRequest(request.raw, reply.raw, request.body);
   });
 
@@ -61,11 +71,16 @@ export async function mcpRoutes(app: FastifyInstance, config: Config): Promise<v
     if (!requireAuth(request, reply)) return;
 
     reply.hijack();
+    // See the POST handler above: a fresh McpServer per request avoids
+    // Protocol.connect()'s "Already connected" throw when this GET stream
+    // overlaps another concurrent request.
+    const server = buildMcpServer();
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     reply.raw.on("close", () => {
       transport.close();
+      server.close();
     });
-    await mcpServer.connect(transport);
+    await server.connect(transport);
     await transport.handleRequest(request.raw, reply.raw);
   });
 

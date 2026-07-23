@@ -232,3 +232,95 @@ describe("mcpRoutes — WebSocket auth", () => {
     }
   });
 });
+
+// Regression test for a Critical review finding: a shared, plugin-scoped
+// McpServer with `.connect(transport)` called per request throws "Already
+// connected to a transport..." from the SDK's Protocol.connect() the moment
+// a second request overlaps the first — and since that throw happens after
+// reply.hijack(), the request just hangs instead of erroring visibly. Each
+// POST/GET handler must build its own McpServer per request (mirroring the
+// SDK's own stateless example, examples/server/simpleStatelessStreamableHttp.js).
+// Uses listen+fetch (not app.inject()) since these routes hijack the reply
+// — see CLAUDE.md's chat-route testing note, same reasoning applies here.
+describe("mcpRoutes — concurrent requests do not hang (per-request McpServer)", () => {
+  let app: FastifyInstance;
+  let base: string;
+
+  beforeAll(async () => {
+    app = await buildApp(makeConfig({ MCP_AUTH_TOKEN: TOKEN }), {
+      logger: false,
+    });
+    base = await app.listen({ port: 0, host: "127.0.0.1" });
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  function initializeRequest(id: number) {
+    return fetch(`${base}/api/mcp`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        authorization: `Bearer ${TOKEN}`,
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-06-18",
+          capabilities: {},
+          clientInfo: { name: "test-client", version: "1.0.0" },
+        },
+      }),
+    });
+  }
+
+  it("two concurrent POST initialize requests both complete (neither hangs)", async () => {
+    const timeout = (label: string) =>
+      new Promise<never>((_, reject) =>
+        setTimeout(
+          () => reject(new Error(`${label} timed out — likely hung on a shared McpServer`)),
+          5_000,
+        ),
+      );
+
+    const [resA, resB] = await Promise.all([
+      Promise.race([initializeRequest(1), timeout("request A")]),
+      Promise.race([initializeRequest(2), timeout("request B")]),
+    ]);
+
+    expect(resA.status).toBe(200);
+    expect(resB.status).toBe(200);
+  });
+
+  it("a GET SSE stream held open does not block a concurrent POST", async () => {
+    const timeout = (label: string) =>
+      new Promise<never>((_, reject) =>
+        setTimeout(
+          () => reject(new Error(`${label} timed out — likely hung on a shared McpServer`)),
+          5_000,
+        ),
+      );
+
+    const getStream = fetch(`${base}/api/mcp`, {
+      method: "GET",
+      headers: {
+        accept: "text/event-stream",
+        authorization: `Bearer ${TOKEN}`,
+      },
+    });
+
+    const [getRes, postRes] = await Promise.all([
+      Promise.race([getStream, timeout("GET stream")]),
+      Promise.race([initializeRequest(3), timeout("concurrent POST")]),
+    ]);
+
+    expect(getRes.status).toBe(200);
+    expect(postRes.status).toBe(200);
+    // Release the held-open SSE stream so it doesn't leak past the test.
+    await getRes.body?.cancel();
+  });
+});
