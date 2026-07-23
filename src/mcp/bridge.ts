@@ -78,13 +78,18 @@ export function registerSession(socket: EditorSocket): void {
     const pendingCall = session.pending.get(id);
     if (!pendingCall) return;
 
-    session.pending.delete(id);
-    clearTimeout(pendingCall.timer);
-
     if (message.type === "tool_result") {
+      session.pending.delete(id);
+      clearTimeout(pendingCall.timer);
       pendingCall.resolve(message.result ?? "");
     } else if (message.type === "tool_error") {
+      session.pending.delete(id);
+      clearTimeout(pendingCall.timer);
       pendingCall.reject(new Error(message.error ?? "Tool call failed"));
+    } else {
+      session.pending.delete(id);
+      clearTimeout(pendingCall.timer);
+      pendingCall.reject(new Error(`Unexpected reply type: ${message.type}`));
     }
   });
 

@@ -76,6 +76,17 @@ describe("mcp bridge", () => {
     await expect(promise).rejects.toThrow("node not found");
   });
 
+  it("rejects (not hangs) on a reply with matching id but unrecognized type", async () => {
+    const socket = new FakeSocket();
+    registerSession(socket);
+
+    const promise = callTool("get_editor_state", {});
+    const call = socket.lastCall();
+    socket.emitMessage(JSON.stringify({ id: call.id, type: "unknown_type" }));
+
+    await expect(promise).rejects.toThrow("Unexpected reply type: unknown_type");
+  });
+
   it("ignores activity pings and stray messages without a matching id", async () => {
     const socket = new FakeSocket();
     registerSession(socket);
