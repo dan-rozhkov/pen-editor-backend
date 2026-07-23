@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While on `0.x`, minor bumps may include breaking changes.
 
+## [0.27.0] - 2026-07-23
+
+### Added
+- **`POST /api/prototype-link`** — LLM link-graph generator for clickable prototypes (PROTO-01). Takes compact clickable-element summaries per screen (`{ screens: [{ id, name, candidates }] }`) and returns a validated navigation graph (`{ links: [{ screenId, protoId, targetScreenId }] }`). Reasons over element labels + screen names only (cheap on tokens; never the full HTML), defensively filters links to known screens/real candidates and drops self-links. Plain-JSON route (no stream hijack); the frontend extracts candidates, applies the graph, and packages the zip.
+
 ## [0.26.0] - 2026-07-23
 
 ### Added
