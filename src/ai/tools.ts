@@ -273,17 +273,19 @@ export function nodeTypeOfCreateOp(statement: string): string | null {
 // Factory so a per-request variant (prototype/slides task policy) can add the
 // embed-only guard on top of the same validation the default tool uses,
 // without duplicating the alias/empty/op-count checks.
+export const batchDesignInputShape = {
+  operations: z.string().optional(),
+  // Compatibility aliases for models that occasionally emit wrong key names.
+  design: z.string().optional(),
+  script: z.string().optional(),
+  batch: z.string().optional(),
+};
+
 export function makeBatchDesignInputSchema(opts?: { embedOnly?: boolean }) {
   const embedOnly = opts?.embedOnly ?? false;
 
   return z
-    .object({
-      operations: z.string().optional(),
-      // Compatibility aliases for models that occasionally emit wrong key names.
-      design: z.string().optional(),
-      script: z.string().optional(),
-      batch: z.string().optional(),
-    })
+    .object(batchDesignInputShape)
     .transform((input, ctx) => {
       const operations = input.operations ?? input.design ?? input.script ?? input.batch;
 
@@ -339,7 +341,7 @@ export function makeBatchDesignInputSchema(opts?: { embedOnly?: boolean }) {
     });
 }
 
-const BATCH_DESIGN_DESCRIPTION = `Execute batch operations on the .pen node tree. Accepts a mini-script string with operations:
+export const BATCH_DESIGN_DESCRIPTION = `Execute batch operations on the .pen node tree. Accepts a mini-script string with operations:
 
 **Operations:**
 - \`binding=I(parent, nodeData)\` — Insert new node. Works both for a freshly-created parent binding AND for adding a child to an already-existing node: pass the existing node's id/path as \`parent\` (e.g. \`I("existingFrameId", {...})\` or \`I(card+"/body", {...})\`). This is the ONLY way to add children to an existing node — \`U()\` cannot add, remove, or reorder children.
@@ -420,108 +422,261 @@ const pluginUiSchema = z
   })
   .nullish();
 
+export const getEditorStateInputShape = {
+  include_schema: z
+    .boolean()
+    .describe(
+      "Whether to include the .pen file schema in the response. Set true if you need to understand the node format.",
+    ),
+};
+
+export const batchGetInputShape = {
+  patterns: z
+    .array(
+      z.object({
+        type: z
+          .enum([
+            "frame",
+            "group",
+            "rectangle",
+            "ellipse",
+            "line",
+            "polygon",
+            "path",
+            "text",
+            "embed",
+            "ref",
+            "connector",
+          ])
+          .optional()
+          .describe("Only return nodes with this type"),
+        name: z
+          .string()
+          .optional()
+          .describe(
+            "Only return nodes whose name matches this regex pattern",
+          ),
+      }),
+    )
+    .optional()
+    .describe("Search patterns to match nodes"),
+  nodeIds: z
+    .array(z.string())
+    .optional()
+    .describe("Specific node IDs to read"),
+  parentId: z
+    .string()
+    .optional()
+    .describe("Parent node ID to limit search scope"),
+  readDepth: z
+    .number()
+    .optional()
+    .describe(
+      "How deep to read children (default 1). Nodes beyond this depth show as '...'.",
+    ),
+  searchDepth: z
+    .number()
+    .optional()
+    .describe("How deep to search in the node tree. Unlimited if omitted."),
+  resolveVariables: z
+    .boolean()
+    .optional()
+    .describe(
+      "If true, variable references are resolved to their current values.",
+    ),
+  includePathGeometry: z
+    .boolean()
+    .optional()
+    .describe("If true, include full SVG path geometry data."),
+};
+
+export const snapshotLayoutInputShape = {
+  parentId: z
+    .string()
+    .optional()
+    .describe(
+      "Subtree root to inspect. Omit for the whole document.",
+    ),
+  maxDepth: z
+    .number()
+    .optional()
+    .describe(
+      "Depth limit for traversal. Default is direct children only. Be careful with large values.",
+    ),
+  problemsOnly: z
+    .boolean()
+    .optional()
+    .describe(
+      "If true, only return nodes with layout problems (clipping, overflow).",
+    ),
+};
+
+export const getVariablesInputShape = {};
+
+export const setVariablesInputShape = {
+  variables: z
+    .record(z.unknown())
+    .describe(
+      "Variable definitions, as an object keyed by variable name. Simplest form — a plain hex string per name: " +
+        '`{"--brand-primary": "#3b82f6", "--brand-bg": "#ffffff"}`. ' +
+        "Full form — an object per name with `type` (\"color\" | \"number\" | \"string\", default \"color\") and `value`: " +
+        '`{"--radius-lg": {"type": "number", "value": "16"}}`. ' +
+        "Per-theme values use `themeValues`: " +
+        '`{"--brand-bg": {"type": "color", "value": "#ffffff", "themeValues": {"dark": "#0b0b0b"}}}`. ' +
+        "Names may be given with or without a leading `--`/`$`. Nested token groups (e.g. `{colors: {primary: {$type, $value}}}`) are also accepted.",
+    ),
+  replace: z
+    .boolean()
+    .optional()
+    .describe(
+      "If true, replaces all existing variables. Default is merge.",
+    ),
+};
+
+// The full instructional text for each topic — unchanged from the previous
+// inline `guidelines` record, only hoisted so both the chat tool's execute
+// and the MCP server's get_guidelines tool (src/mcp/server.ts) can call the
+// same lookup without duplicating this content.
+const GUIDELINES: Record<string, string> = {
+  "design-system":
+    "## Sizing & Auto-Layout Rules\n" +
+    "CRITICAL: When creating frames with layout (vertical/horizontal), you MUST explicitly set width and height. " +
+    "Never leave them as default — the default is a fixed pixel size which breaks auto-layout.\n" +
+    "- Use `width: \"fill_container\"` for children that should stretch to parent width.\n" +
+    "- Use `height: \"fill_container\"` for children that should stretch to parent height.\n" +
+    "- Use `width: \"fit_content\"` or `height: \"fit_content\"` for content-sized elements.\n" +
+    "- Use `height: \"fit_content(900)\"` for screens/sections that need a minimum height but grow with content.\n" +
+    "- Only use fixed pixel values for elements with a known exact size (icons, avatars, fixed sidebars).\n" +
+    "- Screen root frames: `width: 1440, height: \"fit_content(900)\"`.\n" +
+    "- Content areas inside screens: `width: \"fill_container\", height: \"fit_content\"` or `height: \"fill_container\"`.\n" +
+    "- Wrapper/container frames: ALWAYS set `height: \"fit_content\"` — they should grow with content.\n" +
+    "- Card grids / tag lists: set `wrap: true` on the frame plus a fixed/fill `width` and `height: \"fit_content\"` so rows wrap and the frame hugs the total row height. Use `rowGap`/`columnGap` for independent row/column spacing (each falls back to `gap`).\n" +
+    "- Use `minWidth`/`maxWidth`/`minHeight`/`maxHeight` on a child to clamp its resolved size (e.g. a `fill_container` card capped at `maxWidth: 320` so it doesn't stretch too wide in a wide row).\n\n" +
+    "### Examples\n" +
+    "WRONG: `I(screen, {type: \"frame\", layout: \"vertical\", gap: 16})` — no width/height, will use fixed defaults!\n" +
+    "RIGHT: `I(screen, {type: \"frame\", layout: \"vertical\", gap: 16, width: \"fill_container\", height: \"fit_content\"})`\n\n" +
+    "## Component Usage\n" +
+    "- A reusable component is a native `frame` node with `reusable: true` — NOT an embed node. Use `get_editor_state`/`batch_get` to discover existing ones (search `type: \"frame\"`, check `reusable`).\n" +
+    "- An instance is a `ref` node: `inst=I(parent, {type: \"ref\", componentId: \"<componentFrameId>\", width, height})`. Do NOT recreate a component's UI from scratch with frame/rect/text — insert a `ref` pointing at it instead.\n" +
+    "- Per-instance customization goes through **overrides**, addressed by descendant path (a child's id, or `\"childId/grandchildId\"` for nested descendants): `U(inst+\"/label\", {text: \"Buy now\"})` sets a property on that instance only, leaving the component and other instances untouched.\n" +
+    "- **Component properties (variants)**: a component can declare typed, named switches via `properties` on the component frame — `variant` (enum, e.g. state=default/hover/pressed), `boolean` (e.g. showIcon), or `text` (e.g. label). Each property is `{id, name, type, variantOptions?, defaultValue, bindingPath, bindingProp}`, where `bindingPath`/`bindingProp` name the descendant path and field the property controls (the same addressing as an override). `bindingProp` must be the node's INTERNAL field name, not an AI-input alias — use `\"text\"` for a text node's content (NOT `\"content\"`, which is only accepted by `U()`'s own alias mapping, not by `bindingProp`).\n" +
+    "- **Important sequencing**: `componentId`, `bindingPath`, and any other id referenced *inside a nested `{...}`/`[...]` object* only resolve if written as a quoted string of a REAL, already-existing node id — same-call bindings (e.g. `comp=I(...)`) only substitute as bare top-level arguments (parent/sourceId/path), never inside nested JSON. So: create the component and its descendants in one `batch_design` call, read their real ids off the returned `createdNodes`, then in a follow-up call declare `properties` and/or create the `ref` instance using those ids as quoted strings.\n" +
+    "  Call 1: `comp=I(document, {type: \"frame\", name: \"Button\", reusable: true, width: 120, height: 40})\\nlabel=I(comp, {type: \"text\", content: \"Click me\", width: 80, height: 20})` → returns e.g. `comp` id `\"n1\"`, `label` id `\"n2\"`.\n" +
+    "  Call 2: `U(\"n1\", {properties: [{id: \"state\", name: \"State\", type: \"variant\", variantOptions: [\"default\",\"hover\"], defaultValue: \"default\", bindingPath: \"n2\", bindingProp: \"fill\"}]})\\ninst=I(document, {type: \"ref\", componentId: \"n1\", width: 120, height: 40})`.\n" +
+    "- An instance selects a property's value via `propertyValues` (keyed by property id), NOT via `overrides`: `U(inst, {propertyValues: {state: \"hover\"}})` (`inst` here is a real id from a previous result, quoted, or a same-call top-level binding). `U()` merges `propertyValues` by key (setting one property never clobbers others already selected on the instance), and switching a property never touches the instance's `overrides` — both apply together, with an explicit override at the same path winning.\n" +
+    "- When creating new designs, reuse existing components (and their declared variants) rather than building UI from scratch.\n\n" +
+    "## Layout Patterns\n" +
+    "- Sidebar + Content: sidebar with fixed width (240-280px), main with `width: \"fill_container\"`.\n" +
+    "- Card grids: horizontal frame with `gap: 16-24`, cards with `width: \"fill_container\"`.\n" +
+    "- Form fields: vertical frame with `gap: 16`, inputs with `width: \"fill_container\"`.\n\n" +
+    "## Design Tokens\n" +
+    "- Always use `$--variable` tokens for colors, never hardcode hex values.\n" +
+    "- Colors: `$--background`, `$--foreground`, `$--muted-foreground`, `$--primary`, `$--border`, `$--card`.\n" +
+    "- Typography: `$--font-primary` (headings), `$--font-secondary` (body).\n" +
+    "- Border radius: `$--radius-none`, `$--radius-m`, `$--radius-pill`.\n\n" +
+    "## Spacing Reference\n" +
+    "- Screen sections gap: 24-32. Card grid gap: 16-24. Form fields gap: 16.\n" +
+    "- Inside cards padding: 24. Page content padding: 32. Button padding: [10, 16].\n" +
+    "- Maintain consistent spacing — pick from the established scale, don't use arbitrary values.",
+  code:
+    "When generating code from designs, use semantic HTML elements. " +
+    "Map frame layouts to CSS flexbox. Map auto-layout direction to flex-direction. " +
+    "Use CSS custom properties for theme variables. Export assets as needed.",
+  table:
+    "Build tables using nested frames with auto-layout. " +
+    "Use a vertical frame for rows and horizontal frames for cells. " +
+    "Keep header row as a separate component for reuse. " +
+    "Apply consistent padding and borders across cells.",
+  tailwind:
+    "Map design tokens to Tailwind utility classes. " +
+    "Use flex/grid for frame layouts. Apply gap-* for spacing. " +
+    "Use p-* for padding, rounded-* for corner radius. " +
+    "Map fill colors to bg-* and text colors to text-*.",
+  "landing-page":
+    "Structure landing pages with a hero section, features grid, testimonials, and CTA. " +
+    "Use large typography for headings (48-72px). " +
+    "Maintain visual hierarchy with consistent spacing (64-128px between sections). " +
+    "Include responsive breakpoints for mobile and desktop.",
+};
+
+export async function getGuidelinesImpl(
+  topic: string,
+): Promise<{ topic: string; guidelines: string } | { error: string }> {
+  if (!GUIDELINES[topic]) {
+    return {
+      error: `Invalid topic. Available topics: ${Object.keys(GUIDELINES).join(", ")}`,
+    };
+  }
+  return { topic, guidelines: GUIDELINES[topic] };
+}
+
+export async function getStyleGuideTagsImpl(): Promise<{ tags: Record<string, string[]> }> {
+  return {
+    tags: {
+      style: ["minimal", "bold", "elegant", "playful", "corporate", "modern", "retro", "brutalist"],
+      color: ["monochrome", "vibrant", "pastel", "dark", "light", "warm", "cool", "earth-tones"],
+      industry: ["saas", "ecommerce", "finance", "healthcare", "education", "creative", "technology"],
+      platform: ["mobile", "website", "webapp", "dashboard"],
+      layout: ["grid", "asymmetric", "centered", "full-width", "card-based", "sidebar"],
+    },
+  };
+}
+
+export async function getStyleGuideImpl(args: { tags?: string[]; name?: string }): Promise<{
+  name: string;
+  basedOn: string[];
+  typography: unknown;
+  colors: unknown;
+  spacing: unknown;
+  borderRadius: unknown;
+}> {
+  const { tags, name } = args;
+  return {
+    name: name ?? "Generated Style Guide",
+    basedOn: tags ?? [],
+    typography: {
+      headingFont: "Inter",
+      bodyFont: "Inter",
+      sizes: { h1: 48, h2: 36, h3: 24, h4: 18, body: 16, small: 14, caption: 12 },
+      weights: { heading: "700", body: "400", emphasis: "600" },
+    },
+    colors: {
+      primary: "#3B82F6",
+      secondary: "#8B5CF6",
+      accent: "#F59E0B",
+      background: "#FFFFFF",
+      surface: "#F8FAFC",
+      text: "#0F172A",
+      textMuted: "#64748B",
+      border: "#E2E8F0",
+      success: "#22C55E",
+      error: "#EF4444",
+      warning: "#F59E0B",
+    },
+    spacing: { xs: 4, sm: 8, md: 16, lg: 24, xl: 32, xxl: 48, section: 64 },
+    borderRadius: { sm: 4, md: 8, lg: 12, xl: 16, full: 9999 },
+  };
+}
+
 export const penTools = {
   // ── Reading & Navigation ──────────────────────────────────────────
 
   get_editor_state: tool({
     description:
       "Get the current editor state including active .pen file, user selection, top-level nodes, and available components. Reusable components are native `frame` nodes with `reusable: true` — NOT embed nodes. They are returned under `reusableComponents` (id, name, a synced HTML snapshot for readability, syncState) and `documentComponents` (tag-based reuse). Never recreate a listed component with fresh frame/rect/text nodes — instead insert a `ref` node with `componentId` pointing at it. See `batch_design`'s Component Usage section for how to declare variant/boolean/text properties on a component and switch them on instances.",
-    inputSchema: z.object({
-      include_schema: z
-        .boolean()
-        .describe(
-          "Whether to include the .pen file schema in the response. Set true if you need to understand the node format.",
-        ),
-    }),
+    inputSchema: z.object(getEditorStateInputShape),
   }),
 
   batch_get: tool({
     description:
       "Retrieve nodes by searching for matching patterns or by reading specific node IDs. Supports flexible tree traversal with depth control. Use this to inspect node structure before modifying. Note: reusable components are native frame nodes — search with type: \"frame\" and check the `reusable` flag (and `properties`, if it declares variants) to find them; `type: \"ref\"` finds component instances.",
-    inputSchema: z.object({
-      patterns: z
-        .array(
-          z.object({
-            type: z
-              .enum([
-                "frame",
-                "group",
-                "rectangle",
-                "ellipse",
-                "line",
-                "polygon",
-                "path",
-                "text",
-                "embed",
-                "ref",
-                "connector",
-              ])
-              .optional()
-              .describe("Only return nodes with this type"),
-            name: z
-              .string()
-              .optional()
-              .describe(
-                "Only return nodes whose name matches this regex pattern",
-              ),
-          }),
-        )
-        .optional()
-        .describe("Search patterns to match nodes"),
-      nodeIds: z
-        .array(z.string())
-        .optional()
-        .describe("Specific node IDs to read"),
-      parentId: z
-        .string()
-        .optional()
-        .describe("Parent node ID to limit search scope"),
-      readDepth: z
-        .number()
-        .optional()
-        .describe(
-          "How deep to read children (default 1). Nodes beyond this depth show as '...'.",
-        ),
-      searchDepth: z
-        .number()
-        .optional()
-        .describe("How deep to search in the node tree. Unlimited if omitted."),
-      resolveVariables: z
-        .boolean()
-        .optional()
-        .describe(
-          "If true, variable references are resolved to their current values.",
-        ),
-      includePathGeometry: z
-        .boolean()
-        .optional()
-        .describe("If true, include full SVG path geometry data."),
-    }),
+    inputSchema: z.object(batchGetInputShape),
   }),
 
   snapshot_layout: tool({
     description:
       "Get computed layout rectangles (positions and sizes after the layout engine runs). Use this to understand where elements actually appear on screen, check for overlapping/clipped elements, and find space for new content.",
-    inputSchema: z.object({
-      parentId: z
-        .string()
-        .optional()
-        .describe(
-          "Subtree root to inspect. Omit for the whole document.",
-        ),
-      maxDepth: z
-        .number()
-        .optional()
-        .describe(
-          "Depth limit for traversal. Default is direct children only. Be careful with large values.",
-        ),
-      problemsOnly: z
-        .boolean()
-        .optional()
-        .describe(
-          "If true, only return nodes with layout problems (clipping, overflow).",
-        ),
-    }),
+    inputSchema: z.object(snapshotLayoutInputShape),
   }),
 
   // get_screenshot is intentionally disabled: the agent has no visual-verification
@@ -537,7 +692,7 @@ export const penTools = {
   get_variables: tool({
     description:
       "Read all design variables (tokens) and themes defined in the .pen file. Variables can be colors, numbers, strings, or booleans, and may have different values per theme.",
-    inputSchema: z.object({}),
+    inputSchema: z.object(getVariablesInputShape),
   }),
 
   // ── Modification ──────────────────────────────────────────────────
@@ -580,25 +735,7 @@ export const penTools = {
   set_variables: tool({
     description:
       "Add or update design variables and themes. Variables can reference theme axes for different values per theme. By default merges with existing variables (matched by id or name); set replace=true to overwrite all.",
-    inputSchema: z.object({
-      variables: z
-        .record(z.unknown())
-        .describe(
-          "Variable definitions, as an object keyed by variable name. Simplest form — a plain hex string per name: " +
-            '`{"--brand-primary": "#3b82f6", "--brand-bg": "#ffffff"}`. ' +
-            "Full form — an object per name with `type` (\"color\" | \"number\" | \"string\", default \"color\") and `value`: " +
-            '`{"--radius-lg": {"type": "number", "value": "16"}}`. ' +
-            "Per-theme values use `themeValues`: " +
-            '`{"--brand-bg": {"type": "color", "value": "#ffffff", "themeValues": {"dark": "#0b0b0b"}}}`. ' +
-            "Names may be given with or without a leading `--`/`$`. Nested token groups (e.g. `{colors: {primary: {$type, $value}}}`) are also accepted.",
-        ),
-      replace: z
-        .boolean()
-        .optional()
-        .describe(
-          "If true, replaces all existing variables. Default is merge.",
-        ),
-    }),
+    inputSchema: z.object(setVariablesInputShape),
   }),
 
   get_text_styles: tool({
@@ -844,93 +981,14 @@ Returns the created/updated style ids and names (with a created|updated status) 
         .enum(["code", "table", "tailwind", "landing-page", "design-system"])
         .describe("Topic to retrieve guidelines for."),
     }),
-    execute: async ({ topic }) => {
-      const guidelines: Record<string, string> = {
-        "design-system":
-          "## Sizing & Auto-Layout Rules\n" +
-          "CRITICAL: When creating frames with layout (vertical/horizontal), you MUST explicitly set width and height. " +
-          "Never leave them as default — the default is a fixed pixel size which breaks auto-layout.\n" +
-          "- Use `width: \"fill_container\"` for children that should stretch to parent width.\n" +
-          "- Use `height: \"fill_container\"` for children that should stretch to parent height.\n" +
-          "- Use `width: \"fit_content\"` or `height: \"fit_content\"` for content-sized elements.\n" +
-          "- Use `height: \"fit_content(900)\"` for screens/sections that need a minimum height but grow with content.\n" +
-          "- Only use fixed pixel values for elements with a known exact size (icons, avatars, fixed sidebars).\n" +
-          "- Screen root frames: `width: 1440, height: \"fit_content(900)\"`.\n" +
-          "- Content areas inside screens: `width: \"fill_container\", height: \"fit_content\"` or `height: \"fill_container\"`.\n" +
-          "- Wrapper/container frames: ALWAYS set `height: \"fit_content\"` — they should grow with content.\n" +
-          "- Card grids / tag lists: set `wrap: true` on the frame plus a fixed/fill `width` and `height: \"fit_content\"` so rows wrap and the frame hugs the total row height. Use `rowGap`/`columnGap` for independent row/column spacing (each falls back to `gap`).\n" +
-          "- Use `minWidth`/`maxWidth`/`minHeight`/`maxHeight` on a child to clamp its resolved size (e.g. a `fill_container` card capped at `maxWidth: 320` so it doesn't stretch too wide in a wide row).\n\n" +
-          "### Examples\n" +
-          "WRONG: `I(screen, {type: \"frame\", layout: \"vertical\", gap: 16})` — no width/height, will use fixed defaults!\n" +
-          "RIGHT: `I(screen, {type: \"frame\", layout: \"vertical\", gap: 16, width: \"fill_container\", height: \"fit_content\"})`\n\n" +
-          "## Component Usage\n" +
-          "- A reusable component is a native `frame` node with `reusable: true` — NOT an embed node. Use `get_editor_state`/`batch_get` to discover existing ones (search `type: \"frame\"`, check `reusable`).\n" +
-          "- An instance is a `ref` node: `inst=I(parent, {type: \"ref\", componentId: \"<componentFrameId>\", width, height})`. Do NOT recreate a component's UI from scratch with frame/rect/text — insert a `ref` pointing at it instead.\n" +
-          "- Per-instance customization goes through **overrides**, addressed by descendant path (a child's id, or `\"childId/grandchildId\"` for nested descendants): `U(inst+\"/label\", {text: \"Buy now\"})` sets a property on that instance only, leaving the component and other instances untouched.\n" +
-          "- **Component properties (variants)**: a component can declare typed, named switches via `properties` on the component frame — `variant` (enum, e.g. state=default/hover/pressed), `boolean` (e.g. showIcon), or `text` (e.g. label). Each property is `{id, name, type, variantOptions?, defaultValue, bindingPath, bindingProp}`, where `bindingPath`/`bindingProp` name the descendant path and field the property controls (the same addressing as an override). `bindingProp` must be the node's INTERNAL field name, not an AI-input alias — use `\"text\"` for a text node's content (NOT `\"content\"`, which is only accepted by `U()`'s own alias mapping, not by `bindingProp`).\n" +
-          "- **Important sequencing**: `componentId`, `bindingPath`, and any other id referenced *inside a nested `{...}`/`[...]` object* only resolve if written as a quoted string of a REAL, already-existing node id — same-call bindings (e.g. `comp=I(...)`) only substitute as bare top-level arguments (parent/sourceId/path), never inside nested JSON. So: create the component and its descendants in one `batch_design` call, read their real ids off the returned `createdNodes`, then in a follow-up call declare `properties` and/or create the `ref` instance using those ids as quoted strings.\n" +
-          "  Call 1: `comp=I(document, {type: \"frame\", name: \"Button\", reusable: true, width: 120, height: 40})\\nlabel=I(comp, {type: \"text\", content: \"Click me\", width: 80, height: 20})` → returns e.g. `comp` id `\"n1\"`, `label` id `\"n2\"`.\n" +
-          "  Call 2: `U(\"n1\", {properties: [{id: \"state\", name: \"State\", type: \"variant\", variantOptions: [\"default\",\"hover\"], defaultValue: \"default\", bindingPath: \"n2\", bindingProp: \"fill\"}]})\\ninst=I(document, {type: \"ref\", componentId: \"n1\", width: 120, height: 40})`.\n" +
-          "- An instance selects a property's value via `propertyValues` (keyed by property id), NOT via `overrides`: `U(inst, {propertyValues: {state: \"hover\"}})` (`inst` here is a real id from a previous result, quoted, or a same-call top-level binding). `U()` merges `propertyValues` by key (setting one property never clobbers others already selected on the instance), and switching a property never touches the instance's `overrides` — both apply together, with an explicit override at the same path winning.\n" +
-          "- When creating new designs, reuse existing components (and their declared variants) rather than building UI from scratch.\n\n" +
-          "## Layout Patterns\n" +
-          "- Sidebar + Content: sidebar with fixed width (240-280px), main with `width: \"fill_container\"`.\n" +
-          "- Card grids: horizontal frame with `gap: 16-24`, cards with `width: \"fill_container\"`.\n" +
-          "- Form fields: vertical frame with `gap: 16`, inputs with `width: \"fill_container\"`.\n\n" +
-          "## Design Tokens\n" +
-          "- Always use `$--variable` tokens for colors, never hardcode hex values.\n" +
-          "- Colors: `$--background`, `$--foreground`, `$--muted-foreground`, `$--primary`, `$--border`, `$--card`.\n" +
-          "- Typography: `$--font-primary` (headings), `$--font-secondary` (body).\n" +
-          "- Border radius: `$--radius-none`, `$--radius-m`, `$--radius-pill`.\n\n" +
-          "## Spacing Reference\n" +
-          "- Screen sections gap: 24-32. Card grid gap: 16-24. Form fields gap: 16.\n" +
-          "- Inside cards padding: 24. Page content padding: 32. Button padding: [10, 16].\n" +
-          "- Maintain consistent spacing — pick from the established scale, don't use arbitrary values.",
-        code:
-          "When generating code from designs, use semantic HTML elements. " +
-          "Map frame layouts to CSS flexbox. Map auto-layout direction to flex-direction. " +
-          "Use CSS custom properties for theme variables. Export assets as needed.",
-        table:
-          "Build tables using nested frames with auto-layout. " +
-          "Use a vertical frame for rows and horizontal frames for cells. " +
-          "Keep header row as a separate component for reuse. " +
-          "Apply consistent padding and borders across cells.",
-        tailwind:
-          "Map design tokens to Tailwind utility classes. " +
-          "Use flex/grid for frame layouts. Apply gap-* for spacing. " +
-          "Use p-* for padding, rounded-* for corner radius. " +
-          "Map fill colors to bg-* and text colors to text-*.",
-        "landing-page":
-          "Structure landing pages with a hero section, features grid, testimonials, and CTA. " +
-          "Use large typography for headings (48-72px). " +
-          "Maintain visual hierarchy with consistent spacing (64-128px between sections). " +
-          "Include responsive breakpoints for mobile and desktop.",
-      };
-
-      if (!guidelines[topic]) {
-        return {
-          error: `Invalid topic. Available topics: ${Object.keys(guidelines).join(", ")}`,
-        };
-      }
-      return { topic, guidelines: guidelines[topic] };
-    },
+    execute: async ({ topic }) => getGuidelinesImpl(topic),
   }),
 
   get_style_guide_tags: tool({
     description:
       "Get all available style guide tags. Call this before get_style_guide to know which tags you can use for filtering.",
     inputSchema: z.object({}),
-    execute: async () => {
-      return {
-        tags: {
-          style: ["minimal", "bold", "elegant", "playful", "corporate", "modern", "retro", "brutalist"],
-          color: ["monochrome", "vibrant", "pastel", "dark", "light", "warm", "cool", "earth-tones"],
-          industry: ["saas", "ecommerce", "finance", "healthcare", "education", "creative", "technology"],
-          platform: ["mobile", "website", "webapp", "dashboard"],
-          layout: ["grid", "asymmetric", "centered", "full-width", "card-based", "sidebar"],
-        },
-      };
-    },
+    execute: async () => getStyleGuideTagsImpl(),
   }),
 
   get_style_guide: tool({
@@ -946,33 +1004,7 @@ Returns the created/updated style ids and names (with a created|updated status) 
         .optional()
         .describe("Specific style guide name to retrieve."),
     }),
-    execute: async ({ tags, name }) => {
-      return {
-        name: name ?? "Generated Style Guide",
-        basedOn: tags ?? [],
-        typography: {
-          headingFont: "Inter",
-          bodyFont: "Inter",
-          sizes: { h1: 48, h2: 36, h3: 24, h4: 18, body: 16, small: 14, caption: 12 },
-          weights: { heading: "700", body: "400", emphasis: "600" },
-        },
-        colors: {
-          primary: "#3B82F6",
-          secondary: "#8B5CF6",
-          accent: "#F59E0B",
-          background: "#FFFFFF",
-          surface: "#F8FAFC",
-          text: "#0F172A",
-          textMuted: "#64748B",
-          border: "#E2E8F0",
-          success: "#22C55E",
-          error: "#EF4444",
-          warning: "#F59E0B",
-        },
-        spacing: { xs: 4, sm: 8, md: 16, lg: 24, xl: 32, xxl: 48, section: 64 },
-        borderRadius: { sm: 4, md: 8, lg: 12, xl: 16, full: 9999 },
-      };
-    },
+    execute: async ({ tags, name }) => getStyleGuideImpl({ tags, name }),
   }),
 
   // ── Comments ──────────────────────────────────────────────────────
