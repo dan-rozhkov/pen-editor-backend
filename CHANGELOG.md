@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While on `0.x`, minor bumps may include breaking changes.
 
+## [0.27.1] - 2026-07-23
+
+### Fixed
+- **Prototype linking returned an empty graph** (nothing linked). The LLM was fed only terse one-line clickable summaries and keyed screens by opaque ids it echoed unreliably. Now each screen carries an optional visible-text `content` excerpt, the prompt is directive (wire every plausible navigation; prefer linking over leaving unlinked; screen ids are short slugs to echo exactly), and target resolution salvages a `targetScreenId` returned as a screen name or wrong case instead of silently dropping the link.
+
 ## [0.27.0] - 2026-07-23
 
 ### Added
