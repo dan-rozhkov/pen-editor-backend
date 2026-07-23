@@ -187,6 +187,8 @@ describe("generatePrototypeLinks", () => {
     expect(captured.toLowerCase()).toContain("dark mode");
     // The prompt must NOT tell the model to unconditionally skip theme switches.
     expect(captured.toLowerCase()).not.toContain("theme switch, and similar");
+    // Guidance for header avatars / profile photos must be present.
+    expect(captured.toLowerCase()).toContain("avatar");
   });
 
   it("accepts an optional content excerpt on screens without affecting resolution", async () => {
