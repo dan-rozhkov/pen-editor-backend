@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While on `0.x`, minor bumps may include breaking changes.
 
+## [0.29.0] - 2026-07-27
+
+### Changed
+- **An oversized `batch_design` call no longer fails — it partially executes.** The schema used to reject any batch over the 25-operation cap with `InvalidToolInputError` before it ever reached the browser, throwing away the whole generated payload. In agent traces this was the #1 tool error (15 occurrences, 3 of them unrecovered — the session died outright), and the most expensive one, since the model had to regenerate everything. Oversized batches now pass validation and reach the client, which runs the first 25 operations and returns a resumption point. The tool description and system prompt spell out the new contract: going over is no longer fatal, but the follow-up call must carry **only** the skipped operations and must swap binding references for the real node ids from the result's `bindings` field, since bindings don't survive across calls. Staying under 25 is still the recommendation — it saves a round-trip.
+- `splitBatchDesignStatements` now runs only for the embed-only guard, its sole remaining consumer, instead of on every `batch_design` call.
+
+### Added
+- **`export_layers_svg` schema** — lets the agent export selected layers as an SVG data URI to drop into embed HTML, instead of reconstructing complex vector paths by hand (which produced distorted logos). Frontend half ships in pen-editor 0.68.0.
+
 ## [0.28.0] - 2026-07-24
 
 ### Changed
