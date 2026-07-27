@@ -10,14 +10,19 @@ import { generateImageRoutes } from "./routes/generateImage.js";
 import { mcpRoutes } from "./mcp/routes.js";
 import { modelsRoutes } from "./routes/models.js";
 import { prototypeLinkRoutes } from "./routes/prototype-link.js";
+import { showcaseRoutes } from "./routes/showcase.js";
 import { uploadRoutes } from "./routes/upload.js";
 import { createTraceStore, type TraceStore } from "./tracing/traceStore.js";
+import type { ShowcaseStore } from "./showcase/store.js";
 
 export interface BuildAppOptions {
   logger?: FastifyServerOptions["logger"];
   // Test seam: inject a fake trace store. `undefined` = create from config,
   // `null` = explicitly disabled.
   traceStore?: TraceStore | null;
+  // Test seam: inject a fake showcase store. `undefined` = create from
+  // config, `null` = explicitly disabled.
+  showcaseStore?: ShowcaseStore | null;
 }
 
 // The MCP WS upgrade (GET /api/mcp/ws?token=...) carries the auth token in
@@ -69,6 +74,12 @@ export async function buildApp(
   await uploadRoutes(app, config);
   await generateImageRoutes(app, config);
   await prototypeLinkRoutes(app, config);
+  const showcaseStore = await showcaseRoutes(app, config, options.showcaseStore);
+  if (showcaseStore) {
+    app.addHook("onClose", async () => {
+      await showcaseStore.close();
+    });
+  }
 
   app.setErrorHandler((error, _request, reply) => {
     app.log.error(error);

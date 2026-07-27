@@ -24,6 +24,31 @@ export function createS3Client(config: Config): S3Client | null {
   });
 }
 
+// General-purpose PUT to a public-read bucket key, returning the public URL.
+// The single place that actually talks to S3 — uploadImage (below) and the
+// showcase run (src/showcase/run.ts) both delegate here instead of each
+// building their own PutObjectCommand.
+export async function uploadObject(
+  client: S3Client,
+  bucket: string,
+  endpoint: string,
+  key: string,
+  body: Buffer,
+  contentType: string,
+): Promise<string> {
+  await client.send(
+    new PutObjectCommand({
+      Bucket: bucket,
+      Key: key,
+      Body: body,
+      ContentType: contentType,
+      ACL: "public-read",
+    }),
+  );
+
+  return `${endpoint}/${bucket}/${key}`;
+}
+
 export async function uploadImage(
   client: S3Client,
   bucket: string,
@@ -33,16 +58,5 @@ export async function uploadImage(
 ): Promise<string> {
   const ext = extensionForMime(mimeType);
   const key = `pen-editor/${randomUUID()}${ext}`;
-
-  await client.send(
-    new PutObjectCommand({
-      Bucket: bucket,
-      Key: key,
-      Body: buffer,
-      ContentType: mimeType,
-      ACL: "public-read",
-    }),
-  );
-
-  return `${endpoint}/${bucket}/${key}`;
+  return uploadObject(client, bucket, endpoint, key, buffer, mimeType);
 }

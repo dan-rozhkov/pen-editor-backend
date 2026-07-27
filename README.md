@@ -96,6 +96,28 @@ Returns `{ results: [{ url, raw_content }], failed: [{ url, error }] }`.
 Both tools never throw out of `execute`: on an API/network failure they return
 `{ error: string }` so a failed search doesn't abort the agent turn.
 
+## Showcase generation (`src/showcase/`)
+
+`npm run showcase:generate` is a standalone script (no HTTP request involved) that
+prompts the same agent turn `/api/chat` uses (via `prepareChatTurn` in
+`src/ai/chatTurn.ts`, so the showcase can never drift from prod's system prompt/tool
+set) with a random mobile-app theme, harvests up to 5 `embed` screens from its
+`batch_design` calls, renders each to a PNG with Playwright Chromium, uploads both the
+PNG and the raw HTML to S3, and inserts a row per screen into `showcase_screens`
+(read by `GET /api/showcase`, `src/routes/showcase.ts`).
+
+Requires `TRACE_DATABASE_URL` and all four `S3_*` vars (see above) — the script exits
+early with an explanation if either is missing. Also requires a Playwright browser
+binary, installed once per machine:
+
+```bash
+npx playwright install chromium
+```
+
+```bash
+npm run showcase:generate   # tsx --env-file=.env src/showcase/run.ts
+```
+
 ## Testing
 
 Tests live in `test/` (Vitest). The LLM (`src/ai/provider.js`) and MCP

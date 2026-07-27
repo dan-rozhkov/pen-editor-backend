@@ -71,3 +71,26 @@ Then open the editor with `VITE_MCP_WS_TOKEN=$MCP_AUTH_TOKEN` set (see
 local/dev builds only. Never set it on a publicly deployed frontend build:**
 every visitor's tab would get the secret and silently register itself as a
 bridge session that anyone holding the token can drive.
+
+## Showcase generation (`src/showcase/`)
+
+`npm run showcase:generate` runs the design agent autonomously, with no browser
+and no HTTP request: it picks a random theme from `themes.ts` (skipping the last
+10 used, via `store.recentThemes`), runs one `/prototype` turn, harvests up to 5
+`embed` screens out of the agent's `batch_design` calls, screenshots each with
+Playwright Chromium, uploads the PNG **and** the raw HTML to S3, and inserts a
+row per screen into `showcase_screens`. The frontend reads them back through
+`GET /api/showcase` (`src/routes/showcase.ts`) and renders a masonry gallery at
+`/`. Needs `TRACE_DATABASE_URL` (same Postgres as traces — deliberately no
+second env var, since a second URL pointing elsewhere would silently split the
+schema) plus all four `S3_*` vars, and a one-time
+`npx playwright install chromium`. Spec: FIR-61.
+
+**The turn is assembled by `prepareChatTurn` (`src/ai/chatTurn.ts`), shared with
+the `/api/chat` route — never hand-roll the system prompt or tool set here.** A
+second prompt builder is how the showcase would start advertising an agent that
+no longer matches the one users get. The runner's only local additions are
+`execute` implementations: `batch_design` collects embed HTML in memory, and
+every other client-executed tool gets a stub that reports itself unavailable
+(without one, the first `get_screenshot` call stalls the whole run, since
+client-executed tools have no `execute` by design).

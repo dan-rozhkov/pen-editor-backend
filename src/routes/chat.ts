@@ -1,12 +1,9 @@
 import {
   streamText,
-  convertToModelMessages,
   stepCountIs,
   NoSuchToolError,
   InvalidToolInputError,
-  type UIMessage,
   type ToolSet,
-  type DynamicToolUIPart,
   type StepResult,
 } from "ai";
 import type { FastifyInstance } from "fastify";
@@ -17,21 +14,20 @@ import {
   parseEnvList,
   type Config,
 } from "../config.js";
-import { createModel } from "../ai/provider.js";
-import { penTools, makeBatchDesignTool } from "../ai/tools.js";
-import { AGENT_MODES, buildSystemPrompt } from "../ai/system-prompt.js";
-import { resolveTaskPolicy } from "../ai/taskPolicy.js";
-import { getMCPTools } from "../ai/mcp.js";
-import { getWebTools } from "../ai/web-search.js";
+import { AGENT_MODES } from "../ai/system-prompt.js";
 import { logSession, type LogStep } from "../logging.js";
-import { randomUUID, createHash } from "node:crypto";
-import {
-  detectSkillCommand,
-  getAllSkills,
-  getSkill,
-  getSkillTools,
-} from "../ai/skills.js";
+import { randomUUID } from "node:crypto";
+import { getAllSkills } from "../ai/skills.js";
 import { writeRawTraceSafe, type TraceStore } from "../tracing/traceStore.js";
+import {
+  prepareChatTurn,
+  sanitizeMessagesForProvider,
+} from "../ai/chatTurn.js";
+
+// Re-exported for backwards compatibility: existing tests import this
+// symbol from routes/chat.js. The implementation now lives in
+// ai/chatTurn.ts (shared with the standalone showcase-generation script).
+export { sanitizeMessagesForProvider };
 
 // Maximum image parts per single message (not per conversation).
 const MAX_IMAGE_PARTS = 4;
@@ -88,51 +84,6 @@ const chatBodySchema = z.object({
   agentMode: z.enum(AGENT_MODES).optional(),
 });
 
-// Strips reasoning/thinking blocks and provider metadata from chat history.
-// Some providers reject stale/invalid thinking signatures when prior assistant turns are replayed.
-// Exported for unit testing.
-export function sanitizeMessagesForProvider(
-  rawMessages: Array<Record<string, unknown>>,
-): { messages: Array<Record<string, unknown>>; removedReasoningParts: number } {
-  let removedReasoningParts = 0;
-
-  const sanitizeBlocks = (blocksRaw: unknown): unknown => {
-    if (!Array.isArray(blocksRaw)) return blocksRaw;
-
-    return blocksRaw
-      .filter((block) => {
-        if (!block || typeof block !== "object") return true;
-        const type = (block as { type?: unknown }).type;
-        const isReasoningLike =
-          type === "reasoning" ||
-          type === "thinking" ||
-          type === "redacted_thinking";
-        if (isReasoningLike) removedReasoningParts += 1;
-        return !isReasoningLike;
-      })
-      .map((block) => {
-        if (!block || typeof block !== "object") return block;
-        const cleaned = { ...(block as Record<string, unknown>) };
-        delete cleaned.providerMetadata;
-        delete cleaned.callProviderMetadata;
-        return cleaned;
-      });
-  };
-
-  const messages = rawMessages.map((message) => {
-    const sanitizedMessage = { ...message };
-    if ("parts" in sanitizedMessage) {
-      sanitizedMessage.parts = sanitizeBlocks(sanitizedMessage.parts);
-    }
-    if ("content" in sanitizedMessage) {
-      sanitizedMessage.content = sanitizeBlocks(sanitizedMessage.content);
-    }
-    return sanitizedMessage;
-  });
-
-  return { messages, removedReasoningParts };
-}
-
 export async function chatRoutes(
   app: FastifyInstance,
   config: Config,
@@ -164,78 +115,6 @@ export async function chatRoutes(
       });
     }
 
-    // Detect slash command skill in last user message and resolve it
-    let skillContent: string | undefined;
-    // Name of the skill named by the CURRENT message's slash command (e.g.
-    // "/prototype ..."), regardless of whether it resolved to a known skill —
-    // used by resolveTaskPolicy below to route batch_design's embed-only guard.
-    let slashSkillName: string | undefined;
-    const lastMsg = messages[messages.length - 1];
-    if (lastMsg && lastMsg.role === "user") {
-      const parts = lastMsg.parts ?? lastMsg.content;
-
-      // Extract the raw text and a setter to write back the stripped text
-      let rawText: string | undefined;
-      let setText: ((v: string) => void) | undefined;
-
-      if (Array.isArray(parts)) {
-        const textPart = parts.find(
-          (p: Record<string, unknown>) =>
-            p &&
-            typeof p === "object" &&
-            (p as { type?: string }).type === "text",
-        ) as { type: string; text: string } | undefined;
-        if (textPart?.text) {
-          rawText = textPart.text;
-          setText = (v) => {
-            textPart.text = v;
-          };
-        }
-      } else if (typeof parts === "string") {
-        rawText = parts;
-        const key = "parts" in lastMsg ? "parts" : "content";
-        setText = (v) => {
-          (lastMsg as Record<string, unknown>)[key] = v;
-        };
-      }
-
-      if (rawText && setText) {
-        const detected = detectSkillCommand(rawText);
-        if (detected) {
-          slashSkillName = detected.skillName;
-          const skill = getSkill(detected.skillName);
-          // Unknown "/..." (a pasted path, "/как дела") is not an error —
-          // the message passes through as plain text.
-          if (skill) {
-            skillContent = skill.content;
-            setText(detected.userText);
-          }
-        }
-      }
-    }
-
-    // When a skill is detected, inject a synthetic tool call + result
-    // right before the last user message so the AI sees skill instructions
-    // without changing the system prompt (preserves prompt caching).
-    // This must be a valid UIMessage: convertToModelMessages expands the
-    // dynamic-tool part into an assistant tool-call plus a tool result
-    // message (and throws on raw ModelMessage roles like "tool").
-    if (skillContent) {
-      const skillToolPart: DynamicToolUIPart = {
-        type: "dynamic-tool",
-        toolName: "lookup_skill",
-        toolCallId: `skill-${randomUUID()}`,
-        state: "output-available",
-        input: {},
-        output: `Follow these instructions for the current task:\n\n${skillContent}`,
-      };
-      const skillMsg: Record<string, unknown> = {
-        role: "assistant",
-        parts: [skillToolPart],
-      };
-      messages.splice(messages.length - 1, 0, skillMsg);
-    }
-
     const maxImagesInOneMessage = messages.reduce((max, msg) => {
       const parts = msg.parts;
       if (!Array.isArray(parts)) return max;
@@ -254,52 +133,22 @@ export async function chatRoutes(
       });
     }
 
-    const model = createModel(config, modelOverride);
-    const skillCatalog = getAllSkills().map((s) => ({
-      name: s.name,
-      description: s.description,
-    }));
-    const system = buildSystemPrompt(canvasContext, skillCatalog);
-    const selectedModelId = modelOverride ?? config.OPENROUTER_MODEL;
     const traceSessionId = chatSessionId ?? `anon-${randomUUID()}`;
-    const systemPromptHash = createHash("sha256")
-      .update(system)
-      .digest("hex")
-      .slice(0, 16);
-    const normalizedMessages = (() => {
-      const sanitized = sanitizeMessagesForProvider(
-        messages as Array<Record<string, unknown>>,
-      );
-      if (sanitized.removedReasoningParts > 0) {
-        console.warn(
-          `[chat] Sanitized ${sanitized.removedReasoningParts} reasoning/thinking part(s) for model "${selectedModelId}".`,
-        );
-      }
-      return sanitized.messages;
-    })();
 
-    const modelMessages = await convertToModelMessages(
-      normalizedMessages as unknown as UIMessage[],
-    );
-
-    // Structural backstop for prototype/slides: swap in the embed-only
-    // batch_design variant so a native frame/rect/text create op is rejected
-    // at the schema level instead of relying on prompting alone. Computed
-    // from the incoming message history (including the synthetic
-    // load_skill/lookup_skill pair injected above for a slash command) plus
-    // the current slash command name, if any.
-    const taskPolicy = resolveTaskPolicy({ messages, slashSkillName });
-
-    const mcpTools = await getMCPTools(config);
-    const tools = {
-      ...penTools,
-      ...getWebTools(config),
-      ...mcpTools,
-      ...getSkillTools(),
-    } as ToolSet;
-    if (taskPolicy !== "native") {
-      tools.batch_design = makeBatchDesignTool({ embedOnly: true });
-    }
+    const {
+      model,
+      system,
+      modelMessages,
+      tools,
+      taskPolicy,
+      selectedModelId,
+      systemPromptHash,
+    } = await prepareChatTurn({
+      config,
+      messages,
+      canvasContext,
+      modelOverride,
+    });
     const maxSteps = MAX_AGENT_STEPS;
 
     // Abort the LLM stream when the client disconnects mid-response, so we

@@ -153,7 +153,7 @@ export function splitBatchDesignStatements(operations: string): string[] {
 // Scans `text` from `fromIndex` (already inside an operator's open paren, so
 // parenDepth starts at 1) for the first unquoted top-level `{` — the start of
 // the operation's props object. Returns -1 if the call closes without one.
-function findFirstTopLevelBrace(text: string, fromIndex: number): number {
+export function findFirstTopLevelBrace(text: string, fromIndex: number): number {
   let parenDepth = 1;
   const scanner = createQuoteScanner();
 
@@ -177,7 +177,7 @@ function findFirstTopLevelBrace(text: string, fromIndex: number): number {
 // Returns the index of the `}` matching the `{` at `openIndex`, scanning with
 // the same string/escape/paren/brace/bracket awareness as the statement
 // splitter above.
-function findMatchingBrace(text: string, openIndex: number): number {
+export function findMatchingBrace(text: string, openIndex: number): number {
   // Only brace balance matters for finding the matching `}` — unbalanced
   // (), [] inside the object (e.g. a function-call-shaped value) still nest
   // inside braces, so tracking brace depth alone is sufficient once strings
@@ -201,7 +201,7 @@ function findMatchingBrace(text: string, openIndex: number): number {
 // {}, [], () or string — so e.g. `type: "embed", fills: [{type: "solid"}]`
 // splits into two chunks (`type: "embed"` and `fills: [...]`), never
 // exposing the nested `type` inside the fills array as a top-level chunk.
-function splitTopLevelByComma(text: string): string[] {
+export function splitTopLevelByComma(text: string): string[] {
   const chunks: string[] = [];
   let current = "";
   const depth = createDepthTracker();
@@ -229,7 +229,7 @@ const TOP_LEVEL_TYPE_KEY_RE =
 // Shared by isCreateOp and nodeTypeOfCreateOp so the two can't drift: matches
 // an optional `binding=` prefix followed by the `I`/`R` operator and its
 // opening paren — the only operators that create a node.
-const CREATE_OP_RE = /^(?:[A-Za-z_$][\w$]*\s*=\s*)?(I|R)\s*\(/;
+export const CREATE_OP_RE = /^(?:[A-Za-z_$][\w$]*\s*=\s*)?(I|R)\s*\(/;
 
 // True iff `statement` is a node-creating `I(...)`/`R(...)` operation (with
 // or without a `binding=` prefix). C/U/D/M/G/snapshot/etc are all false —
