@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While on `0.x`, minor bumps may include breaking changes.
 
+## [0.31.0] - 2026-07-28
+
+### Added
+- **`npm run showcase:rescreenshot`** — re-renders the PNG of every screen already in the gallery from its stored HTML and repoints `image_url`/`width`/`height`. The HTML, not the image, is the source of truth, so a screenshot-pipeline fix (v0.30.0's sliced tab bars) can be applied to screens the gallery is already serving without re-running the agent and getting different designs. Only screens whose dimensions change are re-uploaded (`--force` overrides), each to a fresh S3 key so a cached copy of the old PNG can't survive the repair; `--dry-run` and `--limit=N` for trial runs, and one failing screen doesn't abandon the rest.
+
 ## [0.30.0] - 2026-07-28
 
 ### Added
