@@ -10,8 +10,26 @@ import { openShowcaseBrowser } from "./screenshot.js";
 
 const RECENT_THEMES_WINDOW = 10;
 
+// Optional one-off overrides: `--theme="заказ такси"` pins the theme instead
+// of picking a random unused one, `--model=moonshotai/kimi-k2.5` swaps the
+// generation model. Both default to the automatic behaviour, so the unattended
+// cron-style invocation is unchanged.
+function readFlag(argv: string[], name: string): string | undefined {
+  const prefix = `--${name}=`;
+  const inline = argv.find((a) => a.startsWith(prefix));
+  if (inline) return inline.slice(prefix.length);
+  const index = argv.indexOf(`--${name}`);
+  if (index !== -1 && argv[index + 1] && !argv[index + 1].startsWith("--")) {
+    return argv[index + 1];
+  }
+  return undefined;
+}
+
 async function main(): Promise<void> {
   const config = loadConfig();
+  const argv = process.argv.slice(2);
+  const themeOverride = readFlag(argv, "theme");
+  const modelOverride = readFlag(argv, "model");
 
   if (!config.TRACE_DATABASE_URL) {
     console.error("[showcase] TRACE_DATABASE_URL is required to run showcase generation");
@@ -57,11 +75,17 @@ async function main(): Promise<void> {
       migrationClient.release();
     }
 
-    const recent = await store.recentThemes(RECENT_THEMES_WINDOW);
-    const theme = pickTheme(SHOWCASE_THEMES, recent, Math.random);
-    console.log(`[showcase] generating screens for theme "${theme}"`);
+    let theme = themeOverride;
+    if (!theme) {
+      const recent = await store.recentThemes(RECENT_THEMES_WINDOW);
+      theme = pickTheme(SHOWCASE_THEMES, recent, Math.random);
+    }
+    console.log(
+      `[showcase] generating screens for theme "${theme}"` +
+        (modelOverride ? ` with model "${modelOverride}"` : ""),
+    );
 
-    const result = await runShowcaseGeneration(config, theme);
+    const result = await runShowcaseGeneration(config, theme, modelOverride);
     if (result.screens.length === 0) {
       console.error(`[showcase] no embed screens were produced for theme "${theme}"`);
       process.exitCode = 1;

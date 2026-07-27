@@ -93,15 +93,34 @@ export async function screenshotHtml(
   page: Page,
   html: string,
 ): Promise<ScreenshotResult> {
-  await page.setContent(html, { waitUntil: "load" });
+  // "domcontentloaded", not "load": `load` waits for every remote image, and
+  // it THROWS on the page's default timeout — so a single slow asset (an
+  // agent-generated photo still warming up in S3) took down the whole run.
+  // Asset readiness is handled just below, where overrunning it degrades to
+  // "screenshot anyway" instead of an exception.
+  await page.setContent(html, { waitUntil: "domcontentloaded" });
 
   // page.evaluate() has no built-in timeout (unlike waitForX/click), so a
   // hung remote font or a stuck image decode would otherwise hang this
   // forever. Race it against a plain Node timer instead.
+  //
+  // `decode()` alone resolves for an image that hasn't started loading, so
+  // wait on the load event too — otherwise the race can fall through
+  // instantly and snap a picture of empty boxes.
   const renderReady = page.evaluate(async () => {
     const fontsReady = document.fonts ? document.fonts.ready : Promise.resolve();
     const imagesDecoded = Promise.all(
-      [...document.images].map((img) => img.decode().catch(() => {})),
+      [...document.images].map(
+        (img) =>
+          new Promise<void>((resolve) => {
+            if (img.complete) {
+              img.decode().then(() => resolve(), () => resolve());
+              return;
+            }
+            img.addEventListener("load", () => resolve(), { once: true });
+            img.addEventListener("error", () => resolve(), { once: true });
+          }),
+      ),
     );
     await Promise.all([fontsReady, imagesDecoded]);
   });

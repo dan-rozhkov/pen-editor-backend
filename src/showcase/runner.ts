@@ -215,6 +215,7 @@ function instrumentTools(
 export async function runShowcaseGeneration(
   config: Config,
   theme: string,
+  modelId: string = SHOWCASE_MODEL_ID,
 ): Promise<ShowcaseRunResult> {
   const prompt = buildShowcasePrompt(theme);
   const messages: Array<Record<string, unknown>> = [
@@ -224,7 +225,7 @@ export async function runShowcaseGeneration(
   const prepared = await prepareChatTurn({
     config,
     messages,
-    modelOverride: SHOWCASE_MODEL_ID,
+    modelOverride: modelId,
   });
 
   const screens: ShowcaseScreenDraft[] = [];
