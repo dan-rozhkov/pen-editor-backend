@@ -864,12 +864,14 @@ Returns the created/updated style ids and names (with a created|updated status) 
 
   export_layers_svg: tool({
     description:
-      "Export one or more existing layers (e.g. a logo built from native `path`/`rect`/`group` nodes) to a single standalone SVG document, returned as a `data:image/svg+xml;base64,...` data URI. Use this instead of hand-reconstructing SVG path data or calling generate_image whenever the goal is an exact 1:1 copy of layers that already exist on the canvas — freehand SVG/path re-authoring reliably produces wrong proportions and garbled text/letterforms. Drop the returned `dataUri` straight into an embed's htmlContent as `<img src=\"...\" width=\"{width}\" height=\"{height}\">` (the tool also returns the SVG's intrinsic width/height for sizing). Defaults to the user's current selection if nodeIds is omitted. Fails with a clear error if nothing is selected/found, or if the serialized SVG is too large — export fewer/simpler layers in that case.",
+      "Export one or more existing layers (e.g. a logo built from native `path`/`rect`/`group` nodes) to a single standalone SVG document, returned as a `data:image/svg+xml;base64,...` data URI. Use this instead of hand-reconstructing SVG path data or calling generate_image whenever the goal is an exact 1:1 copy of layers that already exist on the canvas — freehand SVG/path re-authoring reliably produces wrong proportions and garbled text/letterforms. Drop the returned `dataUri` straight into an embed's htmlContent as `<img src=\"...\" width=\"{width}\" height=\"{height}\">` (the tool also returns the SVG's intrinsic width/height for sizing — if the export contains a rotated node or a blur/drop-shadow, this canvas is padded beyond the layers' tight bounding box to avoid clipping, and a warning explains why). Omit nodeIds entirely to export the user's current canvas selection; pass an explicit array — including an empty `[]` — to export exactly those nodes and nothing else (an empty array is treated as \"export nothing\", not as a fallback to the current selection). Fails with a clear error if nothing is selected/found, or if the serialized SVG is too large — export fewer/simpler layers in that case.",
     inputSchema: z.object({
       nodeIds: z
         .array(z.string())
         .optional()
-        .describe("IDs of the layers to export. Omit to export the current canvas selection."),
+        .describe(
+          "IDs of the layers to export. Omit entirely to export the current canvas selection. Pass an explicit array to export exactly those nodes; an empty array ([]) means \"export nothing\" and returns an error, it does NOT fall back to the current selection.",
+        ),
     }),
   }),
 

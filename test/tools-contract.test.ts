@@ -357,6 +357,12 @@ describe("export_layers_svg schema", () => {
     expect(result.success && result.data).toEqual({});
   });
 
+  it("accepts an explicit empty nodeIds array (means \"export nothing\", not \"use selection\" — see frontend handler)", () => {
+    const result = schema.safeParse({ nodeIds: [] });
+    expect(result.success).toBe(true);
+    expect(result.success && result.data).toEqual({ nodeIds: [] });
+  });
+
   it("rejects a non-array nodeIds", () => {
     expect(schema.safeParse({ nodeIds: "n1" }).success).toBe(false);
   });
