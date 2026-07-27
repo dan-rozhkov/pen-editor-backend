@@ -1,4 +1,6 @@
 import { describe, expect, it, beforeAll, afterAll } from "vitest";
+import { createServer, type Server } from "node:http";
+import { AddressInfo } from "node:net";
 import { chromium, type Browser } from "playwright";
 import { screenshotHtml, SHOWCASE_VIEWPORT, SHOWCASE_DEVICE_SCALE_FACTOR } from "../src/showcase/screenshot.js";
 
@@ -39,6 +41,81 @@ async function shoot(html: string) {
     await p.close();
   }
 }
+
+// Same, but reports which requests the browser had FINISHED by the time the
+// snapshot was taken. (Resource-timing entries can't be used for this: a
+// setContent document has an about:blank origin and Chrome records none.)
+async function shootTrackingRequests(html: string): Promise<string[]> {
+  if (!browser) throw new Error("no browser");
+  const p = await browser.newPage({ viewport: SHOWCASE_VIEWPORT, deviceScaleFactor: S });
+  // Both events count: what is being asserted is that the browser had SETTLED
+  // the fetch before the snapshot. A font whose bytes Chrome then rejects
+  // settles as `requestfailed`, and that still proves we waited.
+  const finished: string[] = [];
+  p.on("requestfinished", (req) => finished.push(req.url()));
+  p.on("requestfailed", (req) => finished.push(req.url()));
+  try {
+    await screenshotHtml(p, html);
+    return finished;
+  } finally {
+    await p.close();
+  }
+}
+
+// A 1x1 transparent PNG — the smallest thing a `background-image` can point at.
+const ONE_PIXEL_PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+  "base64",
+);
+
+// Assets that arrive LATE. Everything here is deliberately slower than the
+// browser's `domcontentloaded`, because that is exactly the window in which the
+// screenshot used to fire — snapping a page whose icon font and photos hadn't
+// arrived yet.
+// Long enough that a screenshot which merely takes a few hundred ms of DOM
+// bookkeeping can't pass by luck: if the code doesn't explicitly wait, the
+// asset is still in flight when the assertion runs.
+const ASSET_DELAY_MS = 2_500;
+let assetOrigin = "";
+let assetServer: Server | null = null;
+
+beforeAll(async () => {
+  assetServer = createServer((req, res) => {
+    setTimeout(() => {
+      // Two hops, like Phosphor's: the page @imports a sheet that itself
+      // @imports the one carrying @font-face.
+      if (req.url === "/slow.css") {
+        res.writeHead(200, { "content-type": "text/css" });
+        res.end(`@import url('${assetOrigin}/slow-face.css');`);
+        return;
+      }
+      if (req.url === "/slow-face.css") {
+        res.writeHead(200, { "content-type": "text/css" });
+        res.end(
+          `@font-face { font-family: 'SlowIcons'; src: url('${assetOrigin}/slow.woff2') format('woff2') }`,
+        );
+        return;
+      }
+      if (req.url === "/slow.woff2") {
+        res.writeHead(200, { "content-type": "font/woff2" });
+        res.end(ONE_PIXEL_PNG);
+        return;
+      }
+      if (req.url === "/slow.png") {
+        res.writeHead(200, { "content-type": "image/png" });
+        res.end(ONE_PIXEL_PNG);
+        return;
+      }
+      res.writeHead(404).end();
+    }, ASSET_DELAY_MS);
+  });
+  await new Promise<void>((resolve) => assetServer!.listen(0, "127.0.0.1", resolve));
+  assetOrigin = `http://127.0.0.1:${(assetServer!.address() as AddressInfo).port}`;
+});
+
+afterAll(async () => {
+  await new Promise<void>((resolve) => assetServer?.close(() => resolve()));
+});
 
 describe.skipIf(!!process.env.CI)("screenshotHtml", () => {
   it("leaves a screen alone when nothing is covered by the bottom bar", async () => {
@@ -95,6 +172,34 @@ describe.skipIf(!!process.env.CI)("screenshotHtml", () => {
     // The bar's bottom edge is the viewport bottom, so the screen has to reach
     // it — not stop at the body's own 812px.
     expect(height).toBe(H * S);
+  });
+
+  // The showcase's icon set (Phosphor) is an icon FONT reached through
+  // `@import`. `document.fonts.ready` alone loses the race: at the moment it
+  // is called the imported sheet has only just landed, no layout has demanded
+  // the family yet, so there is nothing pending and it resolves instantly —
+  // and every icon in a whole run came out blank.
+  it("waits for a font the page's own styles ask for", async () => {
+    if (!browser) return;
+
+    const fontUrl = `${assetOrigin}/slow.woff2`;
+    const html = page(
+      "",
+      `<style>@import url('${assetOrigin}/slow.css');</style>` +
+        `<style>.icon::before { font-family: 'SlowIcons'; content: '\\e001' }</style>` +
+        `<i class="icon"></i>`,
+    );
+
+    expect(await shootTrackingRequests(html)).toContain(fontUrl);
+  });
+
+  it("waits for a CSS background-image", async () => {
+    if (!browser) return;
+
+    const url = `${assetOrigin}/slow.png`;
+    const html = page("", `<div style="height:200px;background-image:url('${url}')">hero</div>`);
+
+    expect(await shootTrackingRequests(html)).toContain(url);
   });
 
   it("covers the bar after growing the screen to clear overlapping content", async () => {

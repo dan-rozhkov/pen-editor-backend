@@ -138,7 +138,65 @@ export async function screenshotHtml(
   // `decode()` alone resolves for an image that hasn't started loading, so
   // wait on the load event too — otherwise the race can fall through
   // instantly and snap a picture of empty boxes.
+  //
+  // Three things beyond <img> have to be waited on explicitly, and every one
+  // of them cost a whole showcase run before it was handled here:
+  //
+  //   - CSS `background-image`. The agent puts its generated photos there, not
+  //     in <img>, so they never show up in `document.images` and the old check
+  //     sailed straight past them. Re-requesting the same URL through `new
+  //     Image()` is free (same HTTP cache entry) and gives us a load event.
+  //   - Fonts the page's own styles ask for, Phosphor's icon font above all.
+  //     `document.fonts.ready` is not enough on its own: when it is called the
+  //     @import'ed sheet has only just arrived and nothing has demanded the
+  //     family yet, so there is nothing pending and it resolves instantly.
+  //     Asking for each used family by hand makes the load pending FIRST.
+  //   - `loading="lazy"` images below the fold. A showcase screen is taller
+  //     than the viewport, so a lazy image never enters the viewport and never
+  //     loads at all.
   const renderReady = page.evaluate(async () => {
+    // NOTE: no named inner functions inside page.evaluate — see the note on
+    // clearBottomBarOverlap.
+    for (const img of document.images) img.loading = "eager";
+
+    const elements = [document.documentElement, ...document.body.querySelectorAll("*")];
+    const styles = elements.flatMap((el) => [
+      getComputedStyle(el),
+      getComputedStyle(el, "::before"),
+      getComputedStyle(el, "::after"),
+    ]);
+
+    const backgroundUrls = new Set<string>();
+    for (const cs of styles) {
+      for (const layer of [cs.backgroundImage, cs.maskImage, cs.borderImageSource]) {
+        if (!layer || layer === "none") continue;
+        for (const match of layer.matchAll(/url\((['"]?)([^'")]+)\1\)/g)) {
+          if (!match[2].startsWith("data:")) backgroundUrls.add(match[2]);
+        }
+      }
+    }
+
+    // Kick every font the page actually uses, so the loads are pending before
+    // `fonts.ready` is consulted. `content` matters for icon fonts: the glyph
+    // lives in a private-use codepoint, and passing it makes the browser fetch
+    // the subset that contains it.
+    if (document.fonts) {
+      for (const cs of styles) {
+        const family = cs.fontFamily;
+        if (!family) continue;
+        const text = (cs.content ?? "").replace(/^["']|["']$/g, "");
+        try {
+          void document.fonts.load(
+            `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${family}`,
+            text && text !== "normal" && text !== "none" ? text : undefined,
+          );
+        } catch {
+          // A computed shorthand the Font Loading API rejects (an unquoted
+          // family with spaces, say) is not worth failing the screenshot over.
+        }
+      }
+    }
+
     const fontsReady = document.fonts ? document.fonts.ready : Promise.resolve();
     const imagesDecoded = Promise.all(
       [...document.images].map(
@@ -153,7 +211,18 @@ export async function screenshotHtml(
           }),
       ),
     );
-    await Promise.all([fontsReady, imagesDecoded]);
+    const backgroundsLoaded = Promise.all(
+      [...backgroundUrls].map(
+        (url) =>
+          new Promise<void>((resolve) => {
+            const probe = new Image();
+            probe.addEventListener("load", () => resolve(), { once: true });
+            probe.addEventListener("error", () => resolve(), { once: true });
+            probe.src = url;
+          }),
+      ),
+    );
+    await Promise.all([fontsReady, imagesDecoded, backgroundsLoaded]);
   });
   await Promise.race([
     renderReady,
