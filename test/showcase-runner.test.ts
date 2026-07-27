@@ -20,6 +20,9 @@ vi.mock("../src/ai/provider.js", () => ({
   createModel: vi.fn(() => holders.model),
 }));
 
+const imageGenMock = vi.hoisted(() => ({ generateImage: vi.fn() }));
+vi.mock("../src/services/imageGen.js", () => imageGenMock);
+
 vi.mock("../src/ai/mcp.js", () => ({
   getMCPTools: vi.fn(async () => ({})),
   closeAllMCPClients: vi.fn(async () => {}),
@@ -75,14 +78,18 @@ function mockModel(results: LanguageModelV3GenerateResult[]): MockLanguageModelV
 
 describe("runShowcaseGeneration", () => {
   let runShowcaseGeneration: typeof import("../src/showcase/runner.js").runShowcaseGeneration;
+  let MAX_GENERATED_IMAGES: number;
 
   beforeAll(async () => {
     await loadSkills();
-    ({ runShowcaseGeneration } = await import("../src/showcase/runner.js"));
+    ({ runShowcaseGeneration, MAX_GENERATED_IMAGES } = await import(
+      "../src/showcase/runner.js"
+    ));
   });
 
   beforeEach(() => {
     holders.model = mockModel([textResult("ok")]);
+    imageGenMock.generateImage.mockReset();
   });
 
   it("collects embed screens produced via batch_design", async () => {
@@ -142,6 +149,58 @@ describe("runShowcaseGeneration", () => {
       "Screen 3",
       "Screen 4",
     ]);
+  });
+
+
+  it("puts a generated image URL in front of the model instead of a placeholder", async () => {
+    imageGenMock.generateImage.mockResolvedValue({
+      url: "https://s3.test/generated.png",
+      mimeType: "image/png",
+    });
+    holders.model = mockModel([
+      toolCallResult("generate_image", { prompt: "hero shot of a running trail at dawn" }),
+      textResult("done"),
+    ]);
+
+    await runShowcaseGeneration(makeConfig(), "фитнес-трекер");
+
+    expect(imageGenMock.generateImage).toHaveBeenCalledOnce();
+    const [, prompt] = imageGenMock.generateImage.mock.calls[0];
+    expect(prompt).toContain("running trail");
+  });
+
+  // A timed-out image must not take the run down with it, and must not leave a
+  // hole in the design — the agent needs a usable URL back either way.
+  it("answers with a placeholder URL when image generation fails", async () => {
+    imageGenMock.generateImage.mockRejectedValue(new Error("timed out"));
+    holders.model = mockModel([
+      toolCallResult("generate_image", { prompt: "hero shot" }),
+      toolCallResult("batch_design", {
+        operations: 's1=I(document, {type: "embed", name: "Home", htmlContent: "<div>x</div>"})',
+      }),
+      textResult("done"),
+    ]);
+
+    const result = await runShowcaseGeneration(makeConfig(), "фитнес-трекер");
+
+    // The run completed and still produced its screen.
+    expect(result.screens).toHaveLength(1);
+  });
+
+  it("stops generating past the per-run image budget", async () => {
+    imageGenMock.generateImage.mockResolvedValue({
+      url: "https://s3.test/generated.png",
+      mimeType: "image/png",
+    });
+    // Always answer with another generate_image call; the cap — not the model
+    // — has to be what stops the spend.
+    holders.model = mockModel([
+      toolCallResult("generate_image", { prompt: "another one" }),
+    ]);
+
+    await runShowcaseGeneration(makeConfig(), "фитнес-трекер");
+
+    expect(imageGenMock.generateImage.mock.calls.length).toBe(MAX_GENERATED_IMAGES);
   });
 
   it("returns an empty screens array without throwing when nothing was produced", async () => {

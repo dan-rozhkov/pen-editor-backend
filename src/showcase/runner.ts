@@ -1,6 +1,7 @@
 import { generateText, stepCountIs, type ToolSet } from "ai";
 import type { Config } from "../config.js";
 import { prepareChatTurn } from "../ai/chatTurn.js";
+import { generateImage } from "../services/imageGen.js";
 import { extractEmbedScreens } from "./extractEmbeds.js";
 
 // Hard cap on screens kept per run — matches the showcase's product shape
@@ -17,6 +18,7 @@ export const SHOWCASE_MODEL_ID = "deepseek/deepseek-v4-pro";
 // get_guidelines -> batch_design (+ a retry or two) comfortably fits.
 export const SHOWCASE_MAX_STEPS = 16;
 
+
 export interface ShowcaseScreenDraft {
   name: string;
   htmlContent: string;
@@ -29,14 +31,35 @@ export interface ShowcaseRunResult {
   screens: ShowcaseScreenDraft[];
 }
 
+// Hard ceiling on generated images per run, enforced here rather than left to
+// the prompt. Each one is its own model call with a 90s timeout, so a screen
+// full of avatars or a photo gallery could otherwise stretch a run into tens
+// of minutes. Past the cap the tool keeps working — it just answers with a
+// placeholder URL, so the agent still gets a usable image instead of an error
+// it has to design around.
+export const MAX_GENERATED_IMAGES = 8;
+
 // The message the agent receives. Starts with the `/prototype` slash command
-// so prepareChatTurn/resolveTaskPolicy route it through the embed-only
-// policy and the prototype skill (src/skills/prototype.md) — the same
-// machinery /api/chat uses, never a hand-rolled prompt.
+// so prepareChatTurn/resolveTaskPolicy route it through the embed-only policy
+// and the prototype skill (src/skills/prototype.md) — the same machinery
+// /api/chat uses, never a hand-rolled prompt.
+//
+// The imagery clause deliberately overrides the skill's picsum.photos default
+// for large images only. It lives in the user message, not in the skill file,
+// because the skill is shared with production chat — where making every
+// prototype request wait on image generation would be a very different
+// product decision. Placed after the injected skill instructions, it reads as
+// the requester's requirement rather than a contradiction of them.
 export function buildShowcasePrompt(theme: string): string {
   return (
     `/prototype мобильное приложение — ${theme}, до 5 экранов одного пользовательского флоу, ` +
-    `единый визуальный стиль.`
+    `единый визуальный стиль.\n\n` +
+    `Картинки: для КРУПНЫХ изображений — hero, обложка, карточка контента, продуктовое фото — ` +
+    `не ставь picsum. Вызови generate_image с подробным описанием кадра в стиле этого приложения ` +
+    `и подставь возвращённый url в <img src> или background-image. ` +
+    `Мелочь (аватарки, микро-превью, иконки) оставляй как предписывает скилл — picsum или инициалы. ` +
+    `Не больше ${MAX_GENERATED_IMAGES} генераций на весь прогон: сначала самые заметные кадры. ` +
+    `Если инструмент вернул note про placeholder — используй присланный url как есть и не вызывай его снова.`
   );
 }
 
@@ -86,11 +109,63 @@ const EMULATED_CLIENT_TOOLS: Record<string, () => Promise<string>> = {
   ask_user: async () => DELEGATED_BRIEF_ANSWER,
 };
 
+// Deterministic stand-in used once the image budget is spent, and when a
+// generation fails. Mirrors what the prototype skill asks for by default, so
+// the HTML still ends up with a real <img> rather than a gap.
+function placeholderImageUrl(prompt: string): string {
+  const seed = encodeURIComponent(prompt.slice(0, 40).replace(/\s+/g, "-"));
+  return `https://picsum.photos/seed/${seed}/800/600`;
+}
+
+// In the browser, generate_image posts to /api/generate-image and hands the
+// model back {url}. Here we call the same service directly, so the agent can
+// put a real generated image into an embed's HTML exactly as it would in chat.
+// A failure is reported as a usable placeholder rather than an error: a broken
+// image in a showcase screen is worse than a generic one, and the run must not
+// die because one image timed out.
+function makeGenerateImageTool(config: Config) {
+  let generated = 0;
+
+  return async ({ prompt }: { prompt: string }) => {
+    if (generated >= MAX_GENERATED_IMAGES) {
+      console.warn(
+        `[showcase] image budget spent (${MAX_GENERATED_IMAGES}) — serving a placeholder for: ${prompt.slice(0, 60)}`,
+      );
+      return JSON.stringify({
+        url: placeholderImageUrl(prompt),
+        prompt,
+        note: `Image budget for this run is spent (${MAX_GENERATED_IMAGES} generated). This is a placeholder — use it as-is and do not call generate_image again.`,
+      });
+    }
+
+    // Claim the slot synchronously, before the await: the model issues these
+    // calls in parallel, so reading `generated` back after the await reports
+    // the final count for every one of them.
+    const slot = (generated += 1);
+    try {
+      const { url } = await generateImage(config, prompt);
+      console.log(`[showcase] generated image ${slot}/${MAX_GENERATED_IMAGES}: ${prompt.slice(0, 60)}`);
+      return JSON.stringify({ url, prompt });
+    } catch (err) {
+      console.warn(
+        `[showcase] image generation failed (${(err as Error).message}) — serving a placeholder`,
+      );
+      return JSON.stringify({
+        url: placeholderImageUrl(prompt),
+        prompt,
+        note: "Generation failed; this is a placeholder URL. Use it as-is and continue.",
+      });
+    }
+  };
+}
+
 function instrumentTools(
+  config: Config,
   tools: ToolSet,
   onScreens: (screens: ShowcaseScreenDraft[]) => Array<{ id: string; name: string }>,
 ): ToolSet {
   const instrumented: ToolSet = { ...tools };
+  const generateImageExecute = makeGenerateImageTool(config);
 
   for (const name of Object.keys(instrumented)) {
     const entry = instrumented[name] as { execute?: unknown };
@@ -113,6 +188,11 @@ function instrumentTools(
           });
         },
       };
+      continue;
+    }
+
+    if (name === "generate_image") {
+      instrumented[name] = { ...instrumented[name], execute: generateImageExecute };
       continue;
     }
 
@@ -149,7 +229,7 @@ export async function runShowcaseGeneration(
 
   const screens: ShowcaseScreenDraft[] = [];
 
-  const tools = instrumentTools(prepared.tools, (extracted) => {
+  const tools = instrumentTools(config, prepared.tools, (extracted) => {
     const created: Array<{ id: string; name: string }> = [];
     for (const screen of extracted) {
       if (screens.length >= MAX_SHOWCASE_SCREENS) {
