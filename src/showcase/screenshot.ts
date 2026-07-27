@@ -47,7 +47,19 @@ export async function screenshotHtml(
     // screenshot rather than failing the whole run over a slow asset.
   });
 
-  const buffer = await page.screenshot({ type: "png", fullPage: true });
+  // Screenshot the <body> box rather than the page. The agent lays its screens
+  // out at a fixed device width of its own choosing (375x812 is what it
+  // actually emits), which rarely equals SHOWCASE_VIEWPORT — a full-page shot
+  // then bakes a strip of empty background down the right edge and along the
+  // bottom of every card in the gallery. An element screenshot crops to what
+  // the design actually occupies, and degrades to the same result as fullPage
+  // for a fluid layout that fills the viewport.
+  const body = page.locator("body");
+  const box = await body.boundingBox();
+  const buffer =
+    box && box.width >= 1 && box.height >= 1
+      ? await body.screenshot({ type: "png" })
+      : await page.screenshot({ type: "png", fullPage: true });
 
   // Read the ACTUAL rendered pixel size back from the PNG rather than
   // assuming SHOWCASE_VIEWPORT * deviceScaleFactor: fullPage screenshots can
