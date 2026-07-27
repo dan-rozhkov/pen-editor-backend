@@ -41,6 +41,7 @@ describe("penTools registry", () => {
         "replace_all_matching_properties",
         "search_all_unique_properties",
         "set_export_settings",
+        "export_layers_svg",
         "set_variables",
         "snapshot_layout",
         "create_plugin",
@@ -78,6 +79,7 @@ describe("penTools registry", () => {
       "generate_frame_image",
       "boolean_operation",
       "set_export_settings",
+      "export_layers_svg",
       "read_comments",
       "reply_comment",
       "resolve_comment",
@@ -339,6 +341,24 @@ describe("set_export_settings schema", () => {
       schema.safeParse({ nodeIds: ["n1"], format: "jpg", mode: "merge" })
         .success,
     ).toBe(false);
+  });
+});
+
+describe("export_layers_svg schema", () => {
+  const schema = schemaOf("export_layers_svg");
+
+  it("accepts nodeIds", () => {
+    expect(schema.safeParse({ nodeIds: ["n1", "n2"] }).success).toBe(true);
+  });
+
+  it("accepts an empty object (defaults to selection)", () => {
+    const result = schema.safeParse({});
+    expect(result.success).toBe(true);
+    expect(result.success && result.data).toEqual({});
+  });
+
+  it("rejects a non-array nodeIds", () => {
+    expect(schema.safeParse({ nodeIds: "n1" }).success).toBe(false);
   });
 });
 

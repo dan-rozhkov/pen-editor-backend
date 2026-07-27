@@ -862,6 +862,17 @@ Returns the created/updated style ids and names (with a created|updated status) 
     }),
   }),
 
+  export_layers_svg: tool({
+    description:
+      "Export one or more existing layers (e.g. a logo built from native `path`/`rect`/`group` nodes) to a single standalone SVG document, returned as a `data:image/svg+xml;base64,...` data URI. Use this instead of hand-reconstructing SVG path data or calling generate_image whenever the goal is an exact 1:1 copy of layers that already exist on the canvas — freehand SVG/path re-authoring reliably produces wrong proportions and garbled text/letterforms. Drop the returned `dataUri` straight into an embed's htmlContent as `<img src=\"...\" width=\"{width}\" height=\"{height}\">` (the tool also returns the SVG's intrinsic width/height for sizing). Defaults to the user's current selection if nodeIds is omitted. Fails with a clear error if nothing is selected/found, or if the serialized SVG is too large — export fewer/simpler layers in that case.",
+    inputSchema: z.object({
+      nodeIds: z
+        .array(z.string())
+        .optional()
+        .describe("IDs of the layers to export. Omit to export the current canvas selection."),
+    }),
+  }),
+
   replace_all_matching_properties: tool({
     description:
       "Recursively find-and-replace property values across the node tree. Useful for bulk color/font/spacing changes (e.g. rebranding, theme adjustments).",
