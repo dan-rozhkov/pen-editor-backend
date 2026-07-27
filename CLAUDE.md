@@ -86,6 +86,13 @@ second env var, since a second URL pointing elsewhere would silently split the
 schema) plus all four `S3_*` vars, and a one-time
 `npx playwright install chromium`. Spec: FIR-61.
 
+`npm run showcase:rescreenshot` re-renders the PNG of every stored screen from
+its stored HTML (`src/showcase/rescreenshot.ts`) — the repair path after a
+screenshot-pipeline fix, since the HTML, not the image, is the source of truth.
+Only screens whose dimensions change are re-uploaded (`--force` overrides), each
+to a *fresh* S3 key so caches can't keep serving the old PNG; `--dry-run` and
+`--limit=N` are available. Same env as generation, minus the LLM.
+
 **The turn is assembled by `prepareChatTurn` (`src/ai/chatTurn.ts`), shared with
 the `/api/chat` route — never hand-roll the system prompt or tool set here.** A
 second prompt builder is how the showcase would start advertising an agent that

@@ -25,7 +25,26 @@ export interface ShowcaseStore {
     cursor?: string;
   }): Promise<{ screens: ShowcaseScreen[]; nextCursor: string | null }>;
   recentThemes(limit: number): Promise<string[]>;
+  // For `npm run showcase:rescreenshot` — the stored HTML is the source of
+  // truth, so every screen can be re-rendered after a screenshot bug fix.
+  listScreenSources(): Promise<ShowcaseScreenSource[]>;
+  updateScreenImage(update: ShowcaseImageUpdate): Promise<void>;
   close(): Promise<void>;
+}
+
+export interface ShowcaseScreenSource {
+  id: string;
+  title: string;
+  htmlUrl: string;
+  width: number;
+  height: number;
+}
+
+export interface ShowcaseImageUpdate {
+  id: string;
+  imageUrl: string;
+  width: number;
+  height: number;
 }
 
 interface DecodedCursor {
@@ -159,6 +178,39 @@ export function createShowcaseStore(
         [limit],
       )) as { rows: Array<{ theme: string }> };
       return result.rows.map((r) => r.theme);
+    },
+
+    async listScreenSources() {
+      // Oldest first, and unpublished rows included: a re-render is a repair of
+      // whatever is stored, not a feed the visitor sees.
+      const result = (await db.query(
+        `SELECT id, title, html_url, width, height
+           FROM showcase_screens
+           ORDER BY created_at ASC, id ASC`,
+        [],
+      )) as {
+        rows: Array<{
+          id: string;
+          title: string;
+          html_url: string;
+          width: number;
+          height: number;
+        }>;
+      };
+      return result.rows.map((row) => ({
+        id: row.id,
+        title: row.title,
+        htmlUrl: row.html_url,
+        width: row.width,
+        height: row.height,
+      }));
+    },
+
+    async updateScreenImage({ id, imageUrl, width, height }) {
+      await db.query(
+        `UPDATE showcase_screens SET image_url = $2, width = $3, height = $4 WHERE id = $1`,
+        [id, imageUrl, width, height],
+      );
     },
 
     close: () => db.end(),
