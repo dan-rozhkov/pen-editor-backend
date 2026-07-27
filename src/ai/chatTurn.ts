@@ -14,7 +14,13 @@ import { buildSystemPrompt } from "./system-prompt.js";
 import { resolveTaskPolicy, type TaskPolicy } from "./taskPolicy.js";
 import { getMCPTools } from "./mcp.js";
 import { getWebTools } from "./web-search.js";
-import { detectSkillCommand, getAllSkills, getSkill, getSkillTools } from "./skills.js";
+import {
+  detectSkillCommand,
+  ensureSkillsLoaded,
+  getAllSkills,
+  getSkill,
+  getSkillTools,
+} from "./skills.js";
 
 // Strips reasoning/thinking blocks and provider metadata from chat history.
 // Some providers reject stale/invalid thinking signatures when prior assistant turns are replayed.
@@ -97,6 +103,11 @@ export async function prepareChatTurn(
   input: PrepareChatTurnInput,
 ): Promise<PreparedChatTurn> {
   const { config, messages, canvasContext, modelOverride } = input;
+
+  // Every skill lookup below — the slash command, the catalog in the system
+  // prompt, the load_skill tool — silently resolves to nothing on an empty
+  // map, so the turn must not be assembled before the skills are in memory.
+  await ensureSkillsLoaded();
 
   // Detect slash command skill in last user message and resolve it
   let skillContent: string | undefined;

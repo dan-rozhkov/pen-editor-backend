@@ -53,6 +53,39 @@ export function buildShowcasePrompt(theme: string): string {
 //     get_screenshot) instead of the run silently hanging.
 //   - tools that already have execute (get_guidelines, get_style_guide*, MCP,
 //     web-search) are left untouched.
+// The prototype skill's mandatory flow calls these before writing any HTML.
+// Answering "unavailable" derails it — the agent is told to read the canvas
+// and gather a brief, and gets an error instead. A showcase run really is a
+// blank document, so the honest answer is the one the frontend handler gives
+// for an empty file, in the same shape. Kept literally identical to
+// pen-editor/src/lib/tools/getEditorState.ts and getVariables.ts.
+const EMPTY_DOCUMENT_STATE = JSON.stringify({
+  pages: [{ id: "page-1", name: "Page 1" }],
+  activePageId: "page-1",
+  roots: [],
+  selectedIds: [],
+  selectedNodes: [],
+  reusableComponents: [],
+  documentComponents: [],
+  viewport: { scale: 1, x: 0, y: 0 },
+});
+
+// `ask_user` pauses the turn for a human in chat. There is no human here, and
+// the skill offers exactly one legitimate way through: its brief form carries
+// a "Decide for me" option. So answer as a user who delegates every choice,
+// rather than reporting the tool broken — which would either stall the flow
+// or push the agent to skip the brief step entirely.
+const DELEGATED_BRIEF_ANSWER =
+  "Decide for me — use your own judgment for every question above, " +
+  "and pick whatever produces the strongest, most opinionated result. " +
+  "Do not ask again; proceed straight to building.";
+
+const EMULATED_CLIENT_TOOLS: Record<string, () => Promise<string>> = {
+  get_editor_state: async () => EMPTY_DOCUMENT_STATE,
+  get_variables: async () => JSON.stringify({ variables: [] }),
+  ask_user: async () => DELEGATED_BRIEF_ANSWER,
+};
+
 function instrumentTools(
   tools: ToolSet,
   onScreens: (screens: ShowcaseScreenDraft[]) => Array<{ id: string; name: string }>,
@@ -83,10 +116,13 @@ function instrumentTools(
       continue;
     }
 
+    const emulated = EMULATED_CLIENT_TOOLS[name];
     instrumented[name] = {
       ...instrumented[name],
-      execute: async () =>
-        `Tool "${name}" is unavailable in autonomous showcase generation mode.`,
+      execute:
+        emulated ??
+        (async () =>
+          `Tool "${name}" is unavailable in autonomous showcase generation mode.`),
     };
   }
 

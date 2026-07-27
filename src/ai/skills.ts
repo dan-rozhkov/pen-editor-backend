@@ -113,6 +113,28 @@ export async function loadSkills(): Promise<void> {
   console.log(`[skills] Loaded ${skillsMap.size} skills: ${[...skillsMap.keys()].join(", ")}`);
 }
 
+let loadOnce: Promise<void> | null = null;
+
+// Loads skills unless they're already in memory, at most once per process.
+//
+// `loadSkills()` used to be called only from src/index.ts, i.e. only when the
+// HTTP server boots. Any OTHER entry point into the agent — the showcase
+// runner — then ran with an empty skills map, and failed silently in three
+// places at once: a `/skill` slash command resolved to nothing (so its
+// instructions were never injected), `load_skill` could not resolve a name,
+// and `buildSystemPrompt` advertised an empty skill catalog. The agent still
+// answered, just without any of its craft instructions — which is far worse
+// than an error, because the output looks plausible.
+//
+// So the guarantee lives in prepareChatTurn (the shared turn builder) rather
+// than in each entry point's boot sequence: anything that assembles a turn
+// gets the skills, and there is nothing left to forget.
+export function ensureSkillsLoaded(): Promise<void> {
+  if (skillsMap.size > 0) return Promise.resolve();
+  loadOnce ??= loadSkills();
+  return loadOnce;
+}
+
 export function getSkill(name: string): Skill | undefined {
   return skillsMap.get(name);
 }
