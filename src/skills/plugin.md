@@ -62,7 +62,9 @@ self-contained `code`, not to run it yourself.
 await pen.tools.run(name, args); // -> Promise<string>
 
 // Scene mutation — shorthand for pen.tools.run("batch_design", {operations}).
-// `operations` is the batch_design DSL string; cap 25 operations per call.
+// `operations` is the batch_design DSL string; cap 25 operations per call
+// (going over isn't fatal — the first 25 run and the result reports
+// truncated: true; see the cap note under Rules).
 await pen.scene.batch(operations); // -> Promise<string>
 
 // Read the scene. No ids -> get_editor_state; with ids -> batch_get({ nodeIds: ids }).
@@ -145,7 +147,7 @@ rejection silently stop it.
 
 1. **Everything async, always await.** Don't assume a `pen.*` call resolves synchronously.
 2. **Mutate the scene only through `pen.scene.batch`/`pen.tools.run`.** There is no other way to touch the document from inside the sandbox — direct DOM/canvas access to the host app is impossible by design.
-3. **Respect the 25-operations-per-`batch_design`-call cap.** Split larger mutations into sequential `pen.scene.batch` calls (with `await` between them so operations don't race).
+3. **Respect the 25-operations-per-`batch_design`-call cap.** Split larger mutations into sequential `pen.scene.batch` calls (with `await` between them so operations don't race). Going over isn't fatal — the first 25 operations still run and the result reports `truncated: true` — but you must then continue with only the operations that didn't run, not repeat ones that already did.
 4. **Code size limit: 100 KB.** `create_plugin`/`update_plugin` reject larger `code`.
 5. **UI plugins render their own DOM inside their iframe** (`document.body`, plain DOM/CSS — no framework is bundled for you), styled with the injected theme variables.
 6. **Iterate via `list_plugins` → `update_plugin`.** Don't `create_plugin` a near-duplicate when the user is asking for a change to an existing plugin — call `list_plugins` to find its id, then `update_plugin` with just the changed fields.

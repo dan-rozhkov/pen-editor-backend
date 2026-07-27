@@ -97,9 +97,11 @@ function createDepthTracker() {
 // Splits a batch_design `operations` script into its individual top-level
 // statements (a newline ends a statement only at top level — outside strings
 // and unbalanced (), {}, [] — so a multi-line value still counts as one
-// statement), skipping blank/comment/wrapper-noise lines. Exported so both
-// the op-count check and the embed-only node-type guard (below) can walk the
-// same real statements without duplicating the scanner.
+// statement), skipping blank/comment/wrapper-noise lines. Exported so the
+// embed-only node-type guard (below) can walk the real statements without
+// duplicating the scanner. There is no operation-count check anymore — a
+// batch over the cap is truncated at execution time on the frontend, not
+// rejected here.
 export function splitBatchDesignStatements(operations: string): string[] {
   operations = stripWrapperNoiseLines(operations);
   const statements: string[] = [];
@@ -272,7 +274,7 @@ export function nodeTypeOfCreateOp(statement: string): string | null {
 
 // Factory so a per-request variant (prototype/slides task policy) can add the
 // embed-only guard on top of the same validation the default tool uses,
-// without duplicating the alias/empty/op-count checks.
+// without duplicating the alias/empty checks.
 export const batchDesignInputShape = {
   operations: z.string().optional(),
   // Compatibility aliases for models that occasionally emit wrong key names.
@@ -298,23 +300,12 @@ export function makeBatchDesignInputSchema(opts?: { embedOnly?: boolean }) {
         return z.NEVER;
       }
 
-      const statements = splitBatchDesignStatements(operations);
-      if (statements.length > MAX_BATCH_DESIGN_OPERATIONS) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message:
-            `Too many operations (${statements.length}). Maximum is ${MAX_BATCH_DESIGN_OPERATIONS}. ` +
-            `Split the work into multiple sequential batch_design calls.`,
-          path: ["operations"],
-        });
-        return z.NEVER;
-      }
-
       // Structural backstop for prototype/slides task policy: the agent must
       // build every screen as a single embed with HTML inside, never native
       // frame/rect/text/etc nodes. Same-turn limitation: only statements
       // inside THIS batch_design call are checked.
       if (embedOnly) {
+        const statements = splitBatchDesignStatements(operations);
         for (const statement of statements) {
           if (!isCreateOp(statement)) continue; // U/D/G/C/M — never creates a node
           // A create op with no explicit `type` key isn't "no type" on
@@ -353,8 +344,10 @@ export const BATCH_DESIGN_DESCRIPTION = `Execute batch operations on the .pen no
 - \`G(nodeId, "ai"|"stock", prompt)\` — Generate/find image and apply as fill to frame/rectangle
 
 **Rules:**
-- Max ${MAX_BATCH_DESIGN_OPERATIONS} operations per call
-- If the task needs more than ${MAX_BATCH_DESIGN_OPERATIONS} operations, split it into multiple sequential \`batch_design\` calls
+- At most ${MAX_BATCH_DESIGN_OPERATIONS} operations are executed per call — prefer keeping each call within that limit
+- If you send more than ${MAX_BATCH_DESIGN_OPERATIONS} operations, the call does NOT fail: only the first ${MAX_BATCH_DESIGN_OPERATIONS} are executed and the rest are skipped. The result reports \`truncated: true\` plus counts and the list of skipped operations
+- On \`truncated: true\`, your next \`batch_design\` call must contain ONLY the skipped operations — never repeat operations that already executed, or you'll create duplicate nodes
+- Bindings (e.g. \`card=I(...)\`) do not survive across calls — in the follow-up call, replace any binding references from the truncated call with the real node ids returned in the result's \`bindings\` field
 - Bindings (e.g. \`card=I(...)\`) only live within one call — assigned ONLY via the \`binding=I(...)\`/\`binding=R(...)\` prefix, never via an \`id\` field inside nodeData (any \`id\`/\`name\` you put in nodeData is cosmetic and is ignored for referencing — it is NOT usable as a binding)
 - Use \`+\` to build paths: \`U(card+"/title", {content: "Hello"})\`
 - If using existing node IDs from previous tool results, pass them as strings (e.g. \`U("abc123", {...})\`)

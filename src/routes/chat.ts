@@ -39,11 +39,11 @@ const MAX_IMAGE_PARTS = 4;
 // pipeUIMessageStreamToResponse masks every stream error to a generic
 // "An error occurred." by default (so server internals never leak to the
 // client). But that also hides our own actionable tool-input validation
-// messages — e.g. batch_design's "Too many operations (30). Maximum is 25.
-// Split the work into multiple sequential batch_design calls." — from the
-// model, so it gets a dead-end instead of guidance it could act on. Surface the
-// message for tool-call validation errors only (safe, model-facing guidance);
-// keep the generic mask for everything else.
+// messages — e.g. batch_design's embed-only guard, 'Prototype/slides flow
+// is embed-only: batch_design may not create a native "frame" node.' — from
+// the model, so it gets a dead-end instead of guidance it could act on. Surface
+// the message for tool-call validation errors only (safe, model-facing
+// guidance); keep the generic mask for everything else.
 export function streamErrorMessage(error: unknown): string {
   if (
     NoSuchToolError.isInstance(error) ||

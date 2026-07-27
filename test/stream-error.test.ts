@@ -5,21 +5,21 @@ import { streamErrorMessage } from "../src/routes/chat.js";
 // The chat route pipes the UI message stream with onError: streamErrorMessage.
 // Without it, pipeUIMessageStreamToResponse masks every error to a generic
 // "An error occurred.", hiding actionable tool-input validation guidance (like
-// batch_design's 25-operation limit message) from the model.
+// batch_design's embed-only guard message) from the model.
 
 describe("streamErrorMessage", () => {
-  it("surfaces the message for invalid tool input (e.g. the batch_design limit)", () => {
+  it("surfaces the message for invalid tool input (e.g. the batch_design embed-only guard)", () => {
     const err = new InvalidToolInputError({
       toolName: "batch_design",
       toolInput: "{...}",
       cause: new Error(
-        "Too many operations (30). Maximum is 25. Split the work into multiple sequential batch_design calls.",
+        'Prototype/slides flow is embed-only: batch_design may not create a native "frame" node.',
       ),
     });
     const message = streamErrorMessage(err);
     expect(message).toBe(err.message);
-    expect(message).toContain("Too many operations (30)");
-    expect(message).toContain("Maximum is 25");
+    expect(message).toContain("embed-only");
+    expect(message).toContain("frame");
   });
 
   it("surfaces the message for an unknown tool", () => {

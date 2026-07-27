@@ -165,9 +165,9 @@ export function buildMcpServer(): McpServer {
       inputSchema: batchDesignInputShape,
     },
     async (rawArgs) => {
-      // Reuse the exact same alias-normalization + op-count validation the
-      // chat tool uses, instead of duplicating it — registerTool's own
-      // raw-shape validation can't run this schema's .transform() refinement.
+      // Reuse the exact same alias-normalization validation the chat tool
+      // uses, instead of duplicating it — registerTool's own raw-shape
+      // validation can't run this schema's .transform() refinement.
       const parsed = makeBatchDesignInputSchema().safeParse(rawArgs);
       if (!parsed.success) {
         return errorResult(parsed.error.issues.map((issue) => issue.message).join("; "));

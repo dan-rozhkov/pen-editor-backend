@@ -101,16 +101,14 @@ describe("makeBatchDesignInputSchema({ embedOnly: true })", () => {
     expect(schema.safeParse({ operations }).success).toBe(true);
   });
 
-  it("still enforces the op-count limit", () => {
+  it("no longer rejects a script over the 25-op limit — truncation is now handled client-side", () => {
     const ops = Array.from({ length: 26 }, (_, i) => `D("node${i}")`).join(
       "\n",
     );
     const result = schema.safeParse({ operations: ops });
-    expect(result.success).toBe(false);
-    if (!result.success) {
-      expect(JSON.stringify(result.error.issues)).toContain(
-        "Too many operations",
-      );
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.operations).toBe(ops);
     }
   });
 
@@ -145,5 +143,16 @@ describe("makeBatchDesignInputSchema({ embedOnly: false }) (default)", () => {
       operations: 'x=I(document, {type: "frame"})',
     });
     expect(result.success).toBe(true);
+  });
+
+  it("regression: a 30-operation script validates successfully and passes the operations through unmodified (no backend truncation)", () => {
+    const ops = Array.from({ length: 30 }, (_, i) => `D("node${i}")`).join(
+      "\n",
+    );
+    const result = schema.safeParse({ operations: ops });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.operations).toBe(ops);
+    }
   });
 });

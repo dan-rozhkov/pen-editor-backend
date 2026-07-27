@@ -140,12 +140,12 @@ describe("batch_design schema", () => {
     expect(schema.safeParse({ operations: 42 }).success).toBe(false);
   });
 
-  it("rejects more than 25 operations", () => {
+  it("accepts more than 25 operations — the backend no longer truncates; the frontend truncates and reports back", () => {
     const ops = Array.from({ length: 26 }, (_, i) => `D("node${i}")`).join("\n");
     const result = schema.safeParse({ operations: ops });
-    expect(result.success).toBe(false);
-    if (!result.success) {
-      expect(JSON.stringify(result.error.issues)).toContain("Too many operations");
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.operations).toBe(ops);
     }
   });
 

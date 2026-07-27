@@ -136,8 +136,8 @@ Tool call payload shape is strict: always send \`{"operations":"<mini-script>"}\
 - If using existing node IDs from previous tool results, pass them as strings, e.g. \`U("abc123", {...})\`
 - **Replace (R) destroys the old node and its children.** After \`R("parentId/childId", ...)\`, the old childId and all its descendants no longer exist. Do NOT reference old child IDs after a Replace — read the new structure with \`batch_get\` if needed.
 - **Binding syntax:** No spaces around \`=\`. Write \`foo=I(...)\`, NEVER \`foo= I(...)\` or \`foo =I(...)\`.
-- Max 25 operations per batch_design call
-- If the task needs more than 25 operations, stop and send multiple sequential \`batch_design\` calls instead of one oversized call
+- At most 25 operations execute per batch_design call — prefer keeping each call within that limit
+- Sending more than 25 does NOT fail the call: only the first 25 execute, the rest are skipped, and the result reports \`truncated: true\` with counts and the skipped operations. If you see \`truncated: true\`, your next call must contain ONLY the skipped operations (never repeat ones that already ran) and must use the real node IDs from the result's \`bindings\` field instead of the old call's binding names
 - There is NO "image" node type — use G() on frame/rectangle to apply image fills
 - \`placeholder: true\` marks frames being actively designed
 - Text has no default color — always set \`fill\` on text nodes
@@ -235,7 +235,7 @@ Follow this general workflow when designing:
 - You cannot see the rendered canvas (no screenshot tool). Get layout right by construction: use flexbox layout, check snapshot_layout for overflow/clipping, and re-read nodes with batch_get instead of assuming.
 - Build layouts using flexbox (layout: "vertical" | "horizontal") rather than absolute positioning
 - Keep batch_design calls focused — split large designs into multiple calls by section
-- Prefer multiple small successful \`batch_design\` calls over one large call near the operation limit
+- Prefer multiple small \`batch_design\` calls over one large call near the operation limit — going over is not fatal (the first 25 ops still execute and \`truncated: true\` tells you what's left), but staying under it avoids the extra round-trip of resuming with the skipped operations
 - Do NOT use emoji in any generated content (including text nodes and embed HTML content).
 - Use ONE font family per design by default; build hierarchy with weight/size/color. Add a second family (e.g. a monospace) only when the user explicitly asks or the content is literally code.
 - Do NOT add OS/device chrome (iOS/Android status bar, notch/Dynamic Island, home indicator, browser chrome) to mockups unless the user explicitly requests it.

@@ -148,13 +148,16 @@ describe("MCP server integration", () => {
     await client.close();
   });
 
-  it("rejects a batch_design call with too many operations before it ever reaches the bridge", async () => {
+  it("no longer rejects a batch_design call with more than 25 operations — it now reaches the bridge for client-side truncation", async () => {
     const client = await connectMcpClient(server.url, TEST_TOKEN);
     const tooMany = Array.from({ length: 26 }, (_, i) => `D("n${i}")`).join("\n");
 
     const result = await client.callTool({ name: "batch_design", arguments: { operations: tooMany } });
+    // No editor tab is connected in this test, so the call still errors —
+    // but now from the bridge (no connected tab), not from op-count validation.
     expect(result.isError).toBe(true);
-    expect(JSON.stringify(result.content)).toContain("Too many operations");
+    expect(JSON.stringify(result.content)).toContain("No Pen Editor tab is connected");
+    expect(JSON.stringify(result.content)).not.toContain("Too many operations");
 
     await client.close();
   });
