@@ -23,6 +23,72 @@ export interface ScreenshotResult {
 // awaited (with a bounded timeout) before the snapshot — without this, text
 // reliably renders in a fallback font and images show as blank boxes,
 // because Playwright's `load` event fires before either finishes.
+// A bottom-pinned tab bar covering the last row of content is the single most
+// common flaw in the agent's screens: it pins a bar to `bottom: 0` and then
+// lets the content run to the full screen height, so the last line sits under
+// an opaque bar. The skill now forbids this, but a prompt can't guarantee it,
+// and a half-covered row is glaring in a gallery of otherwise clean screens.
+//
+// The repair is deterministic and non-destructive: since the bar is pinned to
+// the bottom, making the screen taller moves the BAR down and leaves the
+// content where the designer put it. Nothing is deleted, moved or rescaled —
+// the screen just gains the strip of room the design forgot to reserve.
+// Returns how many pixels were added (0 when nothing overlapped).
+async function clearBottomBarOverlap(page: Page): Promise<number> {
+  // NOTE: no named inner functions inside page.evaluate — tsx/esbuild rewrites
+  // them with a `__name` helper that only exists in the Node bundle, so the
+  // browser throws "__name is not defined". Keep the body to inline
+  // expressions.
+  const needed = await page.evaluate(() => {
+    // `bottom: 0` alone is not enough: a hero overlay pinned to the bottom of
+    // its own container matches that too, and treating it as a screen-level bar
+    // makes everything below it look covered. What identifies a real bottom bar
+    // is that its bottom edge lands on the bottom edge of the screen.
+    const screenBottom = document.body.getBoundingClientRect().bottom;
+    const bars = [...document.body.querySelectorAll("*")].filter((el) => {
+      const cs = getComputedStyle(el);
+      if (cs.position !== "fixed" && cs.position !== "absolute") return false;
+      return el.getBoundingClientRect().bottom >= screenBottom - 1;
+    });
+    if (bars.length === 0) return 0;
+
+    const barTop = Math.min(...bars.map((b) => b.getBoundingClientRect().top));
+    const barHeight = Math.max(...bars.map((b) => b.getBoundingClientRect().height));
+    if (barHeight < 1) return 0;
+
+    // Only leaf nodes with visible content count — an ancestor box that merely
+    // spans the whole screen isn't "covered" in any way a viewer would notice.
+    const covered = [...document.body.querySelectorAll("*")].filter((el) => {
+      if (el.children.length > 0) return false;
+      if (bars.some((bar) => bar === el || bar.contains(el))) return false;
+      const hasInk = (el.textContent ?? "").trim().length > 0 || el.tagName === "IMG";
+      if (!hasInk) return false;
+      return el.getBoundingClientRect().bottom > barTop;
+    });
+    if (covered.length === 0) return 0;
+
+    const lowest = Math.max(...covered.map((el) => el.getBoundingClientRect().bottom));
+    return Math.ceil(lowest - barTop);
+  });
+
+  if (needed <= 0) return 0;
+
+  const viewport = page.viewportSize();
+  if (!viewport) return 0;
+
+  await page.setViewportSize({ width: viewport.width, height: viewport.height + needed });
+  // An `absolute`-positioned bar is pinned to the body box, not the viewport,
+  // so the body has to grow too — its height is usually hard-coded to the
+  // device preset.
+  await page.evaluate((extra) => {
+    const body = document.body;
+    const current = body.getBoundingClientRect().height;
+    body.style.height = `${current + extra}px`;
+  }, needed);
+
+  return needed;
+}
+
 export async function screenshotHtml(
   page: Page,
   html: string,
@@ -46,6 +112,11 @@ export async function screenshotHtml(
     // Timed out or errored waiting for fonts/images — still take the
     // screenshot rather than failing the whole run over a slow asset.
   });
+
+  const grewBy = await clearBottomBarOverlap(page);
+  if (grewBy > 0) {
+    console.log(`[showcase] grew the screen by ${grewBy}px so the bottom bar stopped covering content`);
+  }
 
   // Screenshot the <body> box rather than the page. The agent lays its screens
   // out at a fixed device width of its own choosing (375x812 is what it
