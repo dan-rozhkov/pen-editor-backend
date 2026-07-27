@@ -77,9 +77,8 @@ async function clearBottomBarOverlap(page: Page): Promise<number> {
   if (!viewport) return 0;
 
   await page.setViewportSize({ width: viewport.width, height: viewport.height + needed });
-  // An `absolute`-positioned bar is pinned to the body box, not the viewport,
-  // so the body has to grow too — its height is usually hard-coded to the
-  // device preset.
+  // The body has to grow with the viewport — its height is usually hard-coded
+  // to the device preset, and it is the box that gets screenshotted.
   await page.evaluate((extra) => {
     const body = document.body;
     const current = body.getBoundingClientRect().height;
@@ -87,6 +86,38 @@ async function clearBottomBarOverlap(page: Page): Promise<number> {
   }, needed);
 
   return needed;
+}
+
+// Screen-level bars hang off the VIEWPORT, not the <body> box: `fixed` always
+// does, and `absolute` does too whenever no ancestor is positioned — which is
+// the normal case, since the agent leaves <body> `static`. So a design whose
+// body is shorter than SHOWCASE_VIEWPORT (375x812 is what the agent actually
+// emits) leaves its tab bar sitting below the body box, and the body-element
+// screenshot in `screenshotHtml` slices the bar's last rows off. That was
+// visible on real gallery cards as a tab bar with its labels cut in half.
+//
+// Extend the body down to the lowest pinned element instead. Returns how many
+// pixels were added (0 when nothing hangs below).
+async function coverPinnedBars(page: Page): Promise<number> {
+  // NOTE: no named inner functions inside page.evaluate — see the note in
+  // clearBottomBarOverlap.
+  return page.evaluate(() => {
+    const body = document.body;
+    const rect = body.getBoundingClientRect();
+    let lowest = rect.bottom;
+    for (const el of body.querySelectorAll("*")) {
+      const cs = getComputedStyle(el);
+      if (cs.position !== "fixed" && cs.position !== "absolute") continue;
+      if (cs.visibility === "hidden" || cs.display === "none") continue;
+      const r = el.getBoundingClientRect();
+      if (r.height >= 1 && r.bottom > lowest) lowest = r.bottom;
+    }
+
+    const extra = Math.ceil(lowest - rect.bottom);
+    if (extra <= 0) return 0;
+    body.style.height = `${rect.height + extra}px`;
+    return extra;
+  });
 }
 
 export async function screenshotHtml(
@@ -135,6 +166,11 @@ export async function screenshotHtml(
   const grewBy = await clearBottomBarOverlap(page);
   if (grewBy > 0) {
     console.log(`[showcase] grew the screen by ${grewBy}px so the bottom bar stopped covering content`);
+  }
+
+  const coveredBy = await coverPinnedBars(page);
+  if (coveredBy > 0) {
+    console.log(`[showcase] extended the screen by ${coveredBy}px so the bottom bar wasn't cut off`);
   }
 
   // Screenshot the <body> box rather than the page. The agent lays its screens

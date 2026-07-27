@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While on `0.x`, minor bumps may include breaking changes.
 
+## [0.30.0] - 2026-07-28
+
+### Added
+- **Autonomous showcase generation** (`npm run showcase:generate`) — runs the design agent with no browser and no HTTP request: picks a theme, runs one `/prototype` turn through the shared `prepareChatTurn`, harvests up to 5 embed screens out of `batch_design`, screenshots each with Playwright, uploads PNG + raw HTML to S3 and stores a row per screen. `GET /api/showcase` serves them back to the gallery at the frontend's `/`.
+- **Real imagery in the big picture slots** — the run gets a `generate_image` implementation (capped at 8 per run, failures and budget exhaustion degrade to a picsum placeholder rather than an error), so hero shots and posters are generated art instead of stock placeholders.
+- **`--theme` and `--model` flags** for one-off runs (`npm run showcase:generate -- --theme="билеты в кино" --model=moonshotai/kimi-k2.5`). Without them the behaviour is unchanged: a random theme not used in the last 10 runs, and the default showcase model.
+
+### Fixed
+- **Image URLs the model mistyped are repaired before the screenshot.** A run came back with two broken `<img>` tags whose objects were in S3 and public — the model had transcribed their UUIDs one character wrong (`…af50a7f4` → `…af70a7f4`, a 403). URLs under our own upload directory are now snapped to the nearest URL `generate_image` actually issued; foreign hosts are untouched, and a URL too far from anything issued is logged instead of being pointed at an unrelated image.
+- **The showcase agent was running without any of its skills** — `loadSkills` only ran from `index.ts`, so the generator silently produced weaker work. Loading is now guaranteed by `prepareChatTurn`.
+- **A slow image no longer takes down the run** — `setContent` waited on every remote asset and threw on timeout; asset readiness is now a bounded wait that degrades to "screenshot anyway".
+- **Bottom bars no longer cover the last row of content** — the screen grows by exactly the overlap instead of the design being cropped.
+- Screenshots crop to the design rather than the viewport, so the gallery has no empty margins.
+
+### Changed
+- Coverage config excludes `src/showcase/run.ts` (script entrypoint, like `analysis/run.ts`) and `src/showcase/screenshot.ts` (tested only against a real Chromium, which CI does not install). Thresholds ratcheted **up** to 89/80/89/90.
+
 ## [0.29.0] - 2026-07-27
 
 ### Changed

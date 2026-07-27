@@ -78,4 +78,37 @@ describe.skipIf(!!process.env.CI)("screenshotHtml", () => {
 
     expect(height).toBe(H * S);
   });
+
+  // What the agent actually emits: a body sized to its own device preset
+  // (375x812), `position: static`, and a tab bar at `position: absolute;
+  // bottom: 0`. Static body means the bar's containing block is the initial
+  // containing block — the VIEWPORT — so the bar sits at the viewport's bottom
+  // edge, below the shorter body box, and the body-element screenshot sliced
+  // its last rows off.
+  it("covers a bottom bar pinned below a body shorter than the viewport", async () => {
+    if (!browser) return;
+
+    const shortBody = `margin:0;width:${W}px;height:${H - 32}px;overflow:hidden`;
+    const html = `<!doctype html><html><body style="${shortBody}"><div style="height:400px">content</div>${TAB_BAR}</body></html>`;
+    const { height } = await shoot(html);
+
+    // The bar's bottom edge is the viewport bottom, so the screen has to reach
+    // it — not stop at the body's own 812px.
+    expect(height).toBe(H * S);
+  });
+
+  it("covers the bar after growing the screen to clear overlapping content", async () => {
+    if (!browser) return;
+
+    const bodyHeight = H - 32;
+    // Content runs 20px under the bar (which occupies viewport H-64 .. H).
+    const contentHeight = H - 64 + 20;
+    const shortBody = `margin:0;width:${W}px;height:${bodyHeight}px;overflow:hidden`;
+    const html = `<!doctype html><html><body style="${shortBody}"><div style="height:${contentHeight}px">content</div>${TAB_BAR}</body></html>`;
+    const { height } = await shoot(html);
+
+    // Viewport grew by 20 to uncover the content, taking the bar with it, so
+    // the bar's bottom — and the screen — now sit at H + 20.
+    expect(height).toBe((H + 20) * S);
+  });
 });
