@@ -7,23 +7,9 @@ import { createS3Client, uploadObject } from "../services/s3.js";
 import { SHOWCASE_THEMES, pickTheme } from "./themes.js";
 import { runShowcaseGeneration } from "./runner.js";
 import { openShowcaseBrowser } from "./screenshot.js";
+import { readFlag } from "./cliFlags.js";
 
 const RECENT_THEMES_WINDOW = 10;
-
-// Optional one-off overrides: `--theme="заказ такси"` pins the theme instead
-// of picking a random unused one, `--model=moonshotai/kimi-k2.5` swaps the
-// generation model. Both default to the automatic behaviour, so the unattended
-// cron-style invocation is unchanged.
-function readFlag(argv: string[], name: string): string | undefined {
-  const prefix = `--${name}=`;
-  const inline = argv.find((a) => a.startsWith(prefix));
-  if (inline) return inline.slice(prefix.length);
-  const index = argv.indexOf(`--${name}`);
-  if (index !== -1 && argv[index + 1] && !argv[index + 1].startsWith("--")) {
-    return argv[index + 1];
-  }
-  return undefined;
-}
 
 async function main(): Promise<void> {
   const config = loadConfig();

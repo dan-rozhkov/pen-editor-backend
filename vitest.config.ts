@@ -19,6 +19,17 @@ export default defineConfig({
         // build and the live `npm run analyze`, per the repo convention that
         // integration loops are not unit-tested.
         "src/analysis/run.ts",
+        // showcase generator entrypoint: same shape as analysis/run.ts — reads
+        // env, connects to Postgres and S3, drives the run. Its pure seam
+        // (readFlag) lives in src/showcase/cliFlags.ts and is unit-tested.
+        "src/showcase/run.ts",
+        // Playwright driver. It IS tested — test/showcase-screenshot.test.ts
+        // asserts the real layout geometry — but only against a real Chromium,
+        // which CI does not install (`npx playwright install chromium` is a
+        // documented local step), so those tests skip there. Counting it would
+        // measure whether CI has browser binaries, not whether the code is
+        // tested.
+        "src/showcase/screenshot.ts",
         "src/**/*.d.ts",
       ],
       // Non-regression gate: floors sit ~1-2pp below current measured coverage
@@ -26,10 +37,10 @@ export default defineConfig({
       // minor v8 measurement variance. Ratchet these UP as coverage grows;
       // never lower them to make a red build pass.
       thresholds: {
-        statements: 82,
-        branches: 78,
-        functions: 80,
-        lines: 83,
+        statements: 89,
+        branches: 80,
+        functions: 89,
+        lines: 90,
       },
     },
   },

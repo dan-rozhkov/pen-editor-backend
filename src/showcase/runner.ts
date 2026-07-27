@@ -3,6 +3,7 @@ import type { Config } from "../config.js";
 import { prepareChatTurn } from "../ai/chatTurn.js";
 import { generateImage } from "../services/imageGen.js";
 import { extractEmbedScreens } from "./extractEmbeds.js";
+import { repairGeneratedImageUrls } from "./repairImageUrls.js";
 
 // Hard cap on screens kept per run — matches the showcase's product shape
 // (a short flow, not a whole app). Anything beyond this is dropped and
@@ -123,7 +124,7 @@ function placeholderImageUrl(prompt: string): string {
 // A failure is reported as a usable placeholder rather than an error: a broken
 // image in a showcase screen is worse than a generic one, and the run must not
 // die because one image timed out.
-function makeGenerateImageTool(config: Config) {
+function makeGenerateImageTool(config: Config, onIssuedUrl: (url: string) => void) {
   let generated = 0;
 
   return async ({ prompt }: { prompt: string }) => {
@@ -144,6 +145,7 @@ function makeGenerateImageTool(config: Config) {
     const slot = (generated += 1);
     try {
       const { url } = await generateImage(config, prompt);
+      onIssuedUrl(url);
       console.log(`[showcase] generated image ${slot}/${MAX_GENERATED_IMAGES}: ${prompt.slice(0, 60)}`);
       return JSON.stringify({ url, prompt });
     } catch (err) {
@@ -165,7 +167,12 @@ function instrumentTools(
   onScreens: (screens: ShowcaseScreenDraft[]) => Array<{ id: string; name: string }>,
 ): ToolSet {
   const instrumented: ToolSet = { ...tools };
-  const generateImageExecute = makeGenerateImageTool(config);
+  // Every URL generate_image handed the model this run, so an image URL the
+  // model mistyped into the HTML can be snapped back to the real one.
+  const issuedImageUrls: string[] = [];
+  const generateImageExecute = makeGenerateImageTool(config, (url) =>
+    issuedImageUrls.push(url),
+  );
 
   for (const name of Object.keys(instrumented)) {
     const entry = instrumented[name] as { execute?: unknown };
@@ -175,7 +182,23 @@ function instrumentTools(
       instrumented[name] = {
         ...instrumented[name],
         execute: async (args: { operations: string }) => {
-          const extracted = extractEmbedScreens(args.operations);
+          const extracted = extractEmbedScreens(args.operations).map((screen) => {
+            const { html, repairs, unresolved } = repairGeneratedImageUrls(
+              screen.htmlContent,
+              issuedImageUrls,
+            );
+            for (const { from, to } of repairs) {
+              console.warn(
+                `[showcase] repaired a mistyped generated-image URL in "${screen.name}": ${from} -> ${to}`,
+              );
+            }
+            for (const url of unresolved) {
+              console.warn(
+                `[showcase] screen "${screen.name}" references an image URL no generate_image call returned: ${url}`,
+              );
+            }
+            return { ...screen, htmlContent: html };
+          });
           const created = onScreens(extracted);
           return JSON.stringify({
             success: true,

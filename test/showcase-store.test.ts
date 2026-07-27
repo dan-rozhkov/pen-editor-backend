@@ -113,6 +113,43 @@ describe("createShowcaseStore", () => {
     ).rejects.toMatchObject({ statusCode: 400 });
   });
 
+  it.each([
+    ["no separator", Buffer.from("2026-07-27T10:00:00.000Z").toString("base64url")],
+    ["an empty timestamp", Buffer.from("|some-id").toString("base64url")],
+    ["an empty id", Buffer.from("2026-07-27T10:00:00.000Z|").toString("base64url")],
+    ["an unparseable timestamp", Buffer.from("not-a-date|some-id").toString("base64url")],
+  ])("rejects a cursor with %s", async (_label, cursor) => {
+    const pool = fakePool([]);
+    const store = createShowcaseStore(
+      makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
+      pool,
+    );
+    await expect(
+      store!.listScreens({ limit: 10, cursor }),
+    ).rejects.toMatchObject({ statusCode: 400 });
+  });
+
+  it("applies a valid cursor as a keyset predicate", async () => {
+    const pool = fakePool([]);
+    const store = createShowcaseStore(
+      makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
+      pool,
+    );
+    const cursor = Buffer.from(
+      "2026-07-27T10:00:00.000Z|11111111-1111-1111-1111-111111111111",
+    ).toString("base64url");
+    const { screens, nextCursor } = await store!.listScreens({ limit: 10, cursor });
+
+    expect(screens).toEqual([]);
+    expect(nextCursor).toBeNull();
+    expect(pool.calls[0].sql).toContain("(created_at, id) <");
+    expect(pool.calls[0].params).toEqual([
+      "2026-07-27T10:00:00.000Z",
+      "11111111-1111-1111-1111-111111111111",
+      10,
+    ]);
+  });
+
   it("recentThemes returns distinct themes, freshest first", async () => {
     const pool = fakePool([{ theme: "fitness" }, { theme: "finance" }]);
     const store = createShowcaseStore(
