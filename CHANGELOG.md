@@ -19,6 +19,7 @@ While on `0.x`, minor bumps may include breaking changes.
 - **A slow image no longer takes down the run** — `setContent` waited on every remote asset and threw on timeout; asset readiness is now a bounded wait that degrades to "screenshot anyway".
 - **Bottom bars no longer cover the last row of content** — the screen grows by exactly the overlap instead of the design being cropped.
 - Screenshots crop to the design rather than the viewport, so the gallery has no empty margins.
+- **Tab bars are no longer cut in half.** A screen-level bar hangs off the viewport, not the `<body>` box, so with a body shorter than the showcase viewport the body-element screenshot sliced the bar's last rows off. The body is now extended down to the lowest pinned element before the shot.
 
 ### Changed
 - Coverage config excludes `src/showcase/run.ts` (script entrypoint, like `analysis/run.ts`) and `src/showcase/screenshot.ts` (tested only against a real Chromium, which CI does not install). Thresholds ratcheted **up** to 89/80/89/90.
