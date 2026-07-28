@@ -9,6 +9,19 @@ import { createShowcaseStore, type ShowcaseStore } from "../showcase/store.js";
 const querySchema = z.object({
   limit: z.coerce.number().int().min(1).max(24).default(12),
   cursor: z.string().optional(),
+  sort: z.enum(["popular", "latest"]).default("popular"),
+  category: z.string().min(1).optional(),
+});
+
+const likeParamsSchema = z.object({
+  runId: z.string().uuid(),
+});
+
+// The 1..25 bound exists solely so a single request can't post `count: 1e9`
+// — it is not a rate limit (there's no dedup, claps are meant to be
+// repeatable).
+const likeBodySchema = z.object({
+  count: z.coerce.number().int().min(1).max(25),
 });
 
 export async function showcaseRoutes(
@@ -31,10 +44,12 @@ export async function showcaseRoutes(
       return reply.status(400).send({ error: "Invalid query parameters" });
     }
 
-    const { limit, cursor } = parsed.data;
+    const { limit, cursor, sort, category } = parsed.data;
     const { apps, nextCursor } = await store.listApps({
       limit,
       cursor,
+      sort,
+      category,
     });
 
     // Explicit field lists, not the store rows: `prompt` (the full generation
@@ -46,6 +61,7 @@ export async function showcaseRoutes(
         theme: app.theme,
         model: app.model,
         createdAt: app.createdAt,
+        likes: app.likes,
         screens: app.screens.map((screen) => ({
           id: screen.id,
           title: screen.title,
@@ -60,6 +76,40 @@ export async function showcaseRoutes(
       })),
       nextCursor,
     });
+  });
+
+  app.get("/api/showcase/categories", async (request, reply) => {
+    if (!store) {
+      return reply
+        .status(503)
+        .send({ error: "Showcase storage is not configured" });
+    }
+
+    const categories = await store.listCategories();
+    return reply.send({ categories });
+  });
+
+  app.post("/api/showcase/:runId/like", async (request, reply) => {
+    if (!store) {
+      return reply
+        .status(503)
+        .send({ error: "Showcase storage is not configured" });
+    }
+
+    const params = likeParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      return reply.status(400).send({ error: "Invalid runId" });
+    }
+    const body = likeBodySchema.safeParse(request.body);
+    if (!body.success) {
+      return reply.status(400).send({ error: "Invalid request body" });
+    }
+
+    const likes = await store.likeApp(params.data.runId, body.data.count);
+    if (likes === null) {
+      return reply.status(404).send({ error: "App not found" });
+    }
+    return reply.send({ likes });
   });
 
   return store;

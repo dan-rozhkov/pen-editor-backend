@@ -25,6 +25,7 @@ const APP: ShowcaseApp = {
   theme: SCREEN.theme,
   model: SCREEN.model,
   createdAt: SCREEN.createdAt,
+  likes: 4,
   screens: [SCREEN],
 };
 
@@ -33,6 +34,8 @@ function fakeStore(overrides: Partial<ShowcaseStore> = {}): ShowcaseStore {
     insertScreen: async () => {},
     listApps: async () => ({ apps: [APP], nextCursor: null }),
     recentThemes: async () => [],
+    listCategories: async () => [],
+    likeApp: async () => null,
     close: async () => {},
     ...overrides,
   };
@@ -69,6 +72,7 @@ describe("GET /api/showcase", () => {
       theme: APP.theme,
       model: APP.model,
       createdAt: APP.createdAt,
+      likes: APP.likes,
       screens: [
         {
           id: SCREEN.id,
@@ -143,5 +147,172 @@ describe("GET /api/showcase", () => {
     const instance = await build(store);
     await instance.inject({ method: "GET", url: "/api/showcase" });
     expect(receivedLimit).toBe(12);
+  });
+
+  it("defaults sort to popular and category to undefined", async () => {
+    let received: { sort?: string; category?: string } = {};
+    const store = fakeStore({
+      listApps: async (opts) => {
+        received = { sort: opts.sort, category: opts.category };
+        return { apps: [], nextCursor: null };
+      },
+    });
+    const instance = await build(store);
+    await instance.inject({ method: "GET", url: "/api/showcase" });
+    expect(received).toEqual({ sort: "popular", category: undefined });
+  });
+
+  it("passes sort=latest and category through to the store", async () => {
+    let received: { sort?: string; category?: string } = {};
+    const store = fakeStore({
+      listApps: async (opts) => {
+        received = { sort: opts.sort, category: opts.category };
+        return { apps: [], nextCursor: null };
+      },
+    });
+    const instance = await build(store);
+    await instance.inject({
+      method: "GET",
+      url: "/api/showcase?sort=latest&category=fitness%20tracker",
+    });
+    expect(received).toEqual({ sort: "latest", category: "fitness tracker" });
+  });
+
+  it("returns 400 for an invalid sort value", async () => {
+    const instance = await build(fakeStore());
+    const res = await instance.inject({
+      method: "GET",
+      url: "/api/showcase?sort=trending",
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("returns 400 for an empty category", async () => {
+    const instance = await build(fakeStore());
+    const res = await instance.inject({
+      method: "GET",
+      url: "/api/showcase?category=",
+    });
+    expect(res.statusCode).toBe(400);
+  });
+});
+
+describe("GET /api/showcase/categories", () => {
+  it("returns categories from the store", async () => {
+    const store = fakeStore({
+      listCategories: async () => [
+        { theme: "fitness", apps: 3 },
+        { theme: "finance", apps: 1 },
+      ],
+    });
+    const instance = await build(store);
+    const res = await instance.inject({ method: "GET", url: "/api/showcase/categories" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      categories: [
+        { theme: "fitness", apps: 3 },
+        { theme: "finance", apps: 1 },
+      ],
+    });
+  });
+
+  it("returns 503 when showcase storage is not configured", async () => {
+    const instance = await build(null);
+    const res = await instance.inject({ method: "GET", url: "/api/showcase/categories" });
+    expect(res.statusCode).toBe(503);
+  });
+});
+
+describe("POST /api/showcase/:runId/like", () => {
+  const runId = APP.runId;
+
+  it("increments and returns the new total", async () => {
+    const store = fakeStore({
+      likeApp: async (id, count) => {
+        expect(id).toBe(runId);
+        expect(count).toBe(3);
+        return 7;
+      },
+    });
+    const instance = await build(store);
+    const res = await instance.inject({
+      method: "POST",
+      url: `/api/showcase/${runId}/like`,
+      payload: { count: 3 },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ likes: 7 });
+  });
+
+  it("returns 404 when the store reports no such app", async () => {
+    const store = fakeStore({ likeApp: async () => null });
+    const instance = await build(store);
+    const res = await instance.inject({
+      method: "POST",
+      url: `/api/showcase/${runId}/like`,
+      payload: { count: 1 },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("returns 400 for a runId that isn't a UUID", async () => {
+    const instance = await build(fakeStore());
+    const res = await instance.inject({
+      method: "POST",
+      url: `/api/showcase/not-a-uuid/like`,
+      payload: { count: 1 },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("returns 400 for count=0 (below the 1..25 bound)", async () => {
+    const instance = await build(fakeStore());
+    const res = await instance.inject({
+      method: "POST",
+      url: `/api/showcase/${runId}/like`,
+      payload: { count: 0 },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("returns 400 for count=26 (above the 1..25 bound)", async () => {
+    const instance = await build(fakeStore());
+    const res = await instance.inject({
+      method: "POST",
+      url: `/api/showcase/${runId}/like`,
+      payload: { count: 26 },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("accepts count=25 (the upper bound)", async () => {
+    const store = fakeStore({ likeApp: async () => 25 });
+    const instance = await build(store);
+    const res = await instance.inject({
+      method: "POST",
+      url: `/api/showcase/${runId}/like`,
+      payload: { count: 25 },
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("returns 400 for a non-integer count", async () => {
+    const instance = await build(fakeStore());
+    const res = await instance.inject({
+      method: "POST",
+      url: `/api/showcase/${runId}/like`,
+      payload: { count: 1.5 },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("returns 503 when showcase storage is not configured", async () => {
+    const instance = await build(null);
+    const res = await instance.inject({
+      method: "POST",
+      url: `/api/showcase/${runId}/like`,
+      payload: { count: 1 },
+    });
+    expect(res.statusCode).toBe(503);
   });
 });

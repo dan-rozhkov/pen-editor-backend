@@ -91,7 +91,11 @@ export async function runPinAction(deps: PinDeps, action: PinAction): Promise<vo
       return;
     }
     case "list": {
-      const { apps } = await deps.store.listApps({ limit: action.limit });
+      // `sort: "latest"` explicitly — `listApps`'s default flipped to
+      // "popular" when the feed grew a sort tab, and a `--list` sorted by
+      // likes hides exactly the run you're here to pin: a freshly published
+      // app with 0 likes wouldn't appear until something else liked it.
+      const { apps } = await deps.store.listApps({ limit: action.limit, sort: "latest" });
       if (apps.length === 0) {
         deps.log("[pin] no published screens");
         return;

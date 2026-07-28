@@ -177,7 +177,11 @@ describe("runPinAction", () => {
     });
     const log = vi.fn();
     await runPinAction({ store, log }, { kind: "list", limit: 8 });
-    expect(store.listApps).toHaveBeenCalledWith({ limit: 8 });
+    // Regression: `--list` must stay sorted by recency even though
+    // `listApps`'s own default is "popular" (the feed's sort tab default) —
+    // a freshly published app with 0 likes has to appear so its screen ids
+    // are pinnable, not be pushed off the list by anything with a like.
+    expect(store.listApps).toHaveBeenCalledWith({ limit: 8, sort: "latest" });
     const lines = log.mock.calls.map((call) => call[0] as string);
     // One header per run, screens indented underneath it, pinned marked.
     expect(lines[0]).toContain("run-a");

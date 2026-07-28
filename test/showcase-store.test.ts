@@ -61,6 +61,12 @@ interface FakeRow {
   created_at_raw?: string;
   pinned_at: Date | null;
   published: boolean;
+  // Mirrors `showcase_app_likes.likes` for this row's run_id — every row of
+  // one run should carry the same value (a like belongs to the app, not the
+  // screen); the fake takes the max across a run's rows, same as the real
+  // query's `COALESCE(MAX(l.likes), 0)`, so a mismatched fixture can't
+  // silently pass. Defaults to 0 (no likes row) when unset.
+  likes?: number;
 }
 
 // Recovers full (microsecond) precision from a raw timestamp string as
@@ -77,10 +83,61 @@ function preciseMicros(raw: string): number {
   return new Date(withoutFraction).getTime() * 1000 + fractionMicros;
 }
 
-function fakeDb(initialRows: FakeRow[]): TraceQueryable & { rows: FakeRow[] } {
+function fakeDb(
+  initialRows: FakeRow[],
+): TraceQueryable & { rows: FakeRow[]; likes: Map<string, number> } {
   const rows = initialRows.map((r) => ({ ...r }));
+  // Separate from `rows.likes` (a fixture convenience — see `FakeRow.likes`):
+  // this is the fake's model of the actual `showcase_app_likes` table, kept
+  // as its own map so `likeApp`'s increment/upsert has real state to act on
+  // rather than mutating fixture rows. Seeded from any `FakeRow.likes` set on
+  // construction so ordering/pagination tests can still just set `likes` on
+  // a row.
+  const likes = new Map<string, number>();
+  for (const r of rows) {
+    if (r.likes !== undefined) {
+      likes.set(r.run_id, Math.max(likes.get(r.run_id) ?? 0, r.likes));
+    }
+  }
 
   async function query(sql: string, params: unknown[] = []) {
+    if (sql.includes("INSERT INTO showcase_app_likes")) {
+      if (
+        !sql.includes(
+          "ON CONFLICT (run_id) DO UPDATE",
+        ) ||
+        !sql.includes("SET likes = showcase_app_likes.likes + $2")
+      ) {
+        throw new Error(`unrecognized query (likeApp upsert shape changed): ${sql}`);
+      }
+      const [runId, count] = params as [string, number];
+      const total = (likes.get(runId) ?? 0) + count;
+      likes.set(runId, total);
+      return { rows: [{ likes: String(total) }] };
+    }
+
+    if (sql.includes("SELECT 1 FROM showcase_screens WHERE run_id = $1 AND published = true")) {
+      const [runId] = params as [string];
+      const found = rows.some((r) => r.run_id === runId && r.published);
+      return { rows: found ? [{ "?column?": 1 }] : [] };
+    }
+
+    if (sql.includes("COUNT(DISTINCT run_id)")) {
+      if (!sql.includes("ORDER BY apps DESC, theme ASC")) {
+        throw new Error(`unrecognized query (listCategories ORDER BY changed): ${sql}`);
+      }
+      const runsByTheme = new Map<string, Set<string>>();
+      for (const r of rows) {
+        if (!r.published) continue;
+        if (!runsByTheme.has(r.theme)) runsByTheme.set(r.theme, new Set());
+        runsByTheme.get(r.theme)!.add(r.run_id);
+      }
+      const result = [...runsByTheme.entries()]
+        .map(([theme, runIds]) => ({ theme, apps: runIds.size }))
+        .sort((a, b) => (b.apps !== a.apps ? b.apps - a.apps : a.theme < b.theme ? -1 : 1));
+      return { rows: result.map((r) => ({ theme: r.theme, apps: String(r.apps) })) };
+    }
+
     if (sql.includes("INSERT INTO showcase_screens")) {
       const [
         id,
@@ -168,18 +225,26 @@ function fakeDb(initialRows: FakeRow[]): TraceQueryable & { rows: FakeRow[] } {
       return { rows: [] };
     }
 
-    if (sql.includes("GROUP BY run_id")) {
+    if (sql.includes("GROUP BY showcase_screens.run_id")) {
       // Same refusal as above: only interpret this as the store's real
-      // listApps query if both of its load-bearing ORDER BYs match exactly.
-      // A flipped sort direction, a reordered column, or a dropped tiebreaker
-      // in the real SQL must make this fake stop understanding the query,
-      // not silently keep sorting/filtering in JS against a query shape that
-      // no longer exists.
-      const appOrderBy = "ORDER BY run_sort DESC, run_id DESC";
-      const screenOrderBy =
-        "ORDER BY runs.run_sort DESC, s.run_id DESC, (s.pinned_at IS NOT NULL) DESC, s.created_at DESC, s.id DESC";
-      if (!sql.includes(appOrderBy) || !sql.includes(screenOrderBy)) {
-        throw new Error(`unrecognized query (ORDER BY changed): ${sql}`);
+      // listApps query if its load-bearing ORDER BYs match one of the two
+      // known-good shapes exactly. A flipped sort direction, a reordered
+      // column, or a dropped tiebreaker in the real SQL must make this fake
+      // stop understanding the query, not silently keep sorting/filtering in
+      // JS against a query shape that no longer exists.
+      const isPopular = sql.includes("run_likes DESC, run_sort DESC, run_id DESC");
+      const isLatest = sql.includes("ORDER BY run_sort DESC, run_id DESC");
+      if (isPopular === isLatest) {
+        throw new Error(`unrecognized query (runs ORDER BY not recognized as exactly one sort): ${sql}`);
+      }
+      const screenOrderBy = isPopular
+        ? "ORDER BY runs.run_likes DESC, runs.run_sort DESC, s.run_id DESC, (s.pinned_at IS NOT NULL) DESC, s.created_at DESC, s.id DESC"
+        : "ORDER BY runs.run_sort DESC, s.run_id DESC, (s.pinned_at IS NOT NULL) DESC, s.created_at DESC, s.id DESC";
+      if (!sql.includes(screenOrderBy)) {
+        throw new Error(`unrecognized query (outer ORDER BY changed): ${sql}`);
+      }
+      if (!sql.includes("LEFT JOIN showcase_app_likes l ON l.run_id = showcase_screens.run_id")) {
+        throw new Error(`unrecognized query (likes join missing): ${sql}`);
       }
       // The app-level LIMIT must sit inside the subselect that picks runs —
       // if it ever moved out to the screen level, pages would go back to
@@ -190,27 +255,47 @@ function fakeDb(initialRows: FakeRow[]): TraceQueryable & { rows: FakeRow[] } {
 
       const limit = params[params.length - 1] as number;
 
+      // Category filter: `AND theme = $n` inside the runs subquery's WHERE.
+      const themeMatch = sql.match(/AND theme = \$(\d+)/);
+      const category = themeMatch ? (params[Number(themeMatch[1]) - 1] as string) : null;
+
       // Read the cursor bounds out of `params` by the placeholder numbers
       // that actually appear in the row-wise predicate, rather than assuming
       // a fixed position — so a reordered/renumbered $n in the real SQL shows
       // up as a wrong cursor value here instead of being invisible.
-      const predicateMatch = sql.match(
-        /\(MAX\(created_at\), run_id\) < \(\$(\d+)::timestamptz, \$(\d+)::uuid\)/,
+      const latestPredicate = sql.match(
+        /\(MAX\(created_at\), showcase_screens\.run_id\) < \(\$(\d+)::timestamptz, \$(\d+)::uuid\)/,
       );
-      if (sql.includes("HAVING") && !predicateMatch) {
+      const popularPredicate = sql.match(
+        /\(COALESCE\(MAX\(l\.likes\), 0\), MAX\(created_at\), showcase_screens\.run_id\) < \(\$(\d+)::bigint, \$(\d+)::timestamptz, \$(\d+)::uuid\)/,
+      );
+      if (sql.includes("HAVING") && !latestPredicate && !popularPredicate) {
         throw new Error(`unrecognized query (cursor predicate shape changed): ${sql}`);
       }
-      // Cursor params are the full-precision `::text` form (e.g.
+      if (isPopular && latestPredicate) {
+        throw new Error(`unrecognized query (latest predicate on a popular-sorted query): ${sql}`);
+      }
+      if (isLatest && popularPredicate) {
+        throw new Error(`unrecognized query (popular predicate on a latest-sorted query): ${sql}`);
+      }
+      // Cursor timestamp params are the full-precision `::text` form (e.g.
       // "2026-07-28 13:30:57.663475+00"), not the millisecond-precision ISO
       // `toIso()` produces — so they're compared via `preciseMicros` below,
       // same as every row, rather than through a `Date` that would silently
       // re-truncate them back to milliseconds.
-      const cursor = predicateMatch
+      const cursor = latestPredicate
         ? {
-            runSort: preciseMicros(params[Number(predicateMatch[1]) - 1] as string),
-            runId: params[Number(predicateMatch[2]) - 1] as string,
+            likes: null as number | null,
+            runSort: preciseMicros(params[Number(latestPredicate[1]) - 1] as string),
+            runId: params[Number(latestPredicate[2]) - 1] as string,
           }
-        : null;
+        : popularPredicate
+          ? {
+              likes: params[Number(popularPredicate[1]) - 1] as number,
+              runSort: preciseMicros(params[Number(popularPredicate[2]) - 1] as string),
+              runId: params[Number(popularPredicate[3]) - 1] as string,
+            }
+          : null;
 
       // Full-precision raw text per row (defaults to the millisecond-only
       // ISO string when a test fixture doesn't set `created_at_raw`), and
@@ -222,34 +307,52 @@ function fakeDb(initialRows: FakeRow[]): TraceQueryable & { rows: FakeRow[] } {
 
       const runSortMicrosByRun = new Map<string, number>();
       const runSortRawByRun = new Map<string, string>();
+      const runThemeByRun = new Map<string, string>();
       for (const r of rows) {
         if (!r.published) continue;
+        if (category && r.theme !== category) continue;
         const raw = rawOf(r);
         const micros = preciseMicros(raw);
+        runThemeByRun.set(r.run_id, r.theme);
         if (micros > (runSortMicrosByRun.get(r.run_id) ?? -Infinity)) {
           runSortMicrosByRun.set(r.run_id, micros);
           runSortRawByRun.set(r.run_id, raw);
         }
       }
+      const likesByRun = (runId: string): number => likes.get(runId) ?? 0;
 
-      // Stage 1 — pick `limit` apps by (run_sort, run_id) descending, after
-      // the keyset predicate.
-      const runsSorted = [...runSortMicrosByRun.entries()]
-        .map(([runId, runSortMicros]) => ({ runId, runSortMicros }))
-        .sort((a, b) =>
-          a.runSortMicros !== b.runSortMicros
-            ? b.runSortMicros - a.runSortMicros
-            : a.runId < b.runId
-              ? 1
-              : -1,
-        );
+      // Stage 1 — pick `limit` apps by the requested sort, after the keyset
+      // predicate (row-wise on (likes, run_sort, run_id) for popular, on
+      // (run_sort, run_id) for latest — never ANDed columns, so a tie at the
+      // leading key can't repeat or skip a row across the boundary).
+      const runsSorted = [...runSortMicrosByRun.keys()]
+        .map((runId) => ({
+          runId,
+          runSortMicros: runSortMicrosByRun.get(runId)!,
+          runLikes: likesByRun(runId),
+        }))
+        .sort((a, b) => {
+          if (isPopular && a.runLikes !== b.runLikes) return b.runLikes - a.runLikes;
+          if (a.runSortMicros !== b.runSortMicros) return b.runSortMicros - a.runSortMicros;
+          return a.runId < b.runId ? 1 : -1;
+        });
       const runsPage = (
         cursor
-          ? runsSorted.filter(
-              (x) =>
+          ? runsSorted.filter((x) => {
+              if (isPopular) {
+                const key = (v: { runLikes: number; runSortMicros: number; runId: string }) =>
+                  [v.runLikes, v.runSortMicros, v.runId] as const;
+                const [aLikes, aSort, aId] = key(x);
+                const [bLikes, bSort, bId] = [cursor.likes!, cursor.runSort, cursor.runId] as const;
+                if (aLikes !== bLikes) return aLikes < bLikes;
+                if (aSort !== bSort) return aSort < bSort;
+                return aId < bId;
+              }
+              return (
                 x.runSortMicros < cursor.runSort ||
-                (x.runSortMicros === cursor.runSort && x.runId < cursor.runId),
-            )
+                (x.runSortMicros === cursor.runSort && x.runId < cursor.runId)
+              );
+            })
           : runsSorted
       ).slice(0, limit);
       const runRank = new Map(runsPage.map((x, i) => [x.runId, i]));
@@ -286,6 +389,7 @@ function fakeDb(initialRows: FakeRow[]): TraceQueryable & { rows: FakeRow[] } {
           created_at: r.created_at,
           pinned_at: r.pinned_at,
           run_sort: new Date(runSortRawByRun.get(r.run_id)!),
+          run_likes: String(likesByRun(r.run_id)),
           created_at_text: rawOf(r),
           run_sort_text: runSortRawByRun.get(r.run_id)!,
         })),
@@ -295,7 +399,7 @@ function fakeDb(initialRows: FakeRow[]): TraceQueryable & { rows: FakeRow[] } {
     throw new Error(`unrecognized query — no branch of the fake matched: ${sql}`);
   }
 
-  return { rows, query: vi.fn(query), end: vi.fn(async () => {}) };
+  return { rows, likes, query: vi.fn(query), end: vi.fn(async () => {}) };
 }
 
 function makeRow(overrides: Partial<FakeRow> & { id: string; run_id: string }): FakeRow {
@@ -363,6 +467,7 @@ describe("createShowcaseStore", () => {
       run_sort_text: string;
       image_url_1x: string | null;
       lqip: string | null;
+      run_likes: string;
     }> = {},
   ) {
     const { created_at_text, run_sort_text, ...rest } = overrides;
@@ -382,6 +487,7 @@ describe("createShowcaseStore", () => {
       created_at: new Date("2026-07-27T10:00:00.000Z"),
       pinned_at: null,
       run_sort: new Date("2026-07-27T10:00:00.000Z"),
+      run_likes: "0",
       // Defaults match the millisecond-precision fixture above — real
       // Postgres `::text` output would differ only when the underlying
       // column actually carries sub-millisecond digits, which the dedicated
@@ -407,13 +513,40 @@ describe("createShowcaseStore", () => {
     expect(apps[0].screens).toHaveLength(1);
     expect(apps[0].screens[0].createdAt).toBe("2026-07-27T10:00:00.000Z");
     expect(apps[0].screens[0].pinned).toBe(false);
+    expect(apps[0].likes).toBe(0);
     expect(nextCursor).toBeNull();
     expect(pool.calls[0].sql).toContain("published = true");
-    expect(pool.calls[0].sql).toContain("GROUP BY run_id");
+    expect(pool.calls[0].sql).toContain("GROUP BY showcase_screens.run_id");
+    // Default sort is "popular".
+    expect(pool.calls[0].sql).toContain("ORDER BY run_likes DESC, run_sort DESC, run_id DESC");
+    expect(pool.calls[0].sql).toContain(
+      "ORDER BY runs.run_likes DESC, runs.run_sort DESC, s.run_id DESC, (s.pinned_at IS NOT NULL) DESC, s.created_at DESC, s.id DESC",
+    );
+  });
+
+  it("uses the latest-sort ORDER BY when sort='latest' is requested", async () => {
+    const pool = fakePool([dbRow()]);
+    const store = createShowcaseStore(
+      makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
+      pool,
+    );
+    await store!.listApps({ limit: 12, sort: "latest" });
     expect(pool.calls[0].sql).toContain("ORDER BY run_sort DESC, run_id DESC");
     expect(pool.calls[0].sql).toContain(
       "ORDER BY runs.run_sort DESC, s.run_id DESC, (s.pinned_at IS NOT NULL) DESC, s.created_at DESC, s.id DESC",
     );
+    expect(pool.calls[0].sql).not.toContain("run_likes DESC, run_sort DESC, run_id DESC");
+  });
+
+  it("filters the runs subquery by theme when category is given", async () => {
+    const pool = fakePool([dbRow()]);
+    const store = createShowcaseStore(
+      makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
+      pool,
+    );
+    await store!.listApps({ limit: 12, category: "fitness tracker" });
+    expect(pool.calls[0].sql).toMatch(/WHERE published = true AND theme = \$\d+/);
+    expect(pool.calls[0].params).toContain("fitness tracker");
   });
 
   it("maps NULL image_url_1x/lqip columns to undefined, not null", async () => {
@@ -453,7 +586,7 @@ describe("createShowcaseStore", () => {
     expect(apps[0].screens[0].pinned).toBe(true);
   });
 
-  it("returns an app-addressing nextCursor when the page is full", async () => {
+  it("returns an app-addressing nextCursor when the page is full (default popular sort)", async () => {
     const pool = fakePool([dbRow()]);
     const store = createShowcaseStore(
       makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
@@ -464,7 +597,18 @@ describe("createShowcaseStore", () => {
 
     const decoded = Buffer.from(nextCursor!, "base64url").toString("utf8");
     // Only the app keys — no screen id, since a page boundary never falls
-    // inside an app any more.
+    // inside an app any more. `l1` tag carries likes ahead of run_sort/run_id.
+    expect(decoded).toBe(`l1|0|2026-07-27T10:00:00.000Z|${row.runId}`);
+  });
+
+  it("returns an a1 nextCursor for sort=latest", async () => {
+    const pool = fakePool([dbRow()]);
+    const store = createShowcaseStore(
+      makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
+      pool,
+    );
+    const { nextCursor } = await store!.listApps({ limit: 1, sort: "latest" });
+    const decoded = Buffer.from(nextCursor!, "base64url").toString("utf8");
     expect(decoded).toBe(`a1|2026-07-27T10:00:00.000Z|${row.runId}`);
   });
 
@@ -486,7 +630,7 @@ describe("createShowcaseStore", () => {
       makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
       pool,
     );
-    const { nextCursor } = await store!.listApps({ limit: 1 });
+    const { nextCursor } = await store!.listApps({ limit: 1, sort: "latest" });
     const decoded = Buffer.from(nextCursor!, "base64url").toString("utf8");
     expect(decoded).toBe(`a1|2026-07-28 13:30:57.663475+00|${row.runId}`);
   });
@@ -525,6 +669,16 @@ describe("createShowcaseStore", () => {
       "too many fields",
       "a1|2026-07-27T10:00:00.000Z|22222222-2222-2222-2222-222222222222|extra",
     ],
+    // A hand-crafted or truncated runId (not a UUID at all) must 400 here,
+    // not reach `$N::uuid` in the HAVING clause and blow up as a Postgres
+    // 22P02 — that would surface as an uncaught 500 instead of a client
+    // error. `not-even-uuid-shaped` covers "no dashes"; the digit-count case
+    // below covers "right shape, wrong length".
+    ["a non-UUID run id", "a1|2026-07-27T10:00:00.000Z|not-even-uuid-shaped"],
+    [
+      "a truncated run id",
+      "a1|2026-07-27T10:00:00.000Z|22222222-2222-2222-2222-22222222222",
+    ],
   ])("rejects a malformed a1 cursor with %s", async (_label, decoded) => {
     const pool = fakePool([]);
     const store = createShowcaseStore(
@@ -537,7 +691,28 @@ describe("createShowcaseStore", () => {
     });
   });
 
-  it("applies a valid a1 cursor as a row-wise keyset predicate on the app keys", async () => {
+  it.each([
+    [
+      "a non-UUID run id",
+      "l1|3|2026-07-27T10:00:00.000Z|not-even-uuid-shaped",
+    ],
+    [
+      "a truncated run id",
+      "l1|3|2026-07-27T10:00:00.000Z|22222222-2222-2222-2222-22222222222",
+    ],
+  ])("rejects a malformed l1 (popular) cursor with %s", async (_label, decoded) => {
+    const pool = fakePool([]);
+    const store = createShowcaseStore(
+      makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
+      pool,
+    );
+    const cursor = Buffer.from(decoded).toString("base64url");
+    await expect(store!.listApps({ limit: 10, cursor, sort: "popular" })).rejects.toMatchObject(
+      { statusCode: 400 },
+    );
+  });
+
+  it("applies a valid a1 cursor as a row-wise keyset predicate on the app keys (sort=latest)", async () => {
     const pool = fakePool([]);
     const store = createShowcaseStore(
       makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
@@ -546,17 +721,63 @@ describe("createShowcaseStore", () => {
     const cursor = Buffer.from(
       "a1|2026-07-27T10:00:00.000Z|22222222-2222-2222-2222-222222222222",
     ).toString("base64url");
-    const { apps, nextCursor } = await store!.listApps({ limit: 10, cursor });
+    const { apps, nextCursor } = await store!.listApps({ limit: 10, cursor, sort: "latest" });
 
     expect(apps).toEqual([]);
     expect(nextCursor).toBeNull();
     // HAVING, not WHERE: run_sort is the MAX aggregate the query computes.
-    expect(pool.calls[0].sql).toContain("HAVING (MAX(created_at), run_id) <");
+    expect(pool.calls[0].sql).toContain(
+      "HAVING (MAX(created_at), showcase_screens.run_id) <",
+    );
     expect(pool.calls[0].params).toEqual([
       "2026-07-27T10:00:00.000Z",
       "22222222-2222-2222-2222-222222222222",
       10,
     ]);
+  });
+
+  it("applies a valid l1 cursor as a row-wise keyset predicate on (likes, run_sort, run_id) (sort=popular)", async () => {
+    const pool = fakePool([]);
+    const store = createShowcaseStore(
+      makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
+      pool,
+    );
+    const cursor = Buffer.from(
+      "l1|3|2026-07-27T10:00:00.000Z|22222222-2222-2222-2222-222222222222",
+    ).toString("base64url");
+    const { apps, nextCursor } = await store!.listApps({ limit: 10, cursor, sort: "popular" });
+
+    expect(apps).toEqual([]);
+    expect(nextCursor).toBeNull();
+    expect(pool.calls[0].sql).toContain(
+      "HAVING (COALESCE(MAX(l.likes), 0), MAX(created_at), showcase_screens.run_id) <",
+    );
+    expect(pool.calls[0].params).toEqual([
+      3,
+      "2026-07-27T10:00:00.000Z",
+      "22222222-2222-2222-2222-222222222222",
+      10,
+    ]);
+  });
+
+  it("ignores a cursor whose tag disagrees with the requested sort and serves the page from the top", async () => {
+    const pool = fakePool([]);
+    const store = createShowcaseStore(
+      makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
+      pool,
+    );
+    // An `a1` (latest) cursor against a `sort=popular` request — e.g. a tab
+    // left open across a tab switch. Must not 400, and must not apply the
+    // stale predicate.
+    const cursor = Buffer.from(
+      "a1|2026-07-27T10:00:00.000Z|22222222-2222-2222-2222-222222222222",
+    ).toString("base64url");
+    const { apps, nextCursor } = await store!.listApps({ limit: 10, cursor, sort: "popular" });
+
+    expect(apps).toEqual([]);
+    expect(nextCursor).toBeNull();
+    expect(pool.calls[0].sql).not.toContain("HAVING");
+    expect(pool.calls[0].params).toEqual([10]);
   });
 
   it.each([
@@ -712,6 +933,179 @@ describe("createShowcaseStore", () => {
       const page2 = await store!.listApps({ limit: 1, cursor: page1.nextCursor! });
       // Before the precision fix this would have been runB a second time.
       expect(page2.apps.map((a) => a.runId)).toEqual([runA]);
+    });
+  });
+
+  describe("popular sort, likes, and category filtering", () => {
+    it("orders apps by likes descending, ignoring recency", async () => {
+      const runOld = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"; // fewer likes, newer
+      const runNew = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"; // more likes, older
+      const db = fakeDb([
+        makeRow({ id: "old-1", run_id: runOld, created_at: new Date("2026-07-20T00:00:00.000Z"), likes: 1 }),
+        makeRow({ id: "new-1", run_id: runNew, created_at: new Date("2026-07-01T00:00:00.000Z"), likes: 5 }),
+      ]);
+      const store = createShowcaseStore(
+        makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
+        db,
+      );
+      const { apps } = await store!.listApps({ limit: 10, sort: "popular" });
+      expect(apps.map((a) => a.runId)).toEqual([runNew, runOld]);
+      expect(apps[0].likes).toBe(5);
+      expect(apps[1].likes).toBe(1);
+    });
+
+    it("breaks a like-count tie by recency, same as the latest sort would", async () => {
+      const runOlder = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+      const runNewer = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+      const db = fakeDb([
+        makeRow({ id: "older-1", run_id: runOlder, created_at: new Date("2026-07-01T00:00:00.000Z"), likes: 2 }),
+        makeRow({ id: "newer-1", run_id: runNewer, created_at: new Date("2026-07-20T00:00:00.000Z"), likes: 2 }),
+      ]);
+      const store = createShowcaseStore(
+        makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
+        db,
+      );
+      const { apps } = await store!.listApps({ limit: 10, sort: "popular" });
+      expect(apps.map((a) => a.runId)).toEqual([runNewer, runOlder]);
+    });
+
+    // The row-wise-tuple-comparison bug this design deliberately avoids: with
+    // ANDed columns, a cursor crossing the boundary between two apps that
+    // tie on likes would either repeat or drop whichever one sits exactly at
+    // the page edge. Three apps tie on likes; page size 2 puts the boundary
+    // between the 2nd and 3rd.
+    it("does not duplicate or drop an app when the cursor crosses a like-count tie", async () => {
+      const runA = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"; // newest of the tied three
+      const runB = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+      const runC = "cccccccc-cccc-cccc-cccc-cccccccccccc"; // oldest of the tied three
+      const db = fakeDb([
+        makeRow({ id: "a-1", run_id: runA, created_at: new Date("2026-07-20T00:00:00.000Z"), likes: 3 }),
+        makeRow({ id: "b-1", run_id: runB, created_at: new Date("2026-07-10T00:00:00.000Z"), likes: 3 }),
+        makeRow({ id: "c-1", run_id: runC, created_at: new Date("2026-07-01T00:00:00.000Z"), likes: 3 }),
+      ]);
+      const store = createShowcaseStore(
+        makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
+        db,
+      );
+
+      const page1 = await store!.listApps({ limit: 2, sort: "popular" });
+      expect(page1.apps.map((a) => a.runId)).toEqual([runA, runB]);
+      expect(page1.nextCursor).not.toBeNull();
+
+      const page2 = await store!.listApps({
+        limit: 2,
+        sort: "popular",
+        cursor: page1.nextCursor!,
+      });
+      // Exactly runC — neither a repeat of runB nor a skip past runC.
+      expect(page2.apps.map((a) => a.runId)).toEqual([runC]);
+      expect(page2.nextCursor).toBeNull();
+    });
+
+    it("filters to one theme, in either sort", async () => {
+      const runFitness = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+      const runFinance = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+      const db = fakeDb([
+        makeRow({ id: "f-1", run_id: runFitness, theme: "fitness", created_at: new Date("2026-07-01T00:00:00.000Z"), likes: 1 }),
+        makeRow({ id: "m-1", run_id: runFinance, theme: "finance", created_at: new Date("2026-07-20T00:00:00.000Z"), likes: 9 }),
+      ]);
+      const store = createShowcaseStore(
+        makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
+        db,
+      );
+
+      const popular = await store!.listApps({ limit: 10, sort: "popular", category: "fitness" });
+      expect(popular.apps.map((a) => a.runId)).toEqual([runFitness]);
+
+      const latest = await store!.listApps({ limit: 10, sort: "latest", category: "fitness" });
+      expect(latest.apps.map((a) => a.runId)).toEqual([runFitness]);
+    });
+
+    it("never returns an app from a different theme, even when it would otherwise sort first", async () => {
+      const runFitness = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+      const runFinance = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+      const db = fakeDb([
+        makeRow({ id: "f-1", run_id: runFitness, theme: "fitness", likes: 100 }),
+        makeRow({ id: "m-1", run_id: runFinance, theme: "finance", likes: 1 }),
+      ]);
+      const store = createShowcaseStore(
+        makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
+        db,
+      );
+      const { apps } = await store!.listApps({ limit: 10, sort: "popular", category: "finance" });
+      expect(apps.map((a) => a.runId)).toEqual([runFinance]);
+    });
+  });
+
+  describe("listCategories", () => {
+    it("counts distinct apps per theme, ordered by count then theme", async () => {
+      const db = fakeDb([
+        makeRow({ id: "a-1", run_id: "run-a", theme: "fitness" }),
+        makeRow({ id: "a-2", run_id: "run-a", theme: "fitness" }), // same run — must not double count
+        makeRow({ id: "b-1", run_id: "run-b", theme: "fitness" }),
+        makeRow({ id: "c-1", run_id: "run-c", theme: "finance" }),
+        makeRow({ id: "d-1", run_id: "run-d", theme: "art", published: false }), // unpublished — excluded
+      ]);
+      const store = createShowcaseStore(
+        makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
+        db,
+      );
+      const categories = await store!.listCategories();
+      expect(categories).toEqual([
+        { theme: "fitness", apps: 2 },
+        { theme: "finance", apps: 1 },
+      ]);
+    });
+
+    it("orders ties alphabetically by theme", async () => {
+      const db = fakeDb([
+        makeRow({ id: "z-1", run_id: "run-z", theme: "zebra" }),
+        makeRow({ id: "a-1", run_id: "run-a", theme: "apple" }),
+      ]);
+      const store = createShowcaseStore(
+        makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
+        db,
+      );
+      const categories = await store!.listCategories();
+      expect(categories.map((c) => c.theme)).toEqual(["apple", "zebra"]);
+    });
+  });
+
+  describe("likeApp", () => {
+    it("returns null for a run_id with no published screens", async () => {
+      const db = fakeDb([]);
+      const store = createShowcaseStore(
+        makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
+        db,
+      );
+      const result = await store!.likeApp("does-not-exist", 3);
+      expect(result).toBeNull();
+    });
+
+    it("upsert-increments and returns the new total", async () => {
+      const runId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+      const db = fakeDb([makeRow({ id: "a-1", run_id: runId, likes: 2 })]);
+      const store = createShowcaseStore(
+        makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
+        db,
+      );
+      const first = await store!.likeApp(runId, 3);
+      expect(first).toBe(5);
+      const second = await store!.likeApp(runId, 1);
+      expect(second).toBe(6);
+    });
+
+    it("returns null for a run_id whose screens all got deleted (delete is rows-only)", async () => {
+      const runId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+      // No showcase_screens row for this run_id at all, even though a like
+      // row could in principle still exist from before the delete.
+      const db = fakeDb([]);
+      db.likes.set(runId, 4);
+      const store = createShowcaseStore(
+        makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
+        db,
+      );
+      expect(await store!.likeApp(runId, 1)).toBeNull();
     });
   });
 
@@ -903,6 +1297,88 @@ describe("createShowcaseStore", () => {
       expect(deleted).toEqual([]);
       expect(pool.calls[0].sql).toContain("WHERE id = $1::uuid");
       expect(pool.calls[0].sql).not.toContain("run_id = COALESCE");
+    });
+
+    // A programmable fake, unlike `fakePool` above (which returns the same
+    // fixed rows for every call): these tests need the DELETE and the
+    // follow-up likes cleanup to see different results in sequence.
+    function sequencedPool(
+      responses: Array<{ rows: unknown[] }>,
+    ): TraceQueryable & { calls: Array<{ sql: string; params?: unknown[] }> } {
+      const calls: Array<{ sql: string; params?: unknown[] }> = [];
+      let i = 0;
+      return {
+        calls,
+        query: vi.fn(async (sql: string, params?: unknown[]) => {
+          calls.push({ sql, params });
+          const response = responses[Math.min(i, responses.length - 1)];
+          i += 1;
+          return response;
+        }),
+        end: vi.fn(async () => {}),
+      };
+    }
+
+    it("deletes the app's likes row when a whole app is removed", async () => {
+      const pool = sequencedPool([
+        { rows: [{ id: "a", run_id: "r1", title: "Home" }] },
+        { rows: [] },
+      ]);
+      const store = createShowcaseStore(
+        makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
+        pool,
+      );
+      await store!.deleteScreens({ appOf: "a" });
+      expect(pool.calls).toHaveLength(2);
+      expect(pool.calls[1].sql).toContain("DELETE FROM showcase_app_likes");
+      expect(pool.calls[1].sql).toContain("run_id = ANY($1::uuid[])");
+      expect(pool.calls[1].params).toEqual([["r1"]]);
+    });
+
+    it("does not touch showcase_app_likes when the app target matched nothing", async () => {
+      const pool = sequencedPool([{ rows: [] }]);
+      const store = createShowcaseStore(
+        makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
+        pool,
+      );
+      await store!.deleteScreens({ appOf: "missing" });
+      expect(pool.calls).toHaveLength(1);
+    });
+
+    it("deletes the likes row when a single screen was its run's last published screen", async () => {
+      const pool = sequencedPool([
+        { rows: [{ id: "s2", run_id: "r1", title: "Last screen" }] },
+        // The "any published screens left?" existence check comes back empty.
+        { rows: [] },
+        { rows: [] },
+      ]);
+      const store = createShowcaseStore(
+        makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
+        pool,
+      );
+      await store!.deleteScreens({ screen: "s2" });
+      expect(pool.calls).toHaveLength(3);
+      expect(pool.calls[1].sql).toContain(
+        "SELECT 1 FROM showcase_screens WHERE run_id = $1 AND published = true",
+      );
+      expect(pool.calls[2].sql).toContain("DELETE FROM showcase_app_likes");
+      expect(pool.calls[2].sql).not.toContain("ANY");
+      expect(pool.calls[2].params).toEqual(["r1"]);
+    });
+
+    it("keeps the likes row when the run still has other published screens", async () => {
+      const pool = sequencedPool([
+        { rows: [{ id: "s2", run_id: "r1", title: "One of several" }] },
+        // The existence check finds a surviving published screen.
+        { rows: [{}] },
+      ]);
+      const store = createShowcaseStore(
+        makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
+        pool,
+      );
+      await store!.deleteScreens({ screen: "s2" });
+      expect(pool.calls).toHaveLength(2);
+      expect(pool.calls[1].sql).toContain("SELECT 1 FROM showcase_screens");
     });
   });
 });

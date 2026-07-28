@@ -32,8 +32,11 @@ export interface ShowcaseApp {
   theme: string;
   model: string;
   // The app's own recency — MAX(created_at) across its screens, which is also
-  // what the feed sorts on.
+  // what the feed sorts on when sort=latest.
   createdAt: string;
+  // Total claps for this run_id from `showcase_app_likes`, 0 when the app has
+  // never been liked (the row doesn't exist yet — see `likeApp`).
+  likes: number;
   screens: ShowcaseScreen[];
 }
 
@@ -47,8 +50,24 @@ export interface ShowcaseStore {
   listApps(opts: {
     limit: number;
     cursor?: string;
+    // `"popular"` (default) orders by likes, `"latest"` by recency — the
+    // feed's two sort tabs. Kept as an explicit option rather than folded
+    // into `cursor` because the first page of either sort has no cursor yet.
+    sort?: "popular" | "latest";
+    // A theme filter, applied inside the `runs` subquery (a run has exactly
+    // one theme, so filtering runs fully determines the screens returned).
+    category?: string;
   }): Promise<{ apps: ShowcaseApp[]; nextCursor: string | null }>;
   recentThemes(limit: number): Promise<string[]>;
+  // For the category chip row: every theme that has at least one published
+  // app, with a count, ordered by popularity. Never returns a theme with zero
+  // apps, so a chip can never lead to an empty grid.
+  listCategories(): Promise<Array<{ theme: string; apps: number }>>;
+  // Upsert-increments the like counter for a run_id and returns the new
+  // total, or `null` when `runId` has no published screens — the route turns
+  // that into a 404 rather than silently creating a like row for an app that
+  // doesn't (or no longer) exists.
+  likeApp(runId: string, count: number): Promise<number | null>;
   // For `npm run showcase:rescreenshot` — the stored HTML is the source of
   // truth, so every screen can be re-rendered after a screenshot bug fix.
   // `appOf` narrows the sweep to one app: it takes either a run_id or the id
@@ -132,10 +151,20 @@ export interface ShowcaseImageSource {
   imageUrl1x?: string;
 }
 
-interface DecodedCursor {
+interface DecodedLatestCursor {
+  sort: "latest";
   runSort: string;
   runId: string;
 }
+
+interface DecodedPopularCursor {
+  sort: "popular";
+  likes: number;
+  runSort: string;
+  runId: string;
+}
+
+type DecodedCursor = DecodedLatestCursor | DecodedPopularCursor;
 
 // A cursor decodes to a real keyset position (`DecodedCursor`), or to
 // `"legacy"` when it predates app-wise pagination. Every older format
@@ -149,6 +178,13 @@ type Decoded = DecodedCursor | "legacy";
 function badCursor(): never {
   throw Object.assign(new Error("Invalid cursor"), { statusCode: 400 });
 }
+
+// Both cursor formats embed a raw runId that ends up bound as `$N::uuid` in
+// the HAVING clause. Postgres itself will reject a non-UUID there (22P02),
+// but by then it's a query error, not a validation error — a hand-crafted or
+// truncated cursor 500s instead of 400ing. Checking the shape here, before
+// the value ever reaches SQL, keeps a malformed cursor a client error.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // Current format: `a1|<runSort>|<runId>`, matching the app-level ORDER BY
 // (`run_sort, run_id`) so keyset pagination stays a single row-wise
@@ -166,12 +202,28 @@ function decodeCursor(cursor: string): Decoded {
   // Screen-addressing formats: 2 fields (`createdAt|id`), 3 (`p0|p1` flag +
   // createdAt + id) or 6 (`r2|…`). Their *shape* is enough to recognize them
   // — their *values* addressed a granularity that's gone, so there is nothing
-  // to validate or reuse.
+  // to validate or reuse. `l1` (popular sort) is 4 fields, so it never
+  // collides with these.
   if (parts.length === 2) return "legacy";
   if (parts.length === 6) {
     if (parts[0] === "r2") return "legacy";
     badCursor();
   }
+
+  if (parts.length === 4) {
+    const [tag, likesStr, runSort, runId] = parts;
+    if (tag !== "l1") badCursor();
+    if (!likesStr || !runSort || !runId) badCursor();
+    // Likes is a plain non-negative integer, never a float or a signed value
+    // — round-tripped straight from the BIGINT column, so anything else is a
+    // corrupted or hand-crafted cursor.
+    if (!/^\d+$/.test(likesStr)) badCursor();
+    const likes = Number(likesStr);
+    if (Number.isNaN(Date.parse(runSort))) badCursor();
+    if (!UUID_RE.test(runId)) badCursor();
+    return { sort: "popular", likes, runSort, runId };
+  }
+
   if (parts.length !== 3) badCursor();
 
   const [tag, runSort, runId] = parts;
@@ -180,6 +232,7 @@ function decodeCursor(cursor: string): Decoded {
   if (tag === "p0" || tag === "p1") return "legacy";
   if (tag !== "a1") badCursor();
   if (!runSort || !runId) badCursor();
+  if (!UUID_RE.test(runId)) badCursor();
   // runSort round-trips through Postgres `::text` at full (microsecond)
   // precision — e.g. `2026-07-28 13:30:57.663475+00`, space separator, no
   // `T`, no `Z` — rather than the millisecond-precision ISO string `toIso()`
@@ -189,12 +242,15 @@ function decodeCursor(cursor: string): Decoded {
   // extension), so this validation still rejects genuinely malformed values
   // while accepting both shapes.
   if (Number.isNaN(Date.parse(runSort))) badCursor();
-  return { runSort, runId };
+  return { sort: "latest", runSort, runId };
 }
 
 function encodeCursor(fields: DecodedCursor): string {
-  const { runSort, runId } = fields;
-  return Buffer.from(`a1|${runSort}|${runId}`, "utf8").toString("base64url");
+  const encoded =
+    fields.sort === "latest"
+      ? `a1|${fields.runSort}|${fields.runId}`
+      : `l1|${fields.likes}|${fields.runSort}|${fields.runId}`;
+  return Buffer.from(encoded, "utf8").toString("base64url");
 }
 
 interface ShowcaseScreenDbRow {
@@ -225,6 +281,11 @@ interface ShowcaseScreenDbRow {
   // docs/superpowers/specs/2026-07-28-showcase-per-app-pin-design.md.
   created_at_text: string;
   run_sort_text: string;
+  // `showcase_app_likes.likes` is BIGINT, and node-postgres returns BIGINT as
+  // a decimal string rather than a JS `number` (to avoid silently losing
+  // precision above 2^53) — converted to `number` in the app-building loop
+  // below, same as everywhere else in this file that surfaces a count.
+  run_likes: string;
 }
 
 function toIso(value: string | Date): string {
@@ -283,47 +344,83 @@ export function createShowcaseStore(
       );
     },
 
-    async listApps({ limit, cursor }) {
+    async listApps({ limit, cursor, sort = "popular", category }) {
       const params: unknown[] = [];
+
+      let themeClause = "";
+      if (category) {
+        params.push(category);
+        themeClause = `AND theme = $${params.length}`;
+      }
+
       let cursorClause = "";
       if (cursor) {
         const decoded = decodeCursor(cursor);
         // A legacy cursor addresses a single screen, a granularity this feed
         // no longer paginates by — there is nothing to translate, so this
         // page is served as if no cursor had been given (see decodeCursor).
-        if (decoded !== "legacy") {
-          const { runSort, runId } = decoded;
-          params.push(runSort, runId);
-          // Row-wise comparison against both app-level sort keys at once, not
-          // two ANDed columns: with `AND` an app whose `run_sort` ties the
-          // cursor's would come back on a later page too.
-          //
-          // `HAVING`, not `WHERE`: `run_sort` is the MAX aggregate this very
-          // query computes, so it does not exist yet at WHERE time.
-          cursorClause = `HAVING (MAX(created_at), run_id) < ($${params.length - 1}::timestamptz, $${params.length}::uuid)`;
+        // Same treatment for a cursor whose own sort tag disagrees with the
+        // requested `sort` (e.g. a stale tab still holding an `a1` cursor
+        // after switching to Most popular) — it addresses a position in an
+        // ordering that isn't the one being paginated, so there is nothing
+        // valid to resume from.
+        if (decoded !== "legacy" && decoded.sort === sort) {
+          if (decoded.sort === "latest") {
+            params.push(decoded.runSort, decoded.runId);
+            // Row-wise comparison against both app-level sort keys at once,
+            // not two ANDed columns: with `AND` an app whose `run_sort` ties
+            // the cursor's would come back on a later page too.
+            //
+            // `HAVING`, not `WHERE`: `run_sort` is the MAX aggregate this
+            // very query computes, so it does not exist yet at WHERE time.
+            // `showcase_screens.run_id`, not bare `run_id`: the FROM list now
+            // joins `showcase_app_likes l`, which also has a `run_id` column,
+            // so an unqualified reference is ambiguous to Postgres (not just
+            // to a human reader) and the whole query fails at parse time —
+            // "Show more" 500'd on page 2 of every sort until this was
+            // qualified. `GROUP BY`/`SELECT` already qualify it; `HAVING` was
+            // the one clause that didn't.
+            cursorClause = `HAVING (MAX(created_at), showcase_screens.run_id) < ($${params.length - 1}::timestamptz, $${params.length}::uuid)`;
+          } else {
+            params.push(decoded.likes, decoded.runSort, decoded.runId);
+            // Same row-wise comparison, now over three columns
+            // (likes, run_sort, run_id) — ANDing them would let an app tied
+            // on like count with the cursor's come back on more than one
+            // page. `run_likes`'s defining expression is repeated verbatim
+            // (a HAVING clause can't reference the outer SELECT's alias).
+            // `showcase_screens.run_id` for the same ambiguity reason as the
+            // `latest` branch above.
+            cursorClause = `HAVING (COALESCE(MAX(l.likes), 0), MAX(created_at), showcase_screens.run_id) < ($${params.length - 2}::bigint, $${params.length - 1}::timestamptz, $${params.length}::uuid)`;
+          }
         }
       }
       params.push(limit);
+
+      const runsOrderBy =
+        sort === "latest"
+          ? "run_sort DESC, run_id DESC"
+          : "run_likes DESC, run_sort DESC, run_id DESC";
       // Two stages, and the split is the whole point: `runs` picks exactly
-      // `limit` *apps* by their recency, then the outer select takes every
+      // `limit` *apps* by their sort order, then the outer select takes every
       // screen belonging to them. Paginating the screens directly (what this
       // used to do) let a page boundary fall inside an app, so the gallery —
       // which renders one card per app — showed a carousel missing its last
       // screens until the visitor happened to click "Show more".
       const sql = `SELECT s.id, s.run_id, s.theme, s.title, s.prompt, s.model, s.image_url, s.image_url_1x, s.lqip, s.html_url, s.width, s.height, s.created_at, s.pinned_at,
-                          runs.run_sort, s.created_at::text AS created_at_text, runs.run_sort::text AS run_sort_text
+                          runs.run_sort, runs.run_likes, s.created_at::text AS created_at_text, runs.run_sort::text AS run_sort_text
                    FROM showcase_screens s
                    JOIN (
-                     SELECT run_id, MAX(created_at) AS run_sort
+                     SELECT showcase_screens.run_id AS run_id, MAX(created_at) AS run_sort, COALESCE(MAX(l.likes), 0) AS run_likes
                      FROM showcase_screens
-                     WHERE published = true
-                     GROUP BY run_id
+                     LEFT JOIN showcase_app_likes l ON l.run_id = showcase_screens.run_id
+                     WHERE published = true ${themeClause}
+                     GROUP BY showcase_screens.run_id
                      ${cursorClause}
-                     ORDER BY run_sort DESC, run_id DESC
+                     ORDER BY ${runsOrderBy}
                      LIMIT $${params.length}
                    ) runs ON runs.run_id = s.run_id
                    WHERE s.published = true
-                   ORDER BY runs.run_sort DESC, s.run_id DESC, (s.pinned_at IS NOT NULL) DESC, s.created_at DESC, s.id DESC`;
+                   ORDER BY ${sort === "latest" ? "runs.run_sort DESC" : "runs.run_likes DESC, runs.run_sort DESC"}, s.run_id DESC, (s.pinned_at IS NOT NULL) DESC, s.created_at DESC, s.id DESC`;
       const result = (await db.query(sql, params)) as {
         rows: ShowcaseScreenDbRow[];
       };
@@ -334,6 +431,7 @@ export function createShowcaseStore(
       const apps: ShowcaseApp[] = [];
       const byRun = new Map<string, ShowcaseApp>();
       let lastRunSortText = "";
+      let lastLikes = 0;
       for (const row of result.rows) {
         const screen = mapRow(row);
         let app = byRun.get(row.run_id);
@@ -346,6 +444,7 @@ export function createShowcaseStore(
             theme: row.theme,
             model: row.model,
             createdAt: toIso(row.run_sort),
+            likes: Number(row.run_likes),
             screens: [],
           };
           byRun.set(row.run_id, app);
@@ -353,18 +452,30 @@ export function createShowcaseStore(
         }
         app.screens.push(screen);
         lastRunSortText = row.run_sort_text;
+        lastLikes = Number(row.run_likes);
       }
 
       const nextCursor =
         apps.length === limit && apps.length > 0
-          ? encodeCursor({
-              // Full-precision text, not `toIso(...)`/`app.createdAt` — those
-              // truncate to milliseconds and must never feed the cursor (see
-              // the comment on `ShowcaseScreenDbRow.run_sort_text`). The
-              // display `createdAt` stays millisecond-precision ISO.
-              runSort: lastRunSortText,
-              runId: apps[apps.length - 1].runId,
-            })
+          ? encodeCursor(
+              sort === "latest"
+                ? {
+                    sort: "latest",
+                    // Full-precision text, not `toIso(...)`/`app.createdAt`
+                    // — those truncate to milliseconds and must never feed
+                    // the cursor (see the comment on
+                    // `ShowcaseScreenDbRow.run_sort_text`). The display
+                    // `createdAt` stays millisecond-precision ISO.
+                    runSort: lastRunSortText,
+                    runId: apps[apps.length - 1].runId,
+                  }
+                : {
+                    sort: "popular",
+                    likes: lastLikes,
+                    runSort: lastRunSortText,
+                    runId: apps[apps.length - 1].runId,
+                  },
+            )
           : null;
       return { apps, nextCursor };
     },
@@ -379,6 +490,47 @@ export function createShowcaseStore(
         [limit],
       )) as { rows: Array<{ theme: string }> };
       return result.rows.map((r) => r.theme);
+    },
+
+    async listCategories() {
+      // COUNT(DISTINCT run_id), not COUNT(*): a chip's count is apps, not
+      // screens, matching what the grid actually paginates by — a run
+      // publishing 5 screens must not make its theme look 5x more popular
+      // than one that published fewer.
+      const result = (await db.query(
+        `SELECT theme, COUNT(DISTINCT run_id) AS apps
+           FROM showcase_screens
+           WHERE published = true
+           GROUP BY theme
+           ORDER BY apps DESC, theme ASC`,
+        [],
+      )) as { rows: Array<{ theme: string; apps: string }> };
+      // COUNT(...) is BIGINT — see the comment on `run_likes` above for why
+      // node-postgres hands that back as a string.
+      return result.rows.map((r) => ({ theme: r.theme, apps: Number(r.apps) }));
+    },
+
+    async likeApp(runId, count) {
+      // Existence is checked up front, against `showcase_screens` rather
+      // than `showcase_app_likes`, so an unknown or fully-deleted run_id
+      // 404s instead of silently creating a like row for an app nobody can
+      // ever see — `showcase:delete` removes rows only, so a like row for a
+      // deleted run would otherwise outlive the app it belonged to.
+      const existing = (await db.query(
+        "SELECT 1 FROM showcase_screens WHERE run_id = $1 AND published = true LIMIT 1",
+        [runId],
+      )) as { rows: unknown[] };
+      if (existing.rows.length === 0) return null;
+
+      const result = (await db.query(
+        `INSERT INTO showcase_app_likes (run_id, likes, updated_at)
+           VALUES ($1, $2, now())
+         ON CONFLICT (run_id) DO UPDATE
+           SET likes = showcase_app_likes.likes + $2, updated_at = now()
+         RETURNING likes`,
+        [runId, count],
+      )) as { rows: Array<{ likes: string }> };
+      return Number(result.rows[0].likes);
     },
 
     async listScreenSources(options) {
@@ -529,6 +681,38 @@ export function createShowcaseStore(
       const result = (await db.query(sql, [
         "appOf" in target ? target.appOf : target.screen,
       ])) as { rows: Array<{ id: string; run_id: string; title: string }> };
+
+      // A like belongs to the app (run_id), not any one screen row, so
+      // deleting screens can orphan it — `likeApp`'s existence check runs
+      // against `showcase_screens`, not `showcase_app_likes`, so a leftover
+      // row would just sit there silently until the same run_id got
+      // published again (e.g. a re-`showcase:ingest` of a corrected run) and
+      // resurrect its old count on an app nobody actually liked yet.
+      const runIds = [...new Set(result.rows.map((r) => r.run_id))];
+      if (runIds.length > 0) {
+        if ("appOf" in target) {
+          // The whole app is gone — its counter has nothing left to belong
+          // to. `deleteScreens({ appOf })` always removes every row of the
+          // run (see the WHERE above), so there is no "some screens remain"
+          // case to check here.
+          await db.query("DELETE FROM showcase_app_likes WHERE run_id = ANY($1::uuid[])", [
+            runIds,
+          ]);
+        } else {
+          // A single screen: only clear the counter if that was the run's
+          // last published screen — an app that still has other published
+          // screens keeps its likes.
+          const runId = runIds[0];
+          const remaining = (await db.query(
+            "SELECT 1 FROM showcase_screens WHERE run_id = $1 AND published = true LIMIT 1",
+            [runId],
+          )) as { rows: unknown[] };
+          if (remaining.rows.length === 0) {
+            await db.query("DELETE FROM showcase_app_likes WHERE run_id = $1", [runId]);
+          }
+        }
+      }
+
       return result.rows.map((r) => ({ id: r.id, runId: r.run_id, title: r.title }));
     },
 
