@@ -159,6 +159,48 @@ export async function screenshotHtml(
     // clearBottomBarOverlap.
     for (const img of document.images) img.loading = "eager";
 
+    // Everything below reads computed styles to decide what to wait for, so
+    // the page's @import'ed stylesheets must have ARRIVED first — the skills
+    // require fonts and the Phosphor icon set to be loaded that way, since
+    // <link> is stripped on the canvas. Until such a sheet lands, `.ph::before`
+    // computes to content "none" in a fallback family: no icon font is ever
+    // requested, `fonts.ready` resolves against nothing, and the screen is
+    // snapped with every icon an invisible blank. It is a race, which is why
+    // it hit some screens of a run and not others — and waiting for `load` is
+    // NOT enough, that fires with the imports still pending.
+    //
+    // A pending import is visible as a CSSImportRule whose `styleSheet` is
+    // still null (it becomes non-null even for cross-origin sheets, whose
+    // rules stay unreadable — hence the try/catch around `cssRules`).
+    await Promise.race([
+      new Promise<void>((resolve) => {
+        // An interval, not a self-calling named arrow: a named inner function
+        // makes the bundler emit a `__name` helper that does not exist in the
+        // page (see the note on clearBottomBarOverlap), which rejects this
+        // whole wait on the first tick.
+        const timer = setInterval(() => {
+          let pending = false;
+          for (const sheet of document.styleSheets) {
+            let rules: CSSRuleList;
+            try {
+              rules = sheet.cssRules;
+            } catch {
+              continue; // cross-origin sheet: already loaded, rules just hidden
+            }
+            for (const rule of rules) {
+              // `rule.type === 3` is CSSRule.IMPORT_RULE. Deliberately not
+              // `instanceof CSSImportRule` — same reason as above.
+              if (rule.type === 3 && !(rule as CSSImportRule).styleSheet) pending = true;
+            }
+          }
+          if (pending) return;
+          clearInterval(timer);
+          resolve();
+        }, 25);
+      }),
+      new Promise<void>((resolve) => setTimeout(resolve, 5000)),
+    ]);
+
     const elements = [document.documentElement, ...document.body.querySelectorAll("*")];
     const styles = elements.flatMap((el) => [
       getComputedStyle(el),
@@ -227,9 +269,15 @@ export async function screenshotHtml(
   await Promise.race([
     renderReady,
     new Promise((resolve) => setTimeout(resolve, RENDER_READY_TIMEOUT_MS)),
-  ]).catch(() => {
+  ]).catch((err) => {
     // Timed out or errored waiting for fonts/images — still take the
-    // screenshot rather than failing the whole run over a slow asset.
+    // screenshot rather than failing the whole run over a slow asset. Say so
+    // out loud: an in-page reference that doesn't resolve rejects this wait
+    // instantly, and silence turned that into "the icons are just blank
+    // sometimes" — a whole class of degraded screens with no trace.
+    console.warn(
+      `[showcase] render-ready wait failed, screenshotting anyway: ${(err as Error)?.message ?? err}`,
+    );
   });
 
   const grewBy = await clearBottomBarOverlap(page);

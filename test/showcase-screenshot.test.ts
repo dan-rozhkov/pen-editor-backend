@@ -96,6 +96,17 @@ beforeAll(async () => {
         );
         return;
       }
+      // Like Phosphor's real sheet: the rule that NAMES the icon family and
+      // its glyph lives in the imported file too, so nothing in the page's own
+      // styles mentions the font until that sheet lands.
+      if (req.url === "/slow-icons.css") {
+        res.writeHead(200, { "content-type": "text/css" });
+        res.end(
+          `@font-face { font-family: 'SlowIcons'; src: url('${assetOrigin}/slow.woff2') format('woff2') }\n` +
+            `.icon::before { font-family: 'SlowIcons'; content: "\\e001" }`,
+        );
+        return;
+      }
       if (req.url === "/slow.woff2") {
         res.writeHead(200, { "content-type": "font/woff2" });
         res.end(ONE_PIXEL_PNG);
@@ -188,6 +199,26 @@ describe.skipIf(!!process.env.CI)("screenshotHtml", () => {
       `<style>@import url('${assetOrigin}/slow.css');</style>` +
         `<style>.icon::before { font-family: 'SlowIcons'; content: '\\e001' }</style>` +
         `<i class="icon"></i>`,
+    );
+
+    expect(await shootTrackingRequests(html)).toContain(fontUrl);
+  });
+
+  // Pins the shape that shipped blank icons on real screens: the family and
+  // the glyph are named ONLY inside the @import'ed sheet, so nothing in the
+  // page's own styles mentions the font until that sheet lands.
+  // Caveat, so nobody reads more into a green run than is there: a same-origin
+  // sheet blocks "domcontentloaded", so this case passes with or without the
+  // explicit import wait in screenshotHtml. It guards the end-to-end path, not
+  // that wait — which earns its keep against remote, non-blocking imports
+  // (unpkg, Google Fonts) that this harness cannot reproduce.
+  it("waits for a font named only by an @import'ed stylesheet", async () => {
+    if (!browser) return;
+
+    const fontUrl = `${assetOrigin}/slow.woff2`;
+    const html = page(
+      "",
+      `<style>@import url('${assetOrigin}/slow-icons.css');</style><i class="icon"></i>`,
     );
 
     expect(await shootTrackingRequests(html)).toContain(fontUrl);

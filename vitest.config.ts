@@ -23,6 +23,21 @@ export default defineConfig({
         // env, connects to Postgres and S3, drives the run. Its pure seam
         // (readFlag) lives in src/showcase/cliFlags.ts and is unit-tested.
         "src/showcase/run.ts",
+        // hand-authored-run entrypoints: env + Postgres + S3 + Chromium
+        // wiring only. Their pure seams (parseManifest/resolveScreens in
+        // src/showcase/ingest.ts, publishScreens in src/showcase/publish.ts)
+        // are unit-tested with injected deps.
+        "src/showcase/ingestRun.ts",
+        "src/showcase/imageRun.ts",
+        "src/showcase/themeRun.ts",
+        // the wiring those entrypoints share: reads env, connects, exits the
+        // process on missing config — nothing to assert that the scripts
+        // themselves don't already cover.
+        "src/showcase/context.ts",
+        // the script-guard tail every showcase CLI shares — it only decides
+        // whether process.argv says "run me", which no unit test can observe
+        // without becoming a test of the runner itself.
+        "src/showcase/cli.ts",
         // rescreenshot entrypoint: same shape again. The loop it drives
         // (rescreenshotScreens, in src/showcase/rescreenshot.ts) is unit-tested
         // with injected deps and stays measured.

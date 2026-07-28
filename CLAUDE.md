@@ -94,6 +94,34 @@ Only screens whose dimensions change are re-uploaded (`--force` overrides), each
 to a *fresh* S3 key so caches can't keep serving the old PNG; `--dry-run` and
 `--limit=N` are available. Same env as generation, minus the LLM.
 
+### Hand-authored runs (the agent in this session, not an OpenRouter model)
+
+`npm run showcase:ingest -- --manifest run.json` publishes screens written by
+hand — or by Claude Code following `src/skills/prototype.md` itself — through
+the *same* screenshot → S3 → Postgres path as `showcase:generate`
+(`src/showcase/publish.ts`, shared by both entrypoints; `ingest.ts` holds the
+manifest parsing). The manifest is
+`{theme, prompt?, model?, screens: [{name, file | htmlContent}]}`; `file` paths
+resolve relative to the manifest, and screens should be authored as separate
+`.html` files rather than JSON-escaped strings. `--dry-run` lists what would be
+published. Two helpers complete the loop without a browser or a server:
+`npm run showcase:theme` prints one theme (skipping the last 10 used), and
+`npm run showcase:image -- "prompt"` runs the real `generateImage` and prints
+`url<TAB>prompt`. Record the author in `model` (e.g. `claude-opus-5
+(hand-authored)`) so these runs stay distinguishable in `showcase_screens`.
+
+Env/Postgres/S3 wiring for all four entrypoints lives in
+`src/showcase/context.ts`, and the "run me only as a script" tail in
+`src/showcase/cli.ts`.
+
+**Gotcha, twice burned: no named inner functions inside `page.evaluate`.** The
+bundler emits a `__name` helper that does not exist in the page, so the whole
+evaluate rejects — and `screenshotHtml`'s render-ready wait used to swallow
+that silently, degrading every screen of a run to fallback fonts and blank
+icons with no trace. It now logs a warning when that wait fails, and waits for
+`@import`ed stylesheets to land before reading computed styles (until they do,
+`.ph::before` has no content, so no icon font is ever requested).
+
 **The turn is assembled by `prepareChatTurn` (`src/ai/chatTurn.ts`), shared with
 the `/api/chat` route — never hand-roll the system prompt or tool set here.** A
 second prompt builder is how the showcase would start advertising an agent that
