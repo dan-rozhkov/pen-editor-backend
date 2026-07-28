@@ -16,3 +16,15 @@ export function readFlag(argv: string[], name: string): string | undefined {
   }
   return undefined;
 }
+
+/** True if `--name` appears in argv at all, in either the inline (`--name=x`)
+ * or separated (`--name x`) form, or with no value at all (`--name` as the
+ * last token, or followed by another flag). `readFlag` collapses all of the
+ * valueless cases to `undefined`, which is indistinguishable from the flag
+ * being absent entirely — callers that need to tell "not given" apart from
+ * "given but malformed" (to error instead of silently falling back to a
+ * default) check this first. */
+export function hasFlag(argv: string[], name: string): boolean {
+  const prefix = `--${name}=`;
+  return argv.some((a) => a === `--${name}` || a.startsWith(prefix));
+}

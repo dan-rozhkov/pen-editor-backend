@@ -11,6 +11,7 @@
     "showcase:image": "tsx --env-file=.env src/showcase/imageRun.ts",
     "showcase:ingest": "tsx --env-file=.env src/showcase/ingestRun.ts",
     "showcase:rescreenshot": "tsx --env-file=.env src/showcase/rescreenshotRun.ts",
+    "showcase:pin": "tsx --env-file=.env src/showcase/pinRun.ts",
     "build": "tsc && rm -rf dist/skills && cp -R src/skills dist/skills && rm -rf dist/analysis/migrations && cp -R src/analysis/migrations dist/analysis/migrations",
     "start": "node dist/index.js",
     "test": "vitest run",

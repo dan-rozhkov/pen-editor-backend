@@ -26,6 +26,7 @@ export interface PublishDeps {
   }): Promise<void>;
   newId(): string;
   log(message: string): void;
+  pinScreen(id: string): Promise<boolean>;
 }
 
 /** The live wiring of PublishDeps used by both CLI entrypoints — Postgres and
@@ -43,6 +44,7 @@ export function publishDepsFrom(
     insertScreen: (row) => ctx.store.insertScreen(row),
     newId: randomUUID,
     log: (message) => console.log(message),
+    pinScreen: (id) => ctx.store.pinScreen(id),
   };
 }
 
@@ -52,6 +54,10 @@ export interface PublishInput {
   prompt: string;
   model: string;
   screens: ShowcaseScreenDraft[];
+  // 1-based index into `screens` — the cover picked in the manifest or via
+  // `--cover=<n>`. Pinned right after that screen's row is inserted so a run
+  // that fails partway through never leaves a stale id to look up later.
+  coverIndex?: number;
 }
 
 export interface PublishedScreen {
@@ -81,9 +87,10 @@ export async function publishScreens(
     );
 
     const title = screen.name || `${input.theme} — экран ${index}`;
+    const id = deps.newId();
 
     await deps.insertScreen({
-      id: deps.newId(),
+      id,
       runId: input.runId,
       theme: input.theme,
       title,
@@ -97,6 +104,11 @@ export async function publishScreens(
 
     published.push({ title, imageUrl });
     deps.log(`[showcase] saved screen ${index}/${input.screens.length}: ${title}`);
+
+    if (input.coverIndex === index) {
+      await deps.pinScreen(id);
+      deps.log(`[showcase] pinned as cover: ${title}`);
+    }
   }
 
   return published;

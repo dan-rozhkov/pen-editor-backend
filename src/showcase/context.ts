@@ -14,17 +14,39 @@ import type { S3Client } from "@aws-sdk/client-s3";
 // all CLI entrypoints, and a stack trace is a worse answer than the line
 // naming the variable you forgot.
 
-export interface ShowcaseContext {
+/** The part of the context every entrypoint needs: env + Postgres.
+ * `showcase:pin` only touches `showcase_screens` rows — no screenshots, no
+ * uploads — so it asks for this shape via `{ requireS3: false }` rather than
+ * carrying `s3Client`/`bucket`/`endpoint`/`upload` fields that would be
+ * either unset-but-typed-present (a runtime lie) or `as`-cast away. */
+export interface ShowcaseDbContext {
   config: Config;
   store: ShowcaseStore;
+  close(): Promise<void>;
+}
+
+/** Full context for entrypoints that also screenshot/upload
+ * (generate/ingest/rescreenshot). */
+export interface ShowcaseContext extends ShowcaseDbContext {
   s3Client: S3Client;
   bucket: string;
   endpoint: string;
   upload(key: string, body: Buffer, contentType: string): Promise<string>;
-  close(): Promise<void>;
 }
 
-export async function openShowcaseContext(tag: string): Promise<ShowcaseContext> {
+export function openShowcaseContext(
+  tag: string,
+  options?: { requireS3?: true },
+): Promise<ShowcaseContext>;
+export function openShowcaseContext(
+  tag: string,
+  options: { requireS3: false },
+): Promise<ShowcaseDbContext>;
+export async function openShowcaseContext(
+  tag: string,
+  options: { requireS3?: boolean } = {},
+): Promise<ShowcaseDbContext | ShowcaseContext> {
+  const requireS3 = options.requireS3 ?? true;
   const config = loadConfig();
 
   if (!config.TRACE_DATABASE_URL) {
@@ -32,15 +54,27 @@ export async function openShowcaseContext(tag: string): Promise<ShowcaseContext>
     process.exit(1);
   }
 
-  const s3Client = createS3Client(config);
-  if (!s3Client || !config.S3_BUCKET || !config.S3_ENDPOINT) {
-    console.error(
-      `[${tag}] S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY are all required`,
-    );
-    process.exit(1);
+  let s3Part:
+    | Pick<ShowcaseContext, "s3Client" | "bucket" | "endpoint" | "upload">
+    | undefined;
+  if (requireS3) {
+    const s3Client = createS3Client(config);
+    if (!s3Client || !config.S3_BUCKET || !config.S3_ENDPOINT) {
+      console.error(
+        `[${tag}] S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY are all required`,
+      );
+      process.exit(1);
+    }
+    const bucket = config.S3_BUCKET;
+    const endpoint = config.S3_ENDPOINT;
+    s3Part = {
+      s3Client,
+      bucket,
+      endpoint,
+      upload: (key, body, contentType) =>
+        uploadObject(s3Client, bucket, endpoint, key, body, contentType),
+    };
   }
-  const bucket = config.S3_BUCKET;
-  const endpoint = config.S3_ENDPOINT;
 
   const pool = createPgPool(config.TRACE_DATABASE_URL);
   const store = createShowcaseStore(config, pool);
@@ -59,14 +93,11 @@ export async function openShowcaseContext(tag: string): Promise<ShowcaseContext>
     migrationClient.release();
   }
 
-  return {
+  const dbContext: ShowcaseDbContext = {
     config,
     store,
-    s3Client,
-    bucket,
-    endpoint,
-    upload: (key, body, contentType) =>
-      uploadObject(s3Client, bucket, endpoint, key, body, contentType),
     close: () => store.close(),
   };
+
+  return s3Part ? { ...dbContext, ...s3Part } : dbContext;
 }

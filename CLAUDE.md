@@ -86,6 +86,29 @@ second env var, since a second URL pointing elsewhere would silently split the
 schema) plus all four `S3_*` vars, and a one-time
 `npx playwright install chromium`. Spec: FIR-61.
 
+One screen across the whole feed can be **pinned** so it always sorts first,
+regardless of when it was created (`pinned_at` on `showcase_screens`, migration
+`004_showcase_pin.sql`; exclusive — setting a new pin clears any previous one).
+`GET /api/showcase` doesn't expose `pinned`; the ordering alone is enough. Set
+it at publish time — `cover: true` on a screen in the `showcase:ingest`
+manifest, or `--cover=<n>` (1-based screen index, overrides the manifest) on
+either `showcase:ingest` or `showcase:generate` — or after the fact with
+`npm run showcase:pin -- --screen <uuid>` (`--clear` to unpin, `--list` to
+print recent screens with their ids so you have something to pass to
+`--screen`). `src/showcase/pin.ts` holds the parsing/dispatch, `pinRun.ts` is
+the thin entrypoint, same split as every other showcase script. It is the one
+showcase script that needs **only** `TRACE_DATABASE_URL` — it opens the shared
+context with `{ requireS3: false }`, since pinning touches no image and no
+HTML, and demanding four S3 vars to flip a boolean is how a repair command
+becomes unrunnable exactly when you need it.
+
+Migrations now also run at server startup (`src/startupMigrations.ts`, called
+from `index.ts` when `TRACE_DATABASE_URL` is set; failures are logged, not
+fatal, since the rest of the API works without Postgres). Before that, only
+`npm run analyze` and the showcase CLIs applied them — so the moment a route
+started selecting a migration-added column (`pinned_at`), a deploy would have
+500'd the whole gallery until someone ran a CLI by hand.
+
 `npm run showcase:rescreenshot` re-renders the PNG of every stored screen from
 its stored HTML (`src/showcase/rescreenshot.ts`, driven by the
 `rescreenshotRun.ts` entrypoint) — the repair path after a

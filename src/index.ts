@@ -2,8 +2,16 @@ import { buildApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { closeAllMCPClients } from "./ai/mcp.js";
 import { getAllSkills, loadSkills } from "./ai/skills.js";
+import { applyStartupMigrations } from "./startupMigrations.js";
 
 const config = loadConfig();
+
+// Postgres schema was previously only ever advanced by CLI entrypoints
+// (npm run analyze / the showcase scripts); the server itself never applied
+// migrations. That silently broke the moment a route started reading a
+// column a migration adds (see startupMigrations.ts) — so the server now
+// applies pending migrations itself before it starts serving traffic.
+await applyStartupMigrations(config);
 
 await loadSkills();
 if (getAllSkills().length === 0) {

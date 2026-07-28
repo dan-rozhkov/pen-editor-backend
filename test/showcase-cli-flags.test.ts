@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { readFlag } from "../src/showcase/cliFlags.js";
+import { hasFlag, readFlag } from "../src/showcase/cliFlags.js";
 
 describe("readFlag", () => {
   it("reads the --name=value form, keeping spaces in the value", () => {
@@ -31,5 +31,28 @@ describe("readFlag", () => {
 
   it("accepts an explicitly empty value", () => {
     expect(readFlag(["--theme="], "theme")).toBe("");
+  });
+});
+
+describe("hasFlag", () => {
+  it("is false when the flag is absent", () => {
+    expect(hasFlag([], "cover")).toBe(false);
+    expect(hasFlag(["--model=x"], "cover")).toBe(false);
+  });
+
+  it("is true for the bare form, even with no value following", () => {
+    expect(hasFlag(["--cover"], "cover")).toBe(true);
+  });
+
+  it("is true when followed by another flag instead of a value", () => {
+    expect(hasFlag(["--cover", "--dry-run"], "cover")).toBe(true);
+  });
+
+  it("is true for the inline form", () => {
+    expect(hasFlag(["--cover=2"], "cover")).toBe(true);
+  });
+
+  it("is true for the separated value form", () => {
+    expect(hasFlag(["--cover", "2"], "cover")).toBe(true);
   });
 });

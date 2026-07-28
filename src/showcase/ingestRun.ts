@@ -2,10 +2,10 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { openShowcaseBrowser } from "./screenshot.js";
-import { readFlag } from "./cliFlags.js";
+import { hasFlag, readFlag } from "./cliFlags.js";
 import { openShowcaseContext } from "./context.js";
 import { publishDepsFrom, publishScreens } from "./publish.js";
-import { parseManifest, resolveScreens } from "./ingest.js";
+import { coverIndexFrom, parseManifest, resolveCoverIndex, resolveScreens } from "./ingest.js";
 import { runAsScript } from "./cli.js";
 
 // CLI entrypoint for `npm run showcase:ingest -- --manifest path/to/run.json`.
@@ -15,11 +15,13 @@ async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const manifestPath = readFlag(argv, "manifest");
   const dryRun = argv.includes("--dry-run");
+  const coverFlag = readFlag(argv, "cover");
+  const coverFlagPresent = hasFlag(argv, "cover");
 
   if (!manifestPath) {
     console.error(
       "[ingest] --manifest=path/to/run.json is required " +
-        '(shape: { theme, prompt?, model?, screens: [{ name, file | htmlContent }] })',
+        '(shape: { theme, prompt?, model?, screens: [{ name, file | htmlContent, cover? }] })',
     );
     process.exit(1);
   }
@@ -31,6 +33,21 @@ async function main(): Promise<void> {
     { readFile: (rel) => readFile(resolve(manifestDir, rel), "utf8") },
     manifest,
   );
+
+  // `--cover` overrides the manifest's `cover: true` marker — a one-off pick
+  // shouldn't require editing the file that's meant to be reusable.
+  let coverIndex: number | undefined;
+  try {
+    coverIndex = resolveCoverIndex({
+      raw: coverFlag,
+      flagPresent: coverFlagPresent,
+      manifestDefault: coverIndexFrom(manifest),
+      screenCount: screens.length,
+    });
+  } catch (err) {
+    console.error(`[ingest] ${(err as Error).message}`);
+    process.exit(1);
+  }
 
   const theme = manifest.theme;
   const prompt = manifest.prompt ?? theme;
@@ -54,7 +71,7 @@ async function main(): Promise<void> {
   try {
     const published = await publishScreens(
       publishDepsFrom(ctx, (html) => browserSession.screenshot(html)),
-      { runId: randomUUID(), theme, prompt, model, screens },
+      { runId: randomUUID(), theme, prompt, model, screens, coverIndex },
     );
 
     for (const screen of published) {

@@ -16,6 +16,7 @@ export interface ShowcaseScreenRow {
 
 export interface ShowcaseScreen extends ShowcaseScreenRow {
   createdAt: string;
+  pinned: boolean;
 }
 
 export interface ShowcaseStore {
@@ -29,6 +30,11 @@ export interface ShowcaseStore {
   // truth, so every screen can be re-rendered after a screenshot bug fix.
   listScreenSources(): Promise<ShowcaseScreenSource[]>;
   updateScreenImage(update: ShowcaseImageUpdate): Promise<void>;
+  // Exclusive: clears every existing pin before setting the new one, so "the
+  // first screen" is always at most one row and never needs reconciling.
+  // Returns false (no-op) when `id` does not match any row.
+  pinScreen(id: string): Promise<boolean>;
+  clearPin(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -48,6 +54,7 @@ export interface ShowcaseImageUpdate {
 }
 
 interface DecodedCursor {
+  pinned: boolean;
   createdAt: string;
   id: string;
 }
@@ -56,6 +63,12 @@ function badCursor(): never {
   throw Object.assign(new Error("Invalid cursor"), { statusCode: 400 });
 }
 
+// Cursor is `p1|<createdAt>|<id>` / `p0|<createdAt>|<id>` (pinned flag first,
+// matching the ORDER BY column order) so keyset pagination can compare
+// row-wise against `(pinned, created_at, id)` and never re-show or skip the
+// pinned screen across a page boundary. The old two-field format (no `p`
+// prefix) is still accepted as pinned=false — it is only ever seen on page 2+
+// of a tab that was open before this shipped, where that reading is correct.
 function decodeCursor(cursor: string): DecodedCursor {
   let decoded: string;
   try {
@@ -63,17 +76,33 @@ function decodeCursor(cursor: string): DecodedCursor {
   } catch {
     throw badCursor();
   }
-  const sepIndex = decoded.indexOf("|");
-  if (sepIndex === -1) badCursor();
-  const createdAt = decoded.slice(0, sepIndex);
-  const id = decoded.slice(sepIndex + 1);
+  const parts = decoded.split("|");
+
+  let pinned: boolean;
+  let createdAt: string;
+  let id: string;
+  if (parts.length === 3) {
+    const [flag, rawCreatedAt, rawId] = parts;
+    if (flag !== "p0" && flag !== "p1") badCursor();
+    pinned = flag === "p1";
+    createdAt = rawCreatedAt;
+    id = rawId;
+  } else if (parts.length === 2) {
+    pinned = false;
+    [createdAt, id] = parts;
+  } else {
+    badCursor();
+  }
+
   if (!createdAt || !id) badCursor();
   if (Number.isNaN(Date.parse(createdAt))) badCursor();
-  return { createdAt, id };
+  return { pinned, createdAt, id };
 }
 
-function encodeCursor(createdAt: string, id: string): string {
-  return Buffer.from(`${createdAt}|${id}`, "utf8").toString("base64url");
+function encodeCursor(pinned: boolean, createdAt: string, id: string): string {
+  return Buffer.from(`${pinned ? "p1" : "p0"}|${createdAt}|${id}`, "utf8").toString(
+    "base64url",
+  );
 }
 
 interface ShowcaseScreenDbRow {
@@ -88,6 +117,7 @@ interface ShowcaseScreenDbRow {
   width: number;
   height: number;
   created_at: string | Date;
+  pinned_at: string | Date | null;
 }
 
 function toIso(value: string | Date): string {
@@ -107,6 +137,7 @@ function mapRow(row: ShowcaseScreenDbRow): ShowcaseScreen {
     width: row.width,
     height: row.height,
     createdAt: toIso(row.created_at),
+    pinned: row.pinned_at !== null,
   };
 }
 
@@ -142,17 +173,22 @@ export function createShowcaseStore(
       const conditions = ["published = true"];
       const params: unknown[] = [];
       if (cursor) {
-        const { createdAt, id } = decodeCursor(cursor);
-        params.push(createdAt, id);
+        const { pinned, createdAt, id } = decodeCursor(cursor);
+        params.push(pinned, createdAt, id);
+        // Row-wise comparison, not three ANDed columns: a naive `ORDER BY`
+        // swap would put an old pinned screen on page 1 and then *again* on
+        // whichever later page its (created_at, id) alone would satisfy.
+        // `false < true` in Postgres, so this stays consistent with the
+        // `(pinned_at IS NOT NULL) DESC` ordering below.
         conditions.push(
-          `(created_at, id) < ($${params.length - 1}::timestamptz, $${params.length}::uuid)`,
+          `((pinned_at IS NOT NULL), created_at, id) < ($${params.length - 2}::boolean, $${params.length - 1}::timestamptz, $${params.length}::uuid)`,
         );
       }
       params.push(limit);
-      const sql = `SELECT id, run_id, theme, title, prompt, model, image_url, html_url, width, height, created_at
+      const sql = `SELECT id, run_id, theme, title, prompt, model, image_url, html_url, width, height, created_at, pinned_at
                    FROM showcase_screens
                    WHERE ${conditions.join(" AND ")}
-                   ORDER BY created_at DESC, id DESC
+                   ORDER BY (pinned_at IS NOT NULL) DESC, created_at DESC, id DESC
                    LIMIT $${params.length}`;
       const result = (await db.query(sql, params)) as {
         rows: ShowcaseScreenDbRow[];
@@ -161,6 +197,7 @@ export function createShowcaseStore(
       const nextCursor =
         screens.length === limit && screens.length > 0
           ? encodeCursor(
+              screens[screens.length - 1].pinned,
               screens[screens.length - 1].createdAt,
               screens[screens.length - 1].id,
             )
@@ -210,6 +247,35 @@ export function createShowcaseStore(
       await db.query(
         `UPDATE showcase_screens SET image_url = $2, width = $3, height = $4 WHERE id = $1`,
         [id, imageUrl, width, height],
+      );
+    },
+
+    async pinScreen(id) {
+      // Existence is checked up front so an unknown id is reported as such:
+      // the CASE-WHEN update below matches on `pinned_at IS NOT NULL OR id =
+      // $1`, which would otherwise happily clear the current pin and report
+      // success for an id that clearing every row already meant no-oping on.
+      const existing = (await db.query(
+        "SELECT 1 FROM showcase_screens WHERE id = $1",
+        [id],
+      )) as { rows: unknown[] };
+      if (existing.rows.length === 0) return false;
+
+      // Clear-then-set in one round trip rather than two statements: a crash
+      // between them would otherwise leave the table with either zero or two
+      // pins, both of which break the "exactly one first screen" invariant.
+      await db.query(
+        `UPDATE showcase_screens SET pinned_at = CASE WHEN id = $1 THEN now() ELSE NULL END
+           WHERE pinned_at IS NOT NULL OR id = $1`,
+        [id],
+      );
+      return true;
+    },
+
+    async clearPin() {
+      await db.query(
+        "UPDATE showcase_screens SET pinned_at = NULL WHERE pinned_at IS NOT NULL",
+        [],
       );
     },
 

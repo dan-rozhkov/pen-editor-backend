@@ -42,6 +42,10 @@ export default defineConfig({
         // (rescreenshotScreens, in src/showcase/rescreenshot.ts) is unit-tested
         // with injected deps and stays measured.
         "src/showcase/rescreenshotRun.ts",
+        // pin entrypoint: same shape again. The loop it drives
+        // (resolvePinAction/runPinAction, in src/showcase/pin.ts) is
+        // unit-tested with an injected fake store and stays measured.
+        "src/showcase/pinRun.ts",
         // Playwright driver. It IS tested — test/showcase-screenshot.test.ts
         // asserts the real layout geometry — but only against a real Chromium,
         // which CI does not install (`npx playwright install chromium` is a
