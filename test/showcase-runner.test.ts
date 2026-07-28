@@ -79,10 +79,11 @@ function mockModel(results: LanguageModelV3GenerateResult[]): MockLanguageModelV
 describe("runShowcaseGeneration", () => {
   let runShowcaseGeneration: typeof import("../src/showcase/runner.js").runShowcaseGeneration;
   let MAX_GENERATED_IMAGES: number;
+  let SHOWCASE_MODEL_ID: string;
 
   beforeAll(async () => {
     await loadSkills();
-    ({ runShowcaseGeneration, MAX_GENERATED_IMAGES } = await import(
+    ({ runShowcaseGeneration, MAX_GENERATED_IMAGES, SHOWCASE_MODEL_ID } = await import(
       "../src/showcase/runner.js"
     ));
   });
@@ -106,7 +107,7 @@ describe("runShowcaseGeneration", () => {
     const result = await runShowcaseGeneration(makeConfig(), "fitness tracker");
 
     expect(result.theme).toBe("fitness tracker");
-    expect(result.model).toBe("deepseek/deepseek-v4-pro");
+    expect(result.model).toBe(SHOWCASE_MODEL_ID);
     expect(result.screens).toEqual([
       { name: "Home", htmlContent: "<div>Home</div>" },
       { name: "Profile", htmlContent: "<div>Profile</div>" },
