@@ -1,5 +1,5 @@
 import { openShowcaseBrowser } from "./screenshot.js";
-import { parseCommonRepairFlags } from "./cliFlags.js";
+import { parseCommonRepairFlags, readFlag } from "./cliFlags.js";
 import { rescreenshotScreens } from "./rescreenshot.js";
 import { openShowcaseContext } from "./context.js";
 import { runAsScript } from "./cli.js";
@@ -12,6 +12,8 @@ import { runAsScript } from "./cli.js";
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const { force, dryRun, limit } = parseCommonRepairFlags(argv, "rescreenshot");
+  // `--app <run_id|screen_id>` re-renders just that app's carousel.
+  const appOf = readFlag(argv, "app");
 
   const ctx = await openShowcaseContext("rescreenshot");
   const browserSession = await openShowcaseBrowser();
@@ -28,8 +30,14 @@ async function main(): Promise<void> {
         uploadWebp: (key, body) => ctx.upload(key, body, "image/webp"),
         log: (message) => console.log(message),
       },
-      { force, dryRun, limit },
+      { force, dryRun, limit, appOf },
     );
+
+    if (appOf && summary.total === 0) {
+      console.error(`[rescreenshot] no screens found for --app=${appOf}`);
+      process.exitCode = 1;
+      return;
+    }
 
     console.log(
       `[rescreenshot] done${dryRun ? " (dry run)" : ""} — ${summary.updated} updated, ` +

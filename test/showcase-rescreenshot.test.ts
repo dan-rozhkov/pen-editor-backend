@@ -35,14 +35,20 @@ function makeDeps(
 ): RescreenshotDeps & {
   updates: ShowcaseDerivativesUpdate[];
   uploads: string[];
+  listArgs: Array<{ appOf?: string } | undefined>;
 } {
   const updates: ShowcaseDerivativesUpdate[] = [];
   const uploads: string[] = [];
+  const listArgs: Array<{ appOf?: string } | undefined> = [];
   return {
     updates,
     uploads,
+    listArgs,
     store: {
-      listScreenSources: async () => screens,
+      listScreenSources: async (options) => {
+        listArgs.push(options);
+        return screens;
+      },
       updateScreenDerivatives: async (update) => {
         updates.push(update);
       },
@@ -145,5 +151,15 @@ describe("rescreenshotScreens", () => {
 
     expect(summary.total).toBe(2);
     expect(deps.updates.map((u) => u.id)).toEqual(["a", "b"]);
+  });
+
+  it("passes --app straight through to the store's own filter", async () => {
+    const deps = makeDeps([source()], () => ({ width: 750, height: 2024 }));
+
+    await rescreenshotScreens(deps, { appOf: "screen-4" });
+
+    // Narrowing must happen in SQL, not by fetching every row and filtering
+    // in JS — the sweep re-renders each screen it lists.
+    expect(deps.listArgs).toEqual([{ appOf: "screen-4" }]);
   });
 });

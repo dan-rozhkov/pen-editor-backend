@@ -38,6 +38,8 @@ export interface RescreenshotOptions {
   dryRun?: boolean;
   // Stop after N screens (oldest first) — handy for a trial run.
   limit?: number;
+  // Restrict the sweep to one app: a run_id, or the id of any screen in it.
+  appOf?: string;
 }
 
 export interface RescreenshotSummary {
@@ -52,7 +54,7 @@ export async function rescreenshotScreens(
   options: RescreenshotOptions = {},
 ): Promise<RescreenshotSummary> {
   const log = deps.log ?? (() => {});
-  const all = await deps.store.listScreenSources();
+  const all = await deps.store.listScreenSources({ appOf: options.appOf });
   const screens = options.limit != null ? all.slice(0, options.limit) : all;
 
   const summary: RescreenshotSummary = {

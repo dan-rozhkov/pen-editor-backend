@@ -33,7 +33,12 @@ export interface ShowcaseStore {
   recentThemes(limit: number): Promise<string[]>;
   // For `npm run showcase:rescreenshot` — the stored HTML is the source of
   // truth, so every screen can be re-rendered after a screenshot bug fix.
-  listScreenSources(): Promise<ShowcaseScreenSource[]>;
+  // `appOf` narrows the sweep to one app: it takes either a run_id or the id
+  // of any screen in that run, because in practice you spot the problem on a
+  // single screen in the gallery but want its whole carousel re-rendered
+  // consistently (a run with half-old, half-new screenshots looks worse than
+  // one that is uniformly stale).
+  listScreenSources(options?: { appOf?: string }): Promise<ShowcaseScreenSource[]>;
   // For both `npm run showcase:rescreenshot` and `npm run showcase:reencode`
   // — the only way any code writes `image_url`. There is deliberately no
   // PNG-only "just update image_url" path: every writer that touches the
@@ -313,14 +318,21 @@ export function createShowcaseStore(
       return result.rows.map((r) => r.theme);
     },
 
-    async listScreenSources() {
+    async listScreenSources(options) {
       // Oldest first, and unpublished rows included: a re-render is a repair of
       // whatever is stored, not a feed the visitor sees.
+      const appOf = options?.appOf;
+      // COALESCE resolves the argument as a screen id first and falls back to
+      // treating it as a run_id, so callers can pass whichever one they have.
+      const where = appOf
+        ? `WHERE run_id = COALESCE((SELECT run_id FROM showcase_screens WHERE id = $1::uuid), $1::uuid)`
+        : "";
       const result = (await db.query(
         `SELECT id, title, html_url, width, height
            FROM showcase_screens
+           ${where}
            ORDER BY created_at ASC, id ASC`,
-        [],
+        appOf ? [appOf] : [],
       )) as {
         rows: Array<{
           id: string;
