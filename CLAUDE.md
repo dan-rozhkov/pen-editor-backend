@@ -80,11 +80,20 @@ and no HTTP request: it picks a random theme from `themes.ts` (skipping the last
 `embed` screens out of the agent's `batch_design` calls, screenshots each with
 Playwright Chromium, uploads the PNG **and** the raw HTML to S3, and inserts a
 row per screen into `showcase_screens`. The frontend reads them back through
-`GET /api/showcase` (`src/routes/showcase.ts`) and renders a masonry gallery at
+`GET /api/showcase` (`src/routes/showcase.ts`) and renders a grid of app cards at
 `/`. Needs `TRACE_DATABASE_URL` (same Postgres as traces — deliberately no
 second env var, since a second URL pointing elsewhere would silently split the
 schema) plus all four `S3_*` vars, and a one-time
 `npx playwright install chromium`. Spec: FIR-61.
+
+The feed paginates by **app**, not by screen: `limit` counts apps (default
+12, max 24), the response is `{apps: [{runId, theme, model, createdAt,
+screens}], nextCursor}`, and cursors are app-addressing (`a1|run_sort|run_id`
+— every older, screen-addressing format is treated as legacy and restarts the
+feed). `store.listApps` picks `limit` runs by recency in a subselect and then
+takes *every* screen of those runs, which is what keeps a page from cutting an
+app in half — the gallery renders one card per app, so a screen-counted page
+made a carousel silently grow when the visitor clicked "Show more".
 
 One screen **per app** can be **pinned** as that app's cover, so it opens the
 app's carousel regardless of when it was created (`pinned_at` on
