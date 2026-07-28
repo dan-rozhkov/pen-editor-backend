@@ -103,9 +103,9 @@ describe("runShowcaseGeneration", () => {
       textResult("done"),
     ]);
 
-    const result = await runShowcaseGeneration(makeConfig(), "фитнес-трекер");
+    const result = await runShowcaseGeneration(makeConfig(), "fitness tracker");
 
-    expect(result.theme).toBe("фитнес-трекер");
+    expect(result.theme).toBe("fitness tracker");
     expect(result.model).toBe("deepseek/deepseek-v4-pro");
     expect(result.screens).toEqual([
       { name: "Home", htmlContent: "<div>Home</div>" },
@@ -162,7 +162,7 @@ describe("runShowcaseGeneration", () => {
       textResult("done"),
     ]);
 
-    await runShowcaseGeneration(makeConfig(), "фитнес-трекер");
+    await runShowcaseGeneration(makeConfig(), "fitness tracker");
 
     expect(imageGenMock.generateImage).toHaveBeenCalledOnce();
     const [, prompt] = imageGenMock.generateImage.mock.calls[0];
@@ -181,7 +181,7 @@ describe("runShowcaseGeneration", () => {
       textResult("done"),
     ]);
 
-    const result = await runShowcaseGeneration(makeConfig(), "фитнес-трекер");
+    const result = await runShowcaseGeneration(makeConfig(), "fitness tracker");
 
     // The run completed and still produced its screen.
     expect(result.screens).toHaveLength(1);
@@ -198,7 +198,7 @@ describe("runShowcaseGeneration", () => {
       toolCallResult("generate_image", { prompt: "another one" }),
     ]);
 
-    await runShowcaseGeneration(makeConfig(), "фитнес-трекер");
+    await runShowcaseGeneration(makeConfig(), "fitness tracker");
 
     expect(imageGenMock.generateImage.mock.calls.length).toBe(MAX_GENERATED_IMAGES);
   });

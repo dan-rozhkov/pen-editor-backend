@@ -53,14 +53,14 @@ export const MAX_GENERATED_IMAGES = 8;
 // the requester's requirement rather than a contradiction of them.
 export function buildShowcasePrompt(theme: string): string {
   return (
-    `/prototype мобильное приложение — ${theme}, до 5 экранов одного пользовательского флоу, ` +
-    `единый визуальный стиль.\n\n` +
-    `Картинки: для КРУПНЫХ изображений — hero, обложка, карточка контента, продуктовое фото — ` +
-    `не ставь picsum. Вызови generate_image с подробным описанием кадра в стиле этого приложения ` +
-    `и подставь возвращённый url в <img src> или background-image. ` +
-    `Мелочь (аватарки, микро-превью, иконки) оставляй как предписывает скилл — picsum или инициалы. ` +
-    `Не больше ${MAX_GENERATED_IMAGES} генераций на весь прогон: сначала самые заметные кадры. ` +
-    `Если инструмент вернул note про placeholder — используй присланный url как есть и не вызывай его снова.`
+    `/prototype mobile app — ${theme}, up to 5 screens of a single user flow, ` +
+    `one consistent visual style. Write all UI copy in English.\n\n` +
+    `Imagery: for LARGE images — hero, cover art, content card, product shot — ` +
+    `do not use picsum. Call generate_image with a detailed description of the shot in this ` +
+    `app's style and put the returned url into <img src> or background-image. ` +
+    `Small stuff (avatars, micro-previews, icons) stays as the skill prescribes — picsum or initials. ` +
+    `At most ${MAX_GENERATED_IMAGES} generations for the whole run: the most prominent shots first. ` +
+    `If the tool returns a note about a placeholder, use the url it sent as is and do not call it again.`
   );
 }
 
