@@ -9,3 +9,6 @@ coverage/
 
 # Generated trace-analysis reports
 reports/
+
+# Agent-isolated implementation worktrees
+.worktrees/
