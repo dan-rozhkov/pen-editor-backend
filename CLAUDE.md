@@ -86,16 +86,21 @@ second env var, since a second URL pointing elsewhere would silently split the
 schema) plus all four `S3_*` vars, and a one-time
 `npx playwright install chromium`. Spec: FIR-61.
 
-One screen across the whole feed can be **pinned** so it always sorts first,
-regardless of when it was created (`pinned_at` on `showcase_screens`, migration
-`004_showcase_pin.sql`; exclusive — setting a new pin clears any previous one).
-`GET /api/showcase` doesn't expose `pinned`; the ordering alone is enough. Set
-it at publish time — `cover: true` on a screen in the `showcase:ingest`
-manifest, or `--cover=<n>` (1-based screen index, overrides the manifest) on
-either `showcase:ingest` or `showcase:generate` — or after the fact with
-`npm run showcase:pin -- --screen <uuid>` (`--clear` to unpin, `--list` to
-print recent screens with their ids so you have something to pass to
-`--screen`). `src/showcase/pin.ts` holds the parsing/dispatch, `pinRun.ts` is
+One screen **per app** can be **pinned** as that app's cover, so it opens the
+app's carousel regardless of when it was created (`pinned_at` on
+`showcase_screens`, migrations `004_showcase_pin.sql` +
+`005_showcase_pin_per_run.sql`; exclusive *within a `run_id`* — a partial
+unique index enforces at most one pin per app, and pinning in one app never
+touches another's). The feed orders apps by recency (`MAX(created_at)` per
+run) and screens within an app pinned-first — there is deliberately no way to
+promote an app to the front of the feed. `GET /api/showcase` doesn't expose
+`pinned`; the row order alone is enough, and the client's `groupScreensByApp`
+preserves it. Set it at publish time — `cover: true` on a screen in the
+`showcase:ingest` manifest, or `--cover=<n>` (1-based screen index, overrides
+the manifest) on either `showcase:ingest` or `showcase:generate` — or after the
+fact with `npm run showcase:pin -- --screen <uuid>` (`--clear` unpins every
+app, `--clear --run <uuid>` just one, `--list` prints recent screens grouped by
+app with their ids so you have something to pass to `--screen`). `src/showcase/pin.ts` holds the parsing/dispatch, `pinRun.ts` is
 the thin entrypoint, same split as every other showcase script. It is the one
 showcase script that needs **only** `TRACE_DATABASE_URL` — it opens the shared
 context with `{ requireS3: false }`, since pinning touches no image and no

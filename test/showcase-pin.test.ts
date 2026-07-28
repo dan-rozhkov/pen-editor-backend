@@ -62,6 +62,35 @@ describe("resolvePinAction", () => {
       /positive integer/,
     );
   });
+
+  it("resolves --clear --run to a scoped clear action", () => {
+    expect(
+      resolvePinAction({ clear: true, list: false, run: "22222222-2222-2222-2222-222222222222" }),
+    ).toEqual({ kind: "clear", runId: "22222222-2222-2222-2222-222222222222" });
+  });
+
+  it("rejects --run without --clear", () => {
+    expect(() =>
+      resolvePinAction({ clear: false, list: false, run: "22222222-2222-2222-2222-222222222222" }),
+    ).toThrow(/--run is only valid together with --clear/);
+  });
+
+  it("rejects --run combined with --screen", () => {
+    expect(() =>
+      resolvePinAction({
+        screen: "abc-123",
+        clear: false,
+        list: false,
+        run: "22222222-2222-2222-2222-222222222222",
+      }),
+    ).toThrow(/--run is only valid together with --clear/);
+  });
+
+  it("rejects an empty --run value", () => {
+    expect(() => resolvePinAction({ clear: true, list: false, run: "" })).toThrow(
+      /--run requires a run id/,
+    );
+  });
 });
 
 function fakeStore(overrides: Partial<PinDeps["store"]> = {}): PinDeps["store"] {
@@ -107,16 +136,28 @@ describe("runPinAction", () => {
     ).rejects.toThrow(/no showcase screen with id missing/);
   });
 
-  it("clears the pin and logs it", async () => {
+  it("clears every pin and logs it", async () => {
     const store = fakeStore();
     const log = vi.fn();
     await runPinAction({ store, log }, { kind: "clear" });
-    expect(store.clearPin).toHaveBeenCalled();
-    expect(log).toHaveBeenCalledWith(expect.stringContaining("cleared"));
+    expect(store.clearPin).toHaveBeenCalledWith(undefined);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("cleared every pinned screen"));
   });
 
-  it("lists screens, marking the pinned one", async () => {
-    const screens = [makeScreen({ pinned: true }), makeScreen({ id: "other", pinned: false })];
+  it("clears one run's pin and logs it by run id", async () => {
+    const store = fakeStore();
+    const log = vi.fn();
+    await runPinAction({ store, log }, { kind: "clear", runId: "run-1" });
+    expect(store.clearPin).toHaveBeenCalledWith("run-1");
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("run run-1"));
+  });
+
+  it("lists screens grouped by app, marking the pinned one", async () => {
+    const screens = [
+      makeScreen({ id: "s1", runId: "run-a", pinned: true }),
+      makeScreen({ id: "s2", runId: "run-a", pinned: false }),
+      makeScreen({ id: "s3", runId: "run-b", pinned: false }),
+    ];
     const store = fakeStore({
       listScreens: vi.fn().mockResolvedValue({ screens, nextCursor: null }),
     });
@@ -124,8 +165,12 @@ describe("runPinAction", () => {
     await runPinAction({ store, log }, { kind: "list", limit: 24 });
     expect(store.listScreens).toHaveBeenCalledWith({ limit: 24 });
     const lines = log.mock.calls.map((call) => call[0] as string);
-    expect(lines[0]).toMatch(/^\[pinned\] /);
-    expect(lines[1]).not.toMatch(/^\[pinned\] /);
+    // One header per run, screens indented underneath it, pinned marked.
+    expect(lines[0]).toContain("run-a");
+    expect(lines[1]).toMatch(/^ {2}\[pinned\] /);
+    expect(lines[2]).toMatch(/^ {2}(?!\[pinned\])/);
+    expect(lines[3]).toContain("run-b");
+    expect(lines[4]).toMatch(/^ {2}(?!\[pinned\])/);
   });
 
   it("reports no screens instead of printing an empty list", async () => {

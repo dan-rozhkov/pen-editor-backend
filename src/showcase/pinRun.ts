@@ -10,12 +10,14 @@ async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const screen = readFlag(argv, "screen");
   const limitFlag = readFlag(argv, "limit");
+  const run = readFlag(argv, "run");
 
   const action = resolvePinAction({
     screen,
     clear: argv.includes("--clear"),
     list: argv.includes("--list"),
     limit: limitFlag ? Number(limitFlag) : undefined,
+    run,
   });
 
   const ctx = await openShowcaseContext("pin", { requireS3: false });

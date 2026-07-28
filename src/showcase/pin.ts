@@ -14,7 +14,7 @@ export interface PinDeps {
 
 export type PinAction =
   | { kind: "pin"; screenId: string }
-  | { kind: "clear" }
+  | { kind: "clear"; runId?: string }
   | { kind: "list"; limit: number };
 
 export interface PinArgs {
@@ -22,6 +22,7 @@ export interface PinArgs {
   clear: boolean;
   list: boolean;
   limit?: number;
+  run?: string;
 }
 
 /** Turns raw argv flags into exactly one action, or throws on an ambiguous or
@@ -42,11 +43,22 @@ export function resolvePinAction(args: PinArgs): PinAction {
     throw new Error("--limit must be a positive integer");
   }
 
+  // `--run` narrows what `--clear` clears; it has no meaning against `--screen`
+  // (a screen's own run_id already determines what gets pinned) or `--list`
+  // (listing is unfiltered by design — it's how you find run ids in the
+  // first place), so a typo there fails loudly instead of being ignored.
+  if (args.run !== undefined && !args.clear) {
+    throw new Error("--run is only valid together with --clear");
+  }
+
   if (args.screen !== undefined) {
     if (!args.screen) throw new Error("--screen requires a screen id");
     return { kind: "pin", screenId: args.screen };
   }
-  if (args.clear) return { kind: "clear" };
+  if (args.clear) {
+    if (args.run !== undefined && !args.run) throw new Error("--run requires a run id");
+    return { kind: "clear", runId: args.run };
+  }
   // Listing is the default: with nothing specified there is nothing to act
   // on, and showing what's there (and where the uuids are) is the whole
   // reason to run this command in the first place.
@@ -62,12 +74,18 @@ export async function runPinAction(deps: PinDeps, action: PinAction): Promise<vo
       if (!ok) {
         throw new Error(`no showcase screen with id ${action.screenId}`);
       }
-      deps.log(`[pin] pinned ${action.screenId} as the first screen in the feed`);
+      deps.log(`[pin] pinned ${action.screenId} as its app's cover screen`);
       return;
     }
     case "clear": {
-      await deps.store.clearPin();
-      deps.log("[pin] cleared the pinned screen (feed falls back to created_at order)");
+      await deps.store.clearPin(action.runId);
+      if (action.runId) {
+        deps.log(`[pin] cleared the pinned screen for run ${action.runId}`);
+      } else {
+        deps.log(
+          "[pin] cleared every pinned screen (each app falls back to created_at order)",
+        );
+      }
       return;
     }
     case "list": {
@@ -76,11 +94,18 @@ export async function runPinAction(deps: PinDeps, action: PinAction): Promise<vo
         deps.log("[pin] no published screens");
         return;
       }
+      // Screens of one run are guaranteed contiguous in feed order (the store
+      // sorts apps by recency, then screens within an app), so a single pass
+      // that prints a header whenever run_id changes is enough to group —
+      // no need to bucket screens by run_id first.
+      let lastRunId: string | undefined;
       for (const screen of screens) {
+        if (screen.runId !== lastRunId) {
+          deps.log(`${screen.theme} (run ${screen.runId})`);
+          lastRunId = screen.runId;
+        }
         const mark = screen.pinned ? "[pinned] " : "";
-        deps.log(
-          `${mark}${screen.id}  ${screen.createdAt}  ${screen.theme} — ${screen.title}`,
-        );
+        deps.log(`  ${mark}${screen.id}  ${screen.createdAt}  ${screen.title}`);
       }
       return;
     }

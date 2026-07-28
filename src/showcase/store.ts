@@ -30,11 +30,13 @@ export interface ShowcaseStore {
   // truth, so every screen can be re-rendered after a screenshot bug fix.
   listScreenSources(): Promise<ShowcaseScreenSource[]>;
   updateScreenImage(update: ShowcaseImageUpdate): Promise<void>;
-  // Exclusive: clears every existing pin before setting the new one, so "the
-  // first screen" is always at most one row and never needs reconciling.
-  // Returns false (no-op) when `id` does not match any row.
+  // Exclusive within the screen's own run_id: clears any existing pin for
+  // that app before setting the new one, so "the first screen of this app" is
+  // always at most one row and never needs reconciling. Other apps' pins are
+  // untouched. Returns false (no-op) when `id` does not match any row.
   pinScreen(id: string): Promise<boolean>;
-  clearPin(): Promise<void>;
+  // Clears every pin, or just one app's when `runId` is given.
+  clearPin(runId?: string): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -54,22 +56,32 @@ export interface ShowcaseImageUpdate {
 }
 
 interface DecodedCursor {
+  runSort: string;
+  runId: string;
   pinned: boolean;
   createdAt: string;
   id: string;
 }
 
+// A cursor decodes to a real keyset position (`DecodedCursor`), or to
+// `"legacy"` when it is a pre-per-app-pin cursor: those encoded a sort order
+// (`pinned, created_at, id`) that no longer matches the feed's, and there is
+// no way to translate a position in the old order into one in the new order.
+// Restarting the request from the top of the feed is the only option that
+// isn't a 400 for a page-2+ click in a tab that was already open — one
+// repeated page beats an error.
+type Decoded = DecodedCursor | "legacy";
+
 function badCursor(): never {
   throw Object.assign(new Error("Invalid cursor"), { statusCode: 400 });
 }
 
-// Cursor is `p1|<createdAt>|<id>` / `p0|<createdAt>|<id>` (pinned flag first,
-// matching the ORDER BY column order) so keyset pagination can compare
-// row-wise against `(pinned, created_at, id)` and never re-show or skip the
-// pinned screen across a page boundary. The old two-field format (no `p`
-// prefix) is still accepted as pinned=false — it is only ever seen on page 2+
-// of a tab that was open before this shipped, where that reading is correct.
-function decodeCursor(cursor: string): DecodedCursor {
+// Current format: `r2|<runSort>|<runId>|<p0|p1>|<createdAt>|<id>`, matching
+// the ORDER BY column order (`run_sort, run_id, pinned, created_at, id`) so
+// keyset pagination stays a single row-wise comparison. The `r2` tag lets
+// this be told apart from the two older formats below without guessing from
+// field count alone.
+function decodeCursor(cursor: string): Decoded {
   let decoded: string;
   try {
     decoded = Buffer.from(cursor, "base64url").toString("utf8");
@@ -78,31 +90,34 @@ function decodeCursor(cursor: string): DecodedCursor {
   }
   const parts = decoded.split("|");
 
-  let pinned: boolean;
-  let createdAt: string;
-  let id: string;
+  // Pre-per-app-pin formats: 2 fields (`createdAt|id`) or 3 (`p0|p1` flag +
+  // createdAt + id). Their *shape* is enough to recognize them — their
+  // *values* described a sort order that's gone, so there is nothing to
+  // validate or reuse; treat any 2-field cursor, or any 3-field cursor with a
+  // valid pinned flag, as legacy without inspecting the rest.
+  if (parts.length === 2) return "legacy";
   if (parts.length === 3) {
-    const [flag, rawCreatedAt, rawId] = parts;
-    if (flag !== "p0" && flag !== "p1") badCursor();
-    pinned = flag === "p1";
-    createdAt = rawCreatedAt;
-    id = rawId;
-  } else if (parts.length === 2) {
-    pinned = false;
-    [createdAt, id] = parts;
-  } else {
+    const [flag] = parts;
+    if (flag === "p0" || flag === "p1") return "legacy";
     badCursor();
   }
 
-  if (!createdAt || !id) badCursor();
+  if (parts.length !== 6) badCursor();
+  const [tag, runSort, runId, flag, createdAt, id] = parts;
+  if (tag !== "r2") badCursor();
+  if (flag !== "p0" && flag !== "p1") badCursor();
+  if (!runSort || !runId || !createdAt || !id) badCursor();
+  if (Number.isNaN(Date.parse(runSort))) badCursor();
   if (Number.isNaN(Date.parse(createdAt))) badCursor();
-  return { pinned, createdAt, id };
+  return { runSort, runId, pinned: flag === "p1", createdAt, id };
 }
 
-function encodeCursor(pinned: boolean, createdAt: string, id: string): string {
-  return Buffer.from(`${pinned ? "p1" : "p0"}|${createdAt}|${id}`, "utf8").toString(
-    "base64url",
-  );
+function encodeCursor(fields: DecodedCursor): string {
+  const { runSort, runId, pinned, createdAt, id } = fields;
+  return Buffer.from(
+    `r2|${runSort}|${runId}|${pinned ? "p1" : "p0"}|${createdAt}|${id}`,
+    "utf8",
+  ).toString("base64url");
 }
 
 interface ShowcaseScreenDbRow {
@@ -118,6 +133,7 @@ interface ShowcaseScreenDbRow {
   height: number;
   created_at: string | Date;
   pinned_at: string | Date | null;
+  run_sort: string | Date;
 }
 
 function toIso(value: string | Date): string {
@@ -170,25 +186,37 @@ export function createShowcaseStore(
     },
 
     async listScreens({ limit, cursor }) {
-      const conditions = ["published = true"];
       const params: unknown[] = [];
+      let cursorClause = "";
       if (cursor) {
-        const { pinned, createdAt, id } = decodeCursor(cursor);
-        params.push(pinned, createdAt, id);
-        // Row-wise comparison, not three ANDed columns: a naive `ORDER BY`
-        // swap would put an old pinned screen on page 1 and then *again* on
-        // whichever later page its (created_at, id) alone would satisfy.
-        // `false < true` in Postgres, so this stays consistent with the
-        // `(pinned_at IS NOT NULL) DESC` ordering below.
-        conditions.push(
-          `((pinned_at IS NOT NULL), created_at, id) < ($${params.length - 2}::boolean, $${params.length - 1}::timestamptz, $${params.length}::uuid)`,
-        );
+        const decoded = decodeCursor(cursor);
+        // A legacy cursor describes a position in a sort order that no
+        // longer exists — there is nothing to translate, so this page is
+        // served as if no cursor had been given at all (see decodeCursor).
+        if (decoded !== "legacy") {
+          const { runSort, runId, pinned, createdAt, id } = decoded;
+          params.push(runSort, runId, pinned, createdAt, id);
+          // Row-wise comparison against all five sort keys at once, not five
+          // ANDed columns: a naive `ORDER BY` swap would put a screen back on
+          // a later page merely because some earlier key tied. `false <
+          // true` in Postgres, so this stays consistent with the
+          // `(pinned_at IS NOT NULL) DESC` ordering below.
+          cursorClause = `WHERE (run_sort, run_id, (pinned_at IS NOT NULL), created_at, id) < ($${params.length - 4}::timestamptz, $${params.length - 3}::uuid, $${params.length - 2}::boolean, $${params.length - 1}::timestamptz, $${params.length}::uuid)`;
+        }
       }
       params.push(limit);
-      const sql = `SELECT id, run_id, theme, title, prompt, model, image_url, html_url, width, height, created_at, pinned_at
-                   FROM showcase_screens
-                   WHERE ${conditions.join(" AND ")}
-                   ORDER BY (pinned_at IS NOT NULL) DESC, created_at DESC, id DESC
+      // The window function has to be computed before it can be filtered on,
+      // so the projection (including `published = true`) lives in a
+      // subselect and the keyset predicate applies outside it.
+      const sql = `SELECT id, run_id, theme, title, prompt, model, image_url, html_url, width, height, created_at, pinned_at, run_sort
+                   FROM (
+                     SELECT id, run_id, theme, title, prompt, model, image_url, html_url, width, height, created_at, pinned_at,
+                            MAX(created_at) OVER (PARTITION BY run_id) AS run_sort
+                     FROM showcase_screens
+                     WHERE published = true
+                   ) feed
+                   ${cursorClause}
+                   ORDER BY run_sort DESC, run_id DESC, (pinned_at IS NOT NULL) DESC, created_at DESC, id DESC
                    LIMIT $${params.length}`;
       const result = (await db.query(sql, params)) as {
         rows: ShowcaseScreenDbRow[];
@@ -196,11 +224,13 @@ export function createShowcaseStore(
       const screens = result.rows.map(mapRow);
       const nextCursor =
         screens.length === limit && screens.length > 0
-          ? encodeCursor(
-              screens[screens.length - 1].pinned,
-              screens[screens.length - 1].createdAt,
-              screens[screens.length - 1].id,
-            )
+          ? encodeCursor({
+              runSort: toIso(result.rows[result.rows.length - 1].run_sort),
+              runId: screens[screens.length - 1].runId,
+              pinned: screens[screens.length - 1].pinned,
+              createdAt: screens[screens.length - 1].createdAt,
+              id: screens[screens.length - 1].id,
+            })
           : null;
       return { screens, nextCursor };
     },
@@ -255,24 +285,36 @@ export function createShowcaseStore(
       // the CASE-WHEN update below matches on `pinned_at IS NOT NULL OR id =
       // $1`, which would otherwise happily clear the current pin and report
       // success for an id that clearing every row already meant no-oping on.
+      // It also gives us the run_id, which scopes the update below to this
+      // screen's own app.
       const existing = (await db.query(
-        "SELECT 1 FROM showcase_screens WHERE id = $1",
+        "SELECT run_id FROM showcase_screens WHERE id = $1",
         [id],
-      )) as { rows: unknown[] };
+      )) as { rows: Array<{ run_id: string }> };
       if (existing.rows.length === 0) return false;
+      const runId = existing.rows[0].run_id;
 
       // Clear-then-set in one round trip rather than two statements: a crash
-      // between them would otherwise leave the table with either zero or two
-      // pins, both of which break the "exactly one first screen" invariant.
+      // between them would otherwise leave the run with either zero or two
+      // pins, both of which break the "at most one cover per app" invariant.
+      // Scoping to `run_id = $2` is what keeps this from touching — or even
+      // reading past — any other app's pin.
       await db.query(
         `UPDATE showcase_screens SET pinned_at = CASE WHEN id = $1 THEN now() ELSE NULL END
-           WHERE pinned_at IS NOT NULL OR id = $1`,
-        [id],
+           WHERE run_id = $2 AND (pinned_at IS NOT NULL OR id = $1)`,
+        [id, runId],
       );
       return true;
     },
 
-    async clearPin() {
+    async clearPin(runId) {
+      if (runId) {
+        await db.query(
+          "UPDATE showcase_screens SET pinned_at = NULL WHERE pinned_at IS NOT NULL AND run_id = $1",
+          [runId],
+        );
+        return;
+      }
       await db.query(
         "UPDATE showcase_screens SET pinned_at = NULL WHERE pinned_at IS NOT NULL",
         [],
