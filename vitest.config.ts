@@ -23,6 +23,10 @@ export default defineConfig({
         // env, connects to Postgres and S3, drives the run. Its pure seam
         // (readFlag) lives in src/showcase/cliFlags.ts and is unit-tested.
         "src/showcase/run.ts",
+        // rescreenshot entrypoint: same shape again. The loop it drives
+        // (rescreenshotScreens, in src/showcase/rescreenshot.ts) is unit-tested
+        // with injected deps and stays measured.
+        "src/showcase/rescreenshotRun.ts",
         // Playwright driver. It IS tested — test/showcase-screenshot.test.ts
         // asserts the real layout geometry — but only against a real Chromium,
         // which CI does not install (`npx playwright install chromium` is a
