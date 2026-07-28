@@ -39,6 +39,15 @@ export interface ShowcaseStore {
   // consistently (a run with half-old, half-new screenshots looks worse than
   // one that is uniformly stale).
   listScreenSources(options?: { appOf?: string }): Promise<ShowcaseScreenSource[]>;
+  // For `npm run showcase:replace-html` — one screen by id, or null when the
+  // id matches nothing.
+  getScreenSource(id: string): Promise<ShowcaseScreenSource | null>;
+  // For `npm run showcase:replace-html` — repoints a screen at freshly
+  // uploaded HTML. Always a *new* key rather than an overwrite: showcase
+  // objects are served `immutable` for a year (services/s3.ts), so writing
+  // different bytes under the old key would leave caches serving the broken
+  // markup indefinitely.
+  updateScreenHtmlUrl(id: string, htmlUrl: string): Promise<void>;
   // For both `npm run showcase:rescreenshot` and `npm run showcase:reencode`
   // — the only way any code writes `image_url`. There is deliberately no
   // PNG-only "just update image_url" path: every writer that touches the
@@ -349,6 +358,37 @@ export function createShowcaseStore(
         width: row.width,
         height: row.height,
       }));
+    },
+
+    async getScreenSource(id) {
+      const result = (await db.query(
+        `SELECT id, title, html_url, width, height FROM showcase_screens WHERE id = $1::uuid`,
+        [id],
+      )) as {
+        rows: Array<{
+          id: string;
+          title: string;
+          html_url: string;
+          width: number;
+          height: number;
+        }>;
+      };
+      const row = result.rows[0];
+      if (!row) return null;
+      return {
+        id: row.id,
+        title: row.title,
+        htmlUrl: row.html_url,
+        width: row.width,
+        height: row.height,
+      };
+    },
+
+    async updateScreenHtmlUrl(id, htmlUrl) {
+      await db.query(`UPDATE showcase_screens SET html_url = $2 WHERE id = $1::uuid`, [
+        id,
+        htmlUrl,
+      ]);
     },
 
     async updateScreenDerivatives({ id, imageUrl, imageUrl1x, lqip, width, height }) {
