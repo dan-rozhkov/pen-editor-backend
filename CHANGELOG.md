@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While on `0.x`, minor bumps may include breaking changes.
 
+## [0.32.0] - 2026-07-28
+
+### Added
+- **`npm run showcase:ingest -- --manifest run.json`** — publishes showcase screens that were authored outside an autonomous OpenRouter turn (by hand, or by an agent following `src/skills/prototype.md` itself) through the *same* screenshot → S3 → Postgres path as `showcase:generate`. That path is now a single implementation (`src/showcase/publish.ts`) driven by both entrypoints, so the two cannot drift into differently-shaped rows in one table. A manifest is `{theme, prompt?, model?, screens: [{name, file | htmlContent}]}`; screens may point at sibling `.html` files instead of carrying JSON-escaped HTML, and `--dry-run` lists what would be published without touching S3 or Postgres.
+- **`npm run showcase:theme`** prints one theme, skipping the last 10 used — the generator's own choice, made available before any HTML is written.
+- **`npm run showcase:image -- "prompt" ["prompt"]`** runs the real `generateImage` and prints `url<TAB>prompt` per image, so a hand-authored run gets the same generated photography as an automated one without a server or a browser tab.
+
+### Fixed
+- **Screens no longer get snapped before their `@import`ed stylesheets land** — the cause of icons rendering as invisible blanks on some screens of a run and not others. The readiness check reads computed styles to decide what to wait for, but ran while the imports were still in flight: until Phosphor's sheet arrives, `.ph::before` has no content and names no family, so no icon font is ever requested and `fonts.ready` resolves against an empty queue. It now waits for pending `CSSImportRule`s first.
+- **The readiness wait no longer fails silently.** It is deliberately best-effort — a slow asset must not abandon a run — but the `catch` covered genuine bugs too: a reference that doesn't resolve inside `page.evaluate` rejects the whole wait on the first tick, degrading every screen to fallback fonts and blank icons with no trace. Failures are now logged, and that warning is what identified this one.
+
+### Changed
+- Env/Postgres/S3 wiring for every showcase entrypoint moved to `src/showcase/context.ts`, and the "run only as a script" tail to `src/showcase/cli.ts` — three copies that had already started disagreeing about which variables they check.
+
 ## [0.31.1] - 2026-07-28
 
 ### Fixed
