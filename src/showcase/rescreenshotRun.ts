@@ -1,5 +1,5 @@
 import { openShowcaseBrowser } from "./screenshot.js";
-import { readFlag } from "./cliFlags.js";
+import { parseCommonRepairFlags } from "./cliFlags.js";
 import { rescreenshotScreens } from "./rescreenshot.js";
 import { openShowcaseContext } from "./context.js";
 import { runAsScript } from "./cli.js";
@@ -11,15 +11,7 @@ import { runAsScript } from "./cli.js";
 // measured.
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
-  const force = argv.includes("--force");
-  const dryRun = argv.includes("--dry-run");
-  const limitFlag = readFlag(argv, "limit");
-  const limit = limitFlag ? Number(limitFlag) : undefined;
-
-  if (limit != null && (!Number.isFinite(limit) || limit <= 0)) {
-    console.error("[rescreenshot] --limit must be a positive number");
-    process.exit(1);
-  }
+  const { force, dryRun, limit } = parseCommonRepairFlags(argv, "rescreenshot");
 
   const ctx = await openShowcaseContext("rescreenshot");
   const browserSession = await openShowcaseBrowser();
@@ -33,7 +25,7 @@ async function main(): Promise<void> {
           if (!res.ok) throw new Error(`GET ${url} -> ${res.status}`);
           return res.text();
         },
-        uploadPng: (key, body) => ctx.upload(key, body, "image/png"),
+        uploadWebp: (key, body) => ctx.upload(key, body, "image/webp"),
         log: (message) => console.log(message),
       },
       { force, dryRun, limit },

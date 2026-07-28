@@ -57,6 +57,7 @@ describe("uploadImage", () => {
       Body: buffer,
       ContentType: "image/png",
       ACL: "public-read",
+      CacheControl: "public, max-age=31536000, immutable",
     });
     // key embedded in the URL must equal the uploaded key
     expect(`https://s3.example.test/my-bucket/${command.input.Key}`).toBe(url);

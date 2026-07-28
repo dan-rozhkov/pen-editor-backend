@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
+import sharp from "sharp";
 import {
   rescreenshotScreens,
   type RescreenshotDeps,
 } from "../src/showcase/rescreenshot.js";
-import type { ShowcaseScreenSource } from "../src/showcase/store.js";
+import type { ShowcaseScreenSource, ShowcaseDerivativesUpdate } from "../src/showcase/store.js";
 
 function source(over: Partial<ShowcaseScreenSource> = {}): ShowcaseScreenSource {
   return {
@@ -16,27 +17,42 @@ function source(over: Partial<ShowcaseScreenSource> = {}): ShowcaseScreenSource 
   };
 }
 
+// rescreenshotScreens now runs every re-render through buildDerivatives (real
+// sharp WebP encoding), so the fake `screenshot` dep must return genuine PNG
+// bytes at the dimensions it reports — buildDerivatives reads its own width
+// off the actual pixels, not off this function's return value.
+async function fakePng(width: number, height: number): Promise<Buffer> {
+  return sharp({
+    create: { width, height, channels: 3, background: { r: 9, g: 8, b: 7 } },
+  })
+    .png()
+    .toBuffer();
+}
+
 function makeDeps(
   screens: ShowcaseScreenSource[],
   render: (html: string) => { width: number; height: number },
 ): RescreenshotDeps & {
-  updates: Array<{ id: string; imageUrl: string; width: number; height: number }>;
+  updates: ShowcaseDerivativesUpdate[];
   uploads: string[];
 } {
-  const updates: Array<{ id: string; imageUrl: string; width: number; height: number }> = [];
+  const updates: ShowcaseDerivativesUpdate[] = [];
   const uploads: string[] = [];
   return {
     updates,
     uploads,
     store: {
       listScreenSources: async () => screens,
-      updateScreenImage: async (update) => {
+      updateScreenDerivatives: async (update) => {
         updates.push(update);
       },
     },
     fetchHtml: async (url) => `<html data-src="${url}">`,
-    screenshot: async (html) => ({ buffer: Buffer.from("png"), ...render(html) }),
-    uploadPng: async (key) => {
+    screenshot: async (html) => {
+      const { width, height } = render(html);
+      return { buffer: await fakePng(width, height), width, height };
+    },
+    uploadWebp: async (key) => {
       uploads.push(key);
       return `https://s3.example/${key}`;
     },
@@ -50,12 +66,25 @@ describe("rescreenshotScreens", () => {
     const summary = await rescreenshotScreens(deps);
 
     expect(summary).toEqual({ total: 1, updated: 1, unchanged: 0, failed: 0 });
-    expect(deps.updates).toEqual([
-      { id: "id-1", imageUrl: expect.stringContaining("showcase/rerender/"), width: 750, height: 2024 },
-    ]);
-    // A fresh key, never the URL already in the gallery — the old PNG may be
-    // cached under it.
-    expect(deps.uploads[0]).not.toContain("1.png");
+    expect(deps.updates).toHaveLength(1);
+    expect(deps.updates[0]).toMatchObject({
+      id: "id-1",
+      width: 750,
+      height: 2024,
+    });
+    expect(deps.updates[0].imageUrl).toMatch(/^https:\/\/s3\.example\/showcase\/rerender\//);
+    expect(deps.updates[0].imageUrl1x).toMatch(/@1x\.webp$/);
+    expect(deps.updates[0].lqip).toMatch(/^data:image\/webp;base64,/);
+    // Both derivative objects for this screen, content-hashed, .webp — never
+    // the old naive `${index}.png`-style key, and deterministic regardless
+    // of what the random upload id happens to end in.
+    expect(deps.uploads).toHaveLength(2);
+    expect(deps.uploads[0]).toMatch(
+      /^showcase\/rerender\/[0-9a-f-]+-[0-9a-f]{8}\.webp$/,
+    );
+    expect(deps.uploads[1]).toMatch(
+      /^showcase\/rerender\/[0-9a-f-]+-[0-9a-f]{8}@1x\.webp$/,
+    );
   });
 
   it("leaves a screen alone when the re-render comes out identical", async () => {

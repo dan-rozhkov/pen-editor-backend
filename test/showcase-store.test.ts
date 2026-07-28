@@ -47,6 +47,8 @@ interface FakeRow {
   prompt: string;
   model: string;
   image_url: string;
+  image_url_1x?: string | null;
+  lqip?: string | null;
   html_url: string;
   width: number;
   height: number;
@@ -80,8 +82,33 @@ function fakeDb(initialRows: FakeRow[]): TraceQueryable & { rows: FakeRow[] } {
 
   async function query(sql: string, params: unknown[] = []) {
     if (sql.includes("INSERT INTO showcase_screens")) {
-      const [id, run_id, theme, title, prompt, model, image_url, html_url, width, height] =
-        params as [string, string, string, string, string, string, string, string, number, number];
+      const [
+        id,
+        run_id,
+        theme,
+        title,
+        prompt,
+        model,
+        image_url,
+        image_url_1x,
+        lqip,
+        html_url,
+        width,
+        height,
+      ] = params as [
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string | null,
+        string | null,
+        string,
+        number,
+        number,
+      ];
       rows.push({
         id,
         run_id,
@@ -90,6 +117,8 @@ function fakeDb(initialRows: FakeRow[]): TraceQueryable & { rows: FakeRow[] } {
         prompt,
         model,
         image_url,
+        image_url_1x,
+        lqip,
         html_url,
         width,
         height,
@@ -257,6 +286,8 @@ function fakeDb(initialRows: FakeRow[]): TraceQueryable & { rows: FakeRow[] } {
           prompt: r.prompt,
           model: r.model,
           image_url: r.image_url,
+          image_url_1x: r.image_url_1x ?? null,
+          lqip: r.lqip ?? null,
           html_url: r.html_url,
           width: r.width,
           height: r.height,
@@ -282,6 +313,8 @@ function makeRow(overrides: Partial<FakeRow> & { id: string; run_id: string }): 
     prompt: "a screen",
     model: "google/gemini-2.5-flash",
     image_url: "https://cdn.example.test/x.png",
+    image_url_1x: null,
+    lqip: null,
     html_url: "https://cdn.example.test/x.html",
     width: 390,
     height: 844,
@@ -307,6 +340,28 @@ describe("createShowcaseStore", () => {
     expect(pool.calls).toHaveLength(1);
     expect(pool.calls[0].sql).toContain("INSERT INTO showcase_screens");
     expect(pool.calls[0].params?.[0]).toBe(row.id);
+    // `row` has no derivatives set, so both new columns go in as NULL rather
+    // than `undefined` (which node-postgres would reject as a bind param).
+    expect(pool.calls[0].params).toContain(null);
+  });
+
+  it("passes imageUrl1x/lqip through to the INSERT when present", async () => {
+    const pool = fakePool();
+    const store = createShowcaseStore(
+      makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
+      pool,
+    );
+    await store!.insertScreen({
+      ...row,
+      imageUrl1x: "https://cdn.example.test/1@1x.webp",
+      lqip: "data:image/webp;base64,AAAA",
+    });
+    expect(pool.calls[0].params).toEqual(
+      expect.arrayContaining([
+        "https://cdn.example.test/1@1x.webp",
+        "data:image/webp;base64,AAAA",
+      ]),
+    );
   });
 
   function dbRow(
@@ -314,6 +369,8 @@ describe("createShowcaseStore", () => {
       pinned_at: Date | null;
       created_at_text: string;
       run_sort_text: string;
+      image_url_1x: string | null;
+      lqip: string | null;
     }> = {},
   ) {
     const { created_at_text, run_sort_text, ...rest } = overrides;
@@ -325,6 +382,8 @@ describe("createShowcaseStore", () => {
       prompt: row.prompt,
       model: row.model,
       image_url: row.imageUrl,
+      image_url_1x: null,
+      lqip: null,
       html_url: row.htmlUrl,
       width: row.width,
       height: row.height,
@@ -357,6 +416,33 @@ describe("createShowcaseStore", () => {
     expect(pool.calls[0].sql).toContain(
       "ORDER BY run_sort DESC, run_id DESC, (pinned_at IS NOT NULL) DESC, created_at DESC, id DESC",
     );
+  });
+
+  it("maps NULL image_url_1x/lqip columns to undefined, not null", async () => {
+    const pool = fakePool([dbRow()]);
+    const store = createShowcaseStore(
+      makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
+      pool,
+    );
+    const { screens } = await store!.listScreens({ limit: 24 });
+    expect(screens[0].imageUrl1x).toBeUndefined();
+    expect(screens[0].lqip).toBeUndefined();
+  });
+
+  it("maps present image_url_1x/lqip columns through unchanged", async () => {
+    const pool = fakePool([
+      dbRow({
+        image_url_1x: "https://cdn.example.test/1@1x.webp",
+        lqip: "data:image/webp;base64,AAAA",
+      }),
+    ]);
+    const store = createShowcaseStore(
+      makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
+      pool,
+    );
+    const { screens } = await store!.listScreens({ limit: 24 });
+    expect(screens[0].imageUrl1x).toBe("https://cdn.example.test/1@1x.webp");
+    expect(screens[0].lqip).toBe("data:image/webp;base64,AAAA");
   });
 
   it("marks a screen with pinned_at set as pinned", async () => {
@@ -770,5 +856,68 @@ describe("createShowcaseStore", () => {
     const themes = await store!.recentThemes(5);
     expect(themes).toEqual(["fitness", "finance"]);
     expect(pool.calls[0].sql).toContain("GROUP BY theme");
+  });
+
+  describe("updateScreenDerivatives", () => {
+    it("writes image_url/image_url_1x/lqip/width/height for the given id", async () => {
+      const pool = fakePool();
+      const store = createShowcaseStore(
+        makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
+        pool,
+      );
+      await store!.updateScreenDerivatives({
+        id: row.id,
+        imageUrl: "https://cdn.example.test/1-abcd1234.webp",
+        imageUrl1x: "https://cdn.example.test/1-abcd1234@1x.webp",
+        lqip: "data:image/webp;base64,AAAA",
+        width: 750,
+        height: 1960,
+      });
+      expect(pool.calls).toHaveLength(1);
+      expect(pool.calls[0].sql).toContain(
+        "SET image_url = $2, image_url_1x = $3, lqip = $4, width = $5, height = $6",
+      );
+      expect(pool.calls[0].params).toEqual([
+        row.id,
+        "https://cdn.example.test/1-abcd1234.webp",
+        "https://cdn.example.test/1-abcd1234@1x.webp",
+        "data:image/webp;base64,AAAA",
+        750,
+        1960,
+      ]);
+    });
+  });
+
+  describe("listScreenImages", () => {
+    it("maps rows for backfilling, NULL image_url_1x becoming undefined", async () => {
+      const pool = fakePool([
+        {
+          id: "a",
+          title: "Screen A",
+          image_url: "https://cdn.example.test/a.png",
+          image_url_1x: null,
+        },
+        {
+          id: "b",
+          title: "Screen B",
+          image_url: "https://cdn.example.test/b-abcd1234.webp",
+          image_url_1x: "https://cdn.example.test/b-abcd1234@1x.webp",
+        },
+      ]);
+      const store = createShowcaseStore(
+        makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
+        pool,
+      );
+      const screens = await store!.listScreenImages();
+      expect(screens).toEqual([
+        { id: "a", title: "Screen A", imageUrl: "https://cdn.example.test/a.png", imageUrl1x: undefined },
+        {
+          id: "b",
+          title: "Screen B",
+          imageUrl: "https://cdn.example.test/b-abcd1234.webp",
+          imageUrl1x: "https://cdn.example.test/b-abcd1234@1x.webp",
+        },
+      ]);
+    });
   });
 });

@@ -42,6 +42,8 @@ export async function showcaseRoutes(
         title: screen.title,
         model: screen.model,
         imageUrl: screen.imageUrl,
+        imageUrl1x: screen.imageUrl1x,
+        lqip: screen.lqip,
         htmlUrl: screen.htmlUrl,
         width: screen.width,
         height: screen.height,

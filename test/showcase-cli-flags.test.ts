@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { hasFlag, readFlag } from "../src/showcase/cliFlags.js";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { hasFlag, readFlag, parseCommonRepairFlags } from "../src/showcase/cliFlags.js";
 
 describe("readFlag", () => {
   it("reads the --name=value form, keeping spaces in the value", () => {
@@ -54,5 +54,53 @@ describe("hasFlag", () => {
 
   it("is true for the separated value form", () => {
     expect(hasFlag(["--cover", "2"], "cover")).toBe(true);
+  });
+});
+
+describe("parseCommonRepairFlags", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("defaults to force=false, dryRun=false, limit=undefined", () => {
+    expect(parseCommonRepairFlags([], "reencode")).toEqual({
+      force: false,
+      dryRun: false,
+      limit: undefined,
+    });
+  });
+
+  it("reads --force, --dry-run and --limit together", () => {
+    expect(
+      parseCommonRepairFlags(["--force", "--dry-run", "--limit=5"], "reencode"),
+    ).toEqual({ force: true, dryRun: true, limit: 5 });
+  });
+
+  it("accepts the separated --limit value form", () => {
+    expect(parseCommonRepairFlags(["--limit", "3"], "reencode").limit).toBe(3);
+  });
+
+  it("exits with a tagged error when --limit is not a positive number", () => {
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    expect(() => parseCommonRepairFlags(["--limit=0"], "rescreenshot")).toThrow("exit");
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      "[rescreenshot] --limit must be a positive number",
+    );
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it("exits when --limit is not a number at all", () => {
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    expect(() => parseCommonRepairFlags(["--limit=nope"], "reencode")).toThrow("exit");
+    expect(exitSpy).toHaveBeenCalledWith(1);
   });
 });

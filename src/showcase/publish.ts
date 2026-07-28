@@ -1,16 +1,18 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import type { ShowcaseScreenDraft } from "./runner.js";
 import type { ShowcaseContext } from "./context.js";
+import { buildDerivatives } from "./derivatives.js";
 
 // The half of a showcase run that does not care where the screens came from:
-// screenshot each one, upload the PNG and the source HTML, insert a row.
-// `run.ts` feeds it the output of an autonomous LLM turn; `ingestRun.ts` feeds
-// it screens authored by hand. Keeping one implementation is what stops the
-// two paths from drifting into differently-shaped rows in the same table.
+// screenshot each one, upload the WebP derivatives and the source HTML,
+// insert a row. `run.ts` feeds it the output of an autonomous LLM turn;
+// `ingestRun.ts` feeds it screens authored by hand. Keeping one implementation
+// is what stops the two paths from drifting into differently-shaped rows in
+// the same table.
 
 export interface PublishDeps {
   screenshot(html: string): Promise<{ buffer: Buffer; width: number; height: number }>;
-  uploadPng(key: string, body: Buffer): Promise<string>;
+  uploadWebp(key: string, body: Buffer): Promise<string>;
   uploadHtml(key: string, body: Buffer): Promise<string>;
   insertScreen(row: {
     id: string;
@@ -20,6 +22,8 @@ export interface PublishDeps {
     prompt: string;
     model: string;
     imageUrl: string;
+    imageUrl1x?: string;
+    lqip?: string;
     htmlUrl: string;
     width: number;
     height: number;
@@ -39,7 +43,7 @@ export function publishDepsFrom(
 ): PublishDeps {
   return {
     screenshot,
-    uploadPng: (key, body) => ctx.upload(key, body, "image/png"),
+    uploadWebp: (key, body) => ctx.upload(key, body, "image/webp"),
     uploadHtml: (key, body) => ctx.upload(key, body, "text/html; charset=utf-8"),
     insertScreen: (row) => ctx.store.insertScreen(row),
     newId: randomUUID,
@@ -75,11 +79,23 @@ export async function publishScreens(
     const screen = input.screens[i];
     const index = i + 1;
 
-    const { buffer, width, height } = await deps.screenshot(screen.htmlContent);
+    const { buffer } = await deps.screenshot(screen.htmlContent);
+    const derivatives = await buildDerivatives(buffer);
 
-    const imageUrl = await deps.uploadPng(
-      `showcase/${input.runId}/${index}.png`,
-      buffer,
+    // Content hash of the 2x body, shared by both variants so one screen has
+    // one hash and both objects are immutable — see the image-delivery spec.
+    const sha8 = createHash("sha256")
+      .update(derivatives.webp2x.body)
+      .digest("hex")
+      .slice(0, 8);
+
+    const imageUrl = await deps.uploadWebp(
+      `showcase/${input.runId}/${index}-${sha8}.webp`,
+      derivatives.webp2x.body,
+    );
+    const imageUrl1x = await deps.uploadWebp(
+      `showcase/${input.runId}/${index}-${sha8}@1x.webp`,
+      derivatives.webp1x.body,
     );
     const htmlUrl = await deps.uploadHtml(
       `showcase/${input.runId}/${index}.html`,
@@ -97,9 +113,20 @@ export async function publishScreens(
       prompt: input.prompt,
       model: input.model,
       imageUrl,
+      imageUrl1x,
+      lqip: derivatives.lqip,
       htmlUrl,
-      width,
-      height,
+      // The dimensions of the object actually stored at `imageUrl`, i.e.
+      // `derivatives.webp2x`'s own dimensions — not `screenshot()`'s raw
+      // `width`/`height` (buildDerivatives never resizes the 2x variant, only
+      // re-encodes the format, so today these are numerically identical; but
+      // reading them off the WebP itself is what makes that true by
+      // construction rather than by coincidence, and matches
+      // rescreenshot.ts/reencode.ts, which have no raw screenshot dimension
+      // to fall back on). The frontend's srcset `w` descriptors are built
+      // straight from these columns, so they must describe the served bytes.
+      width: derivatives.webp2x.width,
+      height: derivatives.webp2x.height,
     });
 
     published.push({ title, imageUrl });

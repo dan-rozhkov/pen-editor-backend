@@ -9,6 +9,11 @@ export interface ShowcaseScreenRow {
   prompt: string;
   model: string;
   imageUrl: string;
+  // Half-width WebP variant and inline blurred placeholder. Optional: rows
+  // published before the derivatives migration (or not yet backfilled by
+  // `showcase:reencode`) simply don't have them.
+  imageUrl1x?: string;
+  lqip?: string;
   htmlUrl: string;
   width: number;
   height: number;
@@ -29,7 +34,17 @@ export interface ShowcaseStore {
   // For `npm run showcase:rescreenshot` — the stored HTML is the source of
   // truth, so every screen can be re-rendered after a screenshot bug fix.
   listScreenSources(): Promise<ShowcaseScreenSource[]>;
-  updateScreenImage(update: ShowcaseImageUpdate): Promise<void>;
+  // For both `npm run showcase:rescreenshot` and `npm run showcase:reencode`
+  // — the only way any code writes `image_url`. There is deliberately no
+  // PNG-only "just update image_url" path: every writer that touches the
+  // image goes through `buildDerivatives` and updates image_url,
+  // image_url_1x, lqip and the dimensions together, so a stale @1x/LQIP can
+  // never survive a repair.
+  updateScreenDerivatives(update: ShowcaseDerivativesUpdate): Promise<void>;
+  // For `npm run showcase:reencode` — every row's current image (2x URL, and
+  // 1x if it already has one, to support `--force`) without the HTML/theme
+  // fields `listScreenSources` carries, which reencode never touches.
+  listScreenImages(): Promise<ShowcaseImageSource[]>;
   // Exclusive within the screen's own run_id: clears any existing pin for
   // that app before setting the new one, so "the first screen of this app" is
   // always at most one row and never needs reconciling. Other apps' pins are
@@ -48,11 +63,25 @@ export interface ShowcaseScreenSource {
   height: number;
 }
 
-export interface ShowcaseImageUpdate {
+export interface ShowcaseDerivativesUpdate {
   id: string;
   imageUrl: string;
+  imageUrl1x: string;
+  lqip: string;
+  // The dimensions of the *2x WebP* actually stored at `imageUrl` — not
+  // necessarily the source PNG's. Callers (rescreenshot.ts, reencode.ts)
+  // pass `derivatives.webp2x.{width,height}` here so the row always
+  // describes the object it points at; the frontend builds srcset `w`
+  // descriptors straight from these columns.
   width: number;
   height: number;
+}
+
+export interface ShowcaseImageSource {
+  id: string;
+  title: string;
+  imageUrl: string;
+  imageUrl1x?: string;
 }
 
 interface DecodedCursor {
@@ -135,6 +164,8 @@ interface ShowcaseScreenDbRow {
   prompt: string;
   model: string;
   image_url: string;
+  image_url_1x: string | null;
+  lqip: string | null;
   html_url: string;
   width: number;
   height: number;
@@ -168,6 +199,11 @@ function mapRow(row: ShowcaseScreenDbRow): ShowcaseScreen {
     prompt: row.prompt,
     model: row.model,
     imageUrl: row.image_url,
+    // NULL -> undefined, not null: `ShowcaseScreenRow`/`ShowcaseScreen` model
+    // "not backfilled yet" as an absent field, matching how `insertScreen`
+    // and the API response treat it.
+    imageUrl1x: row.image_url_1x ?? undefined,
+    lqip: row.lqip ?? undefined,
     htmlUrl: row.html_url,
     width: row.width,
     height: row.height,
@@ -187,8 +223,8 @@ export function createShowcaseStore(
     async insertScreen(row) {
       await db.query(
         `INSERT INTO showcase_screens
-           (id, run_id, theme, title, prompt, model, image_url, html_url, width, height)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+           (id, run_id, theme, title, prompt, model, image_url, image_url_1x, lqip, html_url, width, height)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
         [
           row.id,
           row.runId,
@@ -197,6 +233,8 @@ export function createShowcaseStore(
           row.prompt,
           row.model,
           row.imageUrl,
+          row.imageUrl1x ?? null,
+          row.lqip ?? null,
           row.htmlUrl,
           row.width,
           row.height,
@@ -227,10 +265,10 @@ export function createShowcaseStore(
       // The window function has to be computed before it can be filtered on,
       // so the projection (including `published = true`) lives in a
       // subselect and the keyset predicate applies outside it.
-      const sql = `SELECT id, run_id, theme, title, prompt, model, image_url, html_url, width, height, created_at, pinned_at, run_sort,
+      const sql = `SELECT id, run_id, theme, title, prompt, model, image_url, image_url_1x, lqip, html_url, width, height, created_at, pinned_at, run_sort,
                           created_at::text AS created_at_text, run_sort::text AS run_sort_text
                    FROM (
-                     SELECT id, run_id, theme, title, prompt, model, image_url, html_url, width, height, created_at, pinned_at,
+                     SELECT id, run_id, theme, title, prompt, model, image_url, image_url_1x, lqip, html_url, width, height, created_at, pinned_at,
                             MAX(created_at) OVER (PARTITION BY run_id) AS run_sort
                      FROM showcase_screens
                      WHERE published = true
@@ -301,11 +339,33 @@ export function createShowcaseStore(
       }));
     },
 
-    async updateScreenImage({ id, imageUrl, width, height }) {
+    async updateScreenDerivatives({ id, imageUrl, imageUrl1x, lqip, width, height }) {
       await db.query(
-        `UPDATE showcase_screens SET image_url = $2, width = $3, height = $4 WHERE id = $1`,
-        [id, imageUrl, width, height],
+        `UPDATE showcase_screens SET image_url = $2, image_url_1x = $3, lqip = $4, width = $5, height = $6 WHERE id = $1`,
+        [id, imageUrl, imageUrl1x, lqip, width, height],
       );
+    },
+
+    async listScreenImages() {
+      const result = (await db.query(
+        `SELECT id, title, image_url, image_url_1x
+           FROM showcase_screens
+           ORDER BY created_at ASC, id ASC`,
+        [],
+      )) as {
+        rows: Array<{
+          id: string;
+          title: string;
+          image_url: string;
+          image_url_1x: string | null;
+        }>;
+      };
+      return result.rows.map((r) => ({
+        id: r.id,
+        title: r.title,
+        imageUrl: r.image_url,
+        imageUrl1x: r.image_url_1x ?? undefined,
+      }));
     },
 
     async pinScreen(id) {

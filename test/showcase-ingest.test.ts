@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import sharp from "sharp";
 import {
   coverIndexFrom,
   parseManifest,
@@ -7,6 +8,23 @@ import {
 } from "../src/showcase/ingest.js";
 import { publishScreens, type PublishDeps } from "../src/showcase/publish.js";
 import { MAX_SHOWCASE_SCREENS } from "../src/showcase/runner.js";
+
+// publishScreens now runs every screenshot through buildDerivatives (real
+// sharp WebP encoding), so the fake `screenshot` dep must return genuine PNG
+// bytes rather than an arbitrary string buffer. Dimensions are parameterized
+// (default 390x844, the mocked "screenshot" size used throughout this file)
+// so callers can build a PNG whose *real* pixel dimensions match whatever
+// `width`/`height` they hand back from `screenshot()` — the stored row's
+// width/height are read off the 2x WebP itself (publish.ts), not off this
+// mocked return value, so the fixture PNG's actual size is what actually
+// gets asserted on.
+async function fakeScreenshotPng(width = 390, height = 844): Promise<Buffer> {
+  return sharp({
+    create: { width, height, channels: 3, background: { r: 10, g: 20, b: 30 } },
+  })
+    .png()
+    .toBuffer();
+}
 
 function manifestJson(overrides: Record<string, unknown> = {}): string {
   return JSON.stringify({
@@ -173,12 +191,12 @@ describe("publishScreens", () => {
       rows,
       pinnedIds,
       deps: {
-        screenshot: async (html) => ({
-          buffer: Buffer.from(`png:${html}`),
+        screenshot: async () => ({
+          buffer: await fakeScreenshotPng(),
           width: 390,
           height: 844,
         }),
-        uploadPng: async (key) => `https://cdn.example/${key}`,
+        uploadWebp: async (key) => `https://cdn.example/${key}`,
         uploadHtml: async (key) => `https://cdn.example/${key}`,
         insertScreen: async (row) => {
           rows.push(row);
@@ -207,10 +225,16 @@ describe("publishScreens", () => {
       ],
     });
 
-    expect(published).toEqual([
-      { title: "Главная", imageUrl: "https://cdn.example/showcase/run-1/1.png" },
-      { title: "Поездка", imageUrl: "https://cdn.example/showcase/run-1/2.png" },
-    ]);
+    expect(published).toHaveLength(2);
+    expect(published[0].title).toBe("Главная");
+    expect(published[0].imageUrl).toMatch(
+      /^https:\/\/cdn\.example\/showcase\/run-1\/1-[0-9a-f]{8}\.webp$/,
+    );
+    expect(published[1].title).toBe("Поездка");
+    expect(published[1].imageUrl).toMatch(
+      /^https:\/\/cdn\.example\/showcase\/run-1\/2-[0-9a-f]{8}\.webp$/,
+    );
+
     expect(rows).toHaveLength(2);
     expect(rows[0]).toMatchObject({
       runId: "run-1",
@@ -220,6 +244,41 @@ describe("publishScreens", () => {
       width: 390,
       height: 844,
     });
+    // No .png upload anywhere, and the 1x/lqip fields are populated — the
+    // publish path stops touching PNG entirely.
+    expect(rows[0].imageUrl).not.toMatch(/\.png$/);
+    expect(rows[0].imageUrl1x).toMatch(/@1x\.webp$/);
+    expect(rows[0].lqip).toMatch(/^data:image\/webp;base64,/);
+    // Same hash used for both variants of one screen — that's what makes
+    // both objects immutable content-addressed keys.
+    const hash2x = (rows[0].imageUrl as string).match(/1-([0-9a-f]{8})\.webp$/)?.[1];
+    const hash1x = (rows[0].imageUrl1x as string).match(/1-([0-9a-f]{8})@1x\.webp$/)?.[1];
+    expect(hash1x).toBe(hash2x);
+  });
+
+  it("stores width/height matching the actual 2x WebP, not whatever screenshot() reports", async () => {
+    // A deliberately mismatched screenshot(): it claims 390x844 but the real
+    // PNG bytes are 300x600. If publishScreens ever went back to trusting
+    // the mocked width/height instead of reading them off the encoded WebP,
+    // this would catch it — the row must describe the bytes it actually
+    // points at, since the frontend's srcset `w` descriptors are built
+    // straight from these columns.
+    const { deps, rows } = makeDeps();
+    deps.screenshot = async () => ({
+      buffer: await fakeScreenshotPng(300, 600),
+      width: 390,
+      height: 844,
+    });
+
+    await publishScreens(deps, {
+      runId: "run-2",
+      theme: "заказ такси",
+      prompt: "prompt text",
+      model: "hand-authored",
+      screens: [{ name: "Главная", htmlContent: "<div>a</div>" }],
+    });
+
+    expect(rows[0]).toMatchObject({ width: 300, height: 600 });
   });
 
   it("falls back to a numbered title when a screen has no name", async () => {

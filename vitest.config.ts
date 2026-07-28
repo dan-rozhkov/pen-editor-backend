@@ -42,6 +42,10 @@ export default defineConfig({
         // (rescreenshotScreens, in src/showcase/rescreenshot.ts) is unit-tested
         // with injected deps and stays measured.
         "src/showcase/rescreenshotRun.ts",
+        // reencode entrypoint: same shape again. The loop it drives
+        // (reencodeScreens, in src/showcase/reencode.ts) is unit-tested with
+        // injected deps and stays measured.
+        "src/showcase/reencodeRun.ts",
         // pin entrypoint: same shape again. The loop it drives
         // (resolvePinAction/runPinAction, in src/showcase/pin.ts) is
         // unit-tested with an injected fake store and stays measured.

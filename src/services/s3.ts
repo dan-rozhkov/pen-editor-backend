@@ -43,6 +43,19 @@ export async function uploadObject(
       Body: body,
       ContentType: contentType,
       ACL: "public-read",
+      // No key this function is ever called with today gets reused for
+      // different content: showcase derivative WebPs are content-hashed
+      // (publish.ts, reencode.ts, rescreenshot.ts), rescreenshot's repair
+      // objects get a fresh randomUUID-based key every run, showcase HTML
+      // keys are written once per screen and never revisited (rescreenshot
+      // re-renders the image only, not the HTML), and pen-editor's own
+      // uploadImage keys off randomUUID too. That is what makes a
+      // year-long immutable cache safe. If a future caller ever adds a path
+      // that reuses a key on purpose (e.g. overwriting HTML in place), this
+      // header will make browsers/CDNs keep serving the old bytes for a
+      // year — don't add one without reconsidering `immutable` for that key
+      // space. See the showcase image-delivery spec for the reasoning.
+      CacheControl: "public, max-age=31536000, immutable",
     }),
   );
 

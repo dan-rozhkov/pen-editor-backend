@@ -28,3 +28,30 @@ export function hasFlag(argv: string[], name: string): boolean {
   const prefix = `--${name}=`;
   return argv.some((a) => a === `--${name}` || a.startsWith(prefix));
 }
+
+export interface CommonRepairFlags {
+  force: boolean;
+  dryRun: boolean;
+  limit: number | undefined;
+}
+
+/** `--force` / `--dry-run` / `--limit` parsing shared by the repair-style CLI
+ * entrypoints (`showcase:rescreenshot`, `showcase:reencode`) — both loop over
+ * every stored screen and want the same trial-run knobs. `tag` is the
+ * `[prefix]` used in the error message when `--limit` isn't a positive
+ * number; on that error this exits the process, same as `openShowcaseContext`
+ * does for missing env — a CLI is better served by a one-line message naming
+ * the bad flag than a stack trace. */
+export function parseCommonRepairFlags(argv: string[], tag: string): CommonRepairFlags {
+  const force = argv.includes("--force");
+  const dryRun = argv.includes("--dry-run");
+  const limitFlag = readFlag(argv, "limit");
+  const limit = limitFlag ? Number(limitFlag) : undefined;
+
+  if (limit != null && (!Number.isFinite(limit) || limit <= 0)) {
+    console.error(`[${tag}] --limit must be a positive number`);
+    process.exit(1);
+  }
+
+  return { force, dryRun, limit };
+}

@@ -1,10 +1,11 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import type { ShowcaseStore } from "./store.js";
 import type { ScreenshotResult } from "./screenshot.js";
+import { buildDerivatives } from "./derivatives.js";
 
-// Re-renders the PNG of every screen already in `showcase_screens` from its
-// stored HTML. The HTML — not the image — is the source of truth, so a fix to
-// the screenshot pipeline (e.g. a bottom bar that used to be sliced off) can be
+// Re-renders every screen already in `showcase_screens` from its stored HTML.
+// The HTML — not the image — is the source of truth, so a fix to the
+// screenshot pipeline (e.g. a bottom bar that used to be sliced off) can be
 // applied retroactively to screens the gallery is already serving, without
 // re-running the design agent and getting different designs.
 //
@@ -12,12 +13,21 @@ import type { ScreenshotResult } from "./screenshot.js";
 // picsum.photos seeds and fonts load over the network, so pixels can differ run
 // to run. Only screens whose *dimensions* change are re-uploaded by default —
 // that is exactly the class of bug this repairs — unless `force` is set.
+//
+// A re-render goes through the same `buildDerivatives` + two-WebP-object
+// pipeline as `publish.ts`, and updates the row via `updateScreenDerivatives`
+// (image_url, image_url_1x, lqip, width, height together) rather than the
+// PNG-only `updateScreenImage`. That is deliberate: a rescreenshot that wrote
+// a fresh `image_url` without also refreshing `image_url_1x`/`lqip` would
+// leave the row half-updated, and srcset would keep serving the stale @1x
+// image forever since every derivative object is content-hashed and
+// `immutable`-cached.
 
 export interface RescreenshotDeps {
-  store: Pick<ShowcaseStore, "listScreenSources" | "updateScreenImage">;
+  store: Pick<ShowcaseStore, "listScreenSources" | "updateScreenDerivatives">;
   screenshot(html: string): Promise<ScreenshotResult>;
   fetchHtml(url: string): Promise<string>;
-  uploadPng(key: string, body: Buffer): Promise<string>;
+  uploadWebp(key: string, body: Buffer): Promise<string>;
   log?(message: string): void;
 }
 
@@ -73,14 +83,34 @@ export async function rescreenshotScreens(
         continue;
       }
 
-      // A fresh key rather than an overwrite: the old PNG may already be sitting
-      // in a browser or CDN cache under its current URL, and a repair nobody can
-      // see is not a repair.
-      const imageUrl = await deps.uploadPng(
-        `showcase/rerender/${randomUUID()}.png`,
-        buffer,
-      );
-      await deps.store.updateScreenImage({ id: screen.id, imageUrl, width, height });
+      const derivatives = await buildDerivatives(buffer);
+      // Content hash of the 2x body, shared by both variants — same
+      // convention as publish.ts, so one screen has one hash.
+      const sha8 = createHash("sha256")
+        .update(derivatives.webp2x.body)
+        .digest("hex")
+        .slice(0, 8);
+
+      // A fresh, content-hashed key rather than an overwrite: the old WebP
+      // may already be sitting in a browser or CDN cache under its current
+      // URL (now `immutable`, see s3.ts), and a repair nobody can see is not
+      // a repair.
+      const base = `showcase/rerender/${randomUUID()}-${sha8}`;
+      const imageUrl = await deps.uploadWebp(`${base}.webp`, derivatives.webp2x.body);
+      const imageUrl1x = await deps.uploadWebp(`${base}@1x.webp`, derivatives.webp1x.body);
+      await deps.store.updateScreenDerivatives({
+        id: screen.id,
+        imageUrl,
+        imageUrl1x,
+        lqip: derivatives.lqip,
+        // The dimensions of the object actually stored at `imageUrl`
+        // (buildDerivatives never resizes the 2x variant, only re-encodes
+        // the format, so these equal the screenshot's own `width`/`height`
+        // — but deriving them from the WebP itself is what keeps that true
+        // by construction rather than by coincidence).
+        width: derivatives.webp2x.width,
+        height: derivatives.webp2x.height,
+      });
 
       summary.updated++;
       log(
