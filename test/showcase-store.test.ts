@@ -873,4 +873,36 @@ describe("createShowcaseStore", () => {
       ]);
     });
   });
+
+  describe("deleteScreens", () => {
+    it("resolves an app target through run_id or screen id and returns the rows", async () => {
+      const pool = fakePool([{ id: "a", run_id: "r1", title: "Home" }]);
+      const store = createShowcaseStore(
+        makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
+        pool,
+      );
+      const deleted = await store!.deleteScreens({ appOf: "a" });
+      expect(deleted).toEqual([{ id: "a", runId: "r1", title: "Home" }]);
+      expect(pool.calls[0].sql).toContain("DELETE FROM showcase_screens");
+      // The same COALESCE(screen -> run) resolution `listScreenSources` uses,
+      // so `--app <screen-id>` takes that screen's whole run.
+      expect(pool.calls[0].sql).toContain(
+        "WHERE run_id = COALESCE((SELECT run_id FROM showcase_screens WHERE id = $1::uuid), $1::uuid)",
+      );
+      expect(pool.calls[0].sql).toContain("RETURNING id, run_id, title");
+      expect(pool.calls[0].params).toEqual(["a"]);
+    });
+
+    it("deletes a single screen by id, without widening to its run", async () => {
+      const pool = fakePool([]);
+      const store = createShowcaseStore(
+        makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
+        pool,
+      );
+      const deleted = await store!.deleteScreens({ screen: "a" });
+      expect(deleted).toEqual([]);
+      expect(pool.calls[0].sql).toContain("WHERE id = $1::uuid");
+      expect(pool.calls[0].sql).not.toContain("run_id = COALESCE");
+    });
+  });
 });

@@ -14,6 +14,7 @@
     "showcase:replace-html": "tsx --env-file=.env src/showcase/replaceHtmlRun.ts",
     "showcase:reencode": "tsx --env-file=.env src/showcase/reencodeRun.ts",
     "showcase:pin": "tsx --env-file=.env src/showcase/pinRun.ts",
+    "showcase:delete": "tsx --env-file=.env src/showcase/deleteRun.ts",
     "build": "tsc && rm -rf dist/skills && cp -R src/skills dist/skills && rm -rf dist/analysis/migrations && cp -R src/analysis/migrations dist/analysis/migrations",
     "start": "node dist/index.js",
     "test": "vitest run",

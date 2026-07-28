@@ -84,6 +84,14 @@ export interface ShowcaseStore {
   pinScreen(id: string): Promise<boolean>;
   // Clears every pin, or just one app's when `runId` is given.
   clearPin(runId?: string): Promise<void>;
+  // For `npm run showcase:delete` — removes a whole app (`appOf`, resolved
+  // from either a run_id or any screen id in it, same as `listScreenSources`)
+  // or a single screen. Returns the rows that were actually deleted, so the
+  // caller can report them and tell "nothing matched" apart from success.
+  // Deliberately DB-only: the S3 objects behind image_url/html_url are served
+  // `immutable` for a year and cost nothing to keep, while deleting them
+  // would make a mistaken run unrecoverable.
+  deleteScreens(target: DeleteTarget): Promise<ShowcaseDeletedScreen[]>;
   close(): Promise<void>;
 }
 
@@ -107,6 +115,14 @@ export interface ShowcaseDerivativesUpdate {
   // descriptors straight from these columns.
   width: number;
   height: number;
+}
+
+export type DeleteTarget = { appOf: string } | { screen: string };
+
+export interface ShowcaseDeletedScreen {
+  id: string;
+  runId: string;
+  title: string;
 }
 
 export interface ShowcaseImageSource {
@@ -497,6 +513,23 @@ export function createShowcaseStore(
         "UPDATE showcase_screens SET pinned_at = NULL WHERE pinned_at IS NOT NULL",
         [],
       );
+    },
+
+    async deleteScreens(target) {
+      // One statement per shape rather than a shared WHERE: the app form has
+      // to resolve its argument through the same COALESCE(screen -> run)
+      // trick `listScreenSources` uses, which the single-screen form must not
+      // do (passing a screen id there would take its whole run with it).
+      const sql =
+        "appOf" in target
+          ? `DELETE FROM showcase_screens
+               WHERE run_id = COALESCE((SELECT run_id FROM showcase_screens WHERE id = $1::uuid), $1::uuid)
+               RETURNING id, run_id, title`
+          : `DELETE FROM showcase_screens WHERE id = $1::uuid RETURNING id, run_id, title`;
+      const result = (await db.query(sql, [
+        "appOf" in target ? target.appOf : target.screen,
+      ])) as { rows: Array<{ id: string; run_id: string; title: string }> };
+      return result.rows.map((r) => ({ id: r.id, runId: r.run_id, title: r.title }));
     },
 
     close: () => db.end(),

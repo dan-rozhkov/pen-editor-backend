@@ -116,6 +116,17 @@ context with `{ requireS3: false }`, since pinning touches no image and no
 HTML, and demanding four S3 vars to flip a boolean is how a repair command
 becomes unrunnable exactly when you need it.
 
+`npm run showcase:delete -- --app <run-id|screen-id>` removes a published run
+from the gallery — `--app` takes either a `run_id` or *any* screen id in it
+(the id you can copy from the gallery is a screen's), `--screen <uuid>` drops
+one screen instead, and `--dry-run` prints what would go through the exact
+same id resolution. `src/showcase/delete.ts` + `deleteRun.ts`, `{ requireS3:
+false }` like pin. It deletes **rows only**: the S3 objects stay, because they
+are served `immutable` for a year and cost nothing to keep, whereas deleting
+them would make a mis-aimed `--app` unrecoverable — the row can be re-inserted
+from the surviving objects, the objects cannot be re-derived from a deleted
+row.
+
 Migrations now also run at server startup (`src/startupMigrations.ts`, called
 from `index.ts` when `TRACE_DATABASE_URL` is set; failures are logged, not
 fatal, since the rest of the API works without Postgres). Before that, only
