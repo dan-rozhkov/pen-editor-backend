@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While on `0.x`, minor bumps may include breaking changes.
 
+## [0.36.0] - 2026-07-29
+
+### Added
+- **`npm run showcase:delete`** — un-publishes a showcase run, the counterpart to `showcase:generate`/`showcase:ingest` for the apps that turn out not to be worth showing. `--app <run-id|screen-id>` deletes a whole app and resolves its argument through the same `COALESCE(screen -> run)` step `showcase:rescreenshot --app` uses, because the id you can copy out of the gallery is a screen's, not the run's; `--screen <uuid>` drops a single screen; `--dry-run` prints what would go through that exact same resolution. It deletes **rows only** — the S3 objects stay, since they are served `immutable` for a year and cost nothing to keep, while deleting them would make a mis-aimed `--app` unrecoverable (a row can be re-inserted from the surviving objects; the objects cannot be re-derived from a deleted row). Like `showcase:pin`, it needs only `TRACE_DATABASE_URL`.
+
+### Fixed
+- **CI on `main` was red on the coverage gate** (functions 88.67% against the 89% floor) since the app-pagination release: `src/showcase/replaceHtmlRun.ts` is a thin CLI entrypoint like every other `*Run.ts`, but was not added to the coverage exclude list when it landed, so its untestable env/Postgres wiring counted as uncovered functions. Excluded it (and `deleteRun.ts`) on the same documented grounds as `pinRun.ts`, `rescreenshotRun.ts` and the rest. The thresholds themselves are untouched — measured function coverage is now 89.6%.
+
 ## [0.35.1] - 2026-07-28
 
 ### Changed

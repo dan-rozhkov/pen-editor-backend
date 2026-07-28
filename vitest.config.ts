@@ -50,6 +50,14 @@ export default defineConfig({
         // (resolvePinAction/runPinAction, in src/showcase/pin.ts) is
         // unit-tested with an injected fake store and stays measured.
         "src/showcase/pinRun.ts",
+        // replace-html and delete entrypoints: same shape again — flags in,
+        // context out, one call into the tested module. Their logic
+        // (replaceScreenHtml; resolveDeleteAction/runDeleteAction in
+        // src/showcase/delete.ts) is unit-tested with an injected fake store
+        // and stays measured. replaceHtmlRun.ts was missed when it landed,
+        // which is what pushed function coverage under the 89% floor on main.
+        "src/showcase/replaceHtmlRun.ts",
+        "src/showcase/deleteRun.ts",
         // Playwright driver. It IS tested — test/showcase-screenshot.test.ts
         // asserts the real layout geometry — but only against a real Chromium,
         // which CI does not install (`npx playwright install chromium` is a
