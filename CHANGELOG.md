@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While on `0.x`, minor bumps may include breaking changes.
 
+## [0.35.1] - 2026-07-28
+
+### Changed
+- **The showcase generates with `moonshotai/kimi-k2.5` instead of `deepseek/deepseek-v4-pro`** — the answer to "why is so much of the gallery beige". Measured across the 13 runs then published: 4 of deepseek's 5 landed on the same warm-cream ground (`#faf7f2` / `#faf9f6` / `#fef9f0`) with a terracotta accent, which is verbatim the AI-cluster look `src/skills/prototype.md`'s calibration section forbids. In all four, that skill's mandatory THESIS/OWN-WORLD direction contract was absent from the emitted HTML — with no named visual world, the model falls back to its own prior. The one deepseek run that did write the contract chose a deliberate dark cinema world and is the only non-beige one. Every run by another model (kimi, minimax, opus, sonnet) wrote the contract and landed elsewhere. Only the default moves: `npm run showcase:generate -- --model=…` still overrides it, and `/api/chat` is untouched (it reads `OPENROUTER_MODEL`).
+
 ## [0.32.0] - 2026-07-28
 
 ### Added
