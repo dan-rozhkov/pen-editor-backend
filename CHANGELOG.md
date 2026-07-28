@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While on `0.x`, minor bumps may include breaking changes.
 
+## [0.31.1] - 2026-07-28
+
+### Fixed
+- **Showcase screenshots no longer come out with blank photos and blank icons.** A whole generated run rendered as empty boxes and empty circles — the designs were fine, the snapshot was early. Two gaps in the readiness check, both invisible to it by construction: the agent puts its generated photos in CSS `background-image`, never `<img>`, so nothing waited for them; and `document.fonts.ready` resolves instantly when nothing is pending yet, which is exactly the state right after an `@import`'ed sheet lands, so Phosphor's icon font was still in flight. Every used family is now kicked explicitly with `fonts.load` (passing the pseudo-element `content` glyph, which is what icon fonts key on) before `fonts.ready` is awaited, `background-image`/`mask-image`/`border-image` URLs are preloaded, and lazy `<img>` below the fold is forced eager. Verified by re-rendering the stored HTML of a real run: empty boxes before, full photos and icons after.
+
+### Changed
+- The `showcase:rescreenshot` CLI moved to `src/showcase/rescreenshotRun.ts`, leaving `rescreenshot.ts` as the loop alone. `main()`'s env/Postgres/S3/Chromium wiring had dragged global coverage under the gate and left CI red since v0.31.0; the entrypoint is now excluded from coverage like `run.ts` and `analysis/run.ts`, while the loop it drives stays measured. Thresholds unchanged.
+
 ## [0.31.0] - 2026-07-28
 
 ### Added
