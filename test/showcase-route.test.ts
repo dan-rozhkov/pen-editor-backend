@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../src/app.js";
 import { makeConfig } from "./helpers.js";
-import type { ShowcaseScreen, ShowcaseStore } from "../src/showcase/store.js";
+import type { ShowcaseApp, ShowcaseScreen, ShowcaseStore } from "../src/showcase/store.js";
 
 const SCREEN: ShowcaseScreen = {
   id: "11111111-1111-1111-1111-111111111111",
@@ -20,10 +20,18 @@ const SCREEN: ShowcaseScreen = {
   createdAt: "2026-07-27T10:00:00.000Z",
 };
 
+const APP: ShowcaseApp = {
+  runId: SCREEN.runId,
+  theme: SCREEN.theme,
+  model: SCREEN.model,
+  createdAt: SCREEN.createdAt,
+  screens: [SCREEN],
+};
+
 function fakeStore(overrides: Partial<ShowcaseStore> = {}): ShowcaseStore {
   return {
     insertScreen: async () => {},
-    listScreens: async () => ({ screens: [SCREEN], nextCursor: null }),
+    listApps: async () => ({ apps: [APP], nextCursor: null }),
     recentThemes: async () => [],
     close: async () => {},
     ...overrides,
@@ -45,32 +53,42 @@ async function build(showcaseStore: ShowcaseStore | null) {
 }
 
 describe("GET /api/showcase", () => {
-  it("returns 200 with screens and nextCursor, omitting prompt", async () => {
+  it("returns 200 with apps and nextCursor, omitting prompt and pin state", async () => {
     const nextCursor = "abc123";
     const store = fakeStore({
-      listScreens: async () => ({ screens: [SCREEN], nextCursor }),
+      listApps: async () => ({ apps: [APP], nextCursor }),
     });
     const instance = await build(store);
     const res = await instance.inject({ method: "GET", url: "/api/showcase" });
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.nextCursor).toBe(nextCursor);
-    expect(body.screens).toHaveLength(1);
-    expect(body.screens[0]).toEqual({
-      id: SCREEN.id,
-      runId: SCREEN.runId,
-      theme: SCREEN.theme,
-      title: SCREEN.title,
-      model: SCREEN.model,
-      imageUrl: SCREEN.imageUrl,
-      imageUrl1x: SCREEN.imageUrl1x,
-      lqip: SCREEN.lqip,
-      htmlUrl: SCREEN.htmlUrl,
-      width: SCREEN.width,
-      height: SCREEN.height,
-      createdAt: SCREEN.createdAt,
+    expect(body.apps).toHaveLength(1);
+    expect(body.apps[0]).toEqual({
+      runId: APP.runId,
+      theme: APP.theme,
+      model: APP.model,
+      createdAt: APP.createdAt,
+      screens: [
+        {
+          id: SCREEN.id,
+          title: SCREEN.title,
+          imageUrl: SCREEN.imageUrl,
+          imageUrl1x: SCREEN.imageUrl1x,
+          lqip: SCREEN.lqip,
+          htmlUrl: SCREEN.htmlUrl,
+          width: SCREEN.width,
+          height: SCREEN.height,
+          createdAt: SCREEN.createdAt,
+        },
+      ],
     });
-    expect(body.screens[0].prompt).toBeUndefined();
+    // The full generation prompt and pin state stay server-side; the cover
+    // being first in `screens` is the whole pin contract.
+    expect(body.apps[0].screens[0].prompt).toBeUndefined();
+    expect(body.apps[0].screens[0].pinned).toBeUndefined();
+    // The flat screen list the masonry-era client grouped itself is gone.
+    expect(body.screens).toBeUndefined();
   });
 
   it("returns 503 when showcase storage is not configured", async () => {
@@ -91,7 +109,7 @@ describe("GET /api/showcase", () => {
     expect(res.statusCode).toBe(400);
   });
 
-  it("returns 400 for limit over 50", async () => {
+  it("returns 400 for a limit over the 24-app ceiling", async () => {
     const instance = await build(fakeStore());
     const res = await instance.inject({
       method: "GET",
@@ -102,7 +120,7 @@ describe("GET /api/showcase", () => {
 
   it("returns 400 for an undecodable cursor", async () => {
     const store = fakeStore({
-      listScreens: async () => {
+      listApps: async () => {
         throw Object.assign(new Error("Invalid cursor"), { statusCode: 400 });
       },
     });
@@ -114,16 +132,16 @@ describe("GET /api/showcase", () => {
     expect(res.statusCode).toBe(400);
   });
 
-  it("defaults limit to 24 when omitted", async () => {
+  it("defaults limit to 12 apps when omitted", async () => {
     let receivedLimit: number | undefined;
     const store = fakeStore({
-      listScreens: async (opts) => {
+      listApps: async (opts) => {
         receivedLimit = opts.limit;
-        return { screens: [], nextCursor: null };
+        return { apps: [], nextCursor: null };
       },
     });
     const instance = await build(store);
     await instance.inject({ method: "GET", url: "/api/showcase" });
-    expect(receivedLimit).toBe(24);
+    expect(receivedLimit).toBe(12);
   });
 });

@@ -24,12 +24,30 @@ export interface ShowcaseScreen extends ShowcaseScreenRow {
   pinned: boolean;
 }
 
+/** One app — every screen of a single `showcase:generate`/`showcase:ingest`
+ * run, in display order (pinned cover first, then newest). The gallery's unit
+ * of display *and* of pagination: a page never contains half an app. */
+export interface ShowcaseApp {
+  runId: string;
+  theme: string;
+  model: string;
+  // The app's own recency — MAX(created_at) across its screens, which is also
+  // what the feed sorts on.
+  createdAt: string;
+  screens: ShowcaseScreen[];
+}
+
 export interface ShowcaseStore {
   insertScreen(row: ShowcaseScreenRow): Promise<void>;
-  listScreens(opts: {
+  // `limit` counts *apps*, not screens: the gallery renders one card per app,
+  // so a page measured in screens would cut an app in half at the page
+  // boundary and show a carousel that silently grows when the visitor clicks
+  // "Show more". Screens per app are unbounded in the type but bounded in
+  // practice (a run publishes at most 5).
+  listApps(opts: {
     limit: number;
     cursor?: string;
-  }): Promise<{ screens: ShowcaseScreen[]; nextCursor: string | null }>;
+  }): Promise<{ apps: ShowcaseApp[]; nextCursor: string | null }>;
   recentThemes(limit: number): Promise<string[]>;
   // For `npm run showcase:rescreenshot` — the stored HTML is the source of
   // truth, so every screen can be re-rendered after a screenshot bug fix.
@@ -101,29 +119,25 @@ export interface ShowcaseImageSource {
 interface DecodedCursor {
   runSort: string;
   runId: string;
-  pinned: boolean;
-  createdAt: string;
-  id: string;
 }
 
 // A cursor decodes to a real keyset position (`DecodedCursor`), or to
-// `"legacy"` when it is a pre-per-app-pin cursor: those encoded a sort order
-// (`pinned, created_at, id`) that no longer matches the feed's, and there is
-// no way to translate a position in the old order into one in the new order.
-// Restarting the request from the top of the feed is the only option that
-// isn't a 400 for a page-2+ click in a tab that was already open — one
-// repeated page beats an error.
+// `"legacy"` when it predates app-wise pagination. Every older format
+// addressed a *screen* inside the feed; a page is now a whole number of apps,
+// and the screen a legacy cursor names may well sit in the middle of one, so
+// there is no position to translate it to. Restarting from the top of the
+// feed is the only option that isn't a 400 for a "Show more" click in a tab
+// that was already open — one repeated page beats an error.
 type Decoded = DecodedCursor | "legacy";
 
 function badCursor(): never {
   throw Object.assign(new Error("Invalid cursor"), { statusCode: 400 });
 }
 
-// Current format: `r2|<runSort>|<runId>|<p0|p1>|<createdAt>|<id>`, matching
-// the ORDER BY column order (`run_sort, run_id, pinned, created_at, id`) so
-// keyset pagination stays a single row-wise comparison. The `r2` tag lets
-// this be told apart from the two older formats below without guessing from
-// field count alone.
+// Current format: `a1|<runSort>|<runId>`, matching the app-level ORDER BY
+// (`run_sort, run_id`) so keyset pagination stays a single row-wise
+// comparison. Screen-level keys (pinned/created_at/id) are deliberately gone:
+// the page boundary now falls between apps, never inside one.
 function decodeCursor(cursor: string): Decoded {
   let decoded: string;
   try {
@@ -133,41 +147,38 @@ function decodeCursor(cursor: string): Decoded {
   }
   const parts = decoded.split("|");
 
-  // Pre-per-app-pin formats: 2 fields (`createdAt|id`) or 3 (`p0|p1` flag +
-  // createdAt + id). Their *shape* is enough to recognize them — their
-  // *values* described a sort order that's gone, so there is nothing to
-  // validate or reuse; treat any 2-field cursor, or any 3-field cursor with a
-  // valid pinned flag, as legacy without inspecting the rest.
+  // Screen-addressing formats: 2 fields (`createdAt|id`), 3 (`p0|p1` flag +
+  // createdAt + id) or 6 (`r2|…`). Their *shape* is enough to recognize them
+  // — their *values* addressed a granularity that's gone, so there is nothing
+  // to validate or reuse.
   if (parts.length === 2) return "legacy";
-  if (parts.length === 3) {
-    const [flag] = parts;
-    if (flag === "p0" || flag === "p1") return "legacy";
+  if (parts.length === 6) {
+    if (parts[0] === "r2") return "legacy";
     badCursor();
   }
+  if (parts.length !== 3) badCursor();
 
-  if (parts.length !== 6) badCursor();
-  const [tag, runSort, runId, flag, createdAt, id] = parts;
-  if (tag !== "r2") badCursor();
-  if (flag !== "p0" && flag !== "p1") badCursor();
-  if (!runSort || !runId || !createdAt || !id) badCursor();
-  // runSort/createdAt round-trip through Postgres `::text` at full
-  // (microsecond) precision — e.g. `2026-07-28 13:30:57.663475+00`, space
-  // separator, no `T`, no `Z` — rather than the millisecond-precision ISO
-  // string `toIso()` produces. `Date.parse` still accepts that form (a
-  // stable, if non-spec, V8 extension), so no loosening of this validation
-  // was needed — it correctly keeps rejecting genuinely malformed values
-  // (e.g. "not-a-date") while accepting both shapes.
+  const [tag, runSort, runId] = parts;
+  // The three-field shape is shared with the oldest format (`p0|p1` flag +
+  // createdAt + id), so the leading field is what tells them apart.
+  if (tag === "p0" || tag === "p1") return "legacy";
+  if (tag !== "a1") badCursor();
+  if (!runSort || !runId) badCursor();
+  // runSort round-trips through Postgres `::text` at full (microsecond)
+  // precision — e.g. `2026-07-28 13:30:57.663475+00`, space separator, no
+  // `T`, no `Z` — rather than the millisecond-precision ISO string `toIso()`
+  // produces. Truncating it to milliseconds would make the cursor compare as
+  // *smaller* than the real column value and silently drop the run it points
+  // just past. `Date.parse` accepts that form (a stable, if non-spec, V8
+  // extension), so this validation still rejects genuinely malformed values
+  // while accepting both shapes.
   if (Number.isNaN(Date.parse(runSort))) badCursor();
-  if (Number.isNaN(Date.parse(createdAt))) badCursor();
-  return { runSort, runId, pinned: flag === "p1", createdAt, id };
+  return { runSort, runId };
 }
 
 function encodeCursor(fields: DecodedCursor): string {
-  const { runSort, runId, pinned, createdAt, id } = fields;
-  return Buffer.from(
-    `r2|${runSort}|${runId}|${pinned ? "p1" : "p0"}|${createdAt}|${id}`,
-    "utf8",
-  ).toString("base64url");
+  const { runSort, runId } = fields;
+  return Buffer.from(`a1|${runSort}|${runId}`, "utf8").toString("base64url");
 }
 
 interface ShowcaseScreenDbRow {
@@ -256,63 +267,90 @@ export function createShowcaseStore(
       );
     },
 
-    async listScreens({ limit, cursor }) {
+    async listApps({ limit, cursor }) {
       const params: unknown[] = [];
       let cursorClause = "";
       if (cursor) {
         const decoded = decodeCursor(cursor);
-        // A legacy cursor describes a position in a sort order that no
-        // longer exists — there is nothing to translate, so this page is
-        // served as if no cursor had been given at all (see decodeCursor).
+        // A legacy cursor addresses a single screen, a granularity this feed
+        // no longer paginates by — there is nothing to translate, so this
+        // page is served as if no cursor had been given (see decodeCursor).
         if (decoded !== "legacy") {
-          const { runSort, runId, pinned, createdAt, id } = decoded;
-          params.push(runSort, runId, pinned, createdAt, id);
-          // Row-wise comparison against all five sort keys at once, not five
-          // ANDed columns: a naive `ORDER BY` swap would put a screen back on
-          // a later page merely because some earlier key tied. `false <
-          // true` in Postgres, so this stays consistent with the
-          // `(pinned_at IS NOT NULL) DESC` ordering below.
-          cursorClause = `WHERE (run_sort, run_id, (pinned_at IS NOT NULL), created_at, id) < ($${params.length - 4}::timestamptz, $${params.length - 3}::uuid, $${params.length - 2}::boolean, $${params.length - 1}::timestamptz, $${params.length}::uuid)`;
+          const { runSort, runId } = decoded;
+          params.push(runSort, runId);
+          // Row-wise comparison against both app-level sort keys at once, not
+          // two ANDed columns: with `AND` an app whose `run_sort` ties the
+          // cursor's would come back on a later page too.
+          //
+          // `HAVING`, not `WHERE`: `run_sort` is the MAX aggregate this very
+          // query computes, so it does not exist yet at WHERE time.
+          cursorClause = `HAVING (MAX(created_at), run_id) < ($${params.length - 1}::timestamptz, $${params.length}::uuid)`;
         }
       }
       params.push(limit);
-      // The window function has to be computed before it can be filtered on,
-      // so the projection (including `published = true`) lives in a
-      // subselect and the keyset predicate applies outside it.
-      const sql = `SELECT id, run_id, theme, title, prompt, model, image_url, image_url_1x, lqip, html_url, width, height, created_at, pinned_at, run_sort,
-                          created_at::text AS created_at_text, run_sort::text AS run_sort_text
-                   FROM (
-                     SELECT id, run_id, theme, title, prompt, model, image_url, image_url_1x, lqip, html_url, width, height, created_at, pinned_at,
-                            MAX(created_at) OVER (PARTITION BY run_id) AS run_sort
+      // Two stages, and the split is the whole point: `runs` picks exactly
+      // `limit` *apps* by their recency, then the outer select takes every
+      // screen belonging to them. Paginating the screens directly (what this
+      // used to do) let a page boundary fall inside an app, so the gallery —
+      // which renders one card per app — showed a carousel missing its last
+      // screens until the visitor happened to click "Show more".
+      const sql = `SELECT s.id, s.run_id, s.theme, s.title, s.prompt, s.model, s.image_url, s.image_url_1x, s.lqip, s.html_url, s.width, s.height, s.created_at, s.pinned_at,
+                          runs.run_sort, s.created_at::text AS created_at_text, runs.run_sort::text AS run_sort_text
+                   FROM showcase_screens s
+                   JOIN (
+                     SELECT run_id, MAX(created_at) AS run_sort
                      FROM showcase_screens
                      WHERE published = true
-                   ) feed
-                   ${cursorClause}
-                   ORDER BY run_sort DESC, run_id DESC, (pinned_at IS NOT NULL) DESC, created_at DESC, id DESC
-                   LIMIT $${params.length}`;
+                     GROUP BY run_id
+                     ${cursorClause}
+                     ORDER BY run_sort DESC, run_id DESC
+                     LIMIT $${params.length}
+                   ) runs ON runs.run_id = s.run_id
+                   WHERE s.published = true
+                   ORDER BY runs.run_sort DESC, s.run_id DESC, (s.pinned_at IS NOT NULL) DESC, s.created_at DESC, s.id DESC`;
       const result = (await db.query(sql, params)) as {
         rows: ShowcaseScreenDbRow[];
       };
-      const screens = result.rows.map(mapRow);
-      const lastRow = result.rows[result.rows.length - 1];
+
+      // Rows arrive already grouped by app (the ORDER BY leads with the app
+      // keys), so a single pass in feed order rebuilds the apps without
+      // re-sorting anything.
+      const apps: ShowcaseApp[] = [];
+      const byRun = new Map<string, ShowcaseApp>();
+      let lastRunSortText = "";
+      for (const row of result.rows) {
+        const screen = mapRow(row);
+        let app = byRun.get(row.run_id);
+        if (!app) {
+          app = {
+            runId: row.run_id,
+            // Theme and model are per-run in practice (one generate/ingest
+            // run writes one theme and one model to every screen it
+            // publishes), so the first screen's values describe the app.
+            theme: row.theme,
+            model: row.model,
+            createdAt: toIso(row.run_sort),
+            screens: [],
+          };
+          byRun.set(row.run_id, app);
+          apps.push(app);
+        }
+        app.screens.push(screen);
+        lastRunSortText = row.run_sort_text;
+      }
+
       const nextCursor =
-        screens.length === limit && screens.length > 0
+        apps.length === limit && apps.length > 0
           ? encodeCursor({
-              // Full-precision text, not `toIso(lastRow.run_sort)` /
-              // `screens[...].createdAt` — those truncate to milliseconds
-              // and must never feed the cursor (see the comment on
-              // `ShowcaseScreenDbRow.created_at_text`/`run_sort_text`). The
-              // display `createdAt` on `screens[...]` stays
-              // millisecond-precision ISO; only the cursor needs the raw
-              // text form.
-              runSort: lastRow.run_sort_text,
-              runId: screens[screens.length - 1].runId,
-              pinned: screens[screens.length - 1].pinned,
-              createdAt: lastRow.created_at_text,
-              id: screens[screens.length - 1].id,
+              // Full-precision text, not `toIso(...)`/`app.createdAt` — those
+              // truncate to milliseconds and must never feed the cursor (see
+              // the comment on `ShowcaseScreenDbRow.run_sort_text`). The
+              // display `createdAt` stays millisecond-precision ISO.
+              runSort: lastRunSortText,
+              runId: apps[apps.length - 1].runId,
             })
           : null;
-      return { screens, nextCursor };
+      return { apps, nextCursor };
     },
 
     async recentThemes(limit) {

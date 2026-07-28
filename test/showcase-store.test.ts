@@ -168,17 +168,24 @@ function fakeDb(initialRows: FakeRow[]): TraceQueryable & { rows: FakeRow[] } {
       return { rows: [] };
     }
 
-    if (sql.includes("MAX(created_at) OVER")) {
+    if (sql.includes("GROUP BY run_id")) {
       // Same refusal as above: only interpret this as the store's real
-      // listScreens query if its load-bearing ORDER BY matches exactly. A
-      // flipped sort direction, a reordered column, or a dropped tiebreaker
+      // listApps query if both of its load-bearing ORDER BYs match exactly.
+      // A flipped sort direction, a reordered column, or a dropped tiebreaker
       // in the real SQL must make this fake stop understanding the query,
       // not silently keep sorting/filtering in JS against a query shape that
       // no longer exists.
-      const orderBy =
-        "ORDER BY run_sort DESC, run_id DESC, (pinned_at IS NOT NULL) DESC, created_at DESC, id DESC";
-      if (!sql.includes(orderBy)) {
+      const appOrderBy = "ORDER BY run_sort DESC, run_id DESC";
+      const screenOrderBy =
+        "ORDER BY runs.run_sort DESC, s.run_id DESC, (s.pinned_at IS NOT NULL) DESC, s.created_at DESC, s.id DESC";
+      if (!sql.includes(appOrderBy) || !sql.includes(screenOrderBy)) {
         throw new Error(`unrecognized query (ORDER BY changed): ${sql}`);
+      }
+      // The app-level LIMIT must sit inside the subselect that picks runs —
+      // if it ever moved out to the screen level, pages would go back to
+      // cutting an app in half and this fake must not paper over that.
+      if (!/LIMIT \$\d+\s*\n?\s*\) runs/.test(sql)) {
+        throw new Error(`unrecognized query (LIMIT is not app-level): ${sql}`);
       }
 
       const limit = params[params.length - 1] as number;
@@ -188,23 +195,20 @@ function fakeDb(initialRows: FakeRow[]): TraceQueryable & { rows: FakeRow[] } {
       // a fixed position — so a reordered/renumbered $n in the real SQL shows
       // up as a wrong cursor value here instead of being invisible.
       const predicateMatch = sql.match(
-        /\(run_sort, run_id, \(pinned_at IS NOT NULL\), created_at, id\) < \(\$(\d+)::timestamptz, \$(\d+)::uuid, \$(\d+)::boolean, \$(\d+)::timestamptz, \$(\d+)::uuid\)/,
+        /\(MAX\(created_at\), run_id\) < \(\$(\d+)::timestamptz, \$(\d+)::uuid\)/,
       );
-      if (sql.includes("WHERE (run_sort") && !predicateMatch) {
+      if (sql.includes("HAVING") && !predicateMatch) {
         throw new Error(`unrecognized query (cursor predicate shape changed): ${sql}`);
       }
-      // Cursor params are, post-fix, the full-precision `::text` form (e.g.
+      // Cursor params are the full-precision `::text` form (e.g.
       // "2026-07-28 13:30:57.663475+00"), not the millisecond-precision ISO
-      // `toIso()` used to produce — so they're compared via `preciseMicros`
-      // below, same as every row, rather than through a `Date` that would
-      // silently re-truncate them back to milliseconds.
+      // `toIso()` produces — so they're compared via `preciseMicros` below,
+      // same as every row, rather than through a `Date` that would silently
+      // re-truncate them back to milliseconds.
       const cursor = predicateMatch
         ? {
             runSort: preciseMicros(params[Number(predicateMatch[1]) - 1] as string),
             runId: params[Number(predicateMatch[2]) - 1] as string,
-            pinned: params[Number(predicateMatch[3]) - 1] as boolean,
-            createdAt: preciseMicros(params[Number(predicateMatch[4]) - 1] as string),
-            id: params[Number(predicateMatch[5]) - 1] as string,
           }
         : null;
 
@@ -228,57 +232,45 @@ function fakeDb(initialRows: FakeRow[]): TraceQueryable & { rows: FakeRow[] } {
         }
       }
 
-      const withSort = rows
-        .filter((r) => r.published)
-        .map((r) => ({
-          r,
-          runSortMicros: runSortMicrosByRun.get(r.run_id)!,
-          runSortRaw: runSortRawByRun.get(r.run_id)!,
-          createdMicros: preciseMicros(rawOf(r)),
-        }));
+      // Stage 1 — pick `limit` apps by (run_sort, run_id) descending, after
+      // the keyset predicate.
+      const runsSorted = [...runSortMicrosByRun.entries()]
+        .map(([runId, runSortMicros]) => ({ runId, runSortMicros }))
+        .sort((a, b) =>
+          a.runSortMicros !== b.runSortMicros
+            ? b.runSortMicros - a.runSortMicros
+            : a.runId < b.runId
+              ? 1
+              : -1,
+        );
+      const runsPage = (
+        cursor
+          ? runsSorted.filter(
+              (x) =>
+                x.runSortMicros < cursor.runSort ||
+                (x.runSortMicros === cursor.runSort && x.runId < cursor.runId),
+            )
+          : runsSorted
+      ).slice(0, limit);
+      const runRank = new Map(runsPage.map((x, i) => [x.runId, i]));
 
-      withSort.sort((a, b) => {
-        if (a.runSortMicros !== b.runSortMicros) return b.runSortMicros - a.runSortMicros;
-        if (a.r.run_id !== b.r.run_id) return a.r.run_id < b.r.run_id ? 1 : -1;
-        const aPinned = a.r.pinned_at !== null;
-        const bPinned = b.r.pinned_at !== null;
-        if (aPinned !== bPinned) return aPinned ? -1 : 1;
-        if (a.createdMicros !== b.createdMicros) return b.createdMicros - a.createdMicros;
-        return a.r.id < b.r.id ? 1 : -1;
-      });
+      // Stage 2 — every screen of those apps, ordered app-wise then
+      // pinned-first / newest-first within each app.
+      const page = rows
+        .filter((r) => r.published && runRank.has(r.run_id))
+        .map((r) => ({ r, createdMicros: preciseMicros(rawOf(r)) }))
+        .sort((a, b) => {
+          const rankDiff = runRank.get(a.r.run_id)! - runRank.get(b.r.run_id)!;
+          if (rankDiff !== 0) return rankDiff;
+          const aPinned = a.r.pinned_at !== null;
+          const bPinned = b.r.pinned_at !== null;
+          if (aPinned !== bPinned) return aPinned ? -1 : 1;
+          if (a.createdMicros !== b.createdMicros) return b.createdMicros - a.createdMicros;
+          return a.r.id < b.r.id ? 1 : -1;
+        });
 
-      function tuple(x: (typeof withSort)[number]) {
-        return [
-          x.runSortMicros,
-          x.r.run_id,
-          x.r.pinned_at !== null,
-          x.createdMicros,
-          x.r.id,
-        ] as const;
-      }
-      function lessThan(a: ReturnType<typeof tuple>, b: ReturnType<typeof tuple>): boolean {
-        for (let i = 0; i < a.length; i++) {
-          if (a[i] === b[i]) continue;
-          return a[i] < b[i];
-        }
-        return false;
-      }
-
-      const filtered = cursor
-        ? withSort.filter((x) =>
-            lessThan(tuple(x), [
-              cursor.runSort,
-              cursor.runId,
-              cursor.pinned,
-              cursor.createdAt,
-              cursor.id,
-            ]),
-          )
-        : withSort;
-
-      const page = filtered.slice(0, limit);
       return {
-        rows: page.map(({ r, runSortRaw }) => ({
+        rows: page.map(({ r }) => ({
           id: r.id,
           run_id: r.run_id,
           theme: r.theme,
@@ -293,9 +285,9 @@ function fakeDb(initialRows: FakeRow[]): TraceQueryable & { rows: FakeRow[] } {
           height: r.height,
           created_at: r.created_at,
           pinned_at: r.pinned_at,
-          run_sort: new Date(runSortRaw),
+          run_sort: new Date(runSortRawByRun.get(r.run_id)!),
           created_at_text: rawOf(r),
-          run_sort_text: runSortRaw,
+          run_sort_text: runSortRawByRun.get(r.run_id)!,
         })),
       };
     }
@@ -400,21 +392,27 @@ describe("createShowcaseStore", () => {
     };
   }
 
-  it("lists published screens with keyset pagination and no next cursor when under limit", async () => {
+  it("groups screens into apps, with no next cursor when under limit", async () => {
     const pool = fakePool([dbRow()]);
     const store = createShowcaseStore(
       makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
       pool,
     );
-    const { screens, nextCursor } = await store!.listScreens({ limit: 24 });
-    expect(screens).toHaveLength(1);
-    expect(screens[0].createdAt).toBe("2026-07-27T10:00:00.000Z");
-    expect(screens[0].pinned).toBe(false);
+    const { apps, nextCursor } = await store!.listApps({ limit: 12 });
+    expect(apps).toHaveLength(1);
+    expect(apps[0].runId).toBe(row.runId);
+    expect(apps[0].theme).toBe(row.theme);
+    expect(apps[0].model).toBe(row.model);
+    expect(apps[0].createdAt).toBe("2026-07-27T10:00:00.000Z");
+    expect(apps[0].screens).toHaveLength(1);
+    expect(apps[0].screens[0].createdAt).toBe("2026-07-27T10:00:00.000Z");
+    expect(apps[0].screens[0].pinned).toBe(false);
     expect(nextCursor).toBeNull();
     expect(pool.calls[0].sql).toContain("published = true");
-    expect(pool.calls[0].sql).toContain("MAX(created_at) OVER (PARTITION BY run_id)");
+    expect(pool.calls[0].sql).toContain("GROUP BY run_id");
+    expect(pool.calls[0].sql).toContain("ORDER BY run_sort DESC, run_id DESC");
     expect(pool.calls[0].sql).toContain(
-      "ORDER BY run_sort DESC, run_id DESC, (pinned_at IS NOT NULL) DESC, created_at DESC, id DESC",
+      "ORDER BY runs.run_sort DESC, s.run_id DESC, (s.pinned_at IS NOT NULL) DESC, s.created_at DESC, s.id DESC",
     );
   });
 
@@ -424,9 +422,9 @@ describe("createShowcaseStore", () => {
       makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
       pool,
     );
-    const { screens } = await store!.listScreens({ limit: 24 });
-    expect(screens[0].imageUrl1x).toBeUndefined();
-    expect(screens[0].lqip).toBeUndefined();
+    const { apps } = await store!.listApps({ limit: 12 });
+    expect(apps[0].screens[0].imageUrl1x).toBeUndefined();
+    expect(apps[0].screens[0].lqip).toBeUndefined();
   });
 
   it("maps present image_url_1x/lqip columns through unchanged", async () => {
@@ -440,9 +438,9 @@ describe("createShowcaseStore", () => {
       makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
       pool,
     );
-    const { screens } = await store!.listScreens({ limit: 24 });
-    expect(screens[0].imageUrl1x).toBe("https://cdn.example.test/1@1x.webp");
-    expect(screens[0].lqip).toBe("data:image/webp;base64,AAAA");
+    const { apps } = await store!.listApps({ limit: 12 });
+    expect(apps[0].screens[0].imageUrl1x).toBe("https://cdn.example.test/1@1x.webp");
+    expect(apps[0].screens[0].lqip).toBe("data:image/webp;base64,AAAA");
   });
 
   it("marks a screen with pinned_at set as pinned", async () => {
@@ -451,48 +449,32 @@ describe("createShowcaseStore", () => {
       makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
       pool,
     );
-    const { screens } = await store!.listScreens({ limit: 24 });
-    expect(screens[0].pinned).toBe(true);
+    const { apps } = await store!.listApps({ limit: 12 });
+    expect(apps[0].screens[0].pinned).toBe(true);
   });
 
-  it("returns a nextCursor when the page is full", async () => {
+  it("returns an app-addressing nextCursor when the page is full", async () => {
     const pool = fakePool([dbRow()]);
     const store = createShowcaseStore(
       makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
       pool,
     );
-    const { nextCursor } = await store!.listScreens({ limit: 1 });
+    const { nextCursor } = await store!.listApps({ limit: 1 });
     expect(nextCursor).not.toBeNull();
 
     const decoded = Buffer.from(nextCursor!, "base64url").toString("utf8");
-    expect(decoded).toBe(
-      `r2|2026-07-27T10:00:00.000Z|${row.runId}|p0|2026-07-27T10:00:00.000Z|${row.id}`,
-    );
-  });
-
-  it("encodes the cursor as pinned when the last screen on the page is pinned", async () => {
-    const pool = fakePool([dbRow({ pinned_at: new Date("2026-07-28T09:00:00.000Z") })]);
-    const store = createShowcaseStore(
-      makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
-      pool,
-    );
-    const { nextCursor } = await store!.listScreens({ limit: 1 });
-    const decoded = Buffer.from(nextCursor!, "base64url").toString("utf8");
-    expect(decoded).toBe(
-      `r2|2026-07-27T10:00:00.000Z|${row.runId}|p1|2026-07-27T10:00:00.000Z|${row.id}`,
-    );
+    // Only the app keys — no screen id, since a page boundary never falls
+    // inside an app any more.
+    expect(decoded).toBe(`a1|2026-07-27T10:00:00.000Z|${row.runId}`);
   });
 
   // Regression for the pagination bug rooted in timestamp precision:
-  // Postgres stores `created_at` (and the `run_sort` window aggregate
-  // derived from it) with microsecond precision, but `toIso()`/the pg
-  // driver's `Date` truncate to milliseconds. Building the cursor from the
-  // truncated value made it compare as smaller than the true column value,
-  // so the keyset predicate (`run_sort` is its first key) dropped every
-  // remaining row of the run the page ended in. This asserts the cursor is
-  // now built from the full-precision `::text` columns, not the truncated
-  // ones — before the fix, `nextCursor` would have decoded to
-  // ".663Z"-truncated timestamps instead of the ".663475+00" below.
+  // Postgres stores `created_at` (and the `run_sort` aggregate derived from
+  // it) with microsecond precision, but `toIso()`/the pg driver's `Date`
+  // truncate to milliseconds. Building the cursor from the truncated value
+  // made it compare as smaller than the true column value, so the keyset
+  // predicate handed back an app the previous page had already shown. This
+  // asserts the cursor is built from the full-precision `::text` column.
   it("preserves microsecond precision in the emitted nextCursor", async () => {
     const pool = fakePool([
       dbRow({
@@ -504,11 +486,9 @@ describe("createShowcaseStore", () => {
       makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
       pool,
     );
-    const { nextCursor } = await store!.listScreens({ limit: 1 });
+    const { nextCursor } = await store!.listApps({ limit: 1 });
     const decoded = Buffer.from(nextCursor!, "base64url").toString("utf8");
-    expect(decoded).toBe(
-      `r2|2026-07-28 13:30:57.663475+00|${row.runId}|p0|2026-07-28 13:30:57.663475+00|${row.id}`,
-    );
+    expect(decoded).toBe(`a1|2026-07-28 13:30:57.663475+00|${row.runId}`);
   });
 
   it("throws a 400 error for an undecodable cursor", async () => {
@@ -518,7 +498,7 @@ describe("createShowcaseStore", () => {
       pool,
     );
     await expect(
-      store!.listScreens({ limit: 10, cursor: "!!!not-base64url!!!" }),
+      store!.listApps({ limit: 10, cursor: "!!!not-base64url!!!" }),
     ).rejects.toMatchObject({ statusCode: 400 });
   });
 
@@ -529,80 +509,52 @@ describe("createShowcaseStore", () => {
       pool,
     );
     const cursor = Buffer.from("2026-07-27T10:00:00.000Z").toString("base64url");
-    await expect(store!.listScreens({ limit: 10, cursor })).rejects.toMatchObject({
+    await expect(store!.listApps({ limit: 10, cursor })).rejects.toMatchObject({
       statusCode: 400,
     });
-  });
-
-  it("rejects a three-part cursor with an invalid pinned flag", async () => {
-    const pool = fakePool([]);
-    const store = createShowcaseStore(
-      makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
-      pool,
-    );
-    const cursor = Buffer.from(
-      "pX|2026-07-27T10:00:00.000Z|11111111-1111-1111-1111-111111111111",
-    ).toString("base64url");
-    await expect(
-      store!.listScreens({ limit: 10, cursor }),
-    ).rejects.toMatchObject({ statusCode: 400 });
   });
 
   it.each([
     [
       "wrong tag",
-      "r1|2026-07-27T10:00:00.000Z|22222222-2222-2222-2222-222222222222|p1|2026-07-27T10:00:00.000Z|11111111-1111-1111-1111-111111111111",
+      "a0|2026-07-27T10:00:00.000Z|22222222-2222-2222-2222-222222222222",
     ],
+    ["an empty run id", "a1|2026-07-27T10:00:00.000Z|"],
+    ["an unparseable run_sort", "a1|not-a-date|22222222-2222-2222-2222-222222222222"],
     [
-      "invalid pinned flag",
-      "r2|2026-07-27T10:00:00.000Z|22222222-2222-2222-2222-222222222222|pX|2026-07-27T10:00:00.000Z|11111111-1111-1111-1111-111111111111",
+      "too many fields",
+      "a1|2026-07-27T10:00:00.000Z|22222222-2222-2222-2222-222222222222|extra",
     ],
-    [
-      "an empty run id",
-      "r2|2026-07-27T10:00:00.000Z||p1|2026-07-27T10:00:00.000Z|11111111-1111-1111-1111-111111111111",
-    ],
-    [
-      "an unparseable run_sort",
-      "r2|not-a-date|22222222-2222-2222-2222-222222222222|p1|2026-07-27T10:00:00.000Z|11111111-1111-1111-1111-111111111111",
-    ],
-    [
-      "an unparseable created_at",
-      "r2|2026-07-27T10:00:00.000Z|22222222-2222-2222-2222-222222222222|p1|not-a-date|11111111-1111-1111-1111-111111111111",
-    ],
-  ])("rejects a malformed r2 cursor with %s", async (_label, decoded) => {
+  ])("rejects a malformed a1 cursor with %s", async (_label, decoded) => {
     const pool = fakePool([]);
     const store = createShowcaseStore(
       makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
       pool,
     );
     const cursor = Buffer.from(decoded).toString("base64url");
-    await expect(
-      store!.listScreens({ limit: 10, cursor }),
-    ).rejects.toMatchObject({ statusCode: 400 });
+    await expect(store!.listApps({ limit: 10, cursor })).rejects.toMatchObject({
+      statusCode: 400,
+    });
   });
 
-  it("applies a valid r2 cursor as a row-wise keyset predicate", async () => {
+  it("applies a valid a1 cursor as a row-wise keyset predicate on the app keys", async () => {
     const pool = fakePool([]);
     const store = createShowcaseStore(
       makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
       pool,
     );
     const cursor = Buffer.from(
-      "r2|2026-07-27T10:00:00.000Z|22222222-2222-2222-2222-222222222222|p1|2026-07-27T09:00:00.000Z|11111111-1111-1111-1111-111111111111",
+      "a1|2026-07-27T10:00:00.000Z|22222222-2222-2222-2222-222222222222",
     ).toString("base64url");
-    const { screens, nextCursor } = await store!.listScreens({ limit: 10, cursor });
+    const { apps, nextCursor } = await store!.listApps({ limit: 10, cursor });
 
-    expect(screens).toEqual([]);
+    expect(apps).toEqual([]);
     expect(nextCursor).toBeNull();
-    expect(pool.calls[0].sql).toContain(
-      "(run_sort, run_id, (pinned_at IS NOT NULL), created_at, id) <",
-    );
+    // HAVING, not WHERE: run_sort is the MAX aggregate the query computes.
+    expect(pool.calls[0].sql).toContain("HAVING (MAX(created_at), run_id) <");
     expect(pool.calls[0].params).toEqual([
       "2026-07-27T10:00:00.000Z",
       "22222222-2222-2222-2222-222222222222",
-      true,
-      "2026-07-27T09:00:00.000Z",
-      "11111111-1111-1111-1111-111111111111",
       10,
     ]);
   });
@@ -616,6 +568,10 @@ describe("createShowcaseStore", () => {
       "the old three-field pinned-aware format (p1|createdAt|id)",
       "p1|2026-07-27T10:00:00.000Z|11111111-1111-1111-1111-111111111111",
     ],
+    [
+      "the screen-addressing r2 format",
+      "r2|2026-07-27T10:00:00.000Z|22222222-2222-2222-2222-222222222222|p1|2026-07-27T09:00:00.000Z|11111111-1111-1111-1111-111111111111",
+    ],
     ["a garbled old two-field cursor (empty timestamp, still 2 fields)", "|some-id"],
   ])("treats %s as legacy and restarts from the top of the feed", async (_label, decoded) => {
     const pool = fakePool([]);
@@ -624,18 +580,18 @@ describe("createShowcaseStore", () => {
       pool,
     );
     const cursor = Buffer.from(decoded).toString("base64url");
-    const { screens, nextCursor } = await store!.listScreens({ limit: 10, cursor });
+    const { apps, nextCursor } = await store!.listApps({ limit: 10, cursor });
 
-    expect(screens).toEqual([]);
+    expect(apps).toEqual([]);
     expect(nextCursor).toBeNull();
     // No cursor predicate applied — only the limit made it into params, same
     // as an unpaginated first-page request.
     expect(pool.calls[0].params).toEqual([10]);
-    expect(pool.calls[0].sql).not.toContain("WHERE (run_sort");
+    expect(pool.calls[0].sql).not.toContain("HAVING");
   });
 
   describe("ordering and pagination against an in-memory feed", () => {
-    it("orders screens within one run pinned-first, then newest-first", async () => {
+    it("orders screens within one app pinned-first, then newest-first", async () => {
       const runId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
       const db = fakeDb([
         makeRow({
@@ -659,13 +615,14 @@ describe("createShowcaseStore", () => {
         makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
         db,
       );
-      const { screens } = await store!.listScreens({ limit: 10 });
+      const { apps } = await store!.listApps({ limit: 10 });
+      expect(apps).toHaveLength(1);
       // s3 is pinned so it leads despite being newest anyway; s2 then s1
       // follow by created_at descending.
-      expect(screens.map((s) => s.id)).toEqual(["s3", "s2", "s1"]);
+      expect(apps[0].screens.map((s) => s.id)).toEqual(["s3", "s2", "s1"]);
     });
 
-    it("orders apps (runs) by recency of their most recent screen", async () => {
+    it("orders apps by recency of their most recent screen", async () => {
       const runOld = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
       const runNew = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
       const db = fakeDb([
@@ -681,13 +638,19 @@ describe("createShowcaseStore", () => {
         makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
         db,
       );
-      const { screens } = await store!.listScreens({ limit: 10 });
-      expect(screens.map((s) => s.id)).toEqual(["new-2", "new-1", "old-2", "old-1"]);
-      // Screens of one run are contiguous, never interleaved.
-      expect(screens.map((s) => s.runId)).toEqual([runNew, runNew, runOld, runOld]);
+      const { apps } = await store!.listApps({ limit: 10 });
+      expect(apps.map((a) => a.runId)).toEqual([runNew, runOld]);
+      expect(apps[0].screens.map((s) => s.id)).toEqual(["new-2", "new-1"]);
+      expect(apps[1].screens.map((s) => s.id)).toEqual(["old-2", "old-1"]);
+      // An app's createdAt is its most recent screen's — what the feed sorts on.
+      expect(apps[0].createdAt).toBe("2026-07-15T00:00:00.000Z");
     });
 
-    it("paginates across a page boundary that splits a run", async () => {
+    // The bug this whole design replaces: with `limit` counting screens, a
+    // page boundary could land inside an app, so the gallery — one card per
+    // app — rendered a carousel missing screens until "Show more" was
+    // clicked. Now `limit` counts apps, and every app arrives whole.
+    it("never splits an app across a page boundary", async () => {
       const runA = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
       const runB = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
       const db = fakeDb([
@@ -701,64 +664,54 @@ describe("createShowcaseStore", () => {
         db,
       );
 
-      const page1 = await store!.listScreens({ limit: 2 });
-      expect(page1.screens.map((s) => s.id)).toEqual(["b-1", "a-3"]);
+      const page1 = await store!.listApps({ limit: 1 });
+      expect(page1.apps.map((a) => a.runId)).toEqual([runB]);
+      expect(page1.apps[0].screens.map((s) => s.id)).toEqual(["b-1"]);
       expect(page1.nextCursor).not.toBeNull();
 
-      const page2 = await store!.listScreens({ limit: 2, cursor: page1.nextCursor! });
-      expect(page2.screens.map((s) => s.id)).toEqual(["a-2", "a-1"]);
+      const page2 = await store!.listApps({ limit: 1, cursor: page1.nextCursor! });
+      expect(page2.apps.map((a) => a.runId)).toEqual([runA]);
+      // All three of runA's screens, not just the ones that would have fit a
+      // screen-counted page.
+      expect(page2.apps[0].screens.map((s) => s.id)).toEqual(["a-3", "a-2", "a-1"]);
 
       // Page 2 exactly filled the limit, so a nextCursor is still handed
       // back (the store cannot know there's nothing left without another
       // round trip) — the real end of the feed only shows up as an empty
       // page 3.
-      const page3 = await store!.listScreens({ limit: 2, cursor: page2.nextCursor! });
-      expect(page3.screens).toEqual([]);
+      const page3 = await store!.listApps({ limit: 1, cursor: page2.nextCursor! });
+      expect(page3.apps).toEqual([]);
       expect(page3.nextCursor).toBeNull();
     });
 
-    // Regression: `run_sort` is the same value (MAX(created_at)) for every
-    // screen of a run, so when the page boundary falls mid-run, the cursor's
-    // `run_sort` must match the *other* remaining screens' `run_sort` at full
-    // precision — not just the millisecond-truncated value `toIso()` would
-    // have produced. runA's newest screen (a-3, which defines its run_sort)
-    // carries real sub-millisecond digits (".500123"); if the cursor were
-    // built from a millisecond-truncated ".500000" instead, a-2/a-1 (which
-    // share that same true run_sort) would compare as *greater than* the
-    // cursor's run_sort — the first of the five sort keys — and be dropped
-    // for good, exactly the production bug this fix addresses.
-    it("does not drop a run's remaining screens at a page boundary when timestamps differ only in sub-millisecond digits", async () => {
+    // Regression: `run_sort` is the MAX(created_at) of an app's screens, and
+    // Postgres compares it at microsecond precision. If the cursor were built
+    // from the millisecond-truncated value, the app the page ended on would
+    // compare as *greater than* its own cursor and come back again on the
+    // next page — an infinite "Show more" that keeps re-showing one app.
+    it("does not repeat the boundary app when its run_sort has sub-millisecond digits", async () => {
       const runA = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
       const runB = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
       const db = fakeDb([
-        makeRow({ id: "b-1", run_id: runB, created_at: new Date("2026-07-20T00:00:00.000Z") }),
-        makeRow({ id: "a-1", run_id: runA, created_at: new Date("2026-07-10T00:00:00.000Z") }),
-        makeRow({ id: "a-2", run_id: runA, created_at: new Date("2026-07-11T00:00:00.000Z") }),
         makeRow({
-          id: "a-3",
-          run_id: runA,
-          created_at: new Date("2026-07-12T00:00:00.500Z"),
-          created_at_raw: "2026-07-12T00:00:00.500123Z",
+          id: "b-1",
+          run_id: runB,
+          created_at: new Date("2026-07-20T00:00:00.500Z"),
+          created_at_raw: "2026-07-20T00:00:00.500123Z",
         }),
+        makeRow({ id: "a-1", run_id: runA, created_at: new Date("2026-07-10T00:00:00.000Z") }),
       ]);
       const store = createShowcaseStore(
         makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
         db,
       );
 
-      const page1 = await store!.listScreens({ limit: 2 });
-      expect(page1.screens.map((s) => s.id)).toEqual(["b-1", "a-3"]);
-      expect(page1.nextCursor).not.toBeNull();
+      const page1 = await store!.listApps({ limit: 1 });
+      expect(page1.apps.map((a) => a.runId)).toEqual([runB]);
 
-      const page2 = await store!.listScreens({ limit: 2, cursor: page1.nextCursor! });
-      // Before the fix, a-2 and a-1 (sharing runA's true, microsecond-precise
-      // run_sort) would fail the `< cursor` predicate on the run_sort key
-      // alone and this page would come back empty.
-      expect(page2.screens.map((s) => s.id)).toEqual(["a-2", "a-1"]);
-
-      const page3 = await store!.listScreens({ limit: 2, cursor: page2.nextCursor! });
-      expect(page3.screens).toEqual([]);
-      expect(page3.nextCursor).toBeNull();
+      const page2 = await store!.listApps({ limit: 1, cursor: page1.nextCursor! });
+      // Before the precision fix this would have been runB a second time.
+      expect(page2.apps.map((a) => a.runId)).toEqual([runA]);
     });
   });
 

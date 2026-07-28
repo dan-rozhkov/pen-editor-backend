@@ -95,7 +95,7 @@ describe("resolvePinAction", () => {
 
 function fakeStore(overrides: Partial<PinDeps["store"]> = {}): PinDeps["store"] {
   return {
-    listScreens: vi.fn().mockResolvedValue({ screens: [], nextCursor: null }),
+    listApps: vi.fn().mockResolvedValue({ apps: [], nextCursor: null }),
     pinScreen: vi.fn().mockResolvedValue(true),
     clearPin: vi.fn().mockResolvedValue(undefined),
     ...overrides,
@@ -153,17 +153,31 @@ describe("runPinAction", () => {
   });
 
   it("lists screens grouped by app, marking the pinned one", async () => {
-    const screens = [
-      makeScreen({ id: "s1", runId: "run-a", pinned: true }),
-      makeScreen({ id: "s2", runId: "run-a", pinned: false }),
-      makeScreen({ id: "s3", runId: "run-b", pinned: false }),
+    const apps = [
+      {
+        runId: "run-a",
+        theme: "fitness",
+        model: "google/gemini-2.5-flash",
+        createdAt: "2026-07-27T10:00:00.000Z",
+        screens: [
+          makeScreen({ id: "s1", runId: "run-a", pinned: true }),
+          makeScreen({ id: "s2", runId: "run-a", pinned: false }),
+        ],
+      },
+      {
+        runId: "run-b",
+        theme: "cooking",
+        model: "google/gemini-2.5-flash",
+        createdAt: "2026-07-26T10:00:00.000Z",
+        screens: [makeScreen({ id: "s3", runId: "run-b", pinned: false })],
+      },
     ];
     const store = fakeStore({
-      listScreens: vi.fn().mockResolvedValue({ screens, nextCursor: null }),
+      listApps: vi.fn().mockResolvedValue({ apps, nextCursor: null }),
     });
     const log = vi.fn();
-    await runPinAction({ store, log }, { kind: "list", limit: 24 });
-    expect(store.listScreens).toHaveBeenCalledWith({ limit: 24 });
+    await runPinAction({ store, log }, { kind: "list", limit: 8 });
+    expect(store.listApps).toHaveBeenCalledWith({ limit: 8 });
     const lines = log.mock.calls.map((call) => call[0] as string);
     // One header per run, screens indented underneath it, pinned marked.
     expect(lines[0]).toContain("run-a");
@@ -176,7 +190,7 @@ describe("runPinAction", () => {
   it("reports no screens instead of printing an empty list", async () => {
     const store = fakeStore();
     const log = vi.fn();
-    await runPinAction({ store, log }, { kind: "list", limit: 24 });
+    await runPinAction({ store, log }, { kind: "list", limit: 8 });
     expect(log).toHaveBeenCalledWith(expect.stringContaining("no published screens"));
   });
 });

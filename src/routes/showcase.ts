@@ -3,8 +3,11 @@ import { z } from "zod";
 import type { Config } from "../config.js";
 import { createShowcaseStore, type ShowcaseStore } from "../showcase/store.js";
 
+// `limit` counts apps (gallery cards), not screens — an app publishes at most
+// 5 screens, so 24 apps is ~120 screens, in the same ballpark as the old
+// 50-screen ceiling.
 const querySchema = z.object({
-  limit: z.coerce.number().int().min(1).max(50).default(24),
+  limit: z.coerce.number().int().min(1).max(24).default(12),
   cursor: z.string().optional(),
 });
 
@@ -29,25 +32,31 @@ export async function showcaseRoutes(
     }
 
     const { limit, cursor } = parsed.data;
-    const { screens, nextCursor } = await store.listScreens({
+    const { apps, nextCursor } = await store.listApps({
       limit,
       cursor,
     });
 
+    // Explicit field lists, not the store rows: `prompt` (the full generation
+    // prompt) and `pinned` stay server-side. Pin state needs no exposure —
+    // the cover being first in `screens` is the whole contract.
     return reply.send({
-      screens: screens.map((screen) => ({
-        id: screen.id,
-        runId: screen.runId,
-        theme: screen.theme,
-        title: screen.title,
-        model: screen.model,
-        imageUrl: screen.imageUrl,
-        imageUrl1x: screen.imageUrl1x,
-        lqip: screen.lqip,
-        htmlUrl: screen.htmlUrl,
-        width: screen.width,
-        height: screen.height,
-        createdAt: screen.createdAt,
+      apps: apps.map((app) => ({
+        runId: app.runId,
+        theme: app.theme,
+        model: app.model,
+        createdAt: app.createdAt,
+        screens: app.screens.map((screen) => ({
+          id: screen.id,
+          title: screen.title,
+          imageUrl: screen.imageUrl,
+          imageUrl1x: screen.imageUrl1x,
+          lqip: screen.lqip,
+          htmlUrl: screen.htmlUrl,
+          width: screen.width,
+          height: screen.height,
+          createdAt: screen.createdAt,
+        })),
       })),
       nextCursor,
     });

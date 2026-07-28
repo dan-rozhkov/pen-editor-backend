@@ -8,7 +8,7 @@ import type { ShowcaseStore } from "./store.js";
 // independently.
 
 export interface PinDeps {
-  store: Pick<ShowcaseStore, "listScreens" | "pinScreen" | "clearPin">;
+  store: Pick<ShowcaseStore, "listApps" | "pinScreen" | "clearPin">;
   log(message: string): void;
 }
 
@@ -65,7 +65,9 @@ export function resolvePinAction(args: PinArgs): PinAction {
   return { kind: "list", limit: args.limit ?? DEFAULT_PIN_LIST_LIMIT };
 }
 
-export const DEFAULT_PIN_LIST_LIMIT = 24;
+// Apps, not screens — the feed paginates by app, and a handful of recent
+// apps is what you scan to find the screen you want to pin.
+export const DEFAULT_PIN_LIST_LIMIT = 8;
 
 export async function runPinAction(deps: PinDeps, action: PinAction): Promise<void> {
   switch (action.kind) {
@@ -89,23 +91,19 @@ export async function runPinAction(deps: PinDeps, action: PinAction): Promise<vo
       return;
     }
     case "list": {
-      const { screens } = await deps.store.listScreens({ limit: action.limit });
-      if (screens.length === 0) {
+      const { apps } = await deps.store.listApps({ limit: action.limit });
+      if (apps.length === 0) {
         deps.log("[pin] no published screens");
         return;
       }
-      // Screens of one run are guaranteed contiguous in feed order (the store
-      // sorts apps by recency, then screens within an app), so a single pass
-      // that prints a header whenever run_id changes is enough to group —
-      // no need to bucket screens by run_id first.
-      let lastRunId: string | undefined;
-      for (const screen of screens) {
-        if (screen.runId !== lastRunId) {
-          deps.log(`${screen.theme} (run ${screen.runId})`);
-          lastRunId = screen.runId;
+      // The feed already arrives grouped by app, so printing is a plain
+      // nested walk — no bucketing by run_id first.
+      for (const app of apps) {
+        deps.log(`${app.theme} (run ${app.runId})`);
+        for (const screen of app.screens) {
+          const mark = screen.pinned ? "[pinned] " : "";
+          deps.log(`  ${mark}${screen.id}  ${screen.createdAt}  ${screen.title}`);
         }
-        const mark = screen.pinned ? "[pinned] " : "";
-        deps.log(`  ${mark}${screen.id}  ${screen.createdAt}  ${screen.title}`);
       }
       return;
     }
