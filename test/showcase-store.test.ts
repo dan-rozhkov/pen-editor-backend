@@ -51,8 +51,28 @@ interface FakeRow {
   width: number;
   height: number;
   created_at: Date;
+  // Full (microsecond) precision text form of `created_at`, as Postgres'
+  // `::text` cast would return it — e.g. "2026-07-20T00:00:00.500123Z".
+  // Optional: defaults to `created_at.toISOString()` (millisecond precision,
+  // same as every pre-existing fixture) when a test doesn't care about
+  // sub-millisecond digits.
+  created_at_raw?: string;
   pinned_at: Date | null;
   published: boolean;
+}
+
+// Recovers full (microsecond) precision from a raw timestamp string as
+// epoch microseconds — something a JS `Date` cannot hold (it floors to
+// milliseconds). `Date.parse` on the fraction-stripped string gives the
+// millisecond part; the fractional digits (if any, right-padded/truncated to
+// 6) give the rest. Used so this fake's row-wise comparisons are faithful to
+// how Postgres actually compares `timestamptz` values — at full precision,
+// never silently rounded to milliseconds the way `Date#getTime()` would.
+function preciseMicros(raw: string): number {
+  const fractionMatch = raw.match(/\.(\d+)/);
+  const fractionMicros = Number((fractionMatch?.[1] ?? "").padEnd(6, "0").slice(0, 6));
+  const withoutFraction = raw.replace(/\.\d+/, "");
+  return new Date(withoutFraction).getTime() * 1000 + fractionMicros;
 }
 
 function fakeDb(initialRows: FakeRow[]): TraceQueryable & { rows: FakeRow[] } {
@@ -144,45 +164,66 @@ function fakeDb(initialRows: FakeRow[]): TraceQueryable & { rows: FakeRow[] } {
       if (sql.includes("WHERE (run_sort") && !predicateMatch) {
         throw new Error(`unrecognized query (cursor predicate shape changed): ${sql}`);
       }
+      // Cursor params are, post-fix, the full-precision `::text` form (e.g.
+      // "2026-07-28 13:30:57.663475+00"), not the millisecond-precision ISO
+      // `toIso()` used to produce — so they're compared via `preciseMicros`
+      // below, same as every row, rather than through a `Date` that would
+      // silently re-truncate them back to milliseconds.
       const cursor = predicateMatch
         ? {
-            runSort: new Date(params[Number(predicateMatch[1]) - 1] as string),
+            runSort: preciseMicros(params[Number(predicateMatch[1]) - 1] as string),
             runId: params[Number(predicateMatch[2]) - 1] as string,
             pinned: params[Number(predicateMatch[3]) - 1] as boolean,
-            createdAt: new Date(params[Number(predicateMatch[4]) - 1] as string),
+            createdAt: preciseMicros(params[Number(predicateMatch[4]) - 1] as string),
             id: params[Number(predicateMatch[5]) - 1] as string,
           }
         : null;
 
-      const runSortByRun = new Map<string, number>();
+      // Full-precision raw text per row (defaults to the millisecond-only
+      // ISO string when a test fixture doesn't set `created_at_raw`), and
+      // the per-run MAX(created_at) computed — like Postgres — at that same
+      // full precision, not at `Date#getTime()`'s millisecond resolution.
+      function rawOf(r: FakeRow): string {
+        return r.created_at_raw ?? r.created_at.toISOString();
+      }
+
+      const runSortMicrosByRun = new Map<string, number>();
+      const runSortRawByRun = new Map<string, string>();
       for (const r of rows) {
         if (!r.published) continue;
-        const max = Math.max(runSortByRun.get(r.run_id) ?? -Infinity, r.created_at.getTime());
-        runSortByRun.set(r.run_id, max);
+        const raw = rawOf(r);
+        const micros = preciseMicros(raw);
+        if (micros > (runSortMicrosByRun.get(r.run_id) ?? -Infinity)) {
+          runSortMicrosByRun.set(r.run_id, micros);
+          runSortRawByRun.set(r.run_id, raw);
+        }
       }
 
       const withSort = rows
         .filter((r) => r.published)
-        .map((r) => ({ r, runSort: runSortByRun.get(r.run_id)! }));
+        .map((r) => ({
+          r,
+          runSortMicros: runSortMicrosByRun.get(r.run_id)!,
+          runSortRaw: runSortRawByRun.get(r.run_id)!,
+          createdMicros: preciseMicros(rawOf(r)),
+        }));
 
       withSort.sort((a, b) => {
-        if (a.runSort !== b.runSort) return b.runSort - a.runSort;
+        if (a.runSortMicros !== b.runSortMicros) return b.runSortMicros - a.runSortMicros;
         if (a.r.run_id !== b.r.run_id) return a.r.run_id < b.r.run_id ? 1 : -1;
         const aPinned = a.r.pinned_at !== null;
         const bPinned = b.r.pinned_at !== null;
         if (aPinned !== bPinned) return aPinned ? -1 : 1;
-        const aCreated = a.r.created_at.getTime();
-        const bCreated = b.r.created_at.getTime();
-        if (aCreated !== bCreated) return bCreated - aCreated;
+        if (a.createdMicros !== b.createdMicros) return b.createdMicros - a.createdMicros;
         return a.r.id < b.r.id ? 1 : -1;
       });
 
       function tuple(x: (typeof withSort)[number]) {
         return [
-          x.runSort,
+          x.runSortMicros,
           x.r.run_id,
           x.r.pinned_at !== null,
-          x.r.created_at.getTime(),
+          x.createdMicros,
           x.r.id,
         ] as const;
       }
@@ -197,10 +238,10 @@ function fakeDb(initialRows: FakeRow[]): TraceQueryable & { rows: FakeRow[] } {
       const filtered = cursor
         ? withSort.filter((x) =>
             lessThan(tuple(x), [
-              cursor.runSort.getTime(),
+              cursor.runSort,
               cursor.runId,
               cursor.pinned,
-              cursor.createdAt.getTime(),
+              cursor.createdAt,
               cursor.id,
             ]),
           )
@@ -208,7 +249,7 @@ function fakeDb(initialRows: FakeRow[]): TraceQueryable & { rows: FakeRow[] } {
 
       const page = filtered.slice(0, limit);
       return {
-        rows: page.map(({ r, runSort }) => ({
+        rows: page.map(({ r, runSortRaw }) => ({
           id: r.id,
           run_id: r.run_id,
           theme: r.theme,
@@ -221,7 +262,9 @@ function fakeDb(initialRows: FakeRow[]): TraceQueryable & { rows: FakeRow[] } {
           height: r.height,
           created_at: r.created_at,
           pinned_at: r.pinned_at,
-          run_sort: new Date(runSort),
+          run_sort: new Date(runSortRaw),
+          created_at_text: rawOf(r),
+          run_sort_text: runSortRaw,
         })),
       };
     }
@@ -266,7 +309,14 @@ describe("createShowcaseStore", () => {
     expect(pool.calls[0].params?.[0]).toBe(row.id);
   });
 
-  function dbRow(overrides: Partial<{ pinned_at: Date | null }> = {}) {
+  function dbRow(
+    overrides: Partial<{
+      pinned_at: Date | null;
+      created_at_text: string;
+      run_sort_text: string;
+    }> = {},
+  ) {
+    const { created_at_text, run_sort_text, ...rest } = overrides;
     return {
       id: row.id,
       run_id: row.runId,
@@ -281,7 +331,13 @@ describe("createShowcaseStore", () => {
       created_at: new Date("2026-07-27T10:00:00.000Z"),
       pinned_at: null,
       run_sort: new Date("2026-07-27T10:00:00.000Z"),
-      ...overrides,
+      // Defaults match the millisecond-precision fixture above — real
+      // Postgres `::text` output would differ only when the underlying
+      // column actually carries sub-millisecond digits, which the dedicated
+      // microsecond-precision tests below exercise explicitly.
+      created_at_text: created_at_text ?? "2026-07-27T10:00:00.000Z",
+      run_sort_text: run_sort_text ?? "2026-07-27T10:00:00.000Z",
+      ...rest,
     };
   }
 
@@ -338,6 +394,34 @@ describe("createShowcaseStore", () => {
     const decoded = Buffer.from(nextCursor!, "base64url").toString("utf8");
     expect(decoded).toBe(
       `r2|2026-07-27T10:00:00.000Z|${row.runId}|p1|2026-07-27T10:00:00.000Z|${row.id}`,
+    );
+  });
+
+  // Regression for the pagination bug rooted in timestamp precision:
+  // Postgres stores `created_at` (and the `run_sort` window aggregate
+  // derived from it) with microsecond precision, but `toIso()`/the pg
+  // driver's `Date` truncate to milliseconds. Building the cursor from the
+  // truncated value made it compare as smaller than the true column value,
+  // so the keyset predicate (`run_sort` is its first key) dropped every
+  // remaining row of the run the page ended in. This asserts the cursor is
+  // now built from the full-precision `::text` columns, not the truncated
+  // ones — before the fix, `nextCursor` would have decoded to
+  // ".663Z"-truncated timestamps instead of the ".663475+00" below.
+  it("preserves microsecond precision in the emitted nextCursor", async () => {
+    const pool = fakePool([
+      dbRow({
+        created_at_text: "2026-07-28 13:30:57.663475+00",
+        run_sort_text: "2026-07-28 13:30:57.663475+00",
+      }),
+    ]);
+    const store = createShowcaseStore(
+      makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
+      pool,
+    );
+    const { nextCursor } = await store!.listScreens({ limit: 1 });
+    const decoded = Buffer.from(nextCursor!, "base64url").toString("utf8");
+    expect(decoded).toBe(
+      `r2|2026-07-28 13:30:57.663475+00|${row.runId}|p0|2026-07-28 13:30:57.663475+00|${row.id}`,
     );
   });
 
@@ -542,6 +626,50 @@ describe("createShowcaseStore", () => {
       // back (the store cannot know there's nothing left without another
       // round trip) — the real end of the feed only shows up as an empty
       // page 3.
+      const page3 = await store!.listScreens({ limit: 2, cursor: page2.nextCursor! });
+      expect(page3.screens).toEqual([]);
+      expect(page3.nextCursor).toBeNull();
+    });
+
+    // Regression: `run_sort` is the same value (MAX(created_at)) for every
+    // screen of a run, so when the page boundary falls mid-run, the cursor's
+    // `run_sort` must match the *other* remaining screens' `run_sort` at full
+    // precision — not just the millisecond-truncated value `toIso()` would
+    // have produced. runA's newest screen (a-3, which defines its run_sort)
+    // carries real sub-millisecond digits (".500123"); if the cursor were
+    // built from a millisecond-truncated ".500000" instead, a-2/a-1 (which
+    // share that same true run_sort) would compare as *greater than* the
+    // cursor's run_sort — the first of the five sort keys — and be dropped
+    // for good, exactly the production bug this fix addresses.
+    it("does not drop a run's remaining screens at a page boundary when timestamps differ only in sub-millisecond digits", async () => {
+      const runA = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+      const runB = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+      const db = fakeDb([
+        makeRow({ id: "b-1", run_id: runB, created_at: new Date("2026-07-20T00:00:00.000Z") }),
+        makeRow({ id: "a-1", run_id: runA, created_at: new Date("2026-07-10T00:00:00.000Z") }),
+        makeRow({ id: "a-2", run_id: runA, created_at: new Date("2026-07-11T00:00:00.000Z") }),
+        makeRow({
+          id: "a-3",
+          run_id: runA,
+          created_at: new Date("2026-07-12T00:00:00.500Z"),
+          created_at_raw: "2026-07-12T00:00:00.500123Z",
+        }),
+      ]);
+      const store = createShowcaseStore(
+        makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
+        db,
+      );
+
+      const page1 = await store!.listScreens({ limit: 2 });
+      expect(page1.screens.map((s) => s.id)).toEqual(["b-1", "a-3"]);
+      expect(page1.nextCursor).not.toBeNull();
+
+      const page2 = await store!.listScreens({ limit: 2, cursor: page1.nextCursor! });
+      // Before the fix, a-2 and a-1 (sharing runA's true, microsecond-precise
+      // run_sort) would fail the `< cursor` predicate on the run_sort key
+      // alone and this page would come back empty.
+      expect(page2.screens.map((s) => s.id)).toEqual(["a-2", "a-1"]);
+
       const page3 = await store!.listScreens({ limit: 2, cursor: page2.nextCursor! });
       expect(page3.screens).toEqual([]);
       expect(page3.nextCursor).toBeNull();

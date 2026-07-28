@@ -55,6 +55,13 @@ translated; they are accepted and ignored (the request restarts from the top
 of the feed). They only ever appear in tabs opened before this shipped, where
 one repeated page is a better outcome than a 400.
 
+`runSort`/`createdAt` must be built from the columns' full (microsecond)
+precision `::text` form, not from `toIso()`/a JS `Date` — those truncate to
+milliseconds, and since `run_sort` is the first (and every screen of a run
+shares the same) sort key, a truncated cursor compares as smaller than the
+real column value and silently drops every remaining screen of the run the
+page ended in on the next request.
+
 ### Pinning
 
 - `pinScreen(id)` — clear-then-set within that screen's `run_id` only, one

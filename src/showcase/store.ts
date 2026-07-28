@@ -107,6 +107,13 @@ function decodeCursor(cursor: string): Decoded {
   if (tag !== "r2") badCursor();
   if (flag !== "p0" && flag !== "p1") badCursor();
   if (!runSort || !runId || !createdAt || !id) badCursor();
+  // runSort/createdAt round-trip through Postgres `::text` at full
+  // (microsecond) precision — e.g. `2026-07-28 13:30:57.663475+00`, space
+  // separator, no `T`, no `Z` — rather than the millisecond-precision ISO
+  // string `toIso()` produces. `Date.parse` still accepts that form (a
+  // stable, if non-spec, V8 extension), so no loosening of this validation
+  // was needed — it correctly keeps rejecting genuinely malformed values
+  // (e.g. "not-a-date") while accepting both shapes.
   if (Number.isNaN(Date.parse(runSort))) badCursor();
   if (Number.isNaN(Date.parse(createdAt))) badCursor();
   return { runSort, runId, pinned: flag === "p1", createdAt, id };
@@ -134,6 +141,18 @@ interface ShowcaseScreenDbRow {
   created_at: string | Date;
   pinned_at: string | Date | null;
   run_sort: string | Date;
+  // Full (microsecond) precision text form of the two columns above, used
+  // only to build the keyset cursor. Postgres stores `created_at` — and
+  // therefore the `run_sort` window aggregate derived from it — with
+  // microsecond precision, but the JS `Date` values above (and `toIso()`)
+  // truncate to milliseconds. Building the cursor from the truncated value
+  // made it compare as *smaller* than the real column value, so every
+  // remaining row of the run the page ended in (they all share that run's
+  // `run_sort`) failed the `< cursor` predicate on the very first tuple
+  // element and was silently dropped. See
+  // docs/superpowers/specs/2026-07-28-showcase-per-app-pin-design.md.
+  created_at_text: string;
+  run_sort_text: string;
 }
 
 function toIso(value: string | Date): string {
@@ -208,7 +227,8 @@ export function createShowcaseStore(
       // The window function has to be computed before it can be filtered on,
       // so the projection (including `published = true`) lives in a
       // subselect and the keyset predicate applies outside it.
-      const sql = `SELECT id, run_id, theme, title, prompt, model, image_url, html_url, width, height, created_at, pinned_at, run_sort
+      const sql = `SELECT id, run_id, theme, title, prompt, model, image_url, html_url, width, height, created_at, pinned_at, run_sort,
+                          created_at::text AS created_at_text, run_sort::text AS run_sort_text
                    FROM (
                      SELECT id, run_id, theme, title, prompt, model, image_url, html_url, width, height, created_at, pinned_at,
                             MAX(created_at) OVER (PARTITION BY run_id) AS run_sort
@@ -222,13 +242,21 @@ export function createShowcaseStore(
         rows: ShowcaseScreenDbRow[];
       };
       const screens = result.rows.map(mapRow);
+      const lastRow = result.rows[result.rows.length - 1];
       const nextCursor =
         screens.length === limit && screens.length > 0
           ? encodeCursor({
-              runSort: toIso(result.rows[result.rows.length - 1].run_sort),
+              // Full-precision text, not `toIso(lastRow.run_sort)` /
+              // `screens[...].createdAt` — those truncate to milliseconds
+              // and must never feed the cursor (see the comment on
+              // `ShowcaseScreenDbRow.created_at_text`/`run_sort_text`). The
+              // display `createdAt` on `screens[...]` stays
+              // millisecond-precision ISO; only the cursor needs the raw
+              // text form.
+              runSort: lastRow.run_sort_text,
               runId: screens[screens.length - 1].runId,
               pinned: screens[screens.length - 1].pinned,
-              createdAt: screens[screens.length - 1].createdAt,
+              createdAt: lastRow.created_at_text,
               id: screens[screens.length - 1].id,
             })
           : null;
