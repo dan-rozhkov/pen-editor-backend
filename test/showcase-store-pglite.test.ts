@@ -335,4 +335,114 @@ describe("showcase store against a real Postgres engine (PGlite)", () => {
       expect(page2.apps.every((a) => a.platform === "desktop")).toBe(true);
     });
   });
+
+  // `getAppScreens` backs `GET /api/showcase/:runId/html` (the "Open in
+  // Editor" handoff, FIR-62) — real-engine coverage the way `listApps` gets
+  // it above, rather than trusting a hand-written SQL model, since this
+  // query was added alongside that feature and had no PGlite coverage yet
+  // (code review finding #4).
+  describe("getAppScreens", () => {
+    it("returns only published screens for the run, ignoring other runs", async () => {
+      const runId = randomUUID();
+      const otherRunId = randomUUID();
+      const publishedId = randomUUID();
+      const unpublishedId = randomUUID();
+
+      await store.insertScreen({
+        id: publishedId,
+        runId,
+        theme: "fitness",
+        title: "Published screen",
+        prompt: "a screen",
+        model: "test-model",
+        imageUrl: `https://cdn.test/${publishedId}.png`,
+        htmlUrl: `https://cdn.test/${publishedId}.html`,
+        width: 390,
+        height: 844,
+      });
+      await store.insertScreen({
+        id: unpublishedId,
+        runId,
+        theme: "fitness",
+        title: "Unpublished screen",
+        prompt: "a screen",
+        model: "test-model",
+        imageUrl: `https://cdn.test/${unpublishedId}.png`,
+        htmlUrl: `https://cdn.test/${unpublishedId}.html`,
+        width: 390,
+        height: 844,
+      });
+      await harness.db.query("UPDATE showcase_screens SET published = false WHERE id = $1", [
+        unpublishedId,
+      ]);
+      // A screen belonging to a different run must never leak in.
+      const otherId = randomUUID();
+      await store.insertScreen({
+        id: otherId,
+        runId: otherRunId,
+        theme: "fitness",
+        title: "Other run's screen",
+        prompt: "a screen",
+        model: "test-model",
+        imageUrl: `https://cdn.test/${otherId}.png`,
+        htmlUrl: `https://cdn.test/${otherId}.html`,
+        width: 390,
+        height: 844,
+      });
+
+      const screens = await store.getAppScreens(runId);
+
+      expect(screens.map((s) => s.id)).toEqual([publishedId]);
+    });
+
+    it("returns [] for a runId with no published screens", async () => {
+      expect(await store.getAppScreens(randomUUID())).toEqual([]);
+    });
+
+    it("orders the pinned cover first, then newest-first, then id DESC as the final tiebreak", async () => {
+      const runId = randomUUID();
+      const oldestId = randomUUID();
+      const middleId = randomUUID();
+      const newestId = randomUUID();
+
+      for (const [id, day] of [
+        [oldestId, 0],
+        [middleId, 1],
+        [newestId, 2],
+      ] as const) {
+        await store.insertScreen({
+          id,
+          runId,
+          theme: "fitness",
+          title: `screen ${day}`,
+          prompt: "a screen",
+          model: "test-model",
+          imageUrl: `https://cdn.test/${id}.png`,
+          htmlUrl: `https://cdn.test/${id}.html`,
+          width: 390,
+          height: 844,
+        });
+        await harness.db.query("UPDATE showcase_screens SET created_at = $1 WHERE id = $2", [
+          createdAtOf(day),
+          id,
+        ]);
+      }
+
+      // Newest-first, no pin yet.
+      expect((await store.getAppScreens(runId)).map((s) => s.id)).toEqual([
+        newestId,
+        middleId,
+        oldestId,
+      ]);
+
+      // Pinning the oldest screen must move it to the front, ahead of
+      // everything newer — the whole point of a per-app cover.
+      expect(await store.pinScreen(oldestId)).toBe(true);
+      expect((await store.getAppScreens(runId)).map((s) => s.id)).toEqual([
+        oldestId,
+        newestId,
+        middleId,
+      ]);
+    });
+  });
 });

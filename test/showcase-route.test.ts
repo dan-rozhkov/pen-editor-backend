@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../src/app.js";
 import { makeConfig } from "./helpers.js";
@@ -37,6 +37,7 @@ function fakeStore(overrides: Partial<ShowcaseStore> = {}): ShowcaseStore {
     recentThemes: async () => [],
     listCategories: async () => [],
     likeApp: async () => null,
+    getAppScreens: async () => [],
     close: async () => {},
     ...overrides,
   };
@@ -283,6 +284,188 @@ describe("GET /api/showcase/categories", () => {
       url: "/api/showcase/categories?platform=tablet",
     });
     expect(res.statusCode).toBe(400);
+  });
+});
+
+describe("GET /api/showcase/:runId/html", () => {
+  const runId = APP.runId;
+  const SOURCE = {
+    id: SCREEN.id,
+    title: SCREEN.title,
+    htmlUrl: SCREEN.htmlUrl,
+    width: SCREEN.width,
+    height: SCREEN.height,
+    platform: "mobile" as const,
+  };
+  const SOURCE_2 = {
+    ...SOURCE,
+    id: "33333333-3333-3333-3333-333333333333",
+    title: "Second screen",
+    htmlUrl: "https://cdn.example.test/showcase/2.html",
+  };
+
+  function okResponse(url: string) {
+    return {
+      ok: true,
+      headers: { get: () => null },
+      text: async () => `<html data-url="${url}"></html>`,
+    };
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("fetches each screen's HTML server-side (with a timeout signal) and returns it inline", async () => {
+    const fetchMock = vi.fn(async (url: string) => okResponse(url));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const store = fakeStore({ getAppScreens: async () => [SOURCE] });
+    const instance = await build(store);
+    const res = await instance.inject({ method: "GET", url: `/api/showcase/${runId}/html` });
+
+    expect(res.statusCode).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [calledUrl, calledInit] = fetchMock.mock.calls[0];
+    expect(calledUrl).toBe(SOURCE.htmlUrl);
+    // #1: every server-side fetch of an S3 object carries an abort signal —
+    // no timeout meant a single stuck object could hang this request (and,
+    // with the old `Promise.all`, the whole app) forever.
+    expect(calledInit?.signal).toBeInstanceOf(AbortSignal);
+    expect(res.json()).toEqual({
+      screens: [
+        {
+          id: SOURCE.id,
+          title: SOURCE.title,
+          width: SOURCE.width,
+          height: SOURCE.height,
+          htmlContent: `<html data-url="${SOURCE.htmlUrl}"></html>`,
+        },
+      ],
+    });
+  });
+
+  it("sets a long-lived Cache-Control on a successful response, matching the S3 objects' own immutable caching", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => okResponse(url)));
+    const store = fakeStore({ getAppScreens: async () => [SOURCE] });
+    const instance = await build(store);
+    const res = await instance.inject({ method: "GET", url: `/api/showcase/${runId}/html` });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["cache-control"]).toBe("public, max-age=31536000, immutable");
+  });
+
+  it("returns 404 when the app has no published screens", async () => {
+    const store = fakeStore({ getAppScreens: async () => [] });
+    const instance = await build(store);
+    const res = await instance.inject({ method: "GET", url: `/api/showcase/${runId}/html` });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("returns 400 for a runId that isn't a UUID", async () => {
+    const instance = await build(fakeStore());
+    const res = await instance.inject({ method: "GET", url: `/api/showcase/not-a-uuid/html` });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("returns 503 when showcase storage is not configured", async () => {
+    const instance = await build(null);
+    const res = await instance.inject({ method: "GET", url: `/api/showcase/${runId}/html` });
+    expect(res.statusCode).toBe(503);
+  });
+
+  it("returns 502 when fetching THE ONLY screen's HTML fails", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: false, status: 500, headers: { get: () => null }, text: async () => "" })),
+    );
+    const store = fakeStore({ getAppScreens: async () => [SOURCE] });
+    const instance = await build(store);
+    const res = await instance.inject({ method: "GET", url: `/api/showcase/${runId}/html` });
+    expect(res.statusCode).toBe(502);
+  });
+
+  // #3: a Promise.all made this all-or-nothing — one broken screen 502'd the
+  // whole app forever. Now a broken screen is skipped (and logged) as long as
+  // at least one other screen of the app came back successfully.
+  it("skips a broken screen and still returns 200 with the rest, when at least one screen succeeds", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url === SOURCE.htmlUrl) {
+        return { ok: false, status: 500, headers: { get: () => null }, text: async () => "" };
+      }
+      return okResponse(url);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const store = fakeStore({ getAppScreens: async () => [SOURCE, SOURCE_2] });
+    const instance = await build(store);
+    const res = await instance.inject({ method: "GET", url: `/api/showcase/${runId}/html` });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.screens).toHaveLength(1);
+    expect(body.screens[0].id).toBe(SOURCE_2.id);
+  });
+
+  it("logs the failure (not silently) when a screen's HTML fails to fetch", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: false, status: 500, headers: { get: () => null }, text: async () => "" })),
+    );
+    const store = fakeStore({ getAppScreens: async () => [SOURCE] });
+    const instance = await build(store);
+    const logSpy = vi.spyOn(instance.log, "error");
+    await instance.inject({ method: "GET", url: `/api/showcase/${runId}/html` });
+
+    expect(logSpy).toHaveBeenCalled();
+    const [loggedArg] = logSpy.mock.calls[0];
+    expect(JSON.stringify(loggedArg)).toContain(SOURCE.htmlUrl);
+  });
+
+  it("skips a screen whose HTML exceeds the size cap via Content-Length, without hanging or crashing", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => ({
+        ok: true,
+        headers: { get: (name: string) => (name === "content-length" ? String(10 * 1024 * 1024) : null) },
+        text: async () => `<html data-url="${url}"></html>`,
+      })),
+    );
+    const store = fakeStore({ getAppScreens: async () => [SOURCE] });
+    const instance = await build(store);
+    const res = await instance.inject({ method: "GET", url: `/api/showcase/${runId}/html` });
+    // The only screen was oversized, so nothing came back.
+    expect(res.statusCode).toBe(502);
+  });
+
+  it("limits fetch concurrency rather than firing every screen's request at once", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const manySources = Array.from({ length: 8 }, (_, i) => ({
+      ...SOURCE,
+      id: `44444444-4444-4444-4444-44444444444${i}`,
+      htmlUrl: `https://cdn.example.test/showcase/${i}.html`,
+    }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        inFlight--;
+        return okResponse(url);
+      }),
+    );
+
+    const store = fakeStore({ getAppScreens: async () => manySources });
+    const instance = await build(store);
+    const res = await instance.inject({ method: "GET", url: `/api/showcase/${runId}/html` });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().screens).toHaveLength(8);
+    // The bound isn't load-bearing at any particular number, just that it's
+    // capped well below firing all 8 at once.
+    expect(maxInFlight).toBeLessThan(8);
   });
 });
 

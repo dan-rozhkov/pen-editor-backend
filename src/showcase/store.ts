@@ -108,6 +108,14 @@ export interface ShowcaseStore {
   // For `npm run showcase:replace-html` — one screen by id, or null when the
   // id matches nothing.
   getScreenSource(id: string): Promise<ShowcaseScreenSource | null>;
+  // For `GET /api/showcase/:runId/html` (the showcase's "Open in Editor"
+  // handoff — pen-editor's ShowcaseAppCarousel/showcaseScreenHandoff.ts): every
+  // *published* screen of one app, pinned-cover-first then newest-first —
+  // the same per-app tiebreak `listApps` uses (line ~461) — so the screens
+  // this returns land on the editor's canvas in the same order the carousel
+  // already shows them. Returns `[]` rather than `null` for an unknown or
+  // fully-unpublished runId; the route turns an empty array into 404.
+  getAppScreens(runId: string): Promise<ShowcaseScreenSource[]>;
   // For `npm run showcase:replace-html` — repoints a screen at freshly
   // uploaded HTML. Always a *new* key rather than an overwrite: showcase
   // objects are served `immutable` for a year (services/s3.ts), so writing
@@ -652,6 +660,33 @@ export function createShowcaseStore(
         height: row.height,
         platform: row.platform as ShowcasePlatform,
       };
+    },
+
+    async getAppScreens(runId) {
+      const result = (await db.query(
+        `SELECT id, title, html_url, width, height, platform
+           FROM showcase_screens
+          WHERE run_id = $1::uuid AND published = true
+          ORDER BY (pinned_at IS NOT NULL) DESC, created_at DESC, id DESC`,
+        [runId],
+      )) as {
+        rows: Array<{
+          id: string;
+          title: string;
+          html_url: string;
+          width: number;
+          height: number;
+          platform: string;
+        }>;
+      };
+      return result.rows.map((row) => ({
+        id: row.id,
+        title: row.title,
+        htmlUrl: row.html_url,
+        width: row.width,
+        height: row.height,
+        platform: row.platform as ShowcasePlatform,
+      }));
     },
 
     async updateScreenHtmlUrl(id, htmlUrl) {
