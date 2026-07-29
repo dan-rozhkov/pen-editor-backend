@@ -13,15 +13,12 @@ export const MAX_SHOWCASE_SCREENS = 5;
 // Already in DEFAULT_MODELS (src/config.ts), and fine for a batch/offline
 // generation job that isn't latency-sensitive.
 //
-// Was deepseek/deepseek-v4-pro until 2026-07-28. Measured across the 13 runs
-// then in the gallery, 4 of its 5 runs landed on the same warm-cream ground
-// (#faf7f2/#faf9f6/#fef9f0) with a terracotta accent — the exact AI-cluster
-// look prototype.md's calibration section forbids. In all four the skill's
-// mandatory THESIS/OWN-WORLD direction contract was missing from the emitted
-// HTML; the one deepseek run that did write it picked a deliberate dark
-// cinema world instead. Kimi follows the contract step and spreads across
-// palettes, so it's the generation default now.
-export const SHOWCASE_MODEL_ID = "moonshotai/kimi-k2.5";
+// Was moonshotai/kimi-k2.5 between 2026-07-28 and 2026-07-29; back to
+// deepseek/deepseek-v4-pro by request. The earlier swap was motivated by
+// deepseek clustering on warm-cream/terracotta palettes and skipping
+// prototype.md's THESIS/OWN-WORLD direction contract — watch for that
+// returning, and override per run with `--model=` if it does.
+export const SHOWCASE_MODEL_ID = "deepseek/deepseek-v4-pro";
 
 // Generous but bounded step budget: ask_user -> get_editor_state ->
 // get_guidelines -> batch_design (+ a retry or two) comfortably fits.
