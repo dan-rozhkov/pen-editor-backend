@@ -56,10 +56,28 @@ export const MAX_GENERATED_IMAGES = 8;
 // prototype request wait on image generation would be a very different
 // product decision. Placed after the injected skill instructions, it reads as
 // the requester's requirement rather than a contradiction of them.
-export function buildShowcasePrompt(theme: string): string {
+export function buildShowcasePrompt(
+  theme: string,
+  options: { avoidHueFamilies?: string[] } = {},
+): string {
+  // Palette rotation (src/showcase/palette.ts). The skill's own Calibration
+  // check can only make one design self-aware; it cannot see that the last six
+  // apps in the gallery all shipped a terracotta/amber accent. This clause
+  // carries that gallery-level fact into the turn, the same way `themes.ts`
+  // keeps a run off the last 10 themes. Phrased as the requester's constraint,
+  // and only when there is something to avoid — an empty gallery (or an
+  // unreachable S3) simply drops it rather than sending "avoid: nothing".
+  const avoid = options.avoidHueFamilies ?? [];
+  const paletteClause = avoid.length
+    ? `\n\nPalette: the last apps published in this gallery used these accent hue families — ` +
+      `${avoid.join(", ")}. Pick an accent from a DIFFERENT family, and let the ground follow ` +
+      `from it rather than defaulting to a warm neutral. This is a hard requirement of this ` +
+      `request, not a preference: two apps side by side in the same warm palette read as one ` +
+      `template. Everything else about choosing the visual world stays as the skill prescribes.`
+    : "";
   return (
     `/prototype mobile app — ${theme}, up to 5 screens of a single user flow, ` +
-    `one consistent visual style. Write all UI copy in English.\n\n` +
+    `one consistent visual style. Write all UI copy in English.${paletteClause}\n\n` +
     `Imagery: for LARGE images — hero, cover art, content card, product shot — ` +
     `do not use picsum. Call generate_image with a detailed description of the shot in this ` +
     `app's style and put the returned url into <img src> or background-image. ` +
@@ -244,8 +262,9 @@ export async function runShowcaseGeneration(
   config: Config,
   theme: string,
   modelId: string = SHOWCASE_MODEL_ID,
+  options: { avoidHueFamilies?: string[] } = {},
 ): Promise<ShowcaseRunResult> {
-  const prompt = buildShowcasePrompt(theme);
+  const prompt = buildShowcasePrompt(theme, options);
   const messages: Array<Record<string, unknown>> = [
     { id: "showcase-1", role: "user", parts: [{ type: "text", text: prompt }] },
   ];

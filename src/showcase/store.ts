@@ -59,6 +59,12 @@ export interface ShowcaseStore {
     category?: string;
   }): Promise<{ apps: ShowcaseApp[]; nextCursor: string | null }>;
   recentThemes(limit: number): Promise<string[]>;
+  // One screen's `html_url` per recent run, freshest run first — the input to
+  // palette rotation (`src/showcase/palette.ts`), which reads the accent back
+  // out of published HTML so a new run can steer away from the hue families
+  // the gallery has just seen. One screen is enough: a run is one visual
+  // world, so every screen of it shares an accent.
+  recentRunHtmlUrls(limit: number): Promise<string[]>;
   // For the category chip row: every theme that has at least one published
   // app, with a count, ordered by popularity. Never returns a theme with zero
   // apps, so a chip can never lead to an empty grid.
@@ -490,6 +496,24 @@ export function createShowcaseStore(
         [limit],
       )) as { rows: Array<{ theme: string }> };
       return result.rows.map((r) => r.theme);
+    },
+
+    async recentRunHtmlUrls(limit) {
+      // DISTINCT ON collapses each run to one screen, but Postgres requires
+      // its expression to lead the ORDER BY — so recency ordering happens in
+      // the outer query rather than inside the deduplication.
+      const result = (await db.query(
+        `SELECT html_url FROM (
+             SELECT DISTINCT ON (run_id) run_id, html_url, created_at
+               FROM showcase_screens
+              WHERE published = true
+              ORDER BY run_id, created_at DESC
+           ) t
+          ORDER BY created_at DESC
+          LIMIT $1`,
+        [limit],
+      )) as { rows: Array<{ html_url: string }> };
+      return result.rows.map((r) => r.html_url);
     },
 
     async listCategories() {

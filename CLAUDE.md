@@ -86,6 +86,19 @@ second env var, since a second URL pointing elsewhere would silently split the
 schema) plus all four `S3_*` vars, and a one-time
 `npx playwright install chromium`. Spec: FIR-61.
 
+Two rotations keep the gallery from repeating itself. Themes: `store.recentThemes(10)`
++ `pickTheme`. **Palette:** `store.recentRunHtmlUrls(6)` → `src/showcase/palette.ts`
+extracts each recent run's accent straight out of its published HTML (most-frequent
+saturated hex, mapped to one of 8 coarse hue families) and `buildShowcasePrompt` asks
+for a different family. Reading the HTML back beats storing the accent at publish time:
+no migration, no column that can drift, and it works on every run already published.
+It exists because six consecutive `deepseek-v4-pro` runs shipped a warm ground + a
+terracotta/amber accent — the model's prior for "calm, caring, human". The prototype
+skill's Calibration section now names that axis explicitly, but a skill rule can only
+make one design self-aware; it cannot see the gallery. Both halves are needed. The hint
+is best-effort: `recentAccentFamilies` swallows fetch failures, and an empty list drops
+the clause rather than sending "avoid: nothing".
+
 The feed paginates by **app**, not by screen: `limit` counts apps (default
 12, max 24), the response is `{apps: [{runId, theme, model, createdAt,
 screens}], nextCursor}`, and cursors are app-addressing (`a1|run_sort|run_id`

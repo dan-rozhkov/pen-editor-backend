@@ -179,6 +179,37 @@ describe("showcase store against a real Postgres engine (PGlite)", () => {
     expect(new Set(seen).size).toBe(expected.length);
   });
 
+  it("recentRunHtmlUrls collapses each run to one screen, freshest run first", async () => {
+    // Real engine, not fakePool: `DISTINCT ON` requires its expression to lead
+    // the ORDER BY, so the recency ordering has to sit in an outer query. A
+    // hand-written SQL interpreter would happily accept the illegal version.
+    await seedFixture(store, harness);
+    // A real run publishes up to 5 screens; the fixture gives each run one, so
+    // add a second to the newest run to prove the collapse actually happens.
+    const newestRun = latestOrder(FIXTURE)[0];
+    const extraId = randomUUID();
+    await store.insertScreen({
+      id: extraId,
+      runId: newestRun.runId,
+      theme: newestRun.theme,
+      title: "second screen",
+      prompt: "a screen",
+      model: "test-model",
+      imageUrl: `https://cdn.test/${extraId}.png`,
+      htmlUrl: `https://cdn.test/${extraId}.html`,
+      width: 390,
+      height: 844,
+    });
+
+    const urls = await store.recentRunHtmlUrls(3);
+    const newest = latestOrder(FIXTURE).slice(0, 3);
+    expect(urls).toHaveLength(3);
+    // The extra screen is the freshest row in the gallery, so its run leads —
+    // represented once, by that newest screen.
+    expect(urls[0]).toBe(`https://cdn.test/${extraId}.html`);
+    expect(urls.slice(1)).toEqual(newest.slice(1).map((a) => `https://cdn.test/${a.runId}.html`));
+  });
+
   it("listCategories reports every theme with at least one published app, ordered by app count", async () => {
     await seedFixture(store, harness);
     const categories = await store.listCategories();

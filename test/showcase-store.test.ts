@@ -1205,6 +1205,21 @@ describe("createShowcaseStore", () => {
     expect(pool.calls[0].sql).toContain("GROUP BY theme");
   });
 
+  it("recentRunHtmlUrls returns one screen per run, freshest first", async () => {
+    const pool = fakePool([
+      { html_url: "https://cdn.test/b.html" },
+      { html_url: "https://cdn.test/a.html" },
+    ]);
+    const store = createShowcaseStore(
+      makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
+      pool,
+    );
+    const urls = await store!.recentRunHtmlUrls(6);
+    expect(urls).toEqual(["https://cdn.test/b.html", "https://cdn.test/a.html"]);
+    expect(pool.calls[0].sql).toContain("DISTINCT ON (run_id)");
+    expect(pool.calls[0].params).toEqual([6]);
+  });
+
   describe("updateScreenDerivatives", () => {
     it("writes image_url/image_url_1x/lqip/width/height for the given id", async () => {
       const pool = fakePool();

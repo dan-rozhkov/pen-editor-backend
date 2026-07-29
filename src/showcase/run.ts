@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { SHOWCASE_THEMES, pickTheme } from "./themes.js";
+import { recentAccentFamilies } from "./palette.js";
 import { runShowcaseGeneration } from "./runner.js";
 import { openShowcaseBrowser } from "./screenshot.js";
 import { hasFlag, readFlag } from "./cliFlags.js";
@@ -9,6 +10,11 @@ import { resolveCoverIndex } from "./ingest.js";
 import { runAsScript } from "./cli.js";
 
 const RECENT_THEMES_WINDOW = 10;
+// Six runs is roughly the gallery's first visible row, and — with eight hue
+// families — leaves the model real room to choose rather than backing it into
+// the one band nobody has used yet.
+const RECENT_PALETTES_WINDOW = 6;
+const FETCH_TIMEOUT_MS = 10_000;
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
@@ -36,12 +42,28 @@ async function main(): Promise<void> {
       const recent = await ctx.store.recentThemes(RECENT_THEMES_WINDOW);
       theme = pickTheme(SHOWCASE_THEMES, recent, Math.random);
     }
-    console.log(
-      `[showcase] generating screens for theme "${theme}"` +
-        (modelOverride ? ` with model "${modelOverride}"` : ""),
+    // Palette rotation: read the accents of the last few published runs back
+    // out of their HTML so this run can steer away from them. Best-effort by
+    // construction (`recentAccentFamilies` swallows fetch failures) — a run
+    // must still happen when S3 is unreachable, it just loses the hint.
+    const avoidHueFamilies = await recentAccentFamilies(
+      await ctx.store.recentRunHtmlUrls(RECENT_PALETTES_WINDOW),
+      async (url) => {
+        const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+        if (!res.ok) throw new Error(`GET ${url} -> ${res.status}`);
+        return res.text();
+      },
     );
 
-    const result = await runShowcaseGeneration(ctx.config, theme, modelOverride);
+    console.log(
+      `[showcase] generating screens for theme "${theme}"` +
+        (modelOverride ? ` with model "${modelOverride}"` : "") +
+        (avoidHueFamilies.length ? `, avoiding accents: ${avoidHueFamilies.join(", ")}` : ""),
+    );
+
+    const result = await runShowcaseGeneration(ctx.config, theme, modelOverride, {
+      avoidHueFamilies,
+    });
     if (result.screens.length === 0) {
       console.error(`[showcase] no embed screens were produced for theme "${theme}"`);
       process.exitCode = 1;

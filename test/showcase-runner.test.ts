@@ -213,6 +213,34 @@ describe("runShowcaseGeneration", () => {
   });
 });
 
+describe("buildShowcasePrompt", () => {
+  // Imported the same lazy way as runShowcaseGeneration above: runner.js pulls
+  // in the skills registry at module load.
+  let buildShowcasePrompt: typeof import("../src/showcase/runner.js").buildShowcasePrompt;
+
+  beforeAll(async () => {
+    await loadSkills();
+    ({ buildShowcasePrompt } = await import("../src/showcase/runner.js"));
+  });
+
+  it("omits the palette clause when there is nothing to avoid", () => {
+    const prompt = buildShowcasePrompt("sleep tracker");
+    expect(prompt).not.toContain("Palette:");
+    expect(buildShowcasePrompt("sleep tracker", { avoidHueFamilies: [] })).toBe(prompt);
+  });
+
+  it("names the hue families recent apps used and demands a different one", () => {
+    const prompt = buildShowcasePrompt("sleep tracker", {
+      avoidHueFamilies: ["terracotta/amber", "green/emerald"],
+    });
+    expect(prompt).toContain("terracotta/amber, green/emerald");
+    expect(prompt).toContain("DIFFERENT family");
+    // The clause must not push the theme or the imagery instructions out.
+    expect(prompt).toContain("/prototype mobile app — sleep tracker");
+    expect(prompt).toContain("generate_image");
+  });
+});
+
 describe("pickTheme", () => {
   const themes = ["a", "b", "c"];
 
