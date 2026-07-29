@@ -101,6 +101,20 @@ describe("recentAccentFamilies", () => {
     ).resolves.toEqual(["blue"]);
   });
 
+  it("never lists the banned purple family, even when a run shipped it", async () => {
+    // A purple run exists in the gallery (the first rotated run shipped
+    // #7c3aed). Listing it as "recently used" would imply it is a legitimate
+    // family that merely needs to age out — it is banned outright.
+    const fetchHtml = vi.fn(async (url: string) =>
+      url === "purple.html"
+        ? screenHtml({ accent: "#7c3aed" })
+        : screenHtml({ accent: "#d4944e" }),
+    );
+    await expect(
+      recentAccentFamilies(["purple.html", "warm.html"], fetchHtml),
+    ).resolves.toEqual(["terracotta/amber"]);
+  });
+
   it("never rejects — palette rotation is an optimization, not a gate", async () => {
     const fetchHtml = vi.fn(async () => {
       throw new Error("S3 down");

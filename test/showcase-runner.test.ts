@@ -235,6 +235,11 @@ describe("buildShowcasePrompt", () => {
     });
     expect(prompt).toContain("terracotta/amber, green/emerald");
     expect(prompt).toContain("DIFFERENT family");
+    // Narrowing the palette space must not read as "the banned colors are
+    // back on the table" — the first rotated run answered the clause with
+    // electric violet, the one accent the skill bans outright.
+    expect(prompt).toContain("does NOT suspend any rule in the skill");
+    expect(prompt).toMatch(/ban on purple/i);
     // The clause must not push the theme or the imagery instructions out.
     expect(prompt).toContain("/prototype mobile app — sleep tracker");
     expect(prompt).toContain("generate_image");

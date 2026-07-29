@@ -73,7 +73,11 @@ export function buildShowcasePrompt(
       `${avoid.join(", ")}. Pick an accent from a DIFFERENT family, and let the ground follow ` +
       `from it rather than defaulting to a warm neutral. This is a hard requirement of this ` +
       `request, not a preference: two apps side by side in the same warm palette read as one ` +
-      `template. Everything else about choosing the visual world stays as the skill prescribes.`
+      `template. It does NOT suspend any rule in the skill — in particular the ban on purple / ` +
+      `"AI violet" still stands, so a "different family" means a different one the skill already ` +
+      `allows, and the accent still carries no glow. If every remaining family feels wrong for ` +
+      `this product, change the value or temperature within one of them rather than reaching for ` +
+      `a banned color. Everything else about choosing the visual world stays as the skill prescribes.`
     : "";
   return (
     `/prototype mobile app — ${theme}, up to 5 screens of a single user flow, ` +

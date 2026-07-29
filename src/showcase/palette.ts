@@ -15,6 +15,14 @@
 // migration, no column that can drift from the file, and it works retroactively
 // on every run already in the gallery.
 
+/** The one family the prototype skill bans outright ("AI Purple"). Rotation
+ * must never hand it to a run as the free slot: narrowing the palette space
+ * without saying this out loud is exactly how the first rotated run traded a
+ * terracotta default for an electric-violet one. Filtered out of the avoid
+ * list too — the ban already covers it, and listing it as merely "recently
+ * used" reads as a family that comes back into play once it ages out. */
+export const BANNED_ACCENT_FAMILY = "violet/purple";
+
 /** Hue families, coarse enough that "two degrees over" is not an escape hatch.
  * The first band is deliberately wide — terracotta (h≈15) and amber (h≈40) are
  * the same AI-cluster look, and splitting them would let a run "rotate" from
@@ -127,7 +135,9 @@ export async function recentAccentFamilies(
     const accent = extractAccentHex(html);
     if (!accent) continue;
     const family = hueFamily(accent);
-    if (family && !families.includes(family)) families.push(family);
+    if (family && family !== BANNED_ACCENT_FAMILY && !families.includes(family)) {
+      families.push(family);
+    }
   }
   return families;
 }
