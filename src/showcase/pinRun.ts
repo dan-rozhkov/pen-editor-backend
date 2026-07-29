@@ -1,4 +1,4 @@
-import { readFlag } from "./cliFlags.js";
+import { readFlag, parsePlatformFlag } from "./cliFlags.js";
 import { openShowcaseContext } from "./context.js";
 import { resolvePinAction, runPinAction } from "./pin.js";
 import { runAsScript } from "./cli.js";
@@ -11,6 +11,7 @@ async function main(): Promise<void> {
   const screen = readFlag(argv, "screen");
   const limitFlag = readFlag(argv, "limit");
   const run = readFlag(argv, "run");
+  const platform = parsePlatformFlag(argv, "pin");
 
   const action = resolvePinAction({
     screen,
@@ -18,6 +19,7 @@ async function main(): Promise<void> {
     list: argv.includes("--list"),
     limit: limitFlag ? Number(limitFlag) : undefined,
     run,
+    platform,
   });
 
   const ctx = await openShowcaseContext("pin", { requireS3: false });

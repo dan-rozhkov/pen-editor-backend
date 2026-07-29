@@ -4,6 +4,7 @@ import { prepareChatTurn } from "../ai/chatTurn.js";
 import { generateImage } from "../services/imageGen.js";
 import { extractEmbedScreens } from "./extractEmbeds.js";
 import { repairGeneratedImageUrls } from "./repairImageUrls.js";
+import { DEFAULT_SHOWCASE_PLATFORM, type ShowcasePlatform } from "./platform.js";
 
 // Hard cap on screens kept per run — matches the showcase's product shape
 // (a short flow, not a whole app). Anything beyond this is dropped and
@@ -58,8 +59,15 @@ export const MAX_GENERATED_IMAGES = 8;
 // the requester's requirement rather than a contradiction of them.
 export function buildShowcasePrompt(
   theme: string,
-  options: { avoidHueFamilies?: string[] } = {},
+  options: { avoidHueFamilies?: string[]; platform?: ShowcasePlatform } = {},
 ): string {
+  // "desktop web app" rather than "mobile app" is what steers
+  // src/skills/prototype.md into its "Otherwise (default desktop)" device
+  // preset (width: 1440, height: 1024) instead of the mobile/phone branch
+  // (375x812) — the skill matches on the subject phrase, not a flag, so the
+  // wording here is what does the routing, without editing the skill itself.
+  const platform = options.platform ?? DEFAULT_SHOWCASE_PLATFORM;
+  const subject = platform === "desktop" ? "desktop web app" : "mobile app";
   // Palette rotation (src/showcase/palette.ts). The skill's own Calibration
   // check can only make one design self-aware; it cannot see that the last six
   // apps in the gallery all shipped a terracotta/amber accent. This clause
@@ -80,7 +88,7 @@ export function buildShowcasePrompt(
       `a banned color. Everything else about choosing the visual world stays as the skill prescribes.`
     : "";
   return (
-    `/prototype mobile app — ${theme}, up to 5 screens of a single user flow, ` +
+    `/prototype ${subject} — ${theme}, up to 5 screens of a single user flow, ` +
     `one consistent visual style. Write all UI copy in English.${paletteClause}\n\n` +
     `Imagery: for LARGE images — hero, cover art, content card, product shot — ` +
     `do not use picsum. Call generate_image with a detailed description of the shot in this ` +
@@ -266,7 +274,7 @@ export async function runShowcaseGeneration(
   config: Config,
   theme: string,
   modelId: string = SHOWCASE_MODEL_ID,
-  options: { avoidHueFamilies?: string[] } = {},
+  options: { avoidHueFamilies?: string[]; platform?: ShowcasePlatform } = {},
 ): Promise<ShowcaseRunResult> {
   const prompt = buildShowcasePrompt(theme, options);
   const messages: Array<Record<string, unknown>> = [

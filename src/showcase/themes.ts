@@ -32,6 +32,39 @@ export const SHOWCASE_THEMES: string[] = [
   "TV show and movie tracker",
 ];
 
+// Curated pool of desktop web-app domains — the productivity/prosumer/B2B
+// software people actually run in a browser window, as distinct from
+// `SHOWCASE_THEMES`'s consumer mobile-app pool. Kept separate rather than
+// filtered from one shared list because very few of these translate to a
+// phone screen (nobody wants a DAW or an infra dashboard on a 390px-wide
+// canvas), and vice versa.
+export const DESKTOP_THEMES: string[] = [
+  "analytics dashboard",
+  "CRM",
+  "billing and subscriptions admin",
+  "email client",
+  "project planner",
+  "audio workstation (DAW)",
+  "code editor / IDE",
+  "infrastructure monitoring dashboard",
+  "CMS",
+  "HR portal",
+  "applicant tracking system",
+  "customer support helpdesk",
+  "invoicing and accounting",
+  "design system documentation site",
+  "API developer portal",
+  "kanban project board",
+  "video editing suite",
+  "spreadsheet / data grid app",
+  "server / database admin panel",
+  "e-commerce back office",
+  "marketing campaign builder",
+  "knowledge base / wiki",
+  "team calendar and scheduling",
+  "warehouse and inventory management",
+];
+
 // Picks a random theme from `themes`, avoiding anything in `recent` when
 // possible. If every theme is "recent" (small pool, long history), the
 // exclusion is dropped rather than throwing or looping forever — otherwise a

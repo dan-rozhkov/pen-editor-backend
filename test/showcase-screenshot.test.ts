@@ -2,7 +2,11 @@ import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import { createServer, type Server } from "node:http";
 import { AddressInfo } from "node:net";
 import { chromium, type Browser } from "playwright";
-import { screenshotHtml, SHOWCASE_VIEWPORT, SHOWCASE_DEVICE_SCALE_FACTOR } from "../src/showcase/screenshot.js";
+import {
+  screenshotHtml,
+  SHOWCASE_VIEWPORTS,
+  SHOWCASE_DEVICE_SCALE_FACTOR,
+} from "../src/showcase/screenshot.js";
 
 // These need a real browser: the whole point is layout geometry, which no DOM
 // shim reports. CI doesn't install Playwright's browsers (`npx playwright
@@ -23,50 +27,7 @@ afterAll(async () => {
   await browser?.close();
 });
 
-const { width: W, height: H } = SHOWCASE_VIEWPORT;
 const S = SHOWCASE_DEVICE_SCALE_FACTOR;
-
-function page(bodyStyle: string, inner: string): string {
-  return `<!doctype html><html><body style="margin:0;width:${W}px;height:${H}px;overflow:hidden;position:relative;${bodyStyle}">${inner}</body></html>`;
-}
-
-const TAB_BAR = `<div style="position:absolute;bottom:0;left:0;right:0;height:64px;background:#fff">nav</div>`;
-
-async function shoot(html: string) {
-  if (!browser) throw new Error("no browser");
-  const p = await browser.newPage({ viewport: SHOWCASE_VIEWPORT, deviceScaleFactor: S });
-  try {
-    return await screenshotHtml(p, html);
-  } finally {
-    await p.close();
-  }
-}
-
-// Same, but reports which requests the browser had FINISHED by the time the
-// snapshot was taken. (Resource-timing entries can't be used for this: a
-// setContent document has an about:blank origin and Chrome records none.)
-async function shootTrackingRequests(html: string): Promise<string[]> {
-  if (!browser) throw new Error("no browser");
-  const p = await browser.newPage({ viewport: SHOWCASE_VIEWPORT, deviceScaleFactor: S });
-  // Both events count: what is being asserted is that the browser had SETTLED
-  // the fetch before the snapshot. A font whose bytes Chrome then rejects
-  // settles as `requestfailed`, and that still proves we waited.
-  const finished: string[] = [];
-  p.on("requestfinished", (req) => finished.push(req.url()));
-  p.on("requestfailed", (req) => finished.push(req.url()));
-  try {
-    await screenshotHtml(p, html);
-    return finished;
-  } finally {
-    await p.close();
-  }
-}
-
-// A 1x1 transparent PNG — the smallest thing a `background-image` can point at.
-const ONE_PIXEL_PNG = Buffer.from(
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
-  "base64",
-);
 
 // Assets that arrive LATE. Everything here is deliberately slower than the
 // browser's `domcontentloaded`, because that is exactly the window in which the
@@ -78,6 +39,12 @@ const ONE_PIXEL_PNG = Buffer.from(
 const ASSET_DELAY_MS = 2_500;
 let assetOrigin = "";
 let assetServer: Server | null = null;
+
+// A 1x1 transparent PNG — the smallest thing a `background-image` can point at.
+const ONE_PIXEL_PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+  "base64",
+);
 
 beforeAll(async () => {
   assetServer = createServer((req, res) => {
@@ -128,7 +95,60 @@ afterAll(async () => {
   await new Promise<void>((resolve) => assetServer?.close(() => resolve()));
 });
 
-describe.skipIf(!!process.env.CI)("screenshotHtml", () => {
+// Parameterized over both showcase viewports (see SHOWCASE_VIEWPORTS in
+// src/showcase/screenshot.ts) — the geometry helpers in screenshot.ts
+// (matchViewportToBody/clearBottomBarOverlap/coverPinnedBars) are generic
+// over viewport size, and this suite exists to prove that: every existing
+// mobile-portrait assertion below is re-run verbatim against the desktop
+// (landscape) viewport too, none weakened, so a regression that only shows up
+// at a wide/short aspect ratio can't hide behind mobile-only coverage.
+describe.each([
+  { label: "mobile", viewport: SHOWCASE_VIEWPORTS.mobile },
+  { label: "desktop", viewport: SHOWCASE_VIEWPORTS.desktop },
+])("screenshotHtml ($label)", ({ viewport }) => {
+  // Playwright's browsers aren't installed in CI (a local, documented step) —
+  // registering no tests at all here is this suite's equivalent of skipping.
+  if (process.env.CI) return;
+
+  const W = viewport.width;
+  const H = viewport.height;
+
+  function page(bodyStyle: string, inner: string): string {
+    return `<!doctype html><html><body style="margin:0;width:${W}px;height:${H}px;overflow:hidden;position:relative;${bodyStyle}">${inner}</body></html>`;
+  }
+
+  const TAB_BAR = `<div style="position:absolute;bottom:0;left:0;right:0;height:64px;background:#fff">nav</div>`;
+
+  async function shoot(html: string) {
+    if (!browser) throw new Error("no browser");
+    const p = await browser.newPage({ viewport, deviceScaleFactor: S });
+    try {
+      return await screenshotHtml(p, html);
+    } finally {
+      await p.close();
+    }
+  }
+
+  // Same, but reports which requests the browser had FINISHED by the time the
+  // snapshot was taken. (Resource-timing entries can't be used for this: a
+  // setContent document has an about:blank origin and Chrome records none.)
+  async function shootTrackingRequests(html: string): Promise<string[]> {
+    if (!browser) throw new Error("no browser");
+    const p = await browser.newPage({ viewport, deviceScaleFactor: S });
+    // Both events count: what is being asserted is that the browser had SETTLED
+    // the fetch before the snapshot. A font whose bytes Chrome then rejects
+    // settles as `requestfailed`, and that still proves we waited.
+    const finished: string[] = [];
+    p.on("requestfinished", (req) => finished.push(req.url()));
+    p.on("requestfailed", (req) => finished.push(req.url()));
+    try {
+      await screenshotHtml(p, html);
+      return finished;
+    } finally {
+      await p.close();
+    }
+  }
+
   it("leaves a screen alone when nothing is covered by the bottom bar", async () => {
     if (!browser) return expect(launchFailure).toBe("browser unavailable — run `npx playwright install chromium`");
 
@@ -203,11 +223,12 @@ describe.skipIf(!!process.env.CI)("screenshotHtml", () => {
   });
 
   // Live regression, run d60b7a4e screen 1: the design declares its own device
-  // preset (375x812) while the browser viewport is SHOWCASE_VIEWPORT (390x844).
-  // A bottom sheet at `left:0;right:0` is laid out against the viewport, so it
-  // came out 390 wide inside a 375-wide crop — its 16px right padding fell
-  // outside the picture and the "Reserve" buttons ended up glued to, and shaved
-  // by, the right edge.
+  // preset (e.g. 375x812 for mobile) while the browser viewport is the
+  // showcase's own (390x844 for mobile, 1440x1024 for desktop). A bottom
+  // sheet at `left:0;right:0` is laid out against the viewport, so it came out
+  // wider than a narrower declared crop — its right padding fell outside the
+  // picture and the "Reserve" buttons ended up glued to, and shaved by, the
+  // right edge.
   it("lays a screen out at its own declared width, not the viewport's", async () => {
     if (!browser) return;
 
@@ -242,14 +263,14 @@ describe.skipIf(!!process.env.CI)("screenshotHtml", () => {
     expect(height).toBe(H * S);
   });
 
-  // What the agent actually emits: a body sized to its own device preset
-  // (375x812), `position: static`, and a tab bar at `position: absolute;
-  // bottom: 0`. Static body means the bar's containing block is the initial
-  // containing block — the VIEWPORT — so the bar used to sit at the viewport's
-  // bottom edge, below the shorter body box, and the screen was stretched to
-  // reach it. Matching the viewport to the declared box removes the gap
-  // instead: the bar lands where the design put it and the screen publishes at
-  // the size it asked for.
+  // What the agent actually emits: a body sized to its own device preset,
+  // `position: static`, and a tab bar at `position: absolute; bottom: 0`.
+  // Static body means the bar's containing block is the initial containing
+  // block — the VIEWPORT — so the bar used to sit at the viewport's bottom
+  // edge, below the shorter body box, and the screen was stretched to reach
+  // it. Matching the viewport to the declared box removes the gap instead:
+  // the bar lands where the design put it and the screen publishes at the
+  // size it asked for.
   it("publishes a screen at its declared height rather than the viewport's", async () => {
     if (!browser) return;
 

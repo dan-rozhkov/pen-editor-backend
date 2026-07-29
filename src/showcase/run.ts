@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { SHOWCASE_THEMES, pickTheme } from "./themes.js";
+import { SHOWCASE_THEMES, DESKTOP_THEMES, pickTheme } from "./themes.js";
 import { recentAccentFamilies } from "./palette.js";
 import { runShowcaseGeneration } from "./runner.js";
 import { openShowcaseBrowser } from "./screenshot.js";
-import { hasFlag, readFlag } from "./cliFlags.js";
+import { hasFlag, readFlag, parsePlatformFlag } from "./cliFlags.js";
 import { openShowcaseContext } from "./context.js";
 import { publishDepsFrom, publishScreens } from "./publish.js";
 import { resolveCoverIndex } from "./ingest.js";
@@ -22,6 +22,7 @@ async function main(): Promise<void> {
   const modelOverride = readFlag(argv, "model");
   const coverFlag = readFlag(argv, "cover");
   const coverFlagPresent = hasFlag(argv, "cover");
+  const platform = parsePlatformFlag(argv, "showcase");
   // Screen count isn't known until the agent has run, so this first pass
   // only validates presence/format; the upper-bound check happens below
   // once `result.screens.length` exists.
@@ -37,10 +38,11 @@ async function main(): Promise<void> {
   let browserSession: Awaited<ReturnType<typeof openShowcaseBrowser>> | undefined;
 
   try {
+    const themePool = platform === "desktop" ? DESKTOP_THEMES : SHOWCASE_THEMES;
     let theme = themeOverride;
     if (!theme) {
-      const recent = await ctx.store.recentThemes(RECENT_THEMES_WINDOW);
-      theme = pickTheme(SHOWCASE_THEMES, recent, Math.random);
+      const recent = await ctx.store.recentThemes(RECENT_THEMES_WINDOW, platform);
+      theme = pickTheme(themePool, recent, Math.random);
     }
     // Palette rotation: read the accents of the last few published runs back
     // out of their HTML so this run can steer away from them. Best-effort by
@@ -56,13 +58,14 @@ async function main(): Promise<void> {
     );
 
     console.log(
-      `[showcase] generating screens for theme "${theme}"` +
+      `[showcase] generating ${platform} screens for theme "${theme}"` +
         (modelOverride ? ` with model "${modelOverride}"` : "") +
         (avoidHueFamilies.length ? `, avoiding accents: ${avoidHueFamilies.join(", ")}` : ""),
     );
 
     const result = await runShowcaseGeneration(ctx.config, theme, modelOverride, {
       avoidHueFamilies,
+      platform,
     });
     if (result.screens.length === 0) {
       console.error(`[showcase] no embed screens were produced for theme "${theme}"`);
@@ -85,7 +88,7 @@ async function main(): Promise<void> {
     const session = browserSession;
 
     const published = await publishScreens(
-      publishDepsFrom(ctx, (html) => session.screenshot(html)),
+      publishDepsFrom(ctx, (html, screenPlatform) => session.screenshot(html, screenPlatform)),
       {
         runId: randomUUID(),
         theme,
@@ -93,6 +96,7 @@ async function main(): Promise<void> {
         model: result.model,
         screens: result.screens,
         coverIndex,
+        platform,
       },
     );
 

@@ -3,6 +3,7 @@ import type { ShowcaseStore } from "./store.js";
 import type { ScreenshotResult } from "./screenshot.js";
 import { buildDerivatives } from "./derivatives.js";
 import { normalizeShowcaseHtml } from "./normalizeHtml.js";
+import type { ShowcasePlatform } from "./platform.js";
 
 // Re-renders every screen already in `showcase_screens` from its stored HTML.
 // The HTML — not the image — is the source of truth, so a fix to the
@@ -29,7 +30,11 @@ export interface RescreenshotDeps {
     ShowcaseStore,
     "listScreenSources" | "updateScreenDerivatives" | "updateScreenHtmlUrl"
   >;
-  screenshot(html: string): Promise<ScreenshotResult>;
+  // Re-renders at the screen's OWN platform (`ShowcaseScreenSource.platform`)
+  // — a sweep spans every published screen, mobile and desktop alike, so the
+  // viewport can't be fixed once for the whole run the way `run.ts`/
+  // `ingestRun.ts` fix it.
+  screenshot(html: string, platform: ShowcasePlatform): Promise<ScreenshotResult>;
   fetchHtml(url: string): Promise<string>;
   uploadWebp(key: string, body: Buffer): Promise<string>;
   uploadHtml(key: string, body: Buffer): Promise<string>;
@@ -81,7 +86,7 @@ export async function rescreenshotScreens(
       const html = normalizeShowcaseHtml(stored);
       const htmlChanged = html !== stored;
 
-      const { buffer, width, height } = await deps.screenshot(html);
+      const { buffer, width, height } = await deps.screenshot(html, screen.platform);
       const sameSize = width === screen.width && height === screen.height;
 
       if (sameSize && !options.force && !htmlChanged) {

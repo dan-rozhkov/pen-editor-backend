@@ -11,6 +11,14 @@ const querySchema = z.object({
   cursor: z.string().optional(),
   sort: z.enum(["popular", "latest"]).default("popular"),
   category: z.string().min(1).optional(),
+  // Defaults to "mobile" for backward compatibility — every client built
+  // before desktop generation existed still gets exactly the feed it always
+  // has.
+  platform: z.enum(["mobile", "desktop"]).default("mobile"),
+});
+
+const categoriesQuerySchema = z.object({
+  platform: z.enum(["mobile", "desktop"]).default("mobile"),
 });
 
 const likeParamsSchema = z.object({
@@ -44,12 +52,13 @@ export async function showcaseRoutes(
       return reply.status(400).send({ error: "Invalid query parameters" });
     }
 
-    const { limit, cursor, sort, category } = parsed.data;
+    const { limit, cursor, sort, category, platform } = parsed.data;
     const { apps, nextCursor } = await store.listApps({
       limit,
       cursor,
       sort,
       category,
+      platform,
     });
 
     // Explicit field lists, not the store rows: `prompt` (the full generation
@@ -60,6 +69,7 @@ export async function showcaseRoutes(
         runId: app.runId,
         theme: app.theme,
         model: app.model,
+        platform: app.platform,
         createdAt: app.createdAt,
         likes: app.likes,
         screens: app.screens.map((screen) => ({
@@ -85,7 +95,12 @@ export async function showcaseRoutes(
         .send({ error: "Showcase storage is not configured" });
     }
 
-    const categories = await store.listCategories();
+    const parsed = categoriesQuerySchema.safeParse(request.query);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: "Invalid query parameters" });
+    }
+
+    const categories = await store.listCategories(parsed.data.platform);
     return reply.send({ categories });
   });
 

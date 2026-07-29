@@ -14,6 +14,7 @@ function source(over: Partial<ShowcaseScreenSource> = {}): ShowcaseScreenSource 
     htmlUrl: "https://s3.example/showcase/run/1.html",
     width: 750,
     height: 1960,
+    platform: "mobile",
     ...over,
   };
 }
@@ -39,18 +40,21 @@ function makeDeps(
   htmlUploads: Array<{ key: string; body: string }>;
   htmlRepoints: Array<{ id: string; htmlUrl: string }>;
   listArgs: Array<{ appOf?: string } | undefined>;
+  screenshotPlatforms: string[];
 } {
   const updates: ShowcaseDerivativesUpdate[] = [];
   const uploads: string[] = [];
   const htmlUploads: Array<{ key: string; body: string }> = [];
   const htmlRepoints: Array<{ id: string; htmlUrl: string }> = [];
   const listArgs: Array<{ appOf?: string } | undefined> = [];
+  const screenshotPlatforms: string[] = [];
   return {
     updates,
     uploads,
     htmlUploads,
     htmlRepoints,
     listArgs,
+    screenshotPlatforms,
     store: {
       listScreenSources: async (options) => {
         listArgs.push(options);
@@ -70,7 +74,8 @@ function makeDeps(
       htmlUploads.push({ key, body: body.toString("utf8") });
       return `https://s3.example/${key}`;
     },
-    screenshot: async (html) => {
+    screenshot: async (html, platform) => {
+      screenshotPlatforms.push(platform);
       const { width, height } = render(html);
       return { buffer: await fakePng(width, height), width, height };
     },
@@ -207,5 +212,19 @@ describe("rescreenshotScreens", () => {
     // Narrowing must happen in SQL, not by fetching every row and filtering
     // in JS — the sweep re-renders each screen it lists.
     expect(deps.listArgs).toEqual([{ appOf: "screen-4" }]);
+  });
+
+  it("re-renders each screen at its own platform's viewport, not a fixed one", async () => {
+    const deps = makeDeps(
+      [
+        source({ id: "m1", platform: "mobile" }),
+        source({ id: "d1", platform: "desktop" }),
+      ],
+      () => ({ width: 750, height: 2024 }),
+    );
+
+    await rescreenshotScreens(deps);
+
+    expect(deps.screenshotPlatforms).toEqual(["mobile", "desktop"]);
   });
 });

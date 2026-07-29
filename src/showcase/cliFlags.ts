@@ -1,3 +1,5 @@
+import { DEFAULT_SHOWCASE_PLATFORM, isShowcasePlatform, type ShowcasePlatform } from "./platform.js";
+
 // Optional one-off overrides for `npm run showcase:generate`:
 // `--theme="заказ такси"` pins the theme instead of picking a random unused
 // one, `--model=moonshotai/kimi-k2.5` swaps the generation model. Both default
@@ -27,6 +29,20 @@ export function readFlag(argv: string[], name: string): string | undefined {
 export function hasFlag(argv: string[], name: string): boolean {
   const prefix = `--${name}=`;
   return argv.some((a) => a === `--${name}` || a.startsWith(prefix));
+}
+
+/** `--platform=mobile|desktop`, defaulting to "mobile" when absent. An
+ * invalid value is a mistake worth failing loudly on — silently falling back
+ * to mobile would publish (or re-render, or filter) the wrong device class
+ * with no trace, which is worse than a one-line error and a non-zero exit. */
+export function parsePlatformFlag(argv: string[], tag: string): ShowcasePlatform {
+  const raw = readFlag(argv, "platform");
+  if (raw === undefined) return DEFAULT_SHOWCASE_PLATFORM;
+  if (!isShowcasePlatform(raw)) {
+    console.error(`[${tag}] --platform must be "mobile" or "desktop" (got "${raw}")`);
+    process.exit(1);
+  }
+  return raw;
 }
 
 export interface CommonRepairFlags {

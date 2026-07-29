@@ -24,6 +24,7 @@ const APP: ShowcaseApp = {
   runId: SCREEN.runId,
   theme: SCREEN.theme,
   model: SCREEN.model,
+  platform: "mobile",
   createdAt: SCREEN.createdAt,
   likes: 4,
   screens: [SCREEN],
@@ -71,6 +72,7 @@ describe("GET /api/showcase", () => {
       runId: APP.runId,
       theme: APP.theme,
       model: APP.model,
+      platform: APP.platform,
       createdAt: APP.createdAt,
       likes: APP.likes,
       screens: [
@@ -149,24 +151,24 @@ describe("GET /api/showcase", () => {
     expect(receivedLimit).toBe(12);
   });
 
-  it("defaults sort to popular and category to undefined", async () => {
-    let received: { sort?: string; category?: string } = {};
+  it("defaults sort to popular, category to undefined, and platform to mobile", async () => {
+    let received: { sort?: string; category?: string; platform?: string } = {};
     const store = fakeStore({
       listApps: async (opts) => {
-        received = { sort: opts.sort, category: opts.category };
+        received = { sort: opts.sort, category: opts.category, platform: opts.platform };
         return { apps: [], nextCursor: null };
       },
     });
     const instance = await build(store);
     await instance.inject({ method: "GET", url: "/api/showcase" });
-    expect(received).toEqual({ sort: "popular", category: undefined });
+    expect(received).toEqual({ sort: "popular", category: undefined, platform: "mobile" });
   });
 
   it("passes sort=latest and category through to the store", async () => {
-    let received: { sort?: string; category?: string } = {};
+    let received: { sort?: string; category?: string; platform?: string } = {};
     const store = fakeStore({
       listApps: async (opts) => {
-        received = { sort: opts.sort, category: opts.category };
+        received = { sort: opts.sort, category: opts.category, platform: opts.platform };
         return { apps: [], nextCursor: null };
       },
     });
@@ -175,7 +177,33 @@ describe("GET /api/showcase", () => {
       method: "GET",
       url: "/api/showcase?sort=latest&category=fitness%20tracker",
     });
-    expect(received).toEqual({ sort: "latest", category: "fitness tracker" });
+    expect(received).toEqual({
+      sort: "latest",
+      category: "fitness tracker",
+      platform: "mobile",
+    });
+  });
+
+  it("passes platform=desktop through to the store", async () => {
+    let received: { platform?: string } = {};
+    const store = fakeStore({
+      listApps: async (opts) => {
+        received = { platform: opts.platform };
+        return { apps: [], nextCursor: null };
+      },
+    });
+    const instance = await build(store);
+    await instance.inject({ method: "GET", url: "/api/showcase?platform=desktop" });
+    expect(received).toEqual({ platform: "desktop" });
+  });
+
+  it("returns 400 for an invalid platform value", async () => {
+    const instance = await build(fakeStore());
+    const res = await instance.inject({
+      method: "GET",
+      url: "/api/showcase?platform=tablet",
+    });
+    expect(res.statusCode).toBe(400);
   });
 
   it("returns 400 for an invalid sort value", async () => {
@@ -220,6 +248,41 @@ describe("GET /api/showcase/categories", () => {
     const instance = await build(null);
     const res = await instance.inject({ method: "GET", url: "/api/showcase/categories" });
     expect(res.statusCode).toBe(503);
+  });
+
+  it("defaults platform to mobile and passes it to the store", async () => {
+    let received: string | undefined;
+    const store = fakeStore({
+      listCategories: async (platform) => {
+        received = platform;
+        return [];
+      },
+    });
+    const instance = await build(store);
+    await instance.inject({ method: "GET", url: "/api/showcase/categories" });
+    expect(received).toBe("mobile");
+  });
+
+  it("passes platform=desktop through to the store", async () => {
+    let received: string | undefined;
+    const store = fakeStore({
+      listCategories: async (platform) => {
+        received = platform;
+        return [];
+      },
+    });
+    const instance = await build(store);
+    await instance.inject({ method: "GET", url: "/api/showcase/categories?platform=desktop" });
+    expect(received).toBe("desktop");
+  });
+
+  it("returns 400 for an invalid platform value", async () => {
+    const instance = await build(fakeStore());
+    const res = await instance.inject({
+      method: "GET",
+      url: "/api/showcase/categories?platform=tablet",
+    });
+    expect(res.statusCode).toBe(400);
   });
 });
 

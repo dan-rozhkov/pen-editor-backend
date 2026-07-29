@@ -1,5 +1,6 @@
 import type { Config } from "../config.js";
 import { createPgPool, type TraceQueryable } from "../tracing/traceStore.js";
+import { DEFAULT_SHOWCASE_PLATFORM, type ShowcasePlatform } from "./platform.js";
 
 export interface ShowcaseScreenRow {
   id: string;
@@ -17,6 +18,10 @@ export interface ShowcaseScreenRow {
   htmlUrl: string;
   width: number;
   height: number;
+  // Defaults to "mobile" when omitted, same as the column's own DB default —
+  // every caller written before desktop generation existed still inserts a
+  // phone screen without having to know this field exists.
+  platform?: ShowcasePlatform;
 }
 
 export interface ShowcaseScreen extends ShowcaseScreenRow {
@@ -31,6 +36,13 @@ export interface ShowcaseApp {
   runId: string;
   theme: string;
   model: string;
+  // Every screen of a run shares one platform (one generate/ingest run
+  // targets exactly one device class), so this lives on the app, not
+  // `ShowcaseScreen` — deliberately not duplicated onto each screen, even
+  // though the underlying row carries its own `platform` column, to keep the
+  // API and this type from implying a screen could ever disagree with its
+  // own app.
+  platform: ShowcasePlatform;
   // The app's own recency — MAX(created_at) across its screens, which is also
   // what the feed sorts on when sort=latest.
   createdAt: string;
@@ -57,8 +69,17 @@ export interface ShowcaseStore {
     // A theme filter, applied inside the `runs` subquery (a run has exactly
     // one theme, so filtering runs fully determines the screens returned).
     category?: string;
+    // Defaults to "mobile". Unlike `category`, always applied — mobile and
+    // desktop apps must never mix in the same feed page, so there is no
+    // "unfiltered" state the way an absent category has one.
+    platform?: ShowcasePlatform;
   }): Promise<{ apps: ShowcaseApp[]; nextCursor: string | null }>;
-  recentThemes(limit: number): Promise<string[]>;
+  // Defaults `platform` to "mobile". Filtered so a recent desktop run never
+  // excludes a mobile theme (or vice versa) from `pickTheme`'s candidate
+  // pool — the two platforms rotate through independent theme pools
+  // (`themes.ts`), and their "recently used" windows must stay independent
+  // too.
+  recentThemes(limit: number, platform?: ShowcasePlatform): Promise<string[]>;
   // One screen's `html_url` per recent run, freshest run first — the input to
   // palette rotation (`src/showcase/palette.ts`), which reads the accent back
   // out of published HTML so a new run can steer away from the hue families
@@ -67,8 +88,10 @@ export interface ShowcaseStore {
   recentRunHtmlUrls(limit: number): Promise<string[]>;
   // For the category chip row: every theme that has at least one published
   // app, with a count, ordered by popularity. Never returns a theme with zero
-  // apps, so a chip can never lead to an empty grid.
-  listCategories(): Promise<Array<{ theme: string; apps: number }>>;
+  // apps, so a chip can never lead to an empty grid. Defaults `platform` to
+  // "mobile" — the two platforms have separate theme pools, so a chip row is
+  // always scoped to one platform's apps.
+  listCategories(platform?: ShowcasePlatform): Promise<Array<{ theme: string; apps: number }>>;
   // Upsert-increments the like counter for a run_id and returns the new
   // total, or `null` when `runId` has no published screens — the route turns
   // that into a 404 rather than silently creating a like row for an app that
@@ -126,6 +149,10 @@ export interface ShowcaseScreenSource {
   htmlUrl: string;
   width: number;
   height: number;
+  // So `showcase:rescreenshot` re-renders each screen at its own device
+  // viewport rather than always the mobile one — a sweep spans every
+  // published screen regardless of platform.
+  platform: ShowcasePlatform;
 }
 
 export interface ShowcaseDerivativesUpdate {
@@ -272,6 +299,7 @@ interface ShowcaseScreenDbRow {
   html_url: string;
   width: number;
   height: number;
+  platform: string;
   created_at: string | Date;
   pinned_at: string | Date | null;
   run_sort: string | Date;
@@ -331,8 +359,8 @@ export function createShowcaseStore(
     async insertScreen(row) {
       await db.query(
         `INSERT INTO showcase_screens
-           (id, run_id, theme, title, prompt, model, image_url, image_url_1x, lqip, html_url, width, height)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+           (id, run_id, theme, title, prompt, model, image_url, image_url_1x, lqip, html_url, width, height, platform)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
         [
           row.id,
           row.runId,
@@ -346,17 +374,21 @@ export function createShowcaseStore(
           row.htmlUrl,
           row.width,
           row.height,
+          row.platform ?? DEFAULT_SHOWCASE_PLATFORM,
         ],
       );
     },
 
-    async listApps({ limit, cursor, sort = "popular", category }) {
+    async listApps({ limit, cursor, sort = "popular", category, platform = DEFAULT_SHOWCASE_PLATFORM }) {
       const params: unknown[] = [];
 
-      let themeClause = "";
+      params.push(platform);
+      // Always applied, unlike the theme filter below — mobile and desktop
+      // apps must never mix on the same feed page.
+      let filterClause = `AND platform = $${params.length}`;
       if (category) {
         params.push(category);
-        themeClause = `AND theme = $${params.length}`;
+        filterClause += ` AND theme = $${params.length}`;
       }
 
       let cursorClause = "";
@@ -412,14 +444,14 @@ export function createShowcaseStore(
       // used to do) let a page boundary fall inside an app, so the gallery —
       // which renders one card per app — showed a carousel missing its last
       // screens until the visitor happened to click "Show more".
-      const sql = `SELECT s.id, s.run_id, s.theme, s.title, s.prompt, s.model, s.image_url, s.image_url_1x, s.lqip, s.html_url, s.width, s.height, s.created_at, s.pinned_at,
+      const sql = `SELECT s.id, s.run_id, s.theme, s.title, s.prompt, s.model, s.image_url, s.image_url_1x, s.lqip, s.html_url, s.width, s.height, s.platform, s.created_at, s.pinned_at,
                           runs.run_sort, runs.run_likes, s.created_at::text AS created_at_text, runs.run_sort::text AS run_sort_text
                    FROM showcase_screens s
                    JOIN (
                      SELECT showcase_screens.run_id AS run_id, MAX(created_at) AS run_sort, COALESCE(MAX(l.likes), 0) AS run_likes
                      FROM showcase_screens
                      LEFT JOIN showcase_app_likes l ON l.run_id = showcase_screens.run_id
-                     WHERE published = true ${themeClause}
+                     WHERE published = true ${filterClause}
                      GROUP BY showcase_screens.run_id
                      ${cursorClause}
                      ORDER BY ${runsOrderBy}
@@ -449,6 +481,9 @@ export function createShowcaseStore(
             // publishes), so the first screen's values describe the app.
             theme: row.theme,
             model: row.model,
+            // Same reasoning as theme/model: one run is one platform, so the
+            // first screen's own `platform` column describes the whole app.
+            platform: row.platform as ShowcasePlatform,
             createdAt: toIso(row.run_sort),
             likes: Number(row.run_likes),
             screens: [],
@@ -486,14 +521,15 @@ export function createShowcaseStore(
       return { apps, nextCursor };
     },
 
-    async recentThemes(limit) {
+    async recentThemes(limit, platform = DEFAULT_SHOWCASE_PLATFORM) {
       const result = (await db.query(
         `SELECT theme, MAX(created_at) AS last_seen
            FROM showcase_screens
+          WHERE platform = $2
            GROUP BY theme
            ORDER BY last_seen DESC
            LIMIT $1`,
-        [limit],
+        [limit, platform],
       )) as { rows: Array<{ theme: string }> };
       return result.rows.map((r) => r.theme);
     },
@@ -516,7 +552,7 @@ export function createShowcaseStore(
       return result.rows.map((r) => r.html_url);
     },
 
-    async listCategories() {
+    async listCategories(platform = DEFAULT_SHOWCASE_PLATFORM) {
       // COUNT(DISTINCT run_id), not COUNT(*): a chip's count is apps, not
       // screens, matching what the grid actually paginates by — a run
       // publishing 5 screens must not make its theme look 5x more popular
@@ -524,10 +560,10 @@ export function createShowcaseStore(
       const result = (await db.query(
         `SELECT theme, COUNT(DISTINCT run_id) AS apps
            FROM showcase_screens
-           WHERE published = true
+           WHERE published = true AND platform = $1
            GROUP BY theme
            ORDER BY apps DESC, theme ASC`,
-        [],
+        [platform],
       )) as { rows: Array<{ theme: string; apps: string }> };
       // COUNT(...) is BIGINT — see the comment on `run_likes` above for why
       // node-postgres hands that back as a string.
@@ -567,7 +603,7 @@ export function createShowcaseStore(
         ? `WHERE run_id = COALESCE((SELECT run_id FROM showcase_screens WHERE id = $1::uuid), $1::uuid)`
         : "";
       const result = (await db.query(
-        `SELECT id, title, html_url, width, height
+        `SELECT id, title, html_url, width, height, platform
            FROM showcase_screens
            ${where}
            ORDER BY created_at ASC, id ASC`,
@@ -579,6 +615,7 @@ export function createShowcaseStore(
           html_url: string;
           width: number;
           height: number;
+          platform: string;
         }>;
       };
       return result.rows.map((row) => ({
@@ -587,12 +624,13 @@ export function createShowcaseStore(
         htmlUrl: row.html_url,
         width: row.width,
         height: row.height,
+        platform: row.platform as ShowcasePlatform,
       }));
     },
 
     async getScreenSource(id) {
       const result = (await db.query(
-        `SELECT id, title, html_url, width, height FROM showcase_screens WHERE id = $1::uuid`,
+        `SELECT id, title, html_url, width, height, platform FROM showcase_screens WHERE id = $1::uuid`,
         [id],
       )) as {
         rows: Array<{
@@ -601,6 +639,7 @@ export function createShowcaseStore(
           html_url: string;
           width: number;
           height: number;
+          platform: string;
         }>;
       };
       const row = result.rows[0];
@@ -611,6 +650,7 @@ export function createShowcaseStore(
         htmlUrl: row.html_url,
         width: row.width,
         height: row.height,
+        platform: row.platform as ShowcasePlatform,
       };
     },
 

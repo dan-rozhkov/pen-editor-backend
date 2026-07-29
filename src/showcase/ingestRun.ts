@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { openShowcaseBrowser } from "./screenshot.js";
-import { hasFlag, readFlag } from "./cliFlags.js";
+import { hasFlag, readFlag, parsePlatformFlag } from "./cliFlags.js";
 import { openShowcaseContext } from "./context.js";
 import { publishDepsFrom, publishScreens } from "./publish.js";
 import { coverIndexFrom, parseManifest, resolveCoverIndex, resolveScreens } from "./ingest.js";
@@ -17,6 +17,7 @@ async function main(): Promise<void> {
   const dryRun = argv.includes("--dry-run");
   const coverFlag = readFlag(argv, "cover");
   const coverFlagPresent = hasFlag(argv, "cover");
+  const platform = parsePlatformFlag(argv, "ingest");
 
   if (!manifestPath) {
     console.error(
@@ -54,7 +55,7 @@ async function main(): Promise<void> {
   const model = manifest.model ?? "hand-authored";
 
   console.log(
-    `[ingest] publishing ${screens.length} screen(s) for theme "${theme}" as model "${model}"` +
+    `[ingest] publishing ${screens.length} ${platform} screen(s) for theme "${theme}" as model "${model}"` +
       (dryRun ? " (dry run — nothing is uploaded or stored)" : ""),
   );
 
@@ -70,8 +71,8 @@ async function main(): Promise<void> {
 
   try {
     const published = await publishScreens(
-      publishDepsFrom(ctx, (html) => browserSession.screenshot(html)),
-      { runId: randomUUID(), theme, prompt, model, screens, coverIndex },
+      publishDepsFrom(ctx, (html, screenPlatform) => browserSession.screenshot(html, screenPlatform)),
+      { runId: randomUUID(), theme, prompt, model, screens, coverIndex, platform },
     );
 
     for (const screen of published) {

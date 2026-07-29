@@ -1,4 +1,5 @@
 import type { ShowcaseStore } from "./store.js";
+import { DEFAULT_SHOWCASE_PLATFORM, type ShowcasePlatform } from "./platform.js";
 
 // Post-hoc pin management for `npm run showcase:pin` — separate from
 // `--cover` at publish time because a run that's already live sometimes turns
@@ -15,7 +16,7 @@ export interface PinDeps {
 export type PinAction =
   | { kind: "pin"; screenId: string }
   | { kind: "clear"; runId?: string }
-  | { kind: "list"; limit: number };
+  | { kind: "list"; limit: number; platform: ShowcasePlatform };
 
 export interface PinArgs {
   screen?: string;
@@ -23,6 +24,10 @@ export interface PinArgs {
   list: boolean;
   limit?: number;
   run?: string;
+  // Which platform's apps `--list` browses — pinning otherwise has no reason
+  // to touch this, since `pinScreen`/`clearPin` act on ids that already name
+  // a specific screen/run. Defaults to "mobile", same as everywhere else.
+  platform?: ShowcasePlatform;
 }
 
 /** Turns raw argv flags into exactly one action, or throws on an ambiguous or
@@ -62,7 +67,11 @@ export function resolvePinAction(args: PinArgs): PinAction {
   // Listing is the default: with nothing specified there is nothing to act
   // on, and showing what's there (and where the uuids are) is the whole
   // reason to run this command in the first place.
-  return { kind: "list", limit: args.limit ?? DEFAULT_PIN_LIST_LIMIT };
+  return {
+    kind: "list",
+    limit: args.limit ?? DEFAULT_PIN_LIST_LIMIT,
+    platform: args.platform ?? DEFAULT_SHOWCASE_PLATFORM,
+  };
 }
 
 // Apps, not screens — the feed paginates by app, and a handful of recent
@@ -95,7 +104,11 @@ export async function runPinAction(deps: PinDeps, action: PinAction): Promise<vo
       // "popular" when the feed grew a sort tab, and a `--list` sorted by
       // likes hides exactly the run you're here to pin: a freshly published
       // app with 0 likes wouldn't appear until something else liked it.
-      const { apps } = await deps.store.listApps({ limit: action.limit, sort: "latest" });
+      const { apps } = await deps.store.listApps({
+        limit: action.limit,
+        sort: "latest",
+        platform: action.platform,
+      });
       if (apps.length === 0) {
         deps.log("[pin] no published screens");
         return;

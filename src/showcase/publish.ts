@@ -3,6 +3,7 @@ import type { ShowcaseScreenDraft } from "./runner.js";
 import type { ShowcaseContext } from "./context.js";
 import { buildDerivatives } from "./derivatives.js";
 import { normalizeShowcaseHtml } from "./normalizeHtml.js";
+import { DEFAULT_SHOWCASE_PLATFORM, type ShowcasePlatform } from "./platform.js";
 
 // The half of a showcase run that does not care where the screens came from:
 // screenshot each one, upload the WebP derivatives and the source HTML,
@@ -12,7 +13,14 @@ import { normalizeShowcaseHtml } from "./normalizeHtml.js";
 // the same table.
 
 export interface PublishDeps {
-  screenshot(html: string): Promise<{ buffer: Buffer; width: number; height: number }>;
+  // `platform` picks the render viewport (`showcaseViewport`/
+  // `SHOWCASE_VIEWPORTS`) — always the whole run's platform (see
+  // `PublishInput.platform`), since one run targets exactly one device
+  // class.
+  screenshot(
+    html: string,
+    platform: ShowcasePlatform,
+  ): Promise<{ buffer: Buffer; width: number; height: number }>;
   uploadWebp(key: string, body: Buffer): Promise<string>;
   uploadHtml(key: string, body: Buffer): Promise<string>;
   insertScreen(row: {
@@ -28,6 +36,7 @@ export interface PublishDeps {
     htmlUrl: string;
     width: number;
     height: number;
+    platform: ShowcasePlatform;
   }): Promise<void>;
   newId(): string;
   log(message: string): void;
@@ -63,6 +72,10 @@ export interface PublishInput {
   // `--cover=<n>`. Pinned right after that screen's row is inserted so a run
   // that fails partway through never leaves a stale id to look up later.
   coverIndex?: number;
+  // Defaults to "mobile" — every run targets exactly one device class, and
+  // callers that predate desktop generation don't need to know this field
+  // exists.
+  platform?: ShowcasePlatform;
 }
 
 export interface PublishedScreen {
@@ -75,6 +88,7 @@ export async function publishScreens(
   input: PublishInput,
 ): Promise<PublishedScreen[]> {
   const published: PublishedScreen[] = [];
+  const platform = input.platform ?? DEFAULT_SHOWCASE_PLATFORM;
 
   for (let i = 0; i < input.screens.length; i++) {
     const screen = input.screens[i];
@@ -85,7 +99,7 @@ export async function publishScreens(
     // but whose HTML was not would come apart the moment a visitor opened it.
     const htmlContent = normalizeShowcaseHtml(screen.htmlContent);
 
-    const { buffer } = await deps.screenshot(htmlContent);
+    const { buffer } = await deps.screenshot(htmlContent, platform);
     const derivatives = await buildDerivatives(buffer);
 
     // Content hash of the 2x body, shared by both variants so one screen has
@@ -122,6 +136,7 @@ export async function publishScreens(
       imageUrl1x,
       lqip: derivatives.lqip,
       htmlUrl,
+      platform,
       // The dimensions of the object actually stored at `imageUrl`, i.e.
       // `derivatives.webp2x`'s own dimensions — not `screenshot()`'s raw
       // `width`/`height` (buildDerivatives never resizes the 2x variant, only

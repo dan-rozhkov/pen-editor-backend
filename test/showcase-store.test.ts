@@ -468,6 +468,7 @@ describe("createShowcaseStore", () => {
       image_url_1x: string | null;
       lqip: string | null;
       run_likes: string;
+      platform: string;
     }> = {},
   ) {
     const { created_at_text, run_sort_text, ...rest } = overrides;
@@ -484,6 +485,7 @@ describe("createShowcaseStore", () => {
       html_url: row.htmlUrl,
       width: row.width,
       height: row.height,
+      platform: "mobile",
       created_at: new Date("2026-07-27T10:00:00.000Z"),
       pinned_at: null,
       run_sort: new Date("2026-07-27T10:00:00.000Z"),
@@ -509,6 +511,7 @@ describe("createShowcaseStore", () => {
     expect(apps[0].runId).toBe(row.runId);
     expect(apps[0].theme).toBe(row.theme);
     expect(apps[0].model).toBe(row.model);
+    expect(apps[0].platform).toBe("mobile");
     expect(apps[0].createdAt).toBe("2026-07-27T10:00:00.000Z");
     expect(apps[0].screens).toHaveLength(1);
     expect(apps[0].screens[0].createdAt).toBe("2026-07-27T10:00:00.000Z");
@@ -545,8 +548,29 @@ describe("createShowcaseStore", () => {
       pool,
     );
     await store!.listApps({ limit: 12, category: "fitness tracker" });
-    expect(pool.calls[0].sql).toMatch(/WHERE published = true AND theme = \$\d+/);
+    expect(pool.calls[0].sql).toMatch(/WHERE published = true AND platform = \$\d+ AND theme = \$\d+/);
     expect(pool.calls[0].params).toContain("fitness tracker");
+  });
+
+  it("always filters the runs subquery by platform, defaulting to mobile", async () => {
+    const pool = fakePool([dbRow()]);
+    const store = createShowcaseStore(
+      makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
+      pool,
+    );
+    await store!.listApps({ limit: 12 });
+    expect(pool.calls[0].sql).toMatch(/WHERE published = true AND platform = \$1/);
+    expect(pool.calls[0].params).toContain("mobile");
+  });
+
+  it("filters the runs subquery by an explicit platform", async () => {
+    const pool = fakePool([dbRow()]);
+    const store = createShowcaseStore(
+      makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
+      pool,
+    );
+    await store!.listApps({ limit: 12, platform: "desktop" });
+    expect(pool.calls[0].params).toContain("desktop");
   });
 
   it("maps NULL image_url_1x/lqip columns to undefined, not null", async () => {
@@ -730,6 +754,7 @@ describe("createShowcaseStore", () => {
       "HAVING (MAX(created_at), showcase_screens.run_id) <",
     );
     expect(pool.calls[0].params).toEqual([
+      "mobile",
       "2026-07-27T10:00:00.000Z",
       "22222222-2222-2222-2222-222222222222",
       10,
@@ -753,6 +778,7 @@ describe("createShowcaseStore", () => {
       "HAVING (COALESCE(MAX(l.likes), 0), MAX(created_at), showcase_screens.run_id) <",
     );
     expect(pool.calls[0].params).toEqual([
+      "mobile",
       3,
       "2026-07-27T10:00:00.000Z",
       "22222222-2222-2222-2222-222222222222",
@@ -777,7 +803,7 @@ describe("createShowcaseStore", () => {
     expect(apps).toEqual([]);
     expect(nextCursor).toBeNull();
     expect(pool.calls[0].sql).not.toContain("HAVING");
-    expect(pool.calls[0].params).toEqual([10]);
+    expect(pool.calls[0].params).toEqual(["mobile", 10]);
   });
 
   it.each([
@@ -805,9 +831,9 @@ describe("createShowcaseStore", () => {
 
     expect(apps).toEqual([]);
     expect(nextCursor).toBeNull();
-    // No cursor predicate applied — only the limit made it into params, same
-    // as an unpaginated first-page request.
-    expect(pool.calls[0].params).toEqual([10]);
+    // No cursor predicate applied — only platform (always) and the limit made
+    // it into params, same as an unpaginated first-page request.
+    expect(pool.calls[0].params).toEqual(["mobile", 10]);
     expect(pool.calls[0].sql).not.toContain("HAVING");
   });
 

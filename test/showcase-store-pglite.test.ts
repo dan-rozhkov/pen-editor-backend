@@ -235,4 +235,104 @@ describe("showcase store against a real Postgres engine (PGlite)", () => {
       expect(result).toBeNull();
     });
   });
+
+  describe("platform filtering", () => {
+    it("reads pre-migration rows with no explicit platform back as mobile", async () => {
+      // Simulates a row inserted before migration 008 added the column —
+      // relies on the column's own DB DEFAULT 'mobile' rather than on
+      // insertScreen passing a value, which is exactly the scenario the
+      // migration exists to make safe.
+      const runId = randomUUID();
+      const id = randomUUID();
+      await harness.db.query(
+        `INSERT INTO showcase_screens
+           (id, run_id, theme, title, prompt, model, image_url, html_url, width, height)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+        [
+          id,
+          runId,
+          "legacy theme",
+          "Legacy screen",
+          "a screen",
+          "test-model",
+          "https://cdn.test/legacy.png",
+          "https://cdn.test/legacy.html",
+          390,
+          844,
+        ],
+      );
+
+      const { apps } = await store.listApps({ limit: 20, platform: "mobile" });
+      const app = apps.find((a) => a.runId === runId);
+      expect(app?.platform).toBe("mobile");
+    });
+
+    it("never mixes mobile and desktop apps in the same page, and paginates a filtered feed correctly", async () => {
+      const mobileRuns = FIXTURE.map((f) => f.runId);
+      const desktopRuns = Array.from({ length: 4 }, () => randomUUID());
+
+      for (let i = 0; i < desktopRuns.length; i++) {
+        const id = randomUUID();
+        await store.insertScreen({
+          id,
+          runId: desktopRuns[i],
+          theme: "analytics dashboard",
+          title: "Desktop screen",
+          prompt: "a screen",
+          model: "test-model",
+          imageUrl: `https://cdn.test/${desktopRuns[i]}.png`,
+          htmlUrl: `https://cdn.test/${desktopRuns[i]}.html`,
+          width: 1440,
+          height: 1024,
+          platform: "desktop",
+        });
+        // Distinct, increasing created_at so ordering (and pagination) is
+        // deterministic, same trick `seedFixture` uses for the mobile fixture.
+        await harness.db.query("UPDATE showcase_screens SET created_at = $1 WHERE id = $2", [
+          createdAtOf(100 + i),
+          id,
+        ]);
+      }
+      await seedFixture(store, harness);
+
+      // Every mobile app must be invisible to a desktop-filtered page, and
+      // vice versa.
+      const mobilePage = await store.listApps({
+        limit: 20,
+        sort: "latest",
+        platform: "mobile",
+      });
+      expect(mobilePage.apps.map((a) => a.runId).sort()).toEqual([...mobileRuns].sort());
+      expect(mobilePage.apps.every((a) => a.platform === "mobile")).toBe(true);
+
+      const desktopPage = await store.listApps({
+        limit: 20,
+        sort: "latest",
+        platform: "desktop",
+      });
+      expect(desktopPage.apps.map((a) => a.runId).sort()).toEqual([...desktopRuns].sort());
+      expect(desktopPage.apps.every((a) => a.platform === "desktop")).toBe(true);
+
+      // Second page of a filtered, cursor-paginated feed — the exact shape
+      // the repo has previously shipped broken (an ambiguous run_id after a
+      // JOIN, or a page boundary splitting an app), now exercised with the
+      // platform filter active.
+      const expectedDesktopOrder = [...desktopRuns].sort(
+        (a, b) => desktopRuns.indexOf(b) - desktopRuns.indexOf(a),
+      );
+      const page1 = await store.listApps({ limit: 2, sort: "latest", platform: "desktop" });
+      expect(page1.apps.map((a) => a.runId)).toEqual(expectedDesktopOrder.slice(0, 2));
+      expect(page1.nextCursor).not.toBeNull();
+
+      const page2 = await store.listApps({
+        limit: 2,
+        sort: "latest",
+        platform: "desktop",
+        cursor: page1.nextCursor!,
+      });
+      expect(page2.apps.map((a) => a.runId)).toEqual(expectedDesktopOrder.slice(2, 4));
+      // Never a mobile app leaking into a desktop-filtered second page.
+      expect(page2.apps.every((a) => a.platform === "desktop")).toBe(true);
+    });
+  });
 });

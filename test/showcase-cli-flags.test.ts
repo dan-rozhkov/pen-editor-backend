@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { hasFlag, readFlag, parseCommonRepairFlags } from "../src/showcase/cliFlags.js";
+import {
+  hasFlag,
+  readFlag,
+  parseCommonRepairFlags,
+  parsePlatformFlag,
+} from "../src/showcase/cliFlags.js";
 
 describe("readFlag", () => {
   it("reads the --name=value form, keeping spaces in the value", () => {
@@ -101,6 +106,42 @@ describe("parseCommonRepairFlags", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
 
     expect(() => parseCommonRepairFlags(["--limit=nope"], "reencode")).toThrow("exit");
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+});
+
+describe("parsePlatformFlag", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("defaults to mobile when the flag is absent", () => {
+    expect(parsePlatformFlag([], "showcase")).toBe("mobile");
+  });
+
+  it("reads an explicit --platform=mobile", () => {
+    expect(parsePlatformFlag(["--platform=mobile"], "showcase")).toBe("mobile");
+  });
+
+  it("reads an explicit --platform=desktop", () => {
+    expect(parsePlatformFlag(["--platform=desktop"], "showcase")).toBe("desktop");
+  });
+
+  it("reads the separated --platform value form", () => {
+    expect(parsePlatformFlag(["--platform", "desktop"], "showcase")).toBe("desktop");
+  });
+
+  it("exits with a tagged error for an invalid platform", () => {
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    expect(() => parsePlatformFlag(["--platform=tablet"], "showcase")).toThrow("exit");
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      '[showcase] --platform must be "mobile" or "desktop" (got "tablet")',
+    );
     expect(exitSpy).toHaveBeenCalledWith(1);
   });
 });

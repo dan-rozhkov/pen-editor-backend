@@ -244,6 +244,28 @@ describe("buildShowcasePrompt", () => {
     expect(prompt).toContain("/prototype mobile app — sleep tracker");
     expect(prompt).toContain("generate_image");
   });
+
+  it("defaults to the mobile subject phrase when no platform is given", () => {
+    expect(buildShowcasePrompt("sleep tracker")).toContain(
+      "/prototype mobile app — sleep tracker",
+    );
+    expect(buildShowcasePrompt("sleep tracker", { platform: "mobile" })).toContain(
+      "/prototype mobile app — sleep tracker",
+    );
+  });
+
+  it("uses the desktop web app subject phrase for platform: desktop", () => {
+    // This exact phrase is what routes src/skills/prototype.md into its
+    // "Otherwise (default desktop)" device preset (1440x1024) instead of the
+    // mobile/phone branch (375x812) — the skill matches on wording, not a
+    // flag, so the literal string is load-bearing.
+    const prompt = buildShowcasePrompt("sleep tracker", { platform: "desktop" });
+    expect(prompt).toContain("/prototype desktop web app — sleep tracker");
+    expect(prompt).not.toContain("mobile app");
+    // The rest of the prompt (screen count, style, imagery) stays identical.
+    expect(prompt).toContain("up to 5 screens of a single user flow");
+    expect(prompt).toContain("generate_image");
+  });
 });
 
 describe("pickTheme", () => {

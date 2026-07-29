@@ -12,6 +12,7 @@ describe("resolvePinAction", () => {
     expect(resolvePinAction({ clear: false, list: false })).toEqual({
       kind: "list",
       limit: DEFAULT_PIN_LIST_LIMIT,
+      platform: "mobile",
     });
   });
 
@@ -19,6 +20,15 @@ describe("resolvePinAction", () => {
     expect(resolvePinAction({ clear: false, list: false, limit: 5 })).toEqual({
       kind: "list",
       limit: 5,
+      platform: "mobile",
+    });
+  });
+
+  it("honors an explicit --platform for listing", () => {
+    expect(resolvePinAction({ clear: false, list: false, platform: "desktop" })).toEqual({
+      kind: "list",
+      limit: DEFAULT_PIN_LIST_LIMIT,
+      platform: "desktop",
     });
   });
 
@@ -158,6 +168,7 @@ describe("runPinAction", () => {
         runId: "run-a",
         theme: "fitness",
         model: "google/gemini-2.5-flash",
+        platform: "mobile",
         createdAt: "2026-07-27T10:00:00.000Z",
         screens: [
           makeScreen({ id: "s1", runId: "run-a", pinned: true }),
@@ -168,6 +179,7 @@ describe("runPinAction", () => {
         runId: "run-b",
         theme: "cooking",
         model: "google/gemini-2.5-flash",
+        platform: "mobile",
         createdAt: "2026-07-26T10:00:00.000Z",
         screens: [makeScreen({ id: "s3", runId: "run-b", pinned: false })],
       },
@@ -176,12 +188,16 @@ describe("runPinAction", () => {
       listApps: vi.fn().mockResolvedValue({ apps, nextCursor: null }),
     });
     const log = vi.fn();
-    await runPinAction({ store, log }, { kind: "list", limit: 8 });
+    await runPinAction({ store, log }, { kind: "list", limit: 8, platform: "mobile" });
     // Regression: `--list` must stay sorted by recency even though
     // `listApps`'s own default is "popular" (the feed's sort tab default) —
     // a freshly published app with 0 likes has to appear so its screen ids
     // are pinnable, not be pushed off the list by anything with a like.
-    expect(store.listApps).toHaveBeenCalledWith({ limit: 8, sort: "latest" });
+    expect(store.listApps).toHaveBeenCalledWith({
+      limit: 8,
+      sort: "latest",
+      platform: "mobile",
+    });
     const lines = log.mock.calls.map((call) => call[0] as string);
     // One header per run, screens indented underneath it, pinned marked.
     expect(lines[0]).toContain("run-a");
@@ -194,7 +210,7 @@ describe("runPinAction", () => {
   it("reports no screens instead of printing an empty list", async () => {
     const store = fakeStore();
     const log = vi.fn();
-    await runPinAction({ store, log }, { kind: "list", limit: 8 });
+    await runPinAction({ store, log }, { kind: "list", limit: 8, platform: "mobile" });
     expect(log).toHaveBeenCalledWith(expect.stringContaining("no published screens"));
   });
 });

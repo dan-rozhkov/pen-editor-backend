@@ -21,7 +21,7 @@ async function main(): Promise<void> {
     const summary = await rescreenshotScreens(
       {
         store: ctx.store,
-        screenshot: (html) => browserSession.screenshot(html),
+        screenshot: (html, platform) => browserSession.screenshot(html, platform),
         async fetchHtml(url) {
           const res = await fetch(url);
           if (!res.ok) throw new Error(`GET ${url} -> ${res.status}`);

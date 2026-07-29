@@ -47,7 +47,14 @@ describe("resolveDeleteAction", () => {
 });
 
 function source(id: string, title: string): ShowcaseScreenSource {
-  return { id, title, htmlUrl: `https://cdn.test/${id}.html`, width: 390, height: 844 };
+  return {
+    id,
+    title,
+    htmlUrl: `https://cdn.test/${id}.html`,
+    width: 390,
+    height: 844,
+    platform: "mobile",
+  };
 }
 
 function deleted(id: string, title: string): ShowcaseDeletedScreen {

@@ -1,13 +1,30 @@
 import type { Browser, Page } from "playwright";
 import { chromium } from "playwright";
+import { DEFAULT_SHOWCASE_PLATFORM, type ShowcasePlatform } from "./platform.js";
 
-// iPhone-ish mobile viewport, matching the showcase's mobile-app subject
-// matter. deviceScaleFactor: 2 means the actual PNG comes out at 2x these
-// CSS pixels — callers must read real pixel dimensions off the rendered
-// image/page rather than assuming width*2/height*2 themselves (see
-// `screenshotHtml` below, which does exactly that).
-export const SHOWCASE_VIEWPORT = { width: 390, height: 844 } as const;
+// One viewport per platform. deviceScaleFactor: 2 means the actual PNG comes
+// out at 2x these CSS pixels — callers must read real pixel dimensions off
+// the rendered image/page rather than assuming width*2/height*2 themselves
+// (see `screenshotHtml` below, which does exactly that). Desktop's
+// 1440x1024 matches the prototype skill's own "Otherwise (default desktop)"
+// device preset (src/skills/prototype.md), same as mobile's 390x844 is an
+// iPhone-ish viewport around the skill's 375x812 mobile preset.
+export const SHOWCASE_VIEWPORTS: Record<ShowcasePlatform, { width: number; height: number }> = {
+  mobile: { width: 390, height: 844 },
+  desktop: { width: 1440, height: 1024 },
+};
+
+// Kept for existing callers/tests that only ever cared about the mobile
+// viewport — equivalent to `SHOWCASE_VIEWPORTS.mobile`.
+export const SHOWCASE_VIEWPORT = SHOWCASE_VIEWPORTS.mobile;
+
 export const SHOWCASE_DEVICE_SCALE_FACTOR = 2;
+
+export function showcaseViewport(
+  platform: ShowcasePlatform = DEFAULT_SHOWCASE_PLATFORM,
+): { width: number; height: number } {
+  return SHOWCASE_VIEWPORTS[platform];
+}
 
 // How long to wait for fonts/images before snapping anyway. A hung remote
 // font or a picsum.photos hiccup must not hang the whole run.
@@ -413,7 +430,12 @@ function readPngDimensions(buffer: Buffer): { width: number; height: number } {
 
 export interface ShowcaseBrowserSession {
   browser: Browser;
-  screenshot(html: string): Promise<ScreenshotResult>;
+  // `platform` defaults to "mobile" and is picked per call, not per session:
+  // a single session outlives one run in `rescreenshot`, which sweeps every
+  // published screen regardless of which device class it was published for
+  // (see `ShowcaseScreenSource.platform`), so the viewport has to be a
+  // per-screenshot choice rather than fixed at `openShowcaseBrowser()` time.
+  screenshot(html: string, platform?: ShowcasePlatform): Promise<ScreenshotResult>;
   close(): Promise<void>;
 }
 
@@ -425,9 +447,12 @@ export async function openShowcaseBrowser(): Promise<ShowcaseBrowserSession> {
 
   return {
     browser,
-    async screenshot(html: string): Promise<ScreenshotResult> {
+    async screenshot(
+      html: string,
+      platform: ShowcasePlatform = DEFAULT_SHOWCASE_PLATFORM,
+    ): Promise<ScreenshotResult> {
       const page = await browser.newPage({
-        viewport: SHOWCASE_VIEWPORT,
+        viewport: showcaseViewport(platform),
         deviceScaleFactor: SHOWCASE_DEVICE_SCALE_FACTOR,
       });
       try {
