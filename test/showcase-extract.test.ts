@@ -134,4 +134,72 @@ describe("extractEmbedScreens", () => {
     expect(screens).toHaveLength(1);
     expect(screens[0].name).toBe("Line1\nLine2");
   });
+
+  // ── Unescaped internal quotes (the truncation bug) ───────────────────────
+  // The model routinely writes HTML attribute values in the SAME quote style
+  // as the surrounding JS string, without escaping them. The naive
+  // "stop at the first unescaped delimiter" regex silently truncates
+  // htmlContent right there — no error, just a cut-off HTML string shipped to
+  // S3 and rendered as a blank screen. This is the bug's exact repro.
+
+  it("extracts HTML in full when an attribute quote is left unescaped (main repro)", () => {
+    const operations =
+      's1=I(document, {type: "embed", name: "Dashboard", htmlContent: "<style>body{font-family:\'Space Grotesk\'}</style><div class="wrap"><p>hi</p></div>"})';
+    const screens = extractEmbedScreens(operations);
+    expect(screens).toHaveLength(1);
+    expect(screens[0].htmlContent).toBe(
+      '<style>body{font-family:\'Space Grotesk\'}</style><div class="wrap"><p>hi</p></div>',
+    );
+  });
+
+  it("extracts HTML in full despite commas inside it (rgba/font-family) and trailing numeric fields", () => {
+    const operations =
+      's1=I(document, {type: "embed", name: "Card", htmlContent: "<style>body{font-family:\'A\', sans-serif; box-shadow:0 1px 2px rgba(0,0,0,.06)}</style><div class="card">Hi</div>", x: 10, y: 20, width: 300, height: 400})';
+    const screens = extractEmbedScreens(operations);
+    expect(screens).toHaveLength(1);
+    expect(screens[0].htmlContent).toBe(
+      '<style>body{font-family:\'A\', sans-serif; box-shadow:0 1px 2px rgba(0,0,0,.06)}</style><div class="card">Hi</div>',
+    );
+    expect(screens[0].name).toBe("Card");
+  });
+
+  it("extracts HTML in full when htmlContent is not the object's last key", () => {
+    const operations =
+      's1=I(document, {type: "embed", name: "NotLast", htmlContent: "<div class="tag">Hi</div>", x: 5, y: 6, width: 100, height: 200})';
+    const screens = extractEmbedScreens(operations);
+    expect(screens).toHaveLength(1);
+    expect(screens[0].htmlContent).toBe('<div class="tag">Hi</div>');
+  });
+
+  it("extracts HTML in full with a single-quoted delimiter and unescaped double quotes inside", () => {
+    const operations =
+      "s1=I(document, {type: 'embed', name: 'Quoted', htmlContent: '<div data-x=\"hello\">Hi</div>'})";
+    const screens = extractEmbedScreens(operations);
+    expect(screens).toHaveLength(1);
+    expect(screens[0].htmlContent).toBe('<div data-x="hello">Hi</div>');
+  });
+
+  it("extracts every screen from a multi-screen script even when only one has unescaped quotes", () => {
+    const operations = [
+      's1=I(document, {type: "embed", name: "Clean", htmlContent: "<div>Clean</div>"})',
+      's2=I(document, {type: "embed", name: "Messy", htmlContent: "<div class="messy">Messy</div>"})',
+      's3=I(document, {type: "embed", name: "AlsoClean", htmlContent: "<div>AlsoClean</div>"})',
+    ].join("\n");
+    const screens = extractEmbedScreens(operations);
+    expect(screens).toEqual([
+      { name: "Clean", htmlContent: "<div>Clean</div>" },
+      { name: "Messy", htmlContent: '<div class="messy">Messy</div>' },
+      { name: "AlsoClean", htmlContent: "<div>AlsoClean</div>" },
+    ]);
+  });
+
+  it("extracts HTML containing a closing tag and nested angle brackets", () => {
+    const operations =
+      's1=I(document, {type: "embed", name: "Nested", htmlContent: "<div class="a"><span>1 &lt; 2</span></div>"})';
+    const screens = extractEmbedScreens(operations);
+    expect(screens).toHaveLength(1);
+    expect(screens[0].htmlContent).toBe(
+      '<div class="a"><span>1 &lt; 2</span></div>',
+    );
+  });
 });
