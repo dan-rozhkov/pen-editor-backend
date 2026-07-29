@@ -17,3 +17,26 @@ export const DEFAULT_SHOWCASE_PLATFORM: ShowcasePlatform = "mobile";
 export function isShowcasePlatform(value: string): value is ShowcasePlatform {
   return (SHOWCASE_PLATFORMS as readonly string[]).includes(value);
 }
+
+// The CSS viewport each platform's screens are authored and screenshotted in.
+// `deviceScaleFactor: 2` means the stored PNG/WebP comes out at 2x these — so
+// these, not the stored image dimensions, are the CSS box a screen's HTML
+// belongs in. Desktop's 1440x1024 matches the prototype skill's own "Otherwise
+// (default desktop)" device preset (src/skills/prototype.md), same as mobile's
+// 390x844 is an iPhone-ish viewport around the skill's 375x812 mobile preset.
+//
+// They live here, not in screenshot.ts, because screenshot.ts imports
+// `playwright` — a devDependency. The API routes need these numbers to hand
+// screens to the editor, and importing them from screenshot.ts would drag
+// playwright into the server's module graph and crash a production install
+// that never installs dev dependencies.
+export const SHOWCASE_VIEWPORTS: Record<ShowcasePlatform, { width: number; height: number }> = {
+  mobile: { width: 390, height: 844 },
+  desktop: { width: 1440, height: 1024 },
+};
+
+export function showcaseViewport(
+  platform: ShowcasePlatform = DEFAULT_SHOWCASE_PLATFORM,
+): { width: number; height: number } {
+  return SHOWCASE_VIEWPORTS[platform];
+}

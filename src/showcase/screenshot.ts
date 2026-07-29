@@ -1,30 +1,25 @@
 import type { Browser, Page } from "playwright";
 import { chromium } from "playwright";
-import { DEFAULT_SHOWCASE_PLATFORM, type ShowcasePlatform } from "./platform.js";
+import {
+  DEFAULT_SHOWCASE_PLATFORM,
+  SHOWCASE_VIEWPORTS,
+  showcaseViewport,
+  type ShowcasePlatform,
+} from "./platform.js";
 
-// One viewport per platform. deviceScaleFactor: 2 means the actual PNG comes
-// out at 2x these CSS pixels — callers must read real pixel dimensions off
-// the rendered image/page rather than assuming width*2/height*2 themselves
-// (see `screenshotHtml` below, which does exactly that). Desktop's
-// 1440x1024 matches the prototype skill's own "Otherwise (default desktop)"
-// device preset (src/skills/prototype.md), same as mobile's 390x844 is an
-// iPhone-ish viewport around the skill's 375x812 mobile preset.
-export const SHOWCASE_VIEWPORTS: Record<ShowcasePlatform, { width: number; height: number }> = {
-  mobile: { width: 390, height: 844 },
-  desktop: { width: 1440, height: 1024 },
-};
+// The viewports themselves live in platform.ts (playwright-free, so the API
+// routes can read them too); re-exported here for the existing callers that
+// import them from the screenshot module. deviceScaleFactor: 2 means the
+// actual PNG comes out at 2x those CSS pixels — callers must read real pixel
+// dimensions off the rendered image/page rather than assuming width*2/height*2
+// themselves (see `screenshotHtml` below, which does exactly that).
+export { SHOWCASE_VIEWPORTS, showcaseViewport };
 
 // Kept for existing callers/tests that only ever cared about the mobile
 // viewport — equivalent to `SHOWCASE_VIEWPORTS.mobile`.
 export const SHOWCASE_VIEWPORT = SHOWCASE_VIEWPORTS.mobile;
 
 export const SHOWCASE_DEVICE_SCALE_FACTOR = 2;
-
-export function showcaseViewport(
-  platform: ShowcasePlatform = DEFAULT_SHOWCASE_PLATFORM,
-): { width: number; height: number } {
-  return SHOWCASE_VIEWPORTS[platform];
-}
 
 // How long to wait for fonts/images before snapping anyway. A hung remote
 // font or a picsum.photos hiccup must not hang the whole run.

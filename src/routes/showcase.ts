@@ -2,6 +2,9 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { Config } from "../config.js";
 import { createShowcaseStore, type ShowcaseStore, type ShowcaseScreenSource } from "../showcase/store.js";
+// platform.js, not screenshot.js: the latter imports `playwright`, a
+// devDependency that a production install never has.
+import { showcaseViewport } from "../showcase/platform.js";
 
 // Same pattern as `src/showcase/run.ts`/`reencodeRun.ts`: a single stuck S3
 // object must not hang this request (or a whole `Promise.all`) forever.
@@ -35,6 +38,34 @@ async function mapWithConcurrency<T, R>(
     Array.from({ length: Math.min(concurrency, items.length) }, () => worker()),
   );
   return results;
+}
+
+/**
+ * The CSS-pixel box a screen's HTML was laid out in, derived from the stored
+ * image dimensions.
+ *
+ * `showcase_screens.width/height` describe the **2x WebP** actually stored at
+ * `image_url` (see `ShowcaseDerivativesUpdate` in showcase/store.ts), not the
+ * document's own CSS size: a mobile screen is 780px wide there, and its height
+ * is the full-page height, which exceeds the 844px viewport whenever the
+ * content scrolls. Handing those numbers to the editor made "Open in Editor"
+ * lay every screen out at 780 CSS px — a mobile design rendered at roughly
+ * tablet width, hitting different media queries and coming out visibly
+ * out of proportion.
+ *
+ * So: pin the width to the platform's authoring viewport and scale the height
+ * by the same factor, which keeps a taller-than-viewport screen fully visible
+ * instead of cropping it to 844px.
+ */
+function designSize(screen: ShowcaseScreenSource): { width: number; height: number } {
+  const viewport = showcaseViewport(screen.platform);
+  if (!Number.isFinite(screen.width) || screen.width <= 0) return viewport;
+  const scale = viewport.width / screen.width;
+  const height =
+    Number.isFinite(screen.height) && screen.height > 0
+      ? Math.round(screen.height * scale)
+      : viewport.height;
+  return { width: viewport.width, height };
 }
 
 // `limit` counts apps (gallery cards), not screens — an app publishes at most
@@ -211,8 +242,7 @@ export async function showcaseRoutes(
           return {
             id: screen.id,
             title: screen.title,
-            width: screen.width,
-            height: screen.height,
+            ...designSize(screen),
             htmlContent,
           };
         } catch (err) {

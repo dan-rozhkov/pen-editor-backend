@@ -289,12 +289,15 @@ describe("GET /api/showcase/categories", () => {
 
 describe("GET /api/showcase/:runId/html", () => {
   const runId = APP.runId;
+  // Stored dimensions describe the 2x WebP, not the document's CSS box: a
+  // mobile screen is 780px wide there, and its height is the *full-page*
+  // height, so it overshoots 2x844 whenever the content scrolls.
   const SOURCE = {
     id: SCREEN.id,
     title: SCREEN.title,
     htmlUrl: SCREEN.htmlUrl,
-    width: SCREEN.width,
-    height: SCREEN.height,
+    width: 780,
+    height: 1900,
     platform: "mobile" as const,
   };
   const SOURCE_2 = {
@@ -337,12 +340,41 @@ describe("GET /api/showcase/:runId/html", () => {
         {
           id: SOURCE.id,
           title: SOURCE.title,
-          width: SOURCE.width,
-          height: SOURCE.height,
+          // CSS pixels, not the stored 2x image's: the editor lays the HTML
+          // out in this box, so handing it 780x1900 rendered a mobile design
+          // at tablet width — visibly out of proportion.
+          width: 390,
+          height: 950,
           htmlContent: `<html data-url="${SOURCE.htmlUrl}"></html>`,
         },
       ],
     });
+  });
+
+  it("returns a desktop screen in its own authoring viewport width", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => okResponse(url)));
+    const store = fakeStore({
+      getAppScreens: async () => [
+        { ...SOURCE, width: 2880, height: 2048, platform: "desktop" as const },
+      ],
+    });
+    const instance = await build(store);
+    const res = await instance.inject({ method: "GET", url: `/api/showcase/${runId}/html` });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().screens[0]).toMatchObject({ width: 1440, height: 1024 });
+  });
+
+  it("falls back to the platform viewport when the stored dimensions are unusable", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => okResponse(url)));
+    const store = fakeStore({
+      getAppScreens: async () => [{ ...SOURCE, width: 0, height: 0 }],
+    });
+    const instance = await build(store);
+    const res = await instance.inject({ method: "GET", url: `/api/showcase/${runId}/html` });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().screens[0]).toMatchObject({ width: 390, height: 844 });
   });
 
   it("sets a long-lived Cache-Control on a successful response, matching the S3 objects' own immutable caching", async () => {
