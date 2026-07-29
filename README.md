@@ -25,7 +25,7 @@ npm run dev            # tsx watch on http://localhost:3001
 | Var | Required | Purpose |
 |-----|----------|---------|
 | `OPENROUTER_API_KEY` | yes | LLM access via OpenRouter |
-| `OPENROUTER_MODEL` | no | default chat model (`google/gemini-2.5-flash`) |
+| `OPENROUTER_MODEL` | no | default chat model (`deepseek/deepseek-v4-pro`) |
 | `CORS_ALLOWED_ORIGINS` | no | comma-separated origin allowlist |
 | `REFERO_API_KEY` | no | enables research mode (Refero MCP) |
 | `TAVILY_API_KEY` | no | enables internet search (`web_search` / `fetch_url`) |

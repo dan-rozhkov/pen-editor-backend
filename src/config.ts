@@ -4,7 +4,7 @@ const envSchema = z.object({
   PORT: z.coerce.number().default(3001),
   HOST: z.string().default("0.0.0.0"),
   OPENROUTER_API_KEY: z.string().min(1, "OPENROUTER_API_KEY is required"),
-  OPENROUTER_MODEL: z.string().default("google/gemini-2.5-flash"),
+  OPENROUTER_MODEL: z.string().default("deepseek/deepseek-v4-pro"),
   OPENROUTER_IMAGE_MODEL: z
     .string()
     .default("google/gemini-3.1-flash-lite-image"),

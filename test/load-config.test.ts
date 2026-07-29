@@ -26,7 +26,7 @@ describe("loadConfig", () => {
     expect(config.OPENROUTER_API_KEY).toBe("key-123");
     expect(config.PORT).toBe(3001);
     expect(config.HOST).toBe("0.0.0.0");
-    expect(config.OPENROUTER_MODEL).toBe("google/gemini-2.5-flash");
+    expect(config.OPENROUTER_MODEL).toBe("deepseek/deepseek-v4-pro");
     expect(config.S3_REGION).toBe("ru-1");
     expect(config.ENABLE_AGENT_LOGGING).toBe(false);
     expect(config.OPENROUTER_ALLOWED_MODELS).toBeUndefined();

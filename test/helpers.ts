@@ -6,7 +6,7 @@ export function makeConfig(overrides: Partial<Config> = {}): Config {
     PORT: 0,
     HOST: "127.0.0.1",
     OPENROUTER_API_KEY: "test-api-key",
-    OPENROUTER_MODEL: "google/gemini-2.5-flash",
+    OPENROUTER_MODEL: "deepseek/deepseek-v4-pro",
     OPENROUTER_IMAGE_MODEL: "google/gemini-3.1-flash-lite-image",
     OPENROUTER_ALLOWED_MODELS: undefined,
     CORS_ALLOWED_ORIGINS: undefined,
