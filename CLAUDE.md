@@ -147,6 +147,19 @@ fatal, since the rest of the API works without Postgres). Before that, only
 started selecting a migration-added column (`pinned_at`), a deploy would have
 500'd the whole gallery until someone ran a CLI by hand.
 
+Every screen's HTML goes through `normalizeShowcaseHtml`
+(`src/showcase/normalizeHtml.ts`) before it is screenshotted **and** stored —
+one string feeds both, because the gallery lightbox iframes the stored HTML.
+It injects a UA reset for form controls inside a `@layer`, so it can only fill
+in where the design said nothing (unlayered author rules beat layered ones at
+any specificity). Without it a `<button>` the design didn't style renders with
+Chromium's `border: 2px outset` and an Arial label — how a recipe app's sage
+CTA shipped with a system bevel (screen `260e0d07`). `rescreenshot` applies the
+same pass to already-published screens and repoints `html_url` when the markup
+changes, which is what makes one sweep repair the gallery's back catalogue.
+The prototype/slides skills ask for the same reset in generated CSS; both
+halves are needed, since a skill rule can't bind a model.
+
 `npm run showcase:rescreenshot` re-renders the PNG of every stored screen from
 its stored HTML (`src/showcase/rescreenshot.ts`, driven by the
 `rescreenshotRun.ts` entrypoint) — the repair path after a

@@ -2,6 +2,7 @@ import { randomUUID, createHash } from "node:crypto";
 import type { ShowcaseScreenDraft } from "./runner.js";
 import type { ShowcaseContext } from "./context.js";
 import { buildDerivatives } from "./derivatives.js";
+import { normalizeShowcaseHtml } from "./normalizeHtml.js";
 
 // The half of a showcase run that does not care where the screens came from:
 // screenshot each one, upload the WebP derivatives and the source HTML,
@@ -79,7 +80,12 @@ export async function publishScreens(
     const screen = input.screens[i];
     const index = i + 1;
 
-    const { buffer } = await deps.screenshot(screen.htmlContent);
+    // Normalize ONCE, then screenshot and store the same string: the gallery
+    // lightbox iframes the stored HTML, so a screen whose image was repaired
+    // but whose HTML was not would come apart the moment a visitor opened it.
+    const htmlContent = normalizeShowcaseHtml(screen.htmlContent);
+
+    const { buffer } = await deps.screenshot(htmlContent);
     const derivatives = await buildDerivatives(buffer);
 
     // Content hash of the 2x body, shared by both variants so one screen has
@@ -99,7 +105,7 @@ export async function publishScreens(
     );
     const htmlUrl = await deps.uploadHtml(
       `showcase/${input.runId}/${index}.html`,
-      Buffer.from(screen.htmlContent, "utf8"),
+      Buffer.from(htmlContent, "utf8"),
     );
 
     const title = screen.name || `${input.theme} — экран ${index}`;

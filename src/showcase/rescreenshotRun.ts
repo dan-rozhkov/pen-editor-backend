@@ -28,6 +28,7 @@ async function main(): Promise<void> {
           return res.text();
         },
         uploadWebp: (key, body) => ctx.upload(key, body, "image/webp"),
+        uploadHtml: (key, body) => ctx.upload(key, body, "text/html; charset=utf-8"),
         log: (message) => console.log(message),
       },
       { force, dryRun, limit, appOf },

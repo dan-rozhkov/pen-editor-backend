@@ -256,6 +256,34 @@ describe("publishScreens", () => {
     expect(hash1x).toBe(hash2x);
   });
 
+  it("screenshots and stores the SAME normalized HTML", async () => {
+    const { deps } = makeDeps();
+    const rendered: string[] = [];
+    const stored: string[] = [];
+    deps.screenshot = async (html) => {
+      rendered.push(html);
+      return { buffer: await fakeScreenshotPng(), width: 390, height: 844 };
+    };
+    deps.uploadHtml = async (key, body) => {
+      stored.push(body.toString("utf8"));
+      return `https://cdn.example/${key}`;
+    };
+
+    await publishScreens(deps, {
+      runId: "run-1",
+      theme: "рецепты",
+      prompt: "p",
+      model: "hand-authored",
+      screens: [{ name: "Итог", htmlContent: "<html><head></head><body><button>Go</button></body></html>" }],
+    });
+
+    // The gallery lightbox iframes the stored HTML, so image and iframe must
+    // be two renders of one string — not the repaired one and the raw one.
+    expect(rendered[0]).toContain("data-showcase-ua-reset");
+    expect(stored[0]).toBe(rendered[0]);
+    expect(stored[0]).toContain("<button>Go</button>");
+  });
+
   it("stores width/height matching the actual 2x WebP, not whatever screenshot() reports", async () => {
     // A deliberately mismatched screenshot(): it claims 390x844 but the real
     // PNG bytes are 300x600. If publishScreens ever went back to trusting

@@ -34,6 +34,7 @@ You are building a presentation DECK: a sequence of slides, each its own top-lev
 - **Hard rule:** every slide's content MUST fit inside its fixed 1024×768 canvas — no vertical cutoff, no horizontal scroll. Slides render as a fixed-size viewport with NO scrolling; content past the edge is simply lost, not scrollable.
 - **CSS mechanics, baked into the shared theme block from the start:**
   - `*, *::before, *::after { box-sizing: border-box; }` at the top of every slide's `<style>`.
+  - Directly after it, reset form controls: `button, input, select, textarea { font: inherit; color: inherit; background: none; border: 0; }`. A raw `<button>` left on browser defaults renders with a `2px outset` system bevel and an Arial label — glaring on a slide set in the deck's own family.
   - Root/body sized to exactly `width: 1024px; height: 768px;` (or `100%`), `margin: 0; overflow: hidden;`. Never rely on scrolling.
   - `padding` on the fixed-height root WITHOUT `border-box` is the classic cause of bottom cutoff — `border-box` keeps padding inside the 768px height instead of adding to it.
   - No child element wider than 1024px (e.g. no `width: 1100px` block inside a slide), and no unbroken long strings — apply `overflow-wrap: break-word` to copy-heavy elements so they can't push past the edge.

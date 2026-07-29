@@ -2,6 +2,7 @@ import { randomUUID, createHash } from "node:crypto";
 import type { ShowcaseStore } from "./store.js";
 import type { ScreenshotResult } from "./screenshot.js";
 import { buildDerivatives } from "./derivatives.js";
+import { normalizeShowcaseHtml } from "./normalizeHtml.js";
 
 // Re-renders every screen already in `showcase_screens` from its stored HTML.
 // The HTML — not the image — is the source of truth, so a fix to the
@@ -24,10 +25,14 @@ import { buildDerivatives } from "./derivatives.js";
 // `immutable`-cached.
 
 export interface RescreenshotDeps {
-  store: Pick<ShowcaseStore, "listScreenSources" | "updateScreenDerivatives">;
+  store: Pick<
+    ShowcaseStore,
+    "listScreenSources" | "updateScreenDerivatives" | "updateScreenHtmlUrl"
+  >;
   screenshot(html: string): Promise<ScreenshotResult>;
   fetchHtml(url: string): Promise<string>;
   uploadWebp(key: string, body: Buffer): Promise<string>;
+  uploadHtml(key: string, body: Buffer): Promise<string>;
   log?(message: string): void;
 }
 
@@ -67,11 +72,19 @@ export async function rescreenshotScreens(
   for (const screen of screens) {
     const label = `${screen.title} (${screen.id})`;
     try {
-      const html = await deps.fetchHtml(screen.htmlUrl);
+      const stored = await deps.fetchHtml(screen.htmlUrl);
+      // Screens published before `normalizeShowcaseHtml` existed still carry
+      // whatever the agent wrote, so their form controls are still wearing the
+      // user agent's clothes — in the image AND in the lightbox iframe, which
+      // serves this very HTML. Normalizing here is what makes one
+      // `showcase:rescreenshot` sweep a repair path for both.
+      const html = normalizeShowcaseHtml(stored);
+      const htmlChanged = html !== stored;
+
       const { buffer, width, height } = await deps.screenshot(html);
       const sameSize = width === screen.width && height === screen.height;
 
-      if (sameSize && !options.force) {
+      if (sameSize && !options.force && !htmlChanged) {
         summary.unchanged++;
         log(`[rescreenshot] unchanged ${width}x${height}: ${label}`);
         continue;
@@ -80,9 +93,24 @@ export async function rescreenshotScreens(
       if (options.dryRun) {
         summary.updated++;
         log(
-          `[rescreenshot] would update ${screen.width}x${screen.height} -> ${width}x${height}: ${label}`,
+          `[rescreenshot] would update ${screen.width}x${screen.height} -> ${width}x${height}${htmlChanged ? " (+normalized HTML)" : ""}: ${label}`,
         );
         continue;
+      }
+
+      // The HTML first: it is the source of truth, and if the image upload
+      // below fails the screen is at least left with markup a later sweep can
+      // re-render from. A fresh key, never an overwrite — the old object is
+      // served `immutable` for a year (same reasoning as replaceHtml.ts).
+      if (htmlChanged) {
+        const body = Buffer.from(html, "utf8");
+        const htmlSha8 = createHash("sha256").update(body).digest("hex").slice(0, 8);
+        const htmlUrl = await deps.uploadHtml(
+          `showcase/revision/${randomUUID()}-${htmlSha8}.html`,
+          body,
+        );
+        await deps.store.updateScreenHtmlUrl(screen.id, htmlUrl);
+        log(`[rescreenshot] normalized HTML -> ${htmlUrl}: ${label}`);
       }
 
       const derivatives = await buildDerivatives(buffer);

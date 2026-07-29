@@ -5,6 +5,7 @@ import {
   type RescreenshotDeps,
 } from "../src/showcase/rescreenshot.js";
 import type { ShowcaseScreenSource, ShowcaseDerivativesUpdate } from "../src/showcase/store.js";
+import { normalizeShowcaseHtml } from "../src/showcase/normalizeHtml.js";
 
 function source(over: Partial<ShowcaseScreenSource> = {}): ShowcaseScreenSource {
   return {
@@ -35,14 +36,20 @@ function makeDeps(
 ): RescreenshotDeps & {
   updates: ShowcaseDerivativesUpdate[];
   uploads: string[];
+  htmlUploads: Array<{ key: string; body: string }>;
+  htmlRepoints: Array<{ id: string; htmlUrl: string }>;
   listArgs: Array<{ appOf?: string } | undefined>;
 } {
   const updates: ShowcaseDerivativesUpdate[] = [];
   const uploads: string[] = [];
+  const htmlUploads: Array<{ key: string; body: string }> = [];
+  const htmlRepoints: Array<{ id: string; htmlUrl: string }> = [];
   const listArgs: Array<{ appOf?: string } | undefined> = [];
   return {
     updates,
     uploads,
+    htmlUploads,
+    htmlRepoints,
     listArgs,
     store: {
       listScreenSources: async (options) => {
@@ -52,8 +59,17 @@ function makeDeps(
       updateScreenDerivatives: async (update) => {
         updates.push(update);
       },
+      updateScreenHtmlUrl: async (id, htmlUrl) => {
+        htmlRepoints.push({ id, htmlUrl });
+      },
     },
-    fetchHtml: async (url) => `<html data-src="${url}">`,
+    // Already-normalized by default, so the size-driven tests below stay about
+    // size alone — a screen still carrying raw markup is its own test.
+    fetchHtml: async (url) => normalizeShowcaseHtml(`<html data-src="${url}">`),
+    uploadHtml: async (key, body) => {
+      htmlUploads.push({ key, body: body.toString("utf8") });
+      return `https://s3.example/${key}`;
+    },
     screenshot: async (html) => {
       const { width, height } = render(html);
       return { buffer: await fakePng(width, height), width, height };
@@ -132,7 +148,7 @@ describe("rescreenshotScreens", () => {
     );
     deps.fetchHtml = async (url: string) => {
       if (url.endsWith("missing.html")) throw new Error("GET 404");
-      return `<html data-src="${url}">`;
+      return normalizeShowcaseHtml(`<html data-src="${url}">`);
     };
 
     const summary = await rescreenshotScreens(deps);
@@ -151,6 +167,36 @@ describe("rescreenshotScreens", () => {
 
     expect(summary.total).toBe(2);
     expect(deps.updates.map((u) => u.id)).toEqual(["a", "b"]);
+  });
+
+  it("normalizes and repoints HTML published before the UA reset existed", async () => {
+    const deps = makeDeps([source()], () => ({ width: 750, height: 1960 }));
+    deps.fetchHtml = async () => "<html><head></head><body><button>Go</button></body></html>";
+
+    // Same size, no --force: the un-normalized HTML alone must be enough to
+    // make this screen a repair candidate, or the sweep can't fix the gallery.
+    const summary = await rescreenshotScreens(deps);
+
+    expect(summary.updated).toBe(1);
+    expect(deps.htmlUploads).toHaveLength(1);
+    expect(deps.htmlUploads[0].key).toMatch(
+      /^showcase\/revision\/[0-9a-f-]+-[0-9a-f]{8}\.html$/,
+    );
+    expect(deps.htmlUploads[0].body).toContain("data-showcase-ua-reset");
+    expect(deps.htmlRepoints).toEqual([
+      { id: "id-1", htmlUrl: `https://s3.example/${deps.htmlUploads[0].key}` },
+    ]);
+    // The image is re-rendered from the SAME normalized markup that was stored.
+    expect(deps.updates).toHaveLength(1);
+  });
+
+  it("leaves already-normalized HTML where it is", async () => {
+    const deps = makeDeps([source()], () => ({ width: 750, height: 2024 }));
+
+    await rescreenshotScreens(deps);
+
+    expect(deps.htmlUploads).toEqual([]);
+    expect(deps.htmlRepoints).toEqual([]);
   });
 
   it("passes --app straight through to the store's own filter", async () => {
