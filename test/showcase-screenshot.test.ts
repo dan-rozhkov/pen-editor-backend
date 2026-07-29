@@ -153,6 +153,23 @@ describe.skipIf(!!process.env.CI)("screenshotHtml", () => {
     expect(height).toBe((H + 20) * S);
   });
 
+  // Live regression, run 90b00068 screen 3: the last session card's text
+  // cleared the bar, but the card's own padding and rounded bottom edge did
+  // not — text-only measurement stopped 16px short and the card shipped
+  // sliced. A drawn surface is ink too.
+  it("counts a card's own surface, not just the text inside it", async () => {
+    if (!browser) return;
+
+    // Card box ends 24px past the bar's top edge; its text ends well above it.
+    const cardTop = H - 64 - 40;
+    const card =
+      `<div style="position:absolute;top:${cardTop}px;left:0;width:200px;height:104px;` +
+      `background:#1c1c1e;padding:12px"><span>22:00</span></div>`;
+    const { height } = await shoot(page("", `${card}${TAB_BAR}`));
+
+    expect(height).toBe((H + 24) * S);
+  });
+
   // Live regression, run d60b7a4e screen 3: a scooter-sharing map screen was
   // published 1164px tall instead of 812. The full-bleed `<img>` at `inset: 0`
   // ends at the screen bottom like a tab bar does, so it was taken for one —

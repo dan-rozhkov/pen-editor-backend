@@ -68,13 +68,24 @@ async function clearBottomBarOverlap(page: Page): Promise<number> {
     const barHeight = Math.max(...bars.map((b) => b.getBoundingClientRect().height));
     if (barHeight < 1) return 0;
 
-    // Only leaf nodes with visible content count — an ancestor box that merely
-    // spans the whole screen isn't "covered" in any way a viewer would notice.
+    // What counts as ink: a leaf that draws text or an image, and any element
+    // that draws a SURFACE of its own — a filled or bordered card. Text alone
+    // undershoots: a card's last line of text can clear the bar while the
+    // card's own padding and rounded bottom edge stay buried under it, which
+    // is exactly how a session-picker screen shipped with its last card sliced
+    // off. Layout wrappers draw nothing and are still ignored.
     const covered = [...document.body.querySelectorAll("*")].filter((el) => {
-      if (el.children.length > 0) return false;
       if (bars.some((bar) => bar === el || bar.contains(el))) return false;
-      const hasInk = (el.textContent ?? "").trim().length > 0 || el.tagName === "IMG";
-      if (!hasInk) return false;
+      const cs = getComputedStyle(el);
+      const filled =
+        cs.backgroundImage !== "none" ||
+        !/^(transparent$|rgba\(0, 0, 0, 0\)$)/.test(cs.backgroundColor);
+      const bordered =
+        parseFloat(cs.borderBottomWidth) > 0 && cs.borderBottomStyle !== "none";
+      const drawsText =
+        el.children.length === 0 &&
+        ((el.textContent ?? "").trim().length > 0 || el.tagName === "IMG");
+      if (!filled && !bordered && !drawsText) return false;
       const r = el.getBoundingClientRect();
       // A backdrop is not covered content. A full-bleed map or hero image runs
       // the whole height of the screen by design, and a bottom sheet resting on
