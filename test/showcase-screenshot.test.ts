@@ -153,6 +153,64 @@ describe.skipIf(!!process.env.CI)("screenshotHtml", () => {
     expect(height).toBe((H + 20) * S);
   });
 
+  // Live regression, run d60b7a4e screen 3: a scooter-sharing map screen was
+  // published 1164px tall instead of 812. The full-bleed `<img>` at `inset: 0`
+  // ends at the screen bottom like a tab bar does, so it was taken for one —
+  // putting `barTop` at y=0 and marking every inked element on the screen as
+  // "covered by the bar".
+  it("ignores a full-bleed layer that merely reaches the bottom edge", async () => {
+    if (!browser) return;
+
+    const fullBleed = `<div style="position:absolute;inset:0;background:#eee"></div>`;
+    const overlay = `<div style="position:absolute;top:300px;left:20px">14.2 km/h</div>`;
+    const { height } = await shoot(page("", `${fullBleed}${overlay}`));
+
+    expect(height).toBe(H * S);
+  });
+
+  // The other half of the same live regression (run d60b7a4e screen 1): with
+  // the full-bleed layer no longer mistaken for a bar, it must not count as
+  // *covered* either — a bottom sheet resting on a map hides nothing a viewer
+  // expected to read, and treating the map as buried content grew the screen
+  // by the sheet's own height.
+  it("does not treat a backdrop as content buried under a bottom sheet", async () => {
+    if (!browser) return;
+
+    const map = `<div style="position:absolute;inset:0;background:#eee">map</div>`;
+    const sheet =
+      `<div style="position:absolute;left:0;right:0;bottom:0;height:300px;background:#fff">` +
+      `<div>3 scooters nearby</div></div>`;
+    const { height } = await shoot(page("", `${map}${sheet}`));
+
+    expect(height).toBe(H * S);
+  });
+
+  // Live regression, run d60b7a4e screen 1: the design declares its own device
+  // preset (375x812) while the browser viewport is SHOWCASE_VIEWPORT (390x844).
+  // A bottom sheet at `left:0;right:0` is laid out against the viewport, so it
+  // came out 390 wide inside a 375-wide crop — its 16px right padding fell
+  // outside the picture and the "Reserve" buttons ended up glued to, and shaved
+  // by, the right edge.
+  it("lays a screen out at its own declared width, not the viewport's", async () => {
+    if (!browser) return;
+
+    const declaredW = W - 15;
+    const declaredH = H - 32;
+    const sheet =
+      `<div id="sheet" style="position:absolute;left:0;right:0;bottom:0;padding:0 16px">` +
+      `<button id="cta" style="float:right;width:84px;height:36px">Reserve</button></div>`;
+    const html =
+      `<!doctype html><html><body style="margin:0;width:${declaredW}px;height:${declaredH}px;overflow:hidden">` +
+      `<div style="height:200px">content</div>${sheet}</body></html>`;
+
+    const { width, height } = await shoot(html);
+
+    // Cropped to the declared box, and not grown by repairs that only had work
+    // to do because the overlay hung off a wider/taller viewport.
+    expect(width).toBe(declaredW * S);
+    expect(height).toBe(declaredH * S);
+  });
+
   // The regression that shipped first: a hero overlay pinned to `bottom: 0` of
   // its own container matched a naive "bottom: 0" test, so everything below it
   // counted as covered and the screen was inflated by hundreds of pixels.
@@ -170,18 +228,34 @@ describe.skipIf(!!process.env.CI)("screenshotHtml", () => {
   // What the agent actually emits: a body sized to its own device preset
   // (375x812), `position: static`, and a tab bar at `position: absolute;
   // bottom: 0`. Static body means the bar's containing block is the initial
-  // containing block — the VIEWPORT — so the bar sits at the viewport's bottom
-  // edge, below the shorter body box, and the body-element screenshot sliced
-  // its last rows off.
-  it("covers a bottom bar pinned below a body shorter than the viewport", async () => {
+  // containing block — the VIEWPORT — so the bar used to sit at the viewport's
+  // bottom edge, below the shorter body box, and the screen was stretched to
+  // reach it. Matching the viewport to the declared box removes the gap
+  // instead: the bar lands where the design put it and the screen publishes at
+  // the size it asked for.
+  it("publishes a screen at its declared height rather than the viewport's", async () => {
     if (!browser) return;
 
-    const shortBody = `margin:0;width:${W}px;height:${H - 32}px;overflow:hidden`;
+    const declaredH = H - 32;
+    const shortBody = `margin:0;width:${W}px;height:${declaredH}px;overflow:hidden`;
     const html = `<!doctype html><html><body style="${shortBody}"><div style="height:400px">content</div>${TAB_BAR}</body></html>`;
     const { height } = await shoot(html);
 
-    // The bar's bottom edge is the viewport bottom, so the screen has to reach
-    // it — not stop at the body's own 812px.
+    expect(height).toBe(declaredH * S);
+  });
+
+  // The fallback still matters for a body whose height is a function of the
+  // viewport: matching the viewport to it just moves the target, so the
+  // viewport is put back and the bar genuinely does hang below the body box.
+  it("still covers a bar hanging below a fluid body", async () => {
+    if (!browser) return;
+
+    const fluidBody = `margin:0;width:${W}px;height:50%`;
+    const html = `<!doctype html><html style="height:100%"><body style="${fluidBody}">${TAB_BAR}</body></html>`;
+    const { height } = await shoot(html);
+
+    // Body is half the viewport; the bar sits at the viewport's bottom edge,
+    // so the screen has to reach it rather than slice it off.
     expect(height).toBe(H * S);
   });
 

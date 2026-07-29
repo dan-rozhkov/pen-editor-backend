@@ -44,11 +44,23 @@ async function clearBottomBarOverlap(page: Page): Promise<number> {
     // its own container matches that too, and treating it as a screen-level bar
     // makes everything below it look covered. What identifies a real bottom bar
     // is that its bottom edge lands on the bottom edge of the screen.
-    const screenBottom = document.body.getBoundingClientRect().bottom;
+    const screenRect = document.body.getBoundingClientRect();
+    const screenBottom = screenRect.bottom;
     const bars = [...document.body.querySelectorAll("*")].filter((el) => {
       const cs = getComputedStyle(el);
       if (cs.position !== "fixed" && cs.position !== "absolute") return false;
-      return el.getBoundingClientRect().bottom >= screenBottom - 1;
+      const r = el.getBoundingClientRect();
+      if (r.bottom < screenBottom - 1) return false;
+      // A bar is bar-SHAPED. A full-bleed layer — `inset: 0` map, hero image,
+      // background wash — also ends at the screen bottom, and taking it for a
+      // bar put `barTop` at the top of the screen, which made every inked
+      // element on the page "covered" and grew the screen by hundreds of
+      // pixels. (Seen live: a scooter-sharing map screen published at 1164px
+      // tall instead of 812.) Neither test is a heuristic about intent: a
+      // strip that starts at the top of the screen, or occupies half of it,
+      // cannot be covering content the way a tab bar does.
+      if (r.top <= screenRect.top + 1) return false;
+      return r.height <= screenRect.height * 0.5;
     });
     if (bars.length === 0) return 0;
 
@@ -63,7 +75,13 @@ async function clearBottomBarOverlap(page: Page): Promise<number> {
       if (bars.some((bar) => bar === el || bar.contains(el))) return false;
       const hasInk = (el.textContent ?? "").trim().length > 0 || el.tagName === "IMG";
       if (!hasInk) return false;
-      return el.getBoundingClientRect().bottom > barTop;
+      const r = el.getBoundingClientRect();
+      // A backdrop is not covered content. A full-bleed map or hero image runs
+      // the whole height of the screen by design, and a bottom sheet resting on
+      // it hides nothing a viewer expected to read — counting it grew a map
+      // screen by the sheet's own height, every time.
+      if (r.top <= screenRect.top + 1 && r.bottom >= screenBottom - 1) return false;
+      return r.bottom > barTop;
     });
     if (covered.length === 0) return 0;
 
@@ -86,6 +104,59 @@ async function clearBottomBarOverlap(page: Page): Promise<number> {
   }, needed);
 
   return needed;
+}
+
+// Everything positioned `fixed` — and everything `absolute` under a static
+// body, which is what the agent emits — is laid out against the INITIAL
+// CONTAINING BLOCK, i.e. the viewport. The screenshot, meanwhile, crops to the
+// <body> box. When the design declares its own device preset (375x812, per the
+// prototype skill) and the viewport is SHOWCASE_VIEWPORT (390x844), those two
+// boxes differ on BOTH axes, and every full-bleed overlay lands 15px too far
+// right and 32px too low:
+//   - a bottom sheet with `left:0;right:0` is 390 wide inside a 375 crop, so
+//     its right padding falls outside the picture and its buttons come out
+//     glued to — and shaved by — the right edge;
+//   - a bar at `bottom:12` sits 12px above 844, not above 812, so the vertical
+//     repairs below have to paper over a gap the design never had.
+//
+// Making the viewport the size the design says it is removes the mismatch at
+// the source, so the repairs below only fire on genuine overflow. Pages that
+// don't declare a size (their body height is content-derived) reflow when the
+// viewport changes — those are detected by re-measuring and left alone.
+// Returns the new size, or null when nothing was changed.
+async function matchViewportToBody(
+  page: Page,
+): Promise<{ width: number; height: number } | null> {
+  const viewport = page.viewportSize();
+  if (!viewport) return null;
+
+  const measure = () =>
+    page.evaluate(() => {
+      const r = document.body.getBoundingClientRect();
+      return { width: r.width, height: r.height };
+    });
+
+  const box = await measure();
+  const width = Math.round(box.width);
+  const height = Math.round(box.height);
+  if (width < 1 || height < 1) return null;
+  if (Math.abs(width - viewport.width) < 1 && Math.abs(height - viewport.height) < 1) {
+    return null;
+  }
+
+  await page.setViewportSize({ width, height });
+
+  // A fluid page's body box is a function of the viewport, so resizing to it
+  // moves the target. Put the viewport back rather than chase it: for those
+  // pages the old behavior (crop to the body, extend it to reach pinned bars)
+  // is still the right one.
+  const after = await measure();
+  if (Math.abs(after.width - width) > 1 || Math.abs(after.height - height) > 1) {
+    await page.setViewportSize(viewport);
+    return null;
+  }
+
+  return { width, height };
 }
 
 // Screen-level bars hang off the VIEWPORT, not the <body> box: `fixed` always
@@ -279,6 +350,13 @@ export async function screenshotHtml(
       `[showcase] render-ready wait failed, screenshotting anyway: ${(err as Error)?.message ?? err}`,
     );
   });
+
+  const resized = await matchViewportToBody(page);
+  if (resized) {
+    console.log(
+      `[showcase] matched the viewport to the screen's own ${resized.width}x${resized.height} box`,
+    );
+  }
 
   const grewBy = await clearBottomBarOverlap(page);
   if (grewBy > 0) {
