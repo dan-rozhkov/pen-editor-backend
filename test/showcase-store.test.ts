@@ -552,6 +552,48 @@ describe("createShowcaseStore", () => {
     expect(pool.calls[0].params).toContain("fitness tracker");
   });
 
+  it("filters the runs subquery by model when model is given", async () => {
+    const pool = fakePool([dbRow()]);
+    const store = createShowcaseStore(
+      makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
+      pool,
+    );
+    await store!.listApps({ limit: 12, model: "deepseek/deepseek-v4-pro" });
+    expect(pool.calls[0].sql).toMatch(/WHERE published = true AND platform = \$\d+ AND model = \$\d+/);
+    expect(pool.calls[0].params).toContain("deepseek/deepseek-v4-pro");
+  });
+
+  // Each filter above is only exercised in isolation — this is the case a
+  // shifted `$N` placeholder (e.g. `model` landing on `$2` instead of `$3`
+  // after `category`) would slip through: the substring assertions above
+  // ("AND model = $\d+") would still match even with the numbering wrong.
+  // Asserting the placeholder numbers explicitly, and the params array in
+  // the exact matching order, is what would actually catch that regression.
+  it("uses sequential, correctly-ordered placeholders when category, model, and platform are all given", async () => {
+    const pool = fakePool([dbRow()]);
+    const store = createShowcaseStore(
+      makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
+      pool,
+    );
+    await store!.listApps({
+      limit: 12,
+      category: "fitness tracker",
+      model: "deepseek/deepseek-v4-pro",
+      platform: "desktop",
+    });
+    expect(pool.calls[0].sql).toMatch(
+      /WHERE published = true AND platform = \$1 AND theme = \$2 AND model = \$3/,
+    );
+    // platform ($1), category ($2), model ($3), then the (cursor-less) LIMIT
+    // ($4) — in exactly this order.
+    expect(pool.calls[0].params).toEqual([
+      "desktop",
+      "fitness tracker",
+      "deepseek/deepseek-v4-pro",
+      12,
+    ]);
+  });
+
   it("always filters the runs subquery by platform, defaulting to mobile", async () => {
     const pool = fakePool([dbRow()]);
     const store = createShowcaseStore(
@@ -1094,6 +1136,33 @@ describe("createShowcaseStore", () => {
       );
       const categories = await store!.listCategories();
       expect(categories.map((c) => c.theme)).toEqual(["apple", "zebra"]);
+    });
+  });
+
+  describe("listModels", () => {
+    it("issues COUNT(DISTINCT run_id) GROUP BY model ORDER BY apps DESC, model ASC", async () => {
+      const pool = fakePool([{ model: "deepseek/deepseek-v4-pro", apps: "2" }]);
+      const store = createShowcaseStore(
+        makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
+        pool,
+      );
+      const models = await store!.listModels();
+      expect(pool.calls[0].sql).toContain("COUNT(DISTINCT run_id)");
+      expect(pool.calls[0].sql).toContain("GROUP BY model");
+      expect(pool.calls[0].sql).toContain("ORDER BY apps DESC, model ASC");
+      expect(pool.calls[0].sql).toMatch(/WHERE published = true AND platform = \$1/);
+      expect(pool.calls[0].params).toEqual(["mobile"]);
+      expect(models).toEqual([{ model: "deepseek/deepseek-v4-pro", apps: 2 }]);
+    });
+
+    it("defaults platform to mobile and passes an explicit platform through", async () => {
+      const pool = fakePool([]);
+      const store = createShowcaseStore(
+        makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
+        pool,
+      );
+      await store!.listModels("desktop");
+      expect(pool.calls[0].params).toEqual(["desktop"]);
     });
   });
 

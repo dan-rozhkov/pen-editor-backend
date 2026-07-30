@@ -76,6 +76,7 @@ const querySchema = z.object({
   cursor: z.string().optional(),
   sort: z.enum(["popular", "latest"]).default("popular"),
   category: z.string().min(1).optional(),
+  model: z.string().min(1).optional(),
   // Defaults to "mobile" for backward compatibility — every client built
   // before desktop generation existed still gets exactly the feed it always
   // has.
@@ -83,6 +84,10 @@ const querySchema = z.object({
 });
 
 const categoriesQuerySchema = z.object({
+  platform: z.enum(["mobile", "desktop"]).default("mobile"),
+});
+
+const modelsQuerySchema = z.object({
   platform: z.enum(["mobile", "desktop"]).default("mobile"),
 });
 
@@ -121,12 +126,13 @@ export async function showcaseRoutes(
       return reply.status(400).send({ error: "Invalid query parameters" });
     }
 
-    const { limit, cursor, sort, category, platform } = parsed.data;
+    const { limit, cursor, sort, category, model, platform } = parsed.data;
     const { apps, nextCursor } = await store.listApps({
       limit,
       cursor,
       sort,
       category,
+      model,
       platform,
     });
 
@@ -171,6 +177,22 @@ export async function showcaseRoutes(
 
     const categories = await store.listCategories(parsed.data.platform);
     return reply.send({ categories });
+  });
+
+  app.get("/api/showcase/models", async (request, reply) => {
+    if (!store) {
+      return reply
+        .status(503)
+        .send({ error: "Showcase storage is not configured" });
+    }
+
+    const parsed = modelsQuerySchema.safeParse(request.query);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: "Invalid query parameters" });
+    }
+
+    const models = await store.listModels(parsed.data.platform);
+    return reply.send({ models });
   });
 
   // The showcase's "Open in Editor" handoff (pen-editor's

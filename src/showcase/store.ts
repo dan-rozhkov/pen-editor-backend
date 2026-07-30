@@ -69,6 +69,11 @@ export interface ShowcaseStore {
     // A theme filter, applied inside the `runs` subquery (a run has exactly
     // one theme, so filtering runs fully determines the screens returned).
     category?: string;
+    // A model filter, applied inside the same `runs` subquery as `category`
+    // — a run has exactly one model (every screen it publishes shares the
+    // generating model), so filtering runs fully determines the screens
+    // returned, same reasoning as `category`.
+    model?: string;
     // Defaults to "mobile". Unlike `category`, always applied — mobile and
     // desktop apps must never mix in the same feed page, so there is no
     // "unfiltered" state the way an absent category has one.
@@ -92,6 +97,15 @@ export interface ShowcaseStore {
   // "mobile" — the two platforms have separate theme pools, so a chip row is
   // always scoped to one platform's apps.
   listCategories(platform?: ShowcasePlatform): Promise<Array<{ theme: string; apps: number }>>;
+  // For the model chip/filter row: every model that has at least one
+  // published app, with a count, ordered by popularity. Verbatim clone of
+  // `listCategories` with `model` substituted for `theme` — a run has
+  // exactly one model, same as one theme, so the same COUNT(DISTINCT run_id)
+  // reasoning applies. Never returns a model with zero apps, so a filter can
+  // never lead to an empty grid. Defaults `platform` to "mobile" — the two
+  // platforms have separate model pools in practice, so this is always
+  // scoped to one platform's apps.
+  listModels(platform?: ShowcasePlatform): Promise<Array<{ model: string; apps: number }>>;
   // Upsert-increments the like counter for a run_id and returns the new
   // total, or `null` when `runId` has no published screens — the route turns
   // that into a 404 rather than silently creating a like row for an app that
@@ -387,16 +401,27 @@ export function createShowcaseStore(
       );
     },
 
-    async listApps({ limit, cursor, sort = "popular", category, platform = DEFAULT_SHOWCASE_PLATFORM }) {
+    async listApps({
+      limit,
+      cursor,
+      sort = "popular",
+      category,
+      model,
+      platform = DEFAULT_SHOWCASE_PLATFORM,
+    }) {
       const params: unknown[] = [];
 
       params.push(platform);
-      // Always applied, unlike the theme filter below — mobile and desktop
-      // apps must never mix on the same feed page.
+      // Always applied, unlike the theme/model filters below — mobile and
+      // desktop apps must never mix on the same feed page.
       let filterClause = `AND platform = $${params.length}`;
       if (category) {
         params.push(category);
         filterClause += ` AND theme = $${params.length}`;
+      }
+      if (model) {
+        params.push(model);
+        filterClause += ` AND model = $${params.length}`;
       }
 
       let cursorClause = "";
@@ -576,6 +601,21 @@ export function createShowcaseStore(
       // COUNT(...) is BIGINT — see the comment on `run_likes` above for why
       // node-postgres hands that back as a string.
       return result.rows.map((r) => ({ theme: r.theme, apps: Number(r.apps) }));
+    },
+
+    async listModels(platform = DEFAULT_SHOWCASE_PLATFORM) {
+      // Verbatim clone of `listCategories` with `model` substituted for
+      // `theme` — see that method's comment for why COUNT(DISTINCT run_id),
+      // not COUNT(*).
+      const result = (await db.query(
+        `SELECT model, COUNT(DISTINCT run_id) AS apps
+           FROM showcase_screens
+           WHERE published = true AND platform = $1
+           GROUP BY model
+           ORDER BY apps DESC, model ASC`,
+        [platform],
+      )) as { rows: Array<{ model: string; apps: string }> };
+      return result.rows.map((r) => ({ model: r.model, apps: Number(r.apps) }));
     },
 
     async likeApp(runId, count) {

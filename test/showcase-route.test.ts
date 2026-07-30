@@ -36,6 +36,7 @@ function fakeStore(overrides: Partial<ShowcaseStore> = {}): ShowcaseStore {
     listApps: async () => ({ apps: [APP], nextCursor: null }),
     recentThemes: async () => [],
     listCategories: async () => [],
+    listModels: async () => [],
     likeApp: async () => null,
     getAppScreens: async () => [],
     close: async () => {},
@@ -198,6 +199,44 @@ describe("GET /api/showcase", () => {
     expect(received).toEqual({ platform: "desktop" });
   });
 
+  it("defaults model to undefined", async () => {
+    let received: { model?: string } = {};
+    const store = fakeStore({
+      listApps: async (opts) => {
+        received = { model: opts.model };
+        return { apps: [], nextCursor: null };
+      },
+    });
+    const instance = await build(store);
+    await instance.inject({ method: "GET", url: "/api/showcase" });
+    expect(received).toEqual({ model: undefined });
+  });
+
+  it("passes model through to the store", async () => {
+    let received: { model?: string } = {};
+    const store = fakeStore({
+      listApps: async (opts) => {
+        received = { model: opts.model };
+        return { apps: [], nextCursor: null };
+      },
+    });
+    const instance = await build(store);
+    await instance.inject({
+      method: "GET",
+      url: "/api/showcase?model=deepseek%2Fdeepseek-v4-pro",
+    });
+    expect(received).toEqual({ model: "deepseek/deepseek-v4-pro" });
+  });
+
+  it("returns 400 for an empty model", async () => {
+    const instance = await build(fakeStore());
+    const res = await instance.inject({
+      method: "GET",
+      url: "/api/showcase?model=",
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
   it("returns 400 for an invalid platform value", async () => {
     const instance = await build(fakeStore());
     const res = await instance.inject({
@@ -282,6 +321,67 @@ describe("GET /api/showcase/categories", () => {
     const res = await instance.inject({
       method: "GET",
       url: "/api/showcase/categories?platform=tablet",
+    });
+    expect(res.statusCode).toBe(400);
+  });
+});
+
+describe("GET /api/showcase/models", () => {
+  it("returns models from the store", async () => {
+    const store = fakeStore({
+      listModels: async () => [
+        { model: "deepseek/deepseek-v4-pro", apps: 3 },
+        { model: "google/gemini-2.5-flash", apps: 1 },
+      ],
+    });
+    const instance = await build(store);
+    const res = await instance.inject({ method: "GET", url: "/api/showcase/models" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      models: [
+        { model: "deepseek/deepseek-v4-pro", apps: 3 },
+        { model: "google/gemini-2.5-flash", apps: 1 },
+      ],
+    });
+  });
+
+  it("returns 503 when showcase storage is not configured", async () => {
+    const instance = await build(null);
+    const res = await instance.inject({ method: "GET", url: "/api/showcase/models" });
+    expect(res.statusCode).toBe(503);
+  });
+
+  it("defaults platform to mobile and passes it to the store", async () => {
+    let received: string | undefined;
+    const store = fakeStore({
+      listModels: async (platform) => {
+        received = platform;
+        return [];
+      },
+    });
+    const instance = await build(store);
+    await instance.inject({ method: "GET", url: "/api/showcase/models" });
+    expect(received).toBe("mobile");
+  });
+
+  it("passes platform=desktop through to the store", async () => {
+    let received: string | undefined;
+    const store = fakeStore({
+      listModels: async (platform) => {
+        received = platform;
+        return [];
+      },
+    });
+    const instance = await build(store);
+    await instance.inject({ method: "GET", url: "/api/showcase/models?platform=desktop" });
+    expect(received).toBe("desktop");
+  });
+
+  it("returns 400 for an invalid platform value", async () => {
+    const instance = await build(fakeStore());
+    const res = await instance.inject({
+      method: "GET",
+      url: "/api/showcase/models?platform=tablet",
     });
     expect(res.statusCode).toBe(400);
   });

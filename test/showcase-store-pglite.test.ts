@@ -336,6 +336,253 @@ describe("showcase store against a real Postgres engine (PGlite)", () => {
     });
   });
 
+  describe("model filtering", () => {
+    // seedFixture's 7 apps all write `model: "test-model"` (insertScreen's
+    // default in this fixture). Two more model groups here — one still on
+    // `mobile`, one on `desktop` — exercise (a) a model-filtered feed never
+    // mixing models, (b) pagination across a model-filtered feed dropping or
+    // duplicating nothing, and (c) `listModels` scoping its counts to a
+    // platform, mirroring the platform-filtering block above but for the new
+    // `model` axis.
+    const altRuns = Array.from({ length: 3 }, () => randomUUID());
+    const desktopSameModelRuns = Array.from({ length: 2 }, () => randomUUID());
+
+    async function seedAltAndDesktop(): Promise<void> {
+      for (let i = 0; i < altRuns.length; i++) {
+        const id = randomUUID();
+        await store.insertScreen({
+          id,
+          runId: altRuns[i],
+          theme: "productivity",
+          title: "Alt-model screen",
+          prompt: "a screen",
+          model: "alt-model",
+          imageUrl: `https://cdn.test/${altRuns[i]}.png`,
+          htmlUrl: `https://cdn.test/${altRuns[i]}.html`,
+          width: 390,
+          height: 844,
+        });
+        await harness.db.query("UPDATE showcase_screens SET created_at = $1 WHERE id = $2", [
+          createdAtOf(200 + i),
+          id,
+        ]);
+      }
+      for (let i = 0; i < desktopSameModelRuns.length; i++) {
+        const id = randomUUID();
+        await store.insertScreen({
+          id,
+          runId: desktopSameModelRuns[i],
+          theme: "analytics dashboard",
+          title: "Desktop test-model screen",
+          prompt: "a screen",
+          model: "test-model",
+          imageUrl: `https://cdn.test/${desktopSameModelRuns[i]}.png`,
+          htmlUrl: `https://cdn.test/${desktopSameModelRuns[i]}.html`,
+          width: 1440,
+          height: 1024,
+          platform: "desktop",
+        });
+        await harness.db.query("UPDATE showcase_screens SET created_at = $1 WHERE id = $2", [
+          createdAtOf(300 + i),
+          id,
+        ]);
+      }
+    }
+
+    it("never mixes models in the same page, and paginates a model-filtered feed correctly", async () => {
+      await seedFixture(store, harness);
+      await seedAltAndDesktop();
+
+      const testModelRuns = FIXTURE.map((f) => f.runId);
+
+      const testModelPage = await store.listApps({
+        limit: 20,
+        sort: "latest",
+        model: "test-model",
+      });
+      expect(testModelPage.apps.map((a) => a.runId).sort()).toEqual(
+        [...testModelRuns].sort(),
+      );
+      expect(testModelPage.apps.every((a) => a.model === "test-model")).toBe(true);
+
+      const altModelPage = await store.listApps({
+        limit: 20,
+        sort: "latest",
+        model: "alt-model",
+      });
+      expect(altModelPage.apps.map((a) => a.runId).sort()).toEqual([...altRuns].sort());
+      expect(altModelPage.apps.every((a) => a.model === "alt-model")).toBe(true);
+
+      // Page through the model-filtered feed with a small limit and confirm
+      // every app comes back exactly once, no dupes or drops — the same
+      // shape of bug (ambiguous run_id after a JOIN) that previously 500'd
+      // page 2 of the platform-filtered feed.
+      const expectedOrder = latestOrder(FIXTURE).map((a) => a.runId);
+      const seen: string[] = [];
+      let cursor: string | undefined;
+      for (let guard = 0; guard < 10; guard++) {
+        const { apps, nextCursor } = await store.listApps({
+          limit: 2,
+          sort: "latest",
+          model: "test-model",
+          cursor,
+        });
+        seen.push(...apps.map((a) => a.runId));
+        if (!nextCursor) break;
+        cursor = nextCursor;
+      }
+      expect(seen).toEqual(expectedOrder);
+      expect(new Set(seen).size).toBe(expectedOrder.length);
+    });
+
+    it("listModels reports per-model app counts scoped to platform", async () => {
+      await seedFixture(store, harness);
+      await seedAltAndDesktop();
+
+      const mobileModels = await store.listModels("mobile");
+      expect(mobileModels).toEqual([
+        { model: "test-model", apps: FIXTURE.length },
+        { model: "alt-model", apps: altRuns.length },
+      ]);
+
+      const desktopModels = await store.listModels("desktop");
+      expect(desktopModels).toEqual([
+        { model: "test-model", apps: desktopSameModelRuns.length },
+      ]);
+    });
+
+    it("breaks an apps-count tie between models alphabetically", async () => {
+      // Two fresh models, two apps each — tied on count, so only the
+      // `model ASC` tiebreak (not insertion order) can decide the order.
+      // Seeded "zebra-model" first so an accidental `ORDER BY apps DESC`
+      // with no tiebreak, or one keyed off insertion, would put it first
+      // instead.
+      for (const [model, runId] of [
+        ["zebra-model", randomUUID()],
+        ["zebra-model", randomUUID()],
+        ["apple-model", randomUUID()],
+        ["apple-model", randomUUID()],
+      ] as const) {
+        const id = randomUUID();
+        await store.insertScreen({
+          id,
+          runId,
+          theme: "productivity",
+          title: "Tie-break screen",
+          prompt: "a screen",
+          model,
+          imageUrl: `https://cdn.test/${id}.png`,
+          htmlUrl: `https://cdn.test/${id}.html`,
+          width: 390,
+          height: 844,
+        });
+      }
+
+      const models = await store.listModels("mobile");
+      expect(models).toEqual([
+        { model: "apple-model", apps: 2 },
+        { model: "zebra-model", apps: 2 },
+      ]);
+    });
+  });
+
+  // Both filters above are only exercised one at a time. That's exactly the
+  // gap a placeholder-numbering slip in `filterClause` (`AND platform = $1
+  // AND theme = $2 AND model = $3`, cursor params appended after) could hide
+  // behind: a shift there produces a query that is still syntactically
+  // valid — just semantically wrong (e.g. filtering by the wrong column, or
+  // matching against a param meant for the cursor) — which `fakePool`'s SQL
+  // assertions in showcase-store.test.ts cannot detect, but a real engine
+  // returning the wrong rows can.
+  describe("category + model combined filtering", () => {
+    // Three apps match both filters; three decoys each match only one of the
+    // two (same theme, different model / same model, different theme) or
+    // neither — so a bug that silently drops one filter (matching on theme
+    // OR model instead of AND) shows up as a decoy leaking into the result,
+    // not just as a wrong count.
+    const matchRuns = Array.from({ length: 3 }, () => randomUUID());
+    const sameThemeOtherModelRun = randomUUID();
+    const sameModelOtherThemeRun = randomUUID();
+    const neitherRun = randomUUID();
+
+    async function seedCombinedFixture(): Promise<void> {
+      async function seedOne(
+        runId: string,
+        theme: string,
+        model: string,
+        day: number,
+      ): Promise<void> {
+        const id = randomUUID();
+        await store.insertScreen({
+          id,
+          runId,
+          theme,
+          title: `${theme}/${model} screen`,
+          prompt: "a screen",
+          model,
+          imageUrl: `https://cdn.test/${runId}.png`,
+          htmlUrl: `https://cdn.test/${runId}.html`,
+          width: 390,
+          height: 844,
+        });
+        await harness.db.query("UPDATE showcase_screens SET created_at = $1 WHERE id = $2", [
+          createdAtOf(day),
+          id,
+        ]);
+      }
+
+      for (let i = 0; i < matchRuns.length; i++) {
+        await seedOne(matchRuns[i], "fitness", "model-a", i);
+      }
+      await seedOne(sameThemeOtherModelRun, "fitness", "model-b", 10);
+      await seedOne(sameModelOtherThemeRun, "finance", "model-a", 11);
+      await seedOne(neitherRun, "finance", "model-b", 12);
+    }
+
+    it("returns only apps matching BOTH category and model, never either alone", async () => {
+      await seedCombinedFixture();
+
+      const { apps } = await store.listApps({
+        limit: 20,
+        sort: "latest",
+        category: "fitness",
+        model: "model-a",
+      });
+
+      expect(apps.map((a) => a.runId).sort()).toEqual([...matchRuns].sort());
+      expect(apps.every((a) => a.theme === "fitness" && a.model === "model-a")).toBe(true);
+      // Decoys sharing exactly one of the two filters must not leak in.
+      for (const decoy of [sameThemeOtherModelRun, sameModelOtherThemeRun, neitherRun]) {
+        expect(apps.map((a) => a.runId)).not.toContain(decoy);
+      }
+    });
+
+    it("paginates the doubly-filtered feed with no duplicates or drops across pages", async () => {
+      await seedCombinedFixture();
+
+      // matchRuns seeded with day 0,1,2 — latest-sort order is day desc.
+      const expectedOrder = [...matchRuns].reverse();
+
+      const seen: string[] = [];
+      let cursor: string | undefined;
+      for (let guard = 0; guard < 10; guard++) {
+        const { apps, nextCursor } = await store.listApps({
+          limit: 2,
+          sort: "latest",
+          category: "fitness",
+          model: "model-a",
+          cursor,
+        });
+        seen.push(...apps.map((a) => a.runId));
+        if (!nextCursor) break;
+        cursor = nextCursor;
+      }
+
+      expect(seen).toEqual(expectedOrder);
+      expect(new Set(seen).size).toBe(expectedOrder.length);
+    });
+  });
+
   // `getAppScreens` backs `GET /api/showcase/:runId/html` (the "Open in
   // Editor" handoff, FIR-62) — real-engine coverage the way `listApps` gets
   // it above, rather than trusting a hand-written SQL model, since this
