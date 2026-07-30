@@ -192,22 +192,22 @@ function fakeDb(
       return { rows: found ? [{ run_id: found.run_id }] : [] };
     }
 
-    if (sql.includes("SET pinned_at = CASE WHEN id = $1")) {
-      // Refuse to interpret this as the store's real pinScreen update unless
-      // the run-scoping fragment is present verbatim — otherwise a regression
-      // that drops `run_id = $2` from the production SQL would silently keep
-      // being "understood" by this fake as scoped, and no behavioral test
-      // would ever see the bug.
-      if (!sql.includes("run_id = $2 AND (pinned_at IS NOT NULL OR id = $1)")) {
+    if (sql.includes("SET pinned_at = now()")) {
+      // The set half of pinScreen. It clears the app's old pin in a separate,
+      // earlier statement (handled by the `SET pinned_at = NULL ... run_id =
+      // $1` branch below) — see store.ts for why that split is load-bearing.
+      // Refuse to interpret this unless the run-scoping fragment is present
+      // verbatim: otherwise a regression that drops `run_id = $2` from the
+      // production SQL would silently keep being "understood" by this fake as
+      // scoped, and no behavioral test would ever see the bug.
+      if (!sql.includes("WHERE id = $1 AND run_id = $2")) {
         throw new Error(
           `unrecognized query (pinScreen scoping fragment missing/changed): ${sql}`,
         );
       }
       const [id, runId] = params as [string, string];
       for (const r of rows) {
-        if (r.run_id === runId && (r.pinned_at !== null || r.id === id)) {
-          r.pinned_at = r.id === id ? new Date() : null;
-        }
+        if (r.run_id === runId && r.id === id) r.pinned_at = new Date();
       }
       return { rows: [] };
     }
@@ -1217,7 +1217,7 @@ describe("createShowcaseStore", () => {
       expect(pool.calls[0].sql).toContain("SELECT run_id FROM showcase_screens");
     });
 
-    it("clears every other pin within the same run and sets the given id in one update", async () => {
+    it("clears the run's pin BEFORE setting the new one, both scoped to that run", async () => {
       const pool = fakePool([{ run_id: row.runId }]); // existence check finds the row
       const store = createShowcaseStore(
         makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
@@ -1225,10 +1225,17 @@ describe("createShowcaseStore", () => {
       );
       const ok = await store!.pinScreen(row.id);
       expect(ok).toBe(true);
-      expect(pool.calls).toHaveLength(2);
-      expect(pool.calls[1].sql).toContain("CASE WHEN id = $1 THEN now() ELSE NULL END");
-      expect(pool.calls[1].sql).toContain("run_id = $2 AND (pinned_at IS NOT NULL OR id = $1)");
-      expect(pool.calls[1].params).toEqual([row.id, row.runId]);
+      expect(pool.calls).toHaveLength(3);
+      // Order is the whole point: the partial unique index on (run_id) WHERE
+      // pinned_at IS NOT NULL is enforced per row, so setting before clearing
+      // — or doing both in one UPDATE, as this used to — raises 23505 on any
+      // app that already has a cover.
+      expect(pool.calls[1].sql).toContain("SET pinned_at = NULL");
+      expect(pool.calls[1].sql).toContain("run_id = $1");
+      expect(pool.calls[1].params).toEqual([row.runId]);
+      expect(pool.calls[2].sql).toContain("SET pinned_at = now()");
+      expect(pool.calls[2].sql).toContain("WHERE id = $1 AND run_id = $2");
+      expect(pool.calls[2].params).toEqual([row.id, row.runId]);
     });
 
     it("leaves another run's pin intact when pinning a screen in a different run", async () => {

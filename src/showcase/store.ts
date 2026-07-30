@@ -779,14 +779,35 @@ export function createShowcaseStore(
       if (existing.rows.length === 0) return false;
       const runId = existing.rows[0].run_id;
 
-      // Clear-then-set in one round trip rather than two statements: a crash
-      // between them would otherwise leave the run with either zero or two
-      // pins, both of which break the "at most one cover per app" invariant.
-      // Scoping to `run_id = $2` is what keeps this from touching — or even
+      // Clear first, THEN set — deliberately two statements, and in this
+      // order. Doing both in one UPDATE (a CASE WHEN over the run's rows) is
+      // what this used to do, and it raised 23505 against
+      // `showcase_screens_run_pinned_idx` roughly whenever an app already had
+      // a cover: that index is a plain partial unique index, so Postgres
+      // enforces it per row as the UPDATE walks them, not once at statement
+      // end, and the moment the newly pinned row lands before the old pin is
+      // cleared the run momentarily has two. Row order inside an UPDATE is
+      // unspecified, so this failed unpredictably. A deferred check is not
+      // available either: only constraints can be DEFERRABLE, and a partial
+      // unique index cannot be expressed as one.
+      //
+      // Two statements without a transaction is safe here because the failure
+      // modes are not symmetric. `TraceQueryable` exposes no client checkout,
+      // so BEGIN/COMMIT issued through the pool could land on different
+      // clients — but clearing first means a crash in between leaves the app
+      // with ZERO pins, never two. Zero is the same state as an app that was
+      // never pinned (the feed just falls back to newest-first) and re-running
+      // the command repairs it; two would be the state the index exists to
+      // forbid, and clear-first cannot produce it.
+      //
+      // Scoping both to the run is what keeps this from touching — or even
       // reading past — any other app's pin.
       await db.query(
-        `UPDATE showcase_screens SET pinned_at = CASE WHEN id = $1 THEN now() ELSE NULL END
-           WHERE run_id = $2 AND (pinned_at IS NOT NULL OR id = $1)`,
+        "UPDATE showcase_screens SET pinned_at = NULL WHERE run_id = $1 AND pinned_at IS NOT NULL",
+        [runId],
+      );
+      await db.query(
+        "UPDATE showcase_screens SET pinned_at = now() WHERE id = $1 AND run_id = $2",
         [id, runId],
       );
       return true;

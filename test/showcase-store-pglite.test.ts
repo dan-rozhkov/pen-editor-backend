@@ -690,6 +690,49 @@ describe("showcase store against a real Postgres engine (PGlite)", () => {
         newestId,
         middleId,
       ]);
+
+      // Moving the cover to another screen of the SAME app: the partial
+      // unique index on (run_id) WHERE pinned_at IS NOT NULL is checked
+      // row-by-row, not at statement end, so clearing the old pin and
+      // setting the new one in a single UPDATE raised 23505 whenever the
+      // executor happened to reach the row being set first. This is the
+      // ordinary way a cover gets changed and it must never fail.
+      expect(await store.pinScreen(middleId)).toBe(true);
+      expect((await store.getAppScreens(runId)).map((s) => s.id)).toEqual([
+        middleId,
+        newestId,
+        oldestId,
+      ]);
+      const pinned = (await harness.db.query(
+        "SELECT id FROM showcase_screens WHERE run_id = $1 AND pinned_at IS NOT NULL",
+        [runId],
+      )) as { rows: Array<{ id: string }> };
+      expect(pinned.rows.map((r) => r.id)).toEqual([middleId]);
+    });
+
+    it("re-pinning the screen that is already the cover is a no-op, not a violation", async () => {
+      const runId = randomUUID();
+      const id = randomUUID();
+      await store.insertScreen({
+        id,
+        runId,
+        theme: "fitness",
+        title: "only screen",
+        prompt: "a screen",
+        model: "test-model",
+        imageUrl: `https://cdn.test/${id}.png`,
+        htmlUrl: `https://cdn.test/${id}.html`,
+        width: 390,
+        height: 844,
+      });
+
+      expect(await store.pinScreen(id)).toBe(true);
+      expect(await store.pinScreen(id)).toBe(true);
+      const pinned = (await harness.db.query(
+        "SELECT id FROM showcase_screens WHERE run_id = $1 AND pinned_at IS NOT NULL",
+        [runId],
+      )) as { rows: Array<{ id: string }> };
+      expect(pinned.rows.map((r) => r.id)).toEqual([id]);
     });
   });
 });
