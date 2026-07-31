@@ -360,19 +360,34 @@ export async function screenshotHtml(
     );
     await Promise.all([fontsReady, imagesDecoded, backgroundsLoaded]);
   });
-  await Promise.race([
-    renderReady,
-    new Promise((resolve) => setTimeout(resolve, RENDER_READY_TIMEOUT_MS)),
-  ]).catch((err) => {
-    // Timed out or errored waiting for fonts/images — still take the
-    // screenshot rather than failing the whole run over a slow asset. Say so
-    // out loud: an in-page reference that doesn't resolve rejects this wait
-    // instantly, and silence turned that into "the icons are just blank
-    // sometimes" — a whole class of degraded screens with no trace.
+  // Wait for fonts/images, but never fail the run over a slow asset — and say
+  // out loud when the wait didn't finish. Both non-finishing branches degrade
+  // the screenshot silently otherwise: a page reference that never resolves
+  // rejects instantly ("the icons are just blank sometimes"), and a heavy photo
+  // simply runs out of budget, publishing an empty mount at perfect 780x1688
+  // that no dimension check can catch.
+  //
+  // The timer must be distinguishable from success: racing a bare
+  // `setTimeout(resolve)` makes the timeout a *resolution*, so the old
+  // `.catch()` never ran on it and only the reject branch was ever reported.
+  const TIMED_OUT = Symbol("render-ready-timeout");
+  const outcome = await Promise.race([
+    renderReady.then(() => null),
+    new Promise<typeof TIMED_OUT>((resolve) =>
+      setTimeout(() => resolve(TIMED_OUT), RENDER_READY_TIMEOUT_MS),
+    ),
+  ]).catch((err: unknown) => err);
+
+  if (outcome === TIMED_OUT) {
     console.warn(
-      `[showcase] render-ready wait failed, screenshotting anyway: ${(err as Error)?.message ?? err}`,
+      `[showcase] render-ready wait timed out after ${RENDER_READY_TIMEOUT_MS}ms, ` +
+        `screenshotting anyway — fonts or images may be missing from this screen`,
     );
-  });
+  } else if (outcome !== null) {
+    console.warn(
+      `[showcase] render-ready wait failed, screenshotting anyway: ${(outcome as Error)?.message ?? outcome}`,
+    );
+  }
 
   const resized = await matchViewportToBody(page);
   if (resized) {
