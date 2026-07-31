@@ -102,14 +102,16 @@ afterAll(async () => {
 // mobile-portrait assertion below is re-run verbatim against the desktop
 // (landscape) viewport too, none weakened, so a regression that only shows up
 // at a wide/short aspect ratio can't hide behind mobile-only coverage.
-describe.each([
+// Playwright's browsers aren't installed in CI (`npx playwright install
+// chromium` is a local, documented step), so the whole suite is skipped there.
+// It must be `skipIf` rather than an early `return` inside the callback: a
+// callback that registers no tests leaves an EMPTY suite, and vitest fails an
+// empty suite with "No test found in suite" instead of skipping it — which is
+// what made CI red on every commit from the desktop-viewport change onward.
+describe.skipIf(Boolean(process.env.CI)).each([
   { label: "mobile", viewport: SHOWCASE_VIEWPORTS.mobile },
   { label: "desktop", viewport: SHOWCASE_VIEWPORTS.desktop },
 ])("screenshotHtml ($label)", ({ viewport }) => {
-  // Playwright's browsers aren't installed in CI (a local, documented step) —
-  // registering no tests at all here is this suite's equivalent of skipping.
-  if (process.env.CI) return;
-
   const W = viewport.width;
   const H = viewport.height;
 
