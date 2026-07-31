@@ -1,5 +1,13 @@
-import { describe, expect, it } from "vitest";
-import { bottomDeadSpaceRows } from "../src/showcase/previewDiagnostics.js";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import sharp from "sharp";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  bottomDeadSpaceRows,
+  buildContactSheet,
+  measureBottomDeadSpace,
+} from "../src/showcase/previewDiagnostics.js";
 
 // Build a raw RGB buffer: `height` rows of `width` px, painted by `rowColor`.
 function image(
@@ -70,5 +78,72 @@ describe("bottomDeadSpaceRows", () => {
     const raw = Buffer.alloc(width * height * 4, 255);
     for (let x = 0; x < width; x += 1) raw[(3 * width + x) * 4] = 0; // one dark row at y=3
     expect(bottomDeadSpaceRows(raw, width, height, 4)).toBe(6);
+  });
+});
+
+describe("measureBottomDeadSpace", () => {
+  it("reports the band in CSS pixels, halving the device scale factor", async () => {
+    // 40 device px of ground below the content → 20 CSS px.
+    const png = await sharp({
+      create: { width: 8, height: 100, channels: 3, background: { r: 250, g: 250, b: 250 } },
+    })
+      .composite([
+        {
+          input: {
+            create: { width: 8, height: 60, channels: 3, background: { r: 24, g: 24, b: 27 } },
+          },
+          top: 20,
+          left: 0,
+        },
+      ])
+      .png()
+      .toBuffer();
+
+    expect(await measureBottomDeadSpace(png)).toEqual({ cssPx: 10, blank: false });
+  });
+
+  it("flags a screen that rendered as nothing at all", async () => {
+    const png = await sharp({
+      create: { width: 8, height: 40, channels: 3, background: { r: 255, g: 255, b: 255 } },
+    })
+      .png()
+      .toBuffer();
+
+    expect(await measureBottomDeadSpace(png)).toEqual({ cssPx: 20, blank: true });
+  });
+});
+
+describe("buildContactSheet", () => {
+  let dir: string;
+
+  beforeAll(async () => {
+    dir = await mkdtemp(join(tmpdir(), "sheet-"));
+  });
+  afterAll(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("lays every screen out in one row, labelled", async () => {
+    const files = [];
+    for (const [index, colour] of [
+      { r: 200, g: 30, b: 30 },
+      { r: 30, g: 200, b: 30 },
+    ].entries()) {
+      const path = join(dir, `${index + 1}-screen.png`);
+      await sharp({ create: { width: 390, height: 844, channels: 3, background: colour } })
+        .png()
+        .toFile(path);
+      files.push({ path, label: `${index + 1}-screen` });
+    }
+
+    const destination = join(dir, "_sheet.png");
+    await buildContactSheet(files, destination, 200);
+
+    const meta = await sharp(destination).metadata();
+    expect(meta.height).toBe(212); // cell + gap
+    // Two thumbnails side by side, each 190px tall at the screen's 390:844
+    // aspect, plus the gaps around and between them.
+    expect(meta.width).toBeGreaterThan(2 * Math.round((190 * 390) / 844));
+    expect(meta.width).toBeLessThan(2 * Math.round((190 * 390) / 844) + 40);
   });
 });

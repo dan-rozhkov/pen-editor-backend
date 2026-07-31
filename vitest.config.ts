@@ -58,6 +58,12 @@ export default defineConfig({
         // which is what pushed function coverage under the 89% floor on main.
         "src/showcase/replaceHtmlRun.ts",
         "src/showcase/deleteRun.ts",
+        // preview entrypoint: flags in, Chromium out, one call per file into
+        // the tested module. Its checks (bottomDeadSpaceRows, buildContactSheet
+        // in src/showcase/previewDiagnostics.ts) are unit-tested on raw pixel
+        // buffers and stay measured; what is left here is the browser loop,
+        // which needs the same Chromium CI does not install.
+        "src/showcase/previewRun.ts",
         // Playwright driver. It IS tested — test/showcase-screenshot.test.ts
         // asserts the real layout geometry — but only against a real Chromium,
         // which CI does not install (`npx playwright install chromium` is a
