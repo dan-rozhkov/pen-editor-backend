@@ -370,6 +370,33 @@ function mapRow(row: ShowcaseScreenDbRow): ShowcaseScreen {
   };
 }
 
+// The three `ShowcaseScreenSource` readers — `listScreenSources`,
+// `getScreenSource` and `getAppScreens` — differ only in their WHERE/ORDER BY;
+// they select the same columns and map them the same way. Sharing the column
+// list, the row type and the mapper keeps a column added to one of them from
+// silently missing on the other two (and keeps the trio under the jscpd gate).
+const SCREEN_SOURCE_COLUMNS = "id, title, html_url, width, height, platform";
+
+interface ScreenSourceDbRow {
+  id: string;
+  title: string;
+  html_url: string;
+  width: number;
+  height: number;
+  platform: string;
+}
+
+function mapScreenSource(row: ScreenSourceDbRow): ShowcaseScreenSource {
+  return {
+    id: row.id,
+    title: row.title,
+    htmlUrl: row.html_url,
+    width: row.width,
+    height: row.height,
+    platform: row.platform as ShowcasePlatform,
+  };
+}
+
 export function createShowcaseStore(
   config: Config,
   pool?: TraceQueryable,
@@ -651,82 +678,33 @@ export function createShowcaseStore(
         ? `WHERE run_id = COALESCE((SELECT run_id FROM showcase_screens WHERE id = $1::uuid), $1::uuid)`
         : "";
       const result = (await db.query(
-        `SELECT id, title, html_url, width, height, platform
+        `SELECT ${SCREEN_SOURCE_COLUMNS}
            FROM showcase_screens
            ${where}
            ORDER BY created_at ASC, id ASC`,
         appOf ? [appOf] : [],
-      )) as {
-        rows: Array<{
-          id: string;
-          title: string;
-          html_url: string;
-          width: number;
-          height: number;
-          platform: string;
-        }>;
-      };
-      return result.rows.map((row) => ({
-        id: row.id,
-        title: row.title,
-        htmlUrl: row.html_url,
-        width: row.width,
-        height: row.height,
-        platform: row.platform as ShowcasePlatform,
-      }));
+      )) as { rows: ScreenSourceDbRow[] };
+      return result.rows.map(mapScreenSource);
     },
 
     async getScreenSource(id) {
       const result = (await db.query(
-        `SELECT id, title, html_url, width, height, platform FROM showcase_screens WHERE id = $1::uuid`,
+        `SELECT ${SCREEN_SOURCE_COLUMNS} FROM showcase_screens WHERE id = $1::uuid`,
         [id],
-      )) as {
-        rows: Array<{
-          id: string;
-          title: string;
-          html_url: string;
-          width: number;
-          height: number;
-          platform: string;
-        }>;
-      };
+      )) as { rows: ScreenSourceDbRow[] };
       const row = result.rows[0];
-      if (!row) return null;
-      return {
-        id: row.id,
-        title: row.title,
-        htmlUrl: row.html_url,
-        width: row.width,
-        height: row.height,
-        platform: row.platform as ShowcasePlatform,
-      };
+      return row ? mapScreenSource(row) : null;
     },
 
     async getAppScreens(runId) {
       const result = (await db.query(
-        `SELECT id, title, html_url, width, height, platform
+        `SELECT ${SCREEN_SOURCE_COLUMNS}
            FROM showcase_screens
           WHERE run_id = $1::uuid AND published = true
           ORDER BY (pinned_at IS NOT NULL) DESC, created_at DESC, id DESC`,
         [runId],
-      )) as {
-        rows: Array<{
-          id: string;
-          title: string;
-          html_url: string;
-          width: number;
-          height: number;
-          platform: string;
-        }>;
-      };
-      return result.rows.map((row) => ({
-        id: row.id,
-        title: row.title,
-        htmlUrl: row.html_url,
-        width: row.width,
-        height: row.height,
-        platform: row.platform as ShowcasePlatform,
-      }));
+      )) as { rows: ScreenSourceDbRow[] };
+      return result.rows.map(mapScreenSource);
     },
 
     async updateScreenHtmlUrl(id, htmlUrl) {
