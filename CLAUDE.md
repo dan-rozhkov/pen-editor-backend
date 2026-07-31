@@ -178,7 +178,15 @@ manifest parsing). The manifest is
 `{theme, prompt?, model?, screens: [{name, file | htmlContent}]}`; `file` paths
 resolve relative to the manifest, and screens should be authored as separate
 `.html` files rather than JSON-escaped strings. `--dry-run` lists what would be
-published. Two helpers complete the loop without a browser or a server:
+published. `npm run showcase:preview -- screens/*.html` renders hand-authored
+screens through the real pipeline *before* publishing — one Chromium for the
+whole list, each PNG written next to its `.html`, `normalizeShowcaseHtml`
+applied exactly as `publish.ts` applies it, and a non-zero exit if any screen
+is not the viewport's size ×2. It is the supported preview path: writing a
+throwaway harness into `src/` instead launches a browser per screen and skips
+that normalization, so the preview and the published screen can differ. Needs
+neither Postgres nor S3. Two more helpers complete the loop without a browser
+or a server:
 `npm run showcase:theme` prints one theme (skipping the last 10 used), and
 `npm run showcase:image -- "prompt"` runs the real `generateImage` and prints
 `url<TAB>prompt`. Record the author in `model` (e.g. `claude-opus-5

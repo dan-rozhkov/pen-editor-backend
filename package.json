@@ -9,6 +9,7 @@
     "showcase:generate": "tsx --env-file=.env src/showcase/run.ts",
     "showcase:theme": "tsx --env-file=.env src/showcase/themeRun.ts",
     "showcase:image": "tsx --env-file=.env src/showcase/imageRun.ts",
+    "showcase:preview": "tsx src/showcase/previewRun.ts",
     "showcase:ingest": "tsx --env-file=.env src/showcase/ingestRun.ts",
     "showcase:rescreenshot": "tsx --env-file=.env src/showcase/rescreenshotRun.ts",
     "showcase:replace-html": "tsx --env-file=.env src/showcase/replaceHtmlRun.ts",

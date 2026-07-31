@@ -1,0 +1,74 @@
+import { describe, expect, it } from "vitest";
+import { bottomDeadSpaceRows } from "../src/showcase/previewDiagnostics.js";
+
+// Build a raw RGB buffer: `height` rows of `width` px, painted by `rowColor`.
+function image(
+  width: number,
+  height: number,
+  rowColor: (y: number) => [number, number, number],
+): Buffer {
+  const buffer = Buffer.alloc(width * height * 3);
+  for (let y = 0; y < height; y += 1) {
+    const [r, g, b] = rowColor(y);
+    for (let x = 0; x < width; x += 1) {
+      const at = (y * width + x) * 3;
+      buffer[at] = r;
+      buffer[at + 1] = g;
+      buffer[at + 2] = b;
+    }
+  }
+  return buffer;
+}
+
+const WHITE: [number, number, number] = [250, 250, 250];
+const INK: [number, number, number] = [24, 24, 27];
+
+describe("bottomDeadSpaceRows", () => {
+  it("counts the uniform band at the foot of the screen", () => {
+    // Ground at the top (where the background colour is sampled), content
+    // from y=20 to y=59, then 40 rows of empty ground.
+    const raw = image(10, 100, (y) => (y >= 20 && y < 60 ? INK : WHITE));
+    expect(bottomDeadSpaceRows(raw, 10, 100, 3)).toBe(40);
+  });
+
+  it("does not count a full-bleed band that ends at the bottom edge", () => {
+    // The Categories screen: a dark band running to the very bottom is
+    // content, not emptiness — the case that made sampling the last row wrong.
+    const raw = image(10, 100, (y) => (y >= 70 ? INK : WHITE));
+    expect(bottomDeadSpaceRows(raw, 10, 100, 3)).toBe(0);
+  });
+
+  it("reports nothing when content reaches the bottom edge", () => {
+    const raw = image(10, 100, (y) => (y === 99 ? INK : WHITE));
+    expect(bottomDeadSpaceRows(raw, 10, 100, 3)).toBe(0);
+  });
+
+  it("stops at a single line of content inside the band", () => {
+    // A footer rule 20px up: the dead space is what lies below it, not the
+    // whole background-coloured tail.
+    const raw = image(10, 100, (y) => (y === 80 ? INK : WHITE));
+    expect(bottomDeadSpaceRows(raw, 10, 100, 3)).toBe(19);
+  });
+
+  it("treats an entirely uniform image as a blank mount", () => {
+    const raw = image(10, 100, () => WHITE);
+    expect(bottomDeadSpaceRows(raw, 10, 100, 3)).toBe(100);
+  });
+
+  it("tolerates imperceptible per-channel noise", () => {
+    // Anti-aliasing and PNG round-tripping shift a channel by a point or two;
+    // that must not read as content.
+    const raw = image(10, 100, (y) =>
+      y >= 20 && y < 60 ? INK : y % 2 === 0 ? WHITE : [249, 251, 250],
+    );
+    expect(bottomDeadSpaceRows(raw, 10, 100, 3)).toBe(40);
+  });
+
+  it("handles an alpha channel", () => {
+    const width = 4;
+    const height = 10;
+    const raw = Buffer.alloc(width * height * 4, 255);
+    for (let x = 0; x < width; x += 1) raw[(3 * width + x) * 4] = 0; // one dark row at y=3
+    expect(bottomDeadSpaceRows(raw, width, height, 4)).toBe(6);
+  });
+});

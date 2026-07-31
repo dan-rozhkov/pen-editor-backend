@@ -29,6 +29,14 @@ export interface ScreenshotResult {
   buffer: Buffer;
   width: number;
   height: number;
+  // Leaf elements sliced by the bottom edge of the screen, e.g.
+  // `span.progress cut 14px`. Empty for a clean screen. Reported rather than
+  // fixed: the pipeline already grows the box for a pinned bar covering
+  // content (`clearBottomBarOverlap`), but content merely running past the
+  // bottom is a design decision the renderer must not silently rewrite —
+  // and, unlike the pinned-bar case, nothing warned about it at all, so a
+  // shelf with its captions shaved off published at a perfect 780×1688.
+  clipped: string[];
 }
 
 // Renders one HTML document to a full-page PNG. Fonts and <img> decoding are
@@ -406,6 +414,37 @@ export async function screenshotHtml(
     console.log(`[showcase] extended the screen by ${coveredBy}px so the bottom bar wasn't cut off`);
   }
 
+  // Which leaves are sliced by the bottom edge. Only leaves (elements with no
+  // element children) and only *partial* cuts: a container reports the same
+  // overflow as the text inside it, and an element sitting wholly past the
+  // edge is usually a deliberate "the list continues" tail, whereas a row
+  // bisected by the edge never is.
+  const clipped = await page.evaluate(() => {
+    // NOTE: no named inner functions inside page.evaluate — see the note on
+    // clearBottomBarOverlap. Everything below stays inline for that reason.
+    const limit = document.body.getBoundingClientRect().bottom;
+    const found: string[] = [];
+    for (const el of document.body.querySelectorAll("*")) {
+      if (el.querySelector("*")) continue;
+      const rect = el.getBoundingClientRect();
+      if (rect.width < 4 || rect.height < 4) continue;
+      if (rect.top >= limit || rect.bottom <= limit + 2) continue;
+      const style = getComputedStyle(el);
+      if (style.visibility === "hidden" || style.display === "none" || style.opacity === "0") {
+        continue;
+      }
+      const cls = typeof el.className === "string" ? el.className.trim().split(/\s+/)[0] : "";
+      found.push(
+        `${el.tagName.toLowerCase()}${cls ? `.${cls}` : ""} cut ${Math.round(rect.bottom - limit)}px`,
+      );
+      if (found.length >= 5) break;
+    }
+    return found;
+  });
+  if (clipped.length > 0) {
+    console.warn(`[showcase] content sliced by the bottom edge: ${clipped.join(", ")}`);
+  }
+
   // Screenshot the <body> box rather than the page. The agent lays its screens
   // out at a fixed device width of its own choosing (375x812 is what it
   // actually emits), which rarely equals SHOWCASE_VIEWPORT — a full-page shot
@@ -425,7 +464,7 @@ export async function screenshotHtml(
   // exceed the viewport height when content overflows.
   const { width, height } = readPngDimensions(buffer);
 
-  return { buffer, width, height };
+  return { buffer, width, height, clipped };
 }
 
 // Minimal PNG IHDR reader — width/height live in the first chunk after the

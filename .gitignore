@@ -12,3 +12,10 @@ reports/
 
 # Agent-isolated implementation worktrees
 .worktrees/
+
+# Hand-authored showcase runs staged by an agent. The skills tell those agents
+# to work in a scratchpad outside the repo; this is the backstop for when one
+# does not, so a stray run cannot end up committed or clutter someone else's
+# `git status`.
+.handrun/
+scratchpad/
