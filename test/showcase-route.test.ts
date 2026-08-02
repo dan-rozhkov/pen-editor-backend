@@ -601,6 +601,64 @@ describe("GET /api/showcase/:runId/html", () => {
   });
 });
 
+describe("GET /api/image-proxy", () => {
+  const config = makeConfig({
+    S3_ENDPOINT: "https://s3.timeweb.cloud",
+    S3_BUCKET: "bucket",
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("returns a configured pen-editor image with immutable caching", async () => {
+    const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+    const fetchMock = vi.fn(async () =>
+      new Response(bytes, { headers: { "content-type": "image/png" } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const instance = await buildApp(config, {
+      logger: false,
+      showcaseStore: fakeStore(),
+    });
+    // Older published objects use .com while the current SDK endpoint is
+    // configured as .cloud; both names address the same Timeweb bucket.
+    const source = "https://s3.timeweb.com/bucket/pen-editor/photo.png";
+    const res = await instance.inject({
+      method: "GET",
+      url: `/api/image-proxy?url=${encodeURIComponent(source)}`,
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-type"]).toContain("image/png");
+    expect(res.headers["cache-control"]).toBe(
+      "public, max-age=31536000, immutable",
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      new URL(source),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    await instance.close();
+  });
+
+  it("rejects URLs outside the configured bucket prefix without fetching them", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const instance = await buildApp(config, {
+      logger: false,
+      showcaseStore: fakeStore(),
+    });
+    const res = await instance.inject({
+      method: "GET",
+      url: `/api/image-proxy?url=${encodeURIComponent("https://attacker.test/image.png")}`,
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(fetchMock).not.toHaveBeenCalled();
+    await instance.close();
+  });
+});
+
 describe("POST /api/showcase/:runId/like", () => {
   const runId = APP.runId;
 

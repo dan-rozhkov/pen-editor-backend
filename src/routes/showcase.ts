@@ -14,6 +14,7 @@ const FETCH_TIMEOUT_MS = 10_000;
 // so a corrupted or maliciously huge object can't blow up this process's
 // memory or bandwidth just because its `runId` is otherwise valid.
 const MAX_HTML_BYTES = 5 * 1024 * 1024;
+const MAX_IMAGE_BYTES = 15 * 1024 * 1024;
 // This route always fetches at most 5 screens (a run publishes at most 5),
 // so this is a safety ceiling more than a real throttle — it keeps a future
 // change to that 5-screen assumption from firing an unbounded number of
@@ -99,6 +100,47 @@ const appHtmlParamsSchema = z.object({
   runId: z.string().uuid(),
 });
 
+const imageProxyQuerySchema = z.object({
+  url: z.string().url().max(4096),
+});
+
+function editorImagePrefixes(config: Config): URL[] {
+  if (!config.S3_ENDPOINT || !config.S3_BUCKET) return [];
+  try {
+    const configured = new URL(
+      `${config.S3_ENDPOINT.replace(/\/$/, "")}/${config.S3_BUCKET}/pen-editor/`,
+    );
+    const prefixes = [configured];
+    // Timeweb has served the same public buckets from both hostnames over the
+    // lifetime of the showcase. Keep old `.com` objects readable after the
+    // configured SDK endpoint moved to `.cloud` (and vice versa), without
+    // widening the allowlist to another provider, bucket, or key prefix.
+    let aliasHost: string | null = null;
+    if (configured.hostname === "s3.timeweb.cloud") {
+      aliasHost = "s3.timeweb.com";
+    } else if (configured.hostname === "s3.timeweb.com") {
+      aliasHost = "s3.timeweb.cloud";
+    }
+    if (aliasHost) {
+      const alias = new URL(configured.href);
+      alias.hostname = aliasHost;
+      prefixes.push(alias);
+    }
+    return prefixes;
+  } catch {
+    return [];
+  }
+}
+
+function isEditorImageUrl(url: URL, prefix: URL): boolean {
+  return (
+    url.origin === prefix.origin &&
+    url.username === "" &&
+    url.password === "" &&
+    url.pathname.startsWith(prefix.pathname)
+  );
+}
+
 // The 1..25 bound exists solely so a single request can't post `count: 1e9`
 // — it is not a rate limit (there's no dedup, claps are meant to be
 // repeatable).
@@ -113,6 +155,66 @@ export async function showcaseRoutes(
 ): Promise<ShowcaseStore | null> {
   const store =
     storeOverride !== undefined ? storeOverride : createShowcaseStore(config);
+
+  // Pixi uploads image pixels to WebGL, which requires a CORS-readable
+  // response. Our public Timeweb S3 objects are intentionally simple public
+  // files and currently omit Access-Control-Allow-Origin, even though a plain
+  // <img> can display them. Proxy only the immutable `pen-editor/` prefix of
+  // the configured bucket — never an arbitrary caller-provided host — so
+  // converted showcase photos remain renderable without creating an SSRF
+  // endpoint.
+  app.get("/api/image-proxy", async (request, reply) => {
+    const prefixes = editorImagePrefixes(config);
+    if (prefixes.length === 0) {
+      return reply.status(503).send({ error: "S3 storage is not configured" });
+    }
+
+    const parsed = imageProxyQuerySchema.safeParse(request.query);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: "Invalid image URL" });
+    }
+
+    const imageUrl = new URL(parsed.data.url);
+    if (!prefixes.some((prefix) => isEditorImageUrl(imageUrl, prefix))) {
+      return reply.status(403).send({ error: "Image URL is not allowed" });
+    }
+
+    let response: Response;
+    try {
+      response = await fetch(imageUrl, {
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      });
+    } catch (error) {
+      request.log.warn(
+        { err: error, imageUrl: imageUrl.href },
+        "image proxy fetch failed",
+      );
+      return reply.status(502).send({ error: "Failed to fetch image" });
+    }
+    if (!response.ok) {
+      return reply.status(502).send({ error: "Failed to fetch image" });
+    }
+
+    const contentType = response.headers
+      .get("content-type")
+      ?.split(";", 1)[0]
+      ?.trim();
+    if (!contentType?.toLowerCase().startsWith("image/")) {
+      return reply.status(415).send({ error: "Upstream resource is not an image" });
+    }
+    const contentLength = response.headers.get("content-length");
+    if (contentLength && Number(contentLength) > MAX_IMAGE_BYTES) {
+      return reply.status(413).send({ error: "Image is too large" });
+    }
+
+    const bytes = await response.arrayBuffer();
+    if (bytes.byteLength > MAX_IMAGE_BYTES) {
+      return reply.status(413).send({ error: "Image is too large" });
+    }
+
+    reply.header("Cache-Control", "public, max-age=31536000, immutable");
+    return reply.type(contentType).send(Buffer.from(bytes));
+  });
 
   app.get("/api/showcase", async (request, reply) => {
     if (!store) {
