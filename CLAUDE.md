@@ -86,6 +86,21 @@ second env var, since a second URL pointing elsewhere would silently split the
 schema) plus all four `S3_*` vars, and a one-time
 `npx playwright install chromium`. Spec: FIR-61.
 
+`--dry-run=<dir>` runs that same real generation — same theme pick, same
+palette avoidance, same `/prototype` turn — but instead of uploading to S3 and
+inserting rows, writes each screen's HTML and PNG plus a `_sheet.png` contact
+sheet into `<dir>`. It exists for the agent-improvement loop, which generates
+several probe runs per iteration to judge changes to the prompt or skills;
+publishing those would fill the live gallery with half-finished apps before
+anyone has looked at them. The screens are judged through the same
+`renderAndDiagnose`/`describeReport` pass from `previewScreens.ts` that
+`showcase:preview` uses, so a dry run and a hand-authored preview can never
+disagree about what counts as a defect. It still needs the same env as a
+normal run — `openShowcaseContext` is unchanged, so `TRACE_DATABASE_URL` and
+all four `S3_*` vars are validated even though nothing is uploaded — because
+the point is judging the exact run that would have published, not a cheaper
+stand-in for it.
+
 Two rotations keep the gallery from repeating itself. Themes: `store.recentThemes(10)`
 + `pickTheme`. **Palette:** `store.recentRunHtmlUrls(6)` → `src/showcase/palette.ts`
 extracts each recent run's accent straight out of its published HTML (most-frequent
