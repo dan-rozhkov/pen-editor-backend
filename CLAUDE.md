@@ -209,7 +209,9 @@ or a server:
 
 Env/Postgres/S3 wiring for all four entrypoints lives in
 `src/showcase/context.ts`, and the "run me only as a script" tail in
-`src/showcase/cli.ts`.
+`src/showcase/cli.ts`. `probes/showcase-mobile.md` holds the checkable
+expectations the `/improve-design-agent` loop judges a run against; every new
+defect is added there so the next loop re-checks it.
 
 **Gotcha, twice burned: no named inner functions inside `page.evaluate`.** The
 bundler emits a `__name` helper that does not exist in the page, so the whole
