@@ -13,6 +13,11 @@ reports/
 # Agent-isolated implementation worktrees
 .worktrees/
 
+# Subagent-driven-development scratch: per-plan ledgers, task briefs, reports
+# and review packages. The git history is the durable record; this is the
+# controller's working memory while a plan is being executed.
+.superpowers/
+
 # Hand-authored showcase runs staged by an agent. The skills tell those agents
 # to work in a scratchpad outside the repo; this is the backstop for when one
 # does not, so a stray run cannot end up committed or clutter someone else's
