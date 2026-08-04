@@ -87,19 +87,27 @@ schema) plus all four `S3_*` vars, and a one-time
 `npx playwright install chromium`. Spec: FIR-61.
 
 `--dry-run=<dir>` runs that same real generation — same theme pick, same
-palette avoidance, same `/prototype` turn — but instead of uploading to S3 and
-inserting rows, writes each screen's HTML and PNG plus a `_sheet.png` contact
-sheet into `<dir>`. It exists for the agent-improvement loop, which generates
-several probe runs per iteration to judge changes to the prompt or skills;
-publishing those would fill the live gallery with half-finished apps before
-anyone has looked at them. The screens are judged through the same
-`renderAndDiagnose`/`describeReport` pass from `previewScreens.ts` that
-`showcase:preview` uses, so a dry run and a hand-authored preview can never
-disagree about what counts as a defect. It still needs the same env as a
-normal run — `openShowcaseContext` is unchanged, so `TRACE_DATABASE_URL` and
-all four `S3_*` vars are validated even though nothing is uploaded — because
-the point is judging the exact run that would have published, not a cheaper
-stand-in for it.
+palette avoidance, same `/prototype` turn — but publishes nothing: it skips
+the screen upload and the `showcase_screens` insert, writing each screen's
+HTML and PNG plus a `_sheet.png` contact sheet into `<dir>` instead, so
+nothing reaches the gallery. It is not a cheaper stand-in for a real run,
+though — it's the same turn, and if that turn calls `generate_image`, those
+images are uploaded to the production bucket exactly as they would be on a
+normal run (up to `MAX_GENERATED_IMAGES`, see `runner.ts`). That upload is
+also why the four `S3_*` vars are still required even though the screen
+itself is never published: without them `generateImage` falls back to
+inlining a data URL, and a dry run that skipped real image generation would
+stop being the run that would have shipped. The cost is honest orphans —
+those objects are referenced by nothing in Postgres, so no `showcase:delete`
+or rescreenshot sweep will ever reach them; they just sit in the bucket. The
+screens are judged through the same `renderAndDiagnose`/`describeReport` pass
+from `previewScreens.ts` that `showcase:preview` uses, so a dry run and a
+hand-authored preview can never disagree about what counts as a defect. Note
+one gap between the directory and what would have shipped: the dry run writes
+the model's *raw* HTML to `<stem>.html`, but the PNG is rendered from
+`normalizeShowcaseHtml`'s output and `publish.ts` stores that normalized
+string — so a dry-run directory is not byte-identical to what would have
+published, only what would have rendered.
 
 Two rotations keep the gallery from repeating itself. Themes: `store.recentThemes(10)`
 + `pickTheme`. **Palette:** `store.recentRunHtmlUrls(6)` → `src/showcase/palette.ts`

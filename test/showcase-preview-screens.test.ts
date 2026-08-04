@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import sharp from "sharp";
 import {
+  containsScreenOutput,
   describeReport,
   renderAndDiagnose,
   screenFileStem,
@@ -143,5 +144,27 @@ describe("screenFileStem", () => {
 
   it("collapses punctuation runs and trims the edges", () => {
     expect(screenFileStem("  Cart / Checkout!  ", 9)).toBe("10-cart-checkout");
+  });
+});
+
+describe("containsScreenOutput", () => {
+  it("is false for an empty listing", () => {
+    expect(containsScreenOutput([])).toBe(false);
+  });
+
+  it("is false when only unrelated files are present", () => {
+    expect(containsScreenOutput(["README.md", ".DS_Store"])).toBe(false);
+  });
+
+  it("is true when an .html screen is present", () => {
+    expect(containsScreenOutput(["01-home.html"])).toBe(true);
+  });
+
+  it("is true when a .png screen is present", () => {
+    expect(containsScreenOutput(["notes.txt", "01-home.png"])).toBe(true);
+  });
+
+  it("is true for the contact sheet itself", () => {
+    expect(containsScreenOutput(["_sheet.png"])).toBe(true);
   });
 });

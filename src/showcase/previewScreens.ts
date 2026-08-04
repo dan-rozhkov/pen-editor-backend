@@ -13,9 +13,10 @@ import type { ScreenshotResult } from "./screenshot.js";
 // It lives apart from both entrypoints so the two cannot drift: a preview that
 // normalizes differently from the pipeline, or judges against a different box,
 // fails in exactly the way a preview exists to catch. Dependencies are
-// injected rather than imported so this stays testable without the Chromium CI
-// does not install — the type-only import of `ScreenshotResult` is erased at
-// compile time and keeps `playwright` out of this module's graph.
+// injected rather than imported, so this module can be unit-tested without
+// the Chromium that CI does not install — the type-only import of
+// `ScreenshotResult` is erased at compile time and keeps `playwright` out of
+// this module's graph.
 
 export interface ScreenSource {
   /** Used in logs and the contact sheet; the PNG path is given separately. */
@@ -93,4 +94,16 @@ export function screenFileStem(name: string, index: number): string {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
   return `${String(index + 1).padStart(2, "0")}-${slug || "screen"}`;
+}
+
+/** True if `entries` (filenames from a directory listing) contains a screen
+ * this pass would have written — `.html` or `.png`. Callers refuse to write
+ * into a directory where this is true rather than clearing it first: a
+ * `--dry-run=<dir>` run into a directory that already holds screens from an
+ * earlier run would judge those stale files as its own, silently, because
+ * the contact sheet is built only from the current run's reports while the
+ * by-eye step opens every PNG on disk. Deleting someone's files is the worse
+ * failure, so the fix is to refuse, not to clean up first. */
+export function containsScreenOutput(entries: string[]): boolean {
+  return entries.some((entry) => entry.endsWith(".html") || entry.endsWith(".png"));
 }

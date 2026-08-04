@@ -23,25 +23,25 @@ session.
 expectation: every screen is exactly 780x1688 device px
 source: pipeline invariant (`src/showcase/platform.ts`)
 judge: mechanical
-status: green as of 2026-08-04
+status: unknown
 
 ### P-002 nothing is sliced by the bottom edge
 expectation: no leaf element is cut by the bottom of the screen
 source: incident — a shelf published with its captions shaved off at a perfect 780x1688
 judge: mechanical
-status: green as of 2026-08-04
+status: unknown
 
 ### P-003 no screen ends in a band of nothing
 expectation: less than 160 CSS px of bare background at the foot of the screen
 source: `src/skills/prototype.md` ("no screen ends in 200px of dead space")
 judge: mechanical
-status: green as of 2026-08-04
+status: unknown
 
 ### P-004 the mount is never blank
 expectation: no screen renders as a single uniform colour
 source: incident — the render-ready wait timed out on heavy photos and published an empty mount
 judge: mechanical
-status: green as of 2026-08-04
+status: unknown
 
 ### P-005 the pinned bottom bar keeps its labels
 expectation: nothing in the pinned bottom bar is clipped or dropped to fit
@@ -74,10 +74,10 @@ judge: by eye
 status: unknown
 
 ### P-010 every screen the agent announced actually arrived
-expectation: the screen count in the run log matches the number the agent described in its own turn (read from the run log, not the PNG)
+expectation: the screen count in the run log matches the number the agent described in its own turn — the judge reads the run log, not the PNGs, and there is no mechanical check for this: the dry run only ever prints its own count, so absence of a note is not evidence
 source: incident — `extractEmbeds` truncated a batch at an unescaped quote and published blank screens; split from the original probe, which also asserted no screen is blank — that half is already covered by P-004
-judge: mechanical
-status: green as of 2026-08-04
+judge: by eye
+status: unknown
 
 ### P-011 the flow reads as one product
 expectation: type, spacing and colour are shared across the run's screens; no screen looks authored separately

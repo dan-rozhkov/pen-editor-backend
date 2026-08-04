@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { SHOWCASE_THEMES, DESKTOP_THEMES, pickTheme } from "./themes.js";
 import { recentAccentFamilies } from "./palette.js";
@@ -9,7 +9,12 @@ import { hasFlag, readFlag, parsePlatformFlag, parseDryRunDir } from "./cliFlags
 import { openShowcaseContext } from "./context.js";
 import { publishDepsFrom, publishScreens } from "./publish.js";
 import { resolveCoverIndex } from "./ingest.js";
-import { describeReport, renderAndDiagnose, screenFileStem } from "./previewScreens.js";
+import {
+  containsScreenOutput,
+  describeReport,
+  renderAndDiagnose,
+  screenFileStem,
+} from "./previewScreens.js";
 import { buildContactSheet } from "./previewDiagnostics.js";
 import { runAsScript } from "./cli.js";
 
@@ -95,9 +100,34 @@ async function main(): Promise<void> {
     if (dryRunDir) {
       // A real run of the real agent, kept out of the gallery: the improvement
       // loop generates several of these per iteration, and publishing them
-      // would fill the showcase with half-finished apps and pay S3 for them.
-      // Everything upstream of here — theme choice, palette avoidance, the
-      // turn itself — is untouched, so what is judged is what would ship.
+      // would fill the showcase with half-finished apps before anyone has
+      // looked at them. Everything upstream of here — theme choice, palette
+      // avoidance, the turn itself — is untouched, so what is judged is what
+      // would ship. That includes S3: this is a real turn, not a cheaper
+      // stand-in, so any images the agent generates via generate_image are
+      // uploaded to the production bucket exactly as they would be on a
+      // normal run (see CLAUDE.md for why and the orphan cost).
+
+      // Refuse a directory that already holds screen output rather than
+      // silently judging it alongside this run's — or worse, clearing it.
+      // The by-eye step in the improvement loop opens every PNG in the
+      // directory, and the retry-once-on-flake rule reuses the same path, so
+      // a partial batch left on disk is exactly the case this has to catch.
+      let existingEntries: string[] = [];
+      try {
+        existingEntries = await readdir(dryRunDir);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      }
+      if (containsScreenOutput(existingEntries)) {
+        console.error(
+          `[showcase] ${dryRunDir} already contains screen output (.html/.png) — ` +
+            `pick a fresh directory or delete it first`,
+        );
+        process.exitCode = 1;
+        return;
+      }
+
       await mkdir(dryRunDir, { recursive: true });
 
       const sources = await Promise.all(
@@ -130,6 +160,10 @@ async function main(): Promise<void> {
           `${reports.length} screen(s) in ${dryRunDir}, ${problems} mechanical problem(s)\n` +
           `${sheet}  — LOOK AT IT`,
       );
+      // Non-zero exit so an agent looping over this does not have to parse the
+      // log to notice — matches showcase:preview's contract for the same
+      // reason (see previewRun.ts).
+      if (problems > 0) process.exitCode = 1;
       return;
     }
 
