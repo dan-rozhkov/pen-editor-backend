@@ -1,12 +1,21 @@
 import { randomUUID } from "node:crypto";
+import { mkdir, readdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { SHOWCASE_THEMES, DESKTOP_THEMES, pickTheme } from "./themes.js";
 import { recentAccentFamilies } from "./palette.js";
 import { runShowcaseGeneration } from "./runner.js";
 import { openShowcaseBrowser } from "./screenshot.js";
-import { hasFlag, readFlag, parsePlatformFlag } from "./cliFlags.js";
+import { hasFlag, readFlag, parsePlatformFlag, parseDryRunDir } from "./cliFlags.js";
 import { openShowcaseContext } from "./context.js";
 import { publishDepsFrom, publishScreens } from "./publish.js";
 import { resolveCoverIndex } from "./ingest.js";
+import {
+  containsScreenOutput,
+  describeReport,
+  renderAndDiagnose,
+  screenFileStem,
+} from "./previewScreens.js";
+import { buildContactSheet } from "./previewDiagnostics.js";
 import { runAsScript } from "./cli.js";
 
 const RECENT_THEMES_WINDOW = 10;
@@ -23,6 +32,7 @@ async function main(): Promise<void> {
   const coverFlag = readFlag(argv, "cover");
   const coverFlagPresent = hasFlag(argv, "cover");
   const platform = parsePlatformFlag(argv, "showcase");
+  const dryRunDir = parseDryRunDir(argv, "showcase");
   // Screen count isn't known until the agent has run, so this first pass
   // only validates presence/format; the upper-bound check happens below
   // once `result.screens.length` exists.
@@ -86,6 +96,76 @@ async function main(): Promise<void> {
 
     browserSession = await openShowcaseBrowser();
     const session = browserSession;
+
+    if (dryRunDir) {
+      // A real run of the real agent, kept out of the gallery: the improvement
+      // loop generates several of these per iteration, and publishing them
+      // would fill the showcase with half-finished apps before anyone has
+      // looked at them. Everything upstream of here — theme choice, palette
+      // avoidance, the turn itself — is untouched, so what is judged is what
+      // would ship. That includes S3: this is a real turn, not a cheaper
+      // stand-in, so any images the agent generates via generate_image are
+      // uploaded to the production bucket exactly as they would be on a
+      // normal run (see CLAUDE.md for why and the orphan cost).
+
+      // Refuse a directory that already holds screen output rather than
+      // silently judging it alongside this run's — or worse, clearing it.
+      // The by-eye step in the improvement loop opens every PNG in the
+      // directory, and the retry-once-on-flake rule reuses the same path, so
+      // a partial batch left on disk is exactly the case this has to catch.
+      let existingEntries: string[] = [];
+      try {
+        existingEntries = await readdir(dryRunDir);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      }
+      if (containsScreenOutput(existingEntries)) {
+        console.error(
+          `[showcase] ${dryRunDir} already contains screen output (.html/.png) — ` +
+            `pick a fresh directory or delete it first`,
+        );
+        process.exitCode = 1;
+        return;
+      }
+
+      await mkdir(dryRunDir, { recursive: true });
+
+      const sources = await Promise.all(
+        result.screens.map(async (screen, index) => {
+          const stem = screenFileStem(screen.name, index);
+          const htmlPath = join(dryRunDir, `${stem}.html`);
+          await writeFile(htmlPath, screen.htmlContent, "utf8");
+          return { label: stem, html: screen.htmlContent, pngPath: join(dryRunDir, `${stem}.png`) };
+        }),
+      );
+
+      const reports = await renderAndDiagnose(
+        { screenshot: (html, p) => session.screenshot(html, p), writeFile },
+        sources,
+        platform,
+      );
+      for (const report of reports) {
+        for (const line of describeReport(report)) console.log(line);
+      }
+
+      const sheet = join(dryRunDir, "_sheet.png");
+      await buildContactSheet(
+        reports.map((r) => ({ path: r.pngPath, label: r.label })),
+        sheet,
+      );
+
+      const problems = reports.reduce((n, r) => n + r.notes.length, 0);
+      console.log(
+        `[showcase] dry run — theme "${theme}", model "${result.model}", ` +
+          `${reports.length} screen(s) in ${dryRunDir}, ${problems} mechanical problem(s)\n` +
+          `${sheet}  — LOOK AT IT`,
+      );
+      // Non-zero exit so an agent looping over this does not have to parse the
+      // log to notice — matches showcase:preview's contract for the same
+      // reason (see previewRun.ts).
+      if (problems > 0) process.exitCode = 1;
+      return;
+    }
 
     const published = await publishScreens(
       publishDepsFrom(ctx, (html, screenPlatform) => session.screenshot(html, screenPlatform)),

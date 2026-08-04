@@ -4,6 +4,7 @@ import {
   readFlag,
   parseCommonRepairFlags,
   parsePlatformFlag,
+  parseDryRunDir,
 } from "../src/showcase/cliFlags.js";
 
 describe("readFlag", () => {
@@ -143,5 +144,38 @@ describe("parsePlatformFlag", () => {
       '[showcase] --platform must be "mobile" or "desktop" (got "tablet")',
     );
     expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+});
+
+describe("parseDryRunDir", () => {
+  // The existing `afterEach(() => vi.restoreAllMocks())` in this file sits
+  // inside the `parsePlatformFlag` describe block, so it does not cover this
+  // one — the process.exit spy below must be torn down here.
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("returns undefined when the flag is absent", () => {
+    expect(parseDryRunDir(["--theme=x"], "showcase")).toBeUndefined();
+  });
+
+  it("reads the directory from the inline form", () => {
+    expect(parseDryRunDir(["--dry-run=/tmp/probe-01"], "showcase")).toBe("/tmp/probe-01");
+  });
+
+  it("reads the directory from the separated form", () => {
+    expect(parseDryRunDir(["--dry-run", "/tmp/probe-01"], "showcase")).toBe("/tmp/probe-01");
+  });
+
+  it("exits when the flag is given without a directory", () => {
+    // A valueless --dry-run would otherwise read as "publish normally", which
+    // is the one outcome a dry run must never produce.
+    const exit = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    parseDryRunDir(["--dry-run"], "showcase");
+
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(error.mock.calls[0][0]).toContain("--dry-run needs a directory");
   });
 });

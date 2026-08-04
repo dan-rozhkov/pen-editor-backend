@@ -1,13 +1,8 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import { openShowcaseBrowser, showcaseViewport } from "./screenshot.js";
-import { normalizeShowcaseHtml } from "./normalizeHtml.js";
-import {
-  DEAD_SPACE_LIMIT_CSS_PX,
-  DEVICE_SCALE_FACTOR,
-  buildContactSheet,
-  measureBottomDeadSpace,
-} from "./previewDiagnostics.js";
+import { openShowcaseBrowser } from "./screenshot.js";
+import { buildContactSheet } from "./previewDiagnostics.js";
+import { describeReport, renderAndDiagnose } from "./previewScreens.js";
 import { parsePlatformFlag } from "./cliFlags.js";
 import { runAsScript } from "./cli.js";
 
@@ -24,10 +19,11 @@ import { runAsScript } from "./cli.js";
 // `rescreenshot.ts` both apply — so the preview and the published screen could
 // differ in exactly the way a preview exists to catch.
 //
-// The three checks below are the ones that have actually cost rebuilds. Every
-// defect got past the size check at a perfect 780×1688: a screen ending in a
-// band of nothing, a row of content shaved by the bottom edge, and a blank
-// mount left behind when the asset wait timed out.
+// The three checks it runs — the ones that have actually cost rebuilds — now
+// live in `previewScreens.ts`, shared with `showcase:generate --dry-run`.
+// Every defect got past the size check at a perfect 780×1688: a screen ending
+// in a band of nothing, a row of content shaved by the bottom edge, and a
+// blank mount left behind when the asset wait timed out.
 //
 // Needs neither Postgres nor S3: no `openShowcaseContext`, just a browser.
 async function main(): Promise<void> {
@@ -44,42 +40,29 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const viewport = showcaseViewport(platform);
-  const expected = {
-    width: viewport.width * DEVICE_SCALE_FACTOR,
-    height: viewport.height * DEVICE_SCALE_FACTOR,
-  };
-
   // One browser for every file — the whole point of taking a list.
   const session = await openShowcaseBrowser();
   const rendered: { path: string; label: string }[] = [];
   const problems: string[] = [];
   try {
-    for (const file of files) {
-      const html = normalizeShowcaseHtml(await readFile(file, "utf8"));
-      const { buffer, width, height, clipped } = await session.screenshot(html, platform);
-      const out = file.replace(/\.html$/, ".png");
-      await writeFile(out, buffer);
-      rendered.push({ path: out, label: basename(out, ".png") });
+    const sources = await Promise.all(
+      files.map(async (file) => ({
+        label: basename(file, ".html"),
+        html: await readFile(file, "utf8"),
+        pngPath: file.replace(/\.html$/, ".png"),
+      })),
+    );
 
-      const notes: string[] = [];
-      if (width !== expected.width || height !== expected.height) {
-        notes.push(`wrong size — expected ${expected.width}x${expected.height}, content overflows`);
-      }
-      if (clipped.length > 0) notes.push(`sliced by the bottom edge: ${clipped.join(", ")}`);
+    const reports = await renderAndDiagnose(
+      { screenshot: (html, p) => session.screenshot(html, p), writeFile },
+      sources,
+      platform,
+    );
 
-      const dead = await measureBottomDeadSpace(buffer);
-      if (dead.blank) {
-        notes.push("blank mount — nothing rendered, the asset wait probably timed out");
-      } else if (dead.cssPx > DEAD_SPACE_LIMIT_CSS_PX) {
-        notes.push(`${dead.cssPx}px of dead space at the bottom`);
-      }
-
-      console.log(`${out} — ${width}x${height}${notes.length === 0 ? "  ok" : ""}`);
-      for (const note of notes) {
-        console.log(`  ! ${note}`);
-        problems.push(`${basename(out)}: ${note}`);
-      }
+    for (const report of reports) {
+      rendered.push({ path: report.pngPath, label: report.label });
+      for (const line of describeReport(report)) console.log(line);
+      for (const note of report.notes) problems.push(`${basename(report.pngPath)}: ${note}`);
     }
   } finally {
     await session.close();

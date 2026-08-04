@@ -71,3 +71,19 @@ export function parseCommonRepairFlags(argv: string[], tag: string): CommonRepai
 
   return { force, dryRun, limit };
 }
+
+/** `--dry-run=<dir>` for `showcase:generate`: run the agent for real, write
+ * the screens into `<dir>` instead of publishing them. Unlike the boolean
+ * `--dry-run` the repair CLIs take (see `parseCommonRepairFlags`), this one
+ * needs a directory — a valueless flag is a mistake worth exiting on, because
+ * falling back to "no dry run" would publish a probe run into the live
+ * gallery, which is the one outcome the flag exists to prevent. */
+export function parseDryRunDir(argv: string[], tag: string): string | undefined {
+  if (!hasFlag(argv, "dry-run")) return undefined;
+  const dir = readFlag(argv, "dry-run");
+  if (!dir) {
+    console.error(`[${tag}] --dry-run needs a directory, e.g. --dry-run=/tmp/probe-01`);
+    process.exit(1);
+  }
+  return dir;
+}
