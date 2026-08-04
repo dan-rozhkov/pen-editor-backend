@@ -9,9 +9,13 @@ Lives outside `src/` on purpose — `src/skills/` is loaded by `src/ai/skills.ts
 at startup, and a probe file in there would be advertised to the model as a
 skill.
 
-**Fields.** `expectation` is one line a judge can rule on. `judge` is
-`mechanical` (`showcase:preview` / the dry run reports it) or `by eye` (someone
-looks at the PNG). `status` is updated at the end of a loop session.
+**Fields.** `expectation` is one line a judge can rule on. `source` is where the
+expectation came from — a skill file, a pipeline invariant, or a dated
+incident; a probe sourced from a real incident is evidence, not opinion, and
+must not be softened later by someone who does not remember the incident.
+`judge` is `mechanical` (`showcase:preview` / the dry run reports it) or
+`by eye` (someone looks at the PNG). `status` is updated at the end of a loop
+session.
 
 ---
 
@@ -39,8 +43,8 @@ source: incident — the render-ready wait timed out on heavy photos and publish
 judge: mechanical
 status: green as of 2026-08-04
 
-### P-005 the pinned bottom bar survives the 844 box
-expectation: a pinned bottom bar keeps its labels and its full height; content above it neither overflows nor doubles the screen
+### P-005 the pinned bottom bar keeps its labels
+expectation: nothing in the pinned bottom bar is clipped or dropped to fit
 source: incident 2026-07-31 — the 844 box fails three quiet ways at once
 judge: by eye
 status: unknown
@@ -70,9 +74,9 @@ judge: by eye
 status: unknown
 
 ### P-010 every screen the agent announced actually arrived
-expectation: the screen count in the run log matches the number the agent described in its own turn, and none of them is blank
-source: incident — `extractEmbeds` truncated a batch at an unescaped quote and published blank screens
-judge: mechanical (read from the run log, not the PNG)
+expectation: the screen count in the run log matches the number the agent described in its own turn (read from the run log, not the PNG)
+source: incident — `extractEmbeds` truncated a batch at an unescaped quote and published blank screens; split from the original probe, which also asserted no screen is blank — that half is already covered by P-004
+judge: mechanical
 status: green as of 2026-08-04
 
 ### P-011 the flow reads as one product
@@ -84,5 +88,17 @@ status: unknown
 ### P-012 the brief is not austere
 expectation: screens show a point of view — imagery, colour and a stated hierarchy — rather than reading as a list of prohibitions obeyed
 source: incident — "a brief of prohibitions yields dry screens"
+judge: by eye
+status: unknown
+
+### P-013 the pinned bottom bar renders at its full intended height
+expectation: the pinned bottom bar is not compressed below its intended height
+source: incident 2026-07-31 — the 844 box fails three quiet ways at once; split from P-005
+judge: by eye
+status: unknown
+
+### P-014 content above the pinned bar respects the box
+expectation: content above the pinned bottom bar neither overflows behind it nor pushes the screen past the box
+source: incident 2026-07-31 — the 844 box fails three quiet ways at once; split from P-005
 judge: by eye
 status: unknown
