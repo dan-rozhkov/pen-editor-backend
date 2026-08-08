@@ -222,6 +222,7 @@ export async function prepareChatTurn(
   } as ToolSet;
   if (taskPolicy !== "native") {
     tools.batch_design = makeBatchDesignTool({ embedOnly: true });
+    delete tools.draw_vector;
   }
 
   return {

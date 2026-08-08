@@ -40,6 +40,19 @@ describe("prepareChatTurn", () => {
     // penTools.batch_design (schema swapped in resolveTaskPolicy branch).
     const { penTools } = await import("../src/ai/tools.js");
     expect(turn.tools.batch_design).not.toBe(penTools.batch_design);
+    expect(turn.tools.draw_vector).toBeUndefined();
+  });
+
+  it("does not expose draw_vector to /slides turns", async () => {
+    const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+
+    const config = makeConfig();
+    const messages = [userMessage("/slides a quarterly review")];
+
+    const turn = await prepareChatTurn({ config, messages });
+
+    expect(turn.taskPolicy).toBe("slides");
+    expect(turn.tools.draw_vector).toBeUndefined();
   });
 
   // Regression: prepareChatTurn used to assume some *other* code had already
@@ -79,5 +92,6 @@ describe("prepareChatTurn", () => {
     expect(turn.slashSkillName).toBeUndefined();
     expect(turn.system.length).toBeGreaterThan(0);
     expect(turn.tools.batch_design).toBe(penTools.batch_design);
+    expect(turn.tools.draw_vector).toBe(penTools.draw_vector);
   });
 });

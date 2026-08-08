@@ -151,6 +151,49 @@ describe("POST /api/chat — streaming happy paths", () => {
     expect(body).toContain("[DONE]");
   });
 
+  it("preserves progressive draw_vector input deltas without executing the tool", async () => {
+    holders.model = mockModel([
+      { type: "stream-start", warnings: [] },
+      { type: "tool-input-start", id: "call-vector", toolName: "draw_vector" },
+      {
+        type: "tool-input-delta",
+        id: "call-vector",
+        delta: '{"name":"Leaf","commands":"M(10,10)\\n',
+      },
+      {
+        type: "tool-input-delta",
+        id: "call-vector",
+        delta: 'L(20,20)\\nEND()"}',
+      },
+      { type: "tool-input-end", id: "call-vector" },
+      {
+        type: "tool-call",
+        toolCallId: "call-vector",
+        toolName: "draw_vector",
+        input: '{"name":"Leaf","commands":"M(10,10)\\nL(20,20)\\nEND()"}',
+      },
+      {
+        type: "finish",
+        finishReason: { unified: "tool-calls", raw: "tool_calls" },
+        usage: USAGE,
+      },
+    ]);
+
+    const res = await postChat(server.url, {
+      messages: [userMessage("draw a leaf")],
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    const start = body.indexOf('"type":"tool-input-start"');
+    const firstDelta = body.indexOf('"type":"tool-input-delta"');
+    const available = body.indexOf('"type":"tool-input-available"');
+    expect(start).toBeGreaterThan(-1);
+    expect(firstDelta).toBeGreaterThan(start);
+    expect(available).toBeGreaterThan(firstDelta);
+    expect(body).not.toContain('"type":"tool-output-available"');
+  });
+
   it("streams the model text response to the client", async () => {
     holders.model = mockModel(textStreamChunks("Hello from the design agent"));
 
