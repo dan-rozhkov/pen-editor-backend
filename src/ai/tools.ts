@@ -406,6 +406,26 @@ export function makeBatchDesignTool(opts?: { embedOnly?: boolean }) {
   });
 }
 
+export const drawVectorInputSchema = z.strictObject({
+  name: z.string().trim().min(1).max(120),
+  commands: z.string().min(1).max(32_768),
+});
+
+const drawVectorTool = tool({
+  description: `Draw one native vector contour progressively on the canvas. Use this instead of batch_design when the user requests a freeform native vector, icon/logo contour, or explicitly wants to watch the agent draw.
+The browser previews each complete command line while this tool input streams, then commits one PathNode after full validation.
+Commands, exactly one per line and in this order:
+- M(x, y) once, first
+- L(x, y) for a straight segment
+- C(cp1x, cp1y, cp2x, cp2y, x, y) for a cubic segment
+- CLOSE() before filling a closed contour
+- FILL("#RRGGBB" or "#RRGGBBAA") only after CLOSE()
+- STROKE("#RRGGBB" or "#RRGGBBAA", width)
+- END() once, last
+Emit geometry lines first so points and segments appear before fill. One tool call draws one contour; call the tool again for another shape.`,
+  inputSchema: drawVectorInputSchema,
+});
+
 // Shared by create_plugin/update_plugin so the panel-size shape can't drift
 // between the two tools.
 const pluginUiSchema = z
@@ -691,6 +711,8 @@ export const penTools = {
   // ── Modification ──────────────────────────────────────────────────
 
   batch_design: makeBatchDesignTool(),
+
+  draw_vector: drawVectorTool,
 
   rename_layers: tool({
     description:
