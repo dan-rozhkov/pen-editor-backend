@@ -17,6 +17,7 @@ describe("penTools registry", () => {
       [
         "batch_design",
         "batch_get",
+        "draw_vector",
         "boolean_operation",
         "find_empty_space_on_canvas",
         "generate_frame_image",
@@ -60,6 +61,7 @@ describe("penTools registry", () => {
     for (const name of [
       "batch_design",
       "batch_get",
+      "draw_vector",
       "get_editor_state",
       "get_variables",
       "set_variables",
@@ -100,6 +102,32 @@ describe("penTools registry", () => {
     ] as const) {
       expect(hasExecute(name), `${name} must execute on the backend`).toBe(true);
     }
+  });
+});
+
+describe("draw_vector schema", () => {
+  const schema = schemaOf("draw_vector");
+
+  it("accepts a bounded progressive vector script", () => {
+    expect(schema.safeParse({
+      name: "Leaf",
+      commands: [
+        "M(120, 80)",
+        "L(180, 60)",
+        "L(160, 160)",
+        "CLOSE()",
+        'FILL("#65A765")',
+        "END()",
+      ].join("\n"),
+    }).success).toBe(true);
+  });
+
+  it.each([
+    { name: "", commands: "M(0,0)\nL(1,1)\nEND()" },
+    { name: "Vector", commands: "" },
+    { name: "Vector", commands: "x".repeat(32_769) },
+  ])("rejects invalid bounds: %j", (input) => {
+    expect(schema.safeParse(input).success).toBe(false);
   });
 });
 
