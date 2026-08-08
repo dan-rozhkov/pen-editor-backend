@@ -22,7 +22,12 @@ if (getAllSkills().length === 0) {
   process.exit(1);
 }
 
-const app = await buildApp(config);
+// This is the one long-running dev/prod server instance allowed to
+// publish/reuse/clean up the shared ~/.pen-editor/mcp.json handshake file
+// (see BuildAppOptions.publishHandshake in src/app.ts) — every other
+// buildApp() caller (tests, one-off scripts) must default to leaving it
+// alone.
+const app = await buildApp(config, { publishHandshake: true });
 
 const shutdown = async () => {
   await closeAllMCPClients();

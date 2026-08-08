@@ -4,6 +4,9 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["test/**/*.test.ts"],
+    // Redirects os.homedir() away from the developer's real home directory
+    // before any test file is imported — see test/setup.ts.
+    setupFiles: ["test/setup.ts"],
     // Network calls to providers are forbidden in tests; everything is mocked.
     testTimeout: 15_000,
     coverage: {

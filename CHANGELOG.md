@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While on `0.x`, minor bumps may include breaking changes.
 
+## [Unreleased]
+
+### Added
+- **MCP auto-token mode for local dev.** When `MCP_AUTH_TOKEN` is unset in a non-production environment (`NODE_ENV !== "production"`), the server now generates a per-process token instead of returning a hard 503 across `/api/mcp*`, gates every request/upgrade to loopback callers only (`checkLoopback`/`isLoopbackAddress`, `src/mcp/routes.ts`), and publishes `{url, token, port}` to `~/.pen-editor/mcp.json` (mode 0600, dir 0700) so `pen-editor` and `pen-editor-plugin` can discover it with zero manual token wiring. A restart on the same configured port reuses the existing token from that file instead of minting a fresh one, so an already-open editor tab (which inlines the token once at vite boot) doesn't start 401ing in a reconnect loop after a routine `tsx watch` restart. In production with no explicit `MCP_AUTH_TOKEN`, behavior is unchanged from before this feature: a hard 503 across the whole surface — the loopback check alone isn't a safe substitute there, since it doesn't hold behind a same-host reverse proxy terminating on 127.0.0.1.
+- Only the long-running server instance (`src/index.ts`, i.e. `npm run dev`/`npm start`) publishes to or cleans up the handshake file (`BuildAppOptions.publishHandshake` in `src/app.ts`, default `false`) — every other `buildApp()` caller (the test suite, one-off scripts) leaves it untouched. Removal on shutdown additionally verifies the on-disk token/port still matches what this process itself wrote, so a second short-lived auto-token instance can never delete a still-running dev backend's handshake file.
+
+### Fixed
+- Every test that called `buildApp(makeConfig())` + `listen()` — the default `MCP_AUTH_TOKEN`-unset config — previously ran in auto-token mode and unconditionally overwrote/deleted a developer's real `~/.pen-editor/mcp.json` with a throwaway ephemeral-port token. Fixed by the `publishHandshake` opt-in above, plus a global `test/setup.ts` that mocks `node:os`'s `homedir()` for every test file as a second, independent layer.
+- `test/mcp-auto-token.test.ts`'s "wrong token" case sent `"Bearer 0".repeat(16)`, which produces `Bearer 0Bearer 0…` — a different length than a real 64-hex token, so it never actually exercised `constantTimeEqual`'s equal-length comparison path. Now sends `` `Bearer ${"0".repeat(64)}` ``.
+
 ## [0.36.0] - 2026-07-29
 
 ### Added

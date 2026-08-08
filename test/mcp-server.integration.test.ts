@@ -164,7 +164,11 @@ describe("MCP server integration", () => {
 });
 
 describe("MCP auth matrix", () => {
-  it("returns 503 when MCP_AUTH_TOKEN is unset", async () => {
+  // MCP_AUTH_TOKEN unset now means auto-token mode (see
+  // test/mcp-auto-token.test.ts for the full auto-token flow), not a
+  // disabled surface — a loopback request with no token gets 401 (bad
+  // credentials), not 503 (feature off).
+  it("returns 401, not 503, when MCP_AUTH_TOKEN is unset (auto-token mode, wrong/no credentials)", async () => {
     const app = await buildApp(makeConfig({ MCP_AUTH_TOKEN: undefined }), { logger: false });
     const url = await app.listen({ port: 0, host: "127.0.0.1" });
 
@@ -173,7 +177,7 @@ describe("MCP auth matrix", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({}),
     });
-    expect(res.status).toBe(503);
+    expect(res.status).toBe(401);
 
     await app.close();
   });

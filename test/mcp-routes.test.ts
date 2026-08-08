@@ -6,7 +6,15 @@ import { makeConfig } from "./helpers.js";
 
 const TOKEN = "a-very-secret-token!"; // >= 16 chars per MCP_AUTH_TOKEN validation
 
-describe("mcpRoutes — HTTP (auth disabled)", () => {
+// MCP_AUTH_TOKEN unset -> auto-token mode: the surface is enabled (no more
+// 503) but every request must look like it came from loopback. light-my-request
+// (app.inject) defaults MockSocket's remoteAddress to "127.0.0.1", so these
+// requests are seen as loopback and fall through to the ordinary bearer-token
+// check — hence 401, not 403, for a request with no/wrong token. The 403
+// loopback gate itself is covered separately below with an explicit
+// non-loopback remoteAddress. Full end-to-end coverage (auto-generated token
+// actually works, handshake file contents) lives in test/mcp-auto-token.test.ts.
+describe("mcpRoutes — HTTP (auto-token mode, MCP_AUTH_TOKEN unset)", () => {
   let app: FastifyInstance;
 
   beforeAll(async () => {
@@ -20,23 +28,107 @@ describe("mcpRoutes — HTTP (auth disabled)", () => {
     await app.close();
   });
 
-  it("returns 503 for POST /api/mcp when MCP_AUTH_TOKEN is unset", async () => {
+  it("returns 401 (not 503) for POST /api/mcp with no Authorization header", async () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/mcp",
       payload: { jsonrpc: "2.0", method: "ping" },
     });
-    expect(res.statusCode).toBe(503);
+    expect(res.statusCode).toBe(401);
   });
 
-  it("returns 503 for GET /api/mcp when MCP_AUTH_TOKEN is unset", async () => {
+  it("returns 401 (not 503) for GET /api/mcp with no Authorization header", async () => {
     const res = await app.inject({ method: "GET", url: "/api/mcp" });
-    expect(res.statusCode).toBe(503);
+    expect(res.statusCode).toBe(401);
   });
 
-  it("returns 503 for DELETE /api/mcp when MCP_AUTH_TOKEN is unset", async () => {
+  it("returns 401 (not 503) for DELETE /api/mcp with no Authorization header", async () => {
     const res = await app.inject({ method: "DELETE", url: "/api/mcp" });
-    expect(res.statusCode).toBe(503);
+    expect(res.statusCode).toBe(401);
+  });
+});
+
+describe("mcpRoutes — loopback restriction", () => {
+  it("rejects a non-loopback peer with 403 in auto-token mode, before the token is even checked", async () => {
+    const app = await buildApp(makeConfig({ MCP_AUTH_TOKEN: undefined }), {
+      logger: false,
+    });
+    await app.ready();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/mcp",
+        remoteAddress: "203.0.113.5", // TEST-NET-3, definitely non-loopback
+        payload: { jsonrpc: "2.0", method: "ping" },
+      });
+      expect(res.statusCode).toBe(403);
+      expect(res.json()).toMatchObject({ error: expect.stringContaining("127.0.0.1") });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("does NOT apply the loopback restriction when MCP_AUTH_TOKEN is set explicitly", async () => {
+    const app = await buildApp(makeConfig({ MCP_AUTH_TOKEN: TOKEN }), {
+      logger: false,
+    });
+    await app.ready();
+    try {
+      const res = await app.inject({
+        method: "DELETE",
+        url: "/api/mcp",
+        remoteAddress: "203.0.113.5",
+      });
+      // Falls through to the ordinary token check (no header here) -> 401,
+      // not the 403 a non-loopback peer would get in auto-token mode.
+      expect(res.statusCode).toBe(401);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+// Finding: production deployments that deliberately left MCP_AUTH_TOKEN
+// unset previously got a hard 503 across the whole /api/mcp* surface (the
+// pre-auto-token behavior). Auto-token mode must not turn that into a live
+// surface just because the caller happens to look like loopback — the
+// loopback check itself doesn't hold behind a same-host reverse proxy
+// terminating on 127.0.0.1. NODE_ENV="production" is the dev signal that
+// keeps auto-token mode from ever activating in that case (see
+// isDevEnvironment in src/mcp/autoToken.ts).
+describe("mcpRoutes — production with MCP_AUTH_TOKEN unset (503, feature off)", () => {
+  const originalNodeEnv = process.env.NODE_ENV;
+
+  afterEach(() => {
+    process.env.NODE_ENV = originalNodeEnv;
+  });
+
+  it("returns 503 for every /api/mcp* HTTP method, even from a loopback caller", async () => {
+    process.env.NODE_ENV = "production";
+    const app = await buildApp(makeConfig({ MCP_AUTH_TOKEN: undefined }), { logger: false });
+    await app.ready();
+    try {
+      for (const method of ["POST", "GET", "DELETE"] as const) {
+        const res = await app.inject({ method, url: "/api/mcp" });
+        expect(res.statusCode).toBe(503);
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("rejects the WS route's preValidation with 503, not 403 or 401", async () => {
+    process.env.NODE_ENV = "production";
+    const app = await buildApp(makeConfig({ MCP_AUTH_TOKEN: undefined }), { logger: false });
+    await app.ready();
+    try {
+      // preValidation runs (and short-circuits with 503) before the
+      // WebSocket upgrade itself, so a plain GET exercises the same check.
+      const res = await app.inject({ method: "GET", url: "/api/mcp/ws" });
+      expect(res.statusCode).toBe(503);
+    } finally {
+      await app.close();
+    }
   });
 });
 
@@ -190,7 +282,14 @@ describe("mcpRoutes — WebSocket auth", () => {
     resetBridgeForTests();
   });
 
-  it("rejects the upgrade with 503 when MCP_AUTH_TOKEN is unset", async () => {
+  // app.injectWS's synthetic upgrade request has no real socket, so
+  // req.socket.remoteAddress is undefined — isLoopbackAddress(undefined) is
+  // false, so this exercises the same 403 "unrecognized peer" path as a real
+  // non-loopback connection (safe default-deny). The positive case — a real
+  // 127.0.0.1 connection succeeding in auto-token mode — is covered with a
+  // real listen()+ws client in test/mcp-auto-token.test.ts, since injectWS
+  // cannot simulate a genuine loopback peer.
+  it("rejects the upgrade with 403 when MCP_AUTH_TOKEN is unset and the peer isn't recognized as loopback", async () => {
     const app = await buildApp(makeConfig({ MCP_AUTH_TOKEN: undefined }), {
       logger: false,
     });

@@ -52,11 +52,36 @@ Spec: `docs/superpowers/specs/2026-07-17-session-insights-design.md`.
 (WebSocket, `@fastify/websocket`) expose a curated 10-tool MCP surface —
 7 tools bridged live to a connected `pen-editor` browser tab
 (`src/mcp/bridge.ts`, most-recently-active session wins, 30s timeout) plus
-3 static tools executed directly on the server. Gated by `MCP_AUTH_TOKEN`
-(unset = 503 on the whole `/api/mcp*` surface). See
-`docs/superpowers/specs/2026-07-23-mcp-server-design.md` for the full design.
+3 static tools executed directly on the server. Gated by `MCP_AUTH_TOKEN`.
+See `docs/superpowers/specs/2026-07-23-mcp-server-design.md` for the full
+design.
 
-To connect Claude Code locally:
+**`MCP_AUTH_TOKEN` unset behavior depends on the environment**
+(`src/mcp/autoToken.ts`):
+- **Non-production** (`NODE_ENV !== "production"` — the default for `npm run
+  dev`/tests): **auto-token mode.** The server generates a per-process
+  token (or reuses one already sitting in the handshake file below, if it
+  matches this instance's configured port — a routine `tsx watch` restart
+  doesn't rotate the token out from under an already-connected editor tab),
+  restricts every `/api/mcp*` request/upgrade to loopback callers only
+  (`isLoopbackAddress`; a non-loopback caller gets `403`, not the ordinary
+  `401`), and publishes `{url, token, port}` to `~/.pen-editor/mcp.json`
+  (dir mode `0700`, file mode `0600`) so `pen-editor` and
+  `pen-editor-plugin` can connect with zero manual token wiring. Only the
+  long-running `npm run dev`/`npm start` process (`src/index.ts`) does this
+  publish/reuse/cleanup — `buildApp()` calls elsewhere (the test suite, ad
+  hoc scripts) leave the handshake file alone by default
+  (`BuildAppOptions.publishHandshake`, `src/app.ts`).
+- **Production** (`NODE_ENV === "production"`): the whole `/api/mcp*`
+  surface returns `503`, exactly as before auto-token mode existed. The
+  loopback check above is not treated as a safe substitute in production —
+  it doesn't hold behind a same-host reverse proxy (nginx/caddy)
+  terminating on `127.0.0.1`, where every internet request would otherwise
+  look like loopback.
+
+To connect Claude Code locally, either read the auto-published token out of
+`~/.pen-editor/mcp.json` (`npm run dev` writes it on startup) or set an
+explicit token yourself:
 
 ```bash
 export MCP_AUTH_TOKEN=$(openssl rand -hex 24)   # add to .env, then restart `npm run dev`
@@ -64,8 +89,10 @@ claude mcp add --transport http pen-editor http://localhost:3001/api/mcp \
   --header "Authorization: Bearer $MCP_AUTH_TOKEN"
 ```
 
-Then open the editor with `VITE_MCP_WS_TOKEN=$MCP_AUTH_TOKEN` set (see
-`pen-editor/CLAUDE.md`) so a tab is connected for bridged tools to reach.
+With an explicit `MCP_AUTH_TOKEN`, also open the editor with
+`VITE_MCP_WS_TOKEN=$MCP_AUTH_TOKEN` set (see `pen-editor/CLAUDE.md`) so a tab
+is connected for bridged tools to reach — in auto-token mode `pen-editor`'s
+vite dev server reads the handshake file itself and this is unnecessary.
 
 **`VITE_MCP_WS_TOKEN` is baked into the public JS bundle at build time —
 local/dev builds only. Never set it on a publicly deployed frontend build:**
