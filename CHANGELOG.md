@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While on `0.x`, minor bumps may include breaking changes.
 
-## [Unreleased]
+## [0.37.0] - 2026-08-09
 
 ### Added
 - **MCP auto-token mode for local dev.** When `MCP_AUTH_TOKEN` is unset in a non-production environment (`NODE_ENV !== "production"`), the server now generates a per-process token instead of returning a hard 503 across `/api/mcp*`, gates every request/upgrade to loopback callers only (`checkLoopback`/`isLoopbackAddress`, `src/mcp/routes.ts`), and publishes `{url, token, port}` to `~/.pen-editor/mcp.json` (mode 0600, dir 0700) so `pen-editor` and `pen-editor-plugin` can discover it with zero manual token wiring. A restart on the same configured port reuses the existing token from that file instead of minting a fresh one, so an already-open editor tab (which inlines the token once at vite boot) doesn't start 401ing in a reconnect loop after a routine `tsx watch` restart. In production with no explicit `MCP_AUTH_TOKEN`, behavior is unchanged from before this feature: a hard 503 across the whole surface — the loopback check alone isn't a safe substitute there, since it doesn't hold behind a same-host reverse proxy terminating on 127.0.0.1.
