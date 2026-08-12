@@ -24,6 +24,10 @@ import {
 import { renderMemorySnapshot } from "./memory/render.js";
 import { createMemoryToolContext, getMemoryTools } from "./memory/tool.js";
 import type { MemoryStore } from "./memory/store.js";
+import { getLearnedCatalog, type LearnedSkill, type LearnedSkillStore } from "./skills/learnedStore.js";
+import { createSkillRunContext } from "./skills/runContext.js";
+import { getSelfSkillTools } from "./skills/tool.js";
+import type { TraceQueryable } from "../tracing/traceStore.js";
 
 // Bounds the memory-snapshot read on top of (not instead of) the pool's own
 // connectionTimeoutMillis (src/tracing/traceStore.ts): that setting only
@@ -34,6 +38,21 @@ import type { MemoryStore } from "./memory/store.js";
 // case, since a hang here — not an exception — is exactly what a plain
 // try/catch cannot degrade from.
 const MEMORY_SNAPSHOT_TIMEOUT_MS = 2_000;
+
+// Same reasoning as MEMORY_SNAPSHOT_TIMEOUT_MS: the learned-skill catalog
+// read (getLearnedCatalog) sits in this same hot path, so a hung — not
+// merely erroring — Postgres connection must not hold the request open
+// forever either. getLearnedCatalog already catches thrown errors and falls
+// back to its cache; this timeout is what catches the "acquired but never
+// responds" case a plain try/catch cannot.
+const LEARNED_SKILLS_TIMEOUT_MS = 2_000;
+
+// A reasonable ceiling on how many learned rows get rendered into the
+// system prompt's skills catalog in one turn — see the truncation comment
+// where this is used. Generous enough that a real library (dozens of
+// class-level skills, per SKILL_REVIEW_PROMPT's bias against sprawl) never
+// hits it in practice, but still bounded rather than unlimited.
+const MAX_LEARNED_SKILLS_IN_PROMPT = 50;
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -105,6 +124,21 @@ export interface PrepareChatTurnInput {
    * this turn (the showcase runner and every headless entry point). */
   userId?: string;
   memoryStore?: MemoryStore | null;
+  /**
+   * Phase 2: injected learned-skill store. Undefined/null → no self-authored
+   * skills for this turn — the showcase runner and any caller that doesn't
+   * wire one stay exactly the pre-phase-2 turn. Ignored entirely (even if
+   * passed) when SELF_SKILLS_ENABLED is off, so the flag is the only thing
+   * that can change the system prompt/tool set byte-for-byte.
+   */
+  learnedSkillStore?: LearnedSkillStore | null;
+  /**
+   * Phase 2: direct Postgres handle for skill_manage/skill_view's own
+   * agent_selfimprove_audit writes — separate from learnedSkillStore, which
+   * only knows the agent_skills table. Same undefined/null/flag contract as
+   * learnedSkillStore.
+   */
+  auditDb?: TraceQueryable | null;
 }
 
 export interface PreparedChatTurn {
@@ -121,6 +155,9 @@ export interface PreparedChatTurn {
    * turn — the review runner uses it to decide whether a review is possible
    * at all. */
   memoryInjected: boolean;
+  /** Names of the self-authored skills that were merged into this turn's
+   * catalog (empty when SELF_SKILLS_ENABLED is off or no store was wired). */
+  learnedSkillNames: string[];
 }
 
 // Assembles everything streamText needs for a turn: slash-command skill
@@ -217,10 +254,66 @@ export async function prepareChatTurn(
   }
 
   const model = createModel(config, modelOverride);
-  const skillCatalog = getAllSkills().map((s) => ({
-    name: s.name,
-    description: s.description,
-  }));
+
+  // Self-authored skills (phase 2). Everything here is additive and
+  // best-effort: the flag gates it (ignoring even an explicitly-passed
+  // store when off, so the flag alone controls the prompt/tool byte
+  // identity), and a slow/unreachable catalog read degrades to "no learned
+  // skills this turn" rather than hanging the request — same race pattern
+  // as the memory snapshot read above.
+  const learnedStore = config.SELF_SKILLS_ENABLED ? (input.learnedSkillStore ?? null) : null;
+  let learnedSkills: LearnedSkill[] = [];
+  if (learnedStore) {
+    try {
+      learnedSkills = await withTimeout(
+        getLearnedCatalog(learnedStore),
+        LEARNED_SKILLS_TIMEOUT_MS,
+        "[selfskills] catalog read",
+      );
+    } catch (err) {
+      console.error("[selfskills] catalog read timed out; continuing without learned skills:", err);
+    }
+  }
+
+  // A learned skill's name can outlive its usefulness if a human later adds
+  // a curated skill under the same name (checkNameCollision only guards
+  // `create` time — it can't see a file that doesn't exist yet). Without
+  // this filter the catalog would render the name TWICE ("(learned)" and
+  // not), and load_skill always resolves the curated one anyway (see
+  // getSkill/getAllSkills precedence in skills.ts), so the learned entry
+  // would be dead weight the model can never actually reach — curated wins
+  // ties, always. skill_manage's curatedGuard still lets an agent DELETE
+  // the now-shadowed row directly (see tool.ts); this only controls what's
+  // rendered in the prompt.
+  const curatedNames = new Set(getAllSkills().map((s) => s.name));
+  const visibleLearnedSkills = learnedSkills.filter((s) => !curatedNames.has(s.name));
+  if (visibleLearnedSkills.length !== learnedSkills.length) {
+    console.warn(
+      `[selfskills] ${learnedSkills.length - visibleLearnedSkills.length} learned skill(s) hidden from the catalog — shadowed by a curated skill of the same name.`,
+    );
+  }
+
+  // Unbounded growth here means an unbounded system prompt: nothing today
+  // caps how many rows agent_skills can accumulate, and a silent truncation
+  // (or no cap at all) reads to whoever's debugging a missing skill as "it
+  // must have loaded everything" when it didn't. The cap keeps the prompt's
+  // size bounded and the log line makes the truncation visible instead of
+  // silent.
+  const boundedLearnedSkills = visibleLearnedSkills.slice(0, MAX_LEARNED_SKILLS_IN_PROMPT);
+  if (visibleLearnedSkills.length > MAX_LEARNED_SKILLS_IN_PROMPT) {
+    console.warn(
+      `[selfskills] learned skill catalog truncated to ${MAX_LEARNED_SKILLS_IN_PROMPT} of ${visibleLearnedSkills.length} active learned skills.`,
+    );
+  }
+
+  const skillCatalog = [
+    ...getAllSkills().map((s) => ({ name: s.name, description: s.description })),
+    ...boundedLearnedSkills.map((s) => ({
+      name: s.name,
+      description: s.description,
+      learned: true as const,
+    })),
+  ];
 
   // Memory is per-user and opt-in twice over: the kill switch AND a userId.
   // A snapshot read that fails must degrade to an ordinary turn rather than
@@ -278,16 +371,42 @@ export async function prepareChatTurn(
   const taskPolicy = resolveTaskPolicy({ messages, slashSkillName });
 
   const mcpTools = await getMCPTools(config);
+  // One run context per request: load_skill marks what the model actually
+  // read this turn, and skill_manage refuses to patch/delete anything it
+  // did not — see SkillRunContext's doc comment for why this must be fresh
+  // per request rather than shared across turns.
+  const skillRunContext = createSkillRunContext();
   const tools = {
     ...penTools,
     ...getWebTools(config),
     ...mcpTools,
-    ...getSkillTools(),
+    ...getSkillTools({ learnedStore, runContext: skillRunContext }),
   } as ToolSet;
   if (memoryInjected && memoryStore && input.userId) {
     Object.assign(
       tools,
       getMemoryTools(createMemoryToolContext(memoryStore, input.userId, "foreground")),
+    );
+  }
+  const auditDb = config.SELF_SKILLS_ENABLED ? (input.auditDb ?? null) : null;
+  if (learnedStore && auditDb) {
+    Object.assign(
+      tools,
+      getSelfSkillTools({
+        store: learnedStore,
+        runContext: skillRunContext,
+        db: auditDb,
+        // Skills are global, not per-user, so a write is legitimate without
+        // a userId; the audit row still needs one, and "anonymous" is the
+        // honest value for a caller with no client-supplied id.
+        userId: input.userId ?? "anonymous",
+        origin: "foreground",
+        // skill_view belongs to the background review run. In a design turn
+        // the model reads a skill via load_skill, which already satisfies
+        // skill_manage's read-before-write guard — a second reader here
+        // would just invite mid-task browsing of the library.
+        includeView: false,
+      }),
     );
   }
   if (taskPolicy !== "native") {
@@ -305,5 +424,10 @@ export async function prepareChatTurn(
     systemPromptHash,
     slashSkillName,
     memoryInjected,
+    // Reflects what was actually rendered into the catalog (deduped against
+    // curated names, capped at MAX_LEARNED_SKILLS_IN_PROMPT) — not the raw
+    // store read — since this is what other code inspects to know what the
+    // model was actually shown this turn.
+    learnedSkillNames: boundedLearnedSkills.map((s) => s.name),
   };
 }

@@ -136,4 +136,24 @@ describe("loadConfig", () => {
       expect(loadConfig().MEMORY_ENABLED).toBe(expected);
     }
   });
+
+  it("defaults SELF_SKILLS_ENABLED to false and honors only true/1", () => {
+    process.env = { OPENROUTER_API_KEY: "key" } as NodeJS.ProcessEnv;
+    expect(loadConfig().SELF_SKILLS_ENABLED).toBe(false);
+
+    for (const [value, expected] of [
+      ["true", true],
+      ["TRUE", true],
+      ["1", true],
+      ["false", false],
+      ["0", false],
+      ["", false],
+    ] as [string, boolean][]) {
+      process.env = {
+        OPENROUTER_API_KEY: "key",
+        SELF_SKILLS_ENABLED: value,
+      } as NodeJS.ProcessEnv;
+      expect(loadConfig().SELF_SKILLS_ENABLED).toBe(expected);
+    }
+  });
 });

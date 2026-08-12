@@ -3,6 +3,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tool } from "ai";
 import { z } from "zod";
+import type { LearnedSkillStore } from "./skills/learnedStore.js";
+import type { SkillRunContext } from "./skills/runContext.js";
 
 export interface SkillArg {
   name: string;
@@ -143,7 +145,18 @@ export function getAllSkills(): Skill[] {
   return [...skillsMap.values()];
 }
 
-export function getSkillTools(): Record<string, unknown> {
+export interface SkillToolsOptions {
+  /** When wired, load_skill also resolves agent-authored skills from Postgres. */
+  learnedStore?: LearnedSkillStore | null;
+  /** When wired, a successful load counts as "read" for skill_manage's guard. */
+  runContext?: SkillRunContext;
+}
+
+export function getSkillTools(
+  options: SkillToolsOptions = {},
+): Record<string, unknown> {
+  const { learnedStore, runContext } = options;
+
   const load_skill = tool({
     description:
       "Load a skill's full instructions by name. Call this when the user's task matches a skill listed in the 'Available Skills' catalog in your system prompt. Returns the skill's instructions to follow for the current turn.",
@@ -154,15 +167,31 @@ export function getSkillTools(): Record<string, unknown> {
     }),
     execute: async ({ name }: { name: string }) => {
       const skill = getSkill(name);
-      if (!skill) {
-        const available = getAllSkills()
-          .map((s) => s.name)
-          .join(", ");
-        return {
-          error: `Unknown skill "${name}". Available skills: ${available}`,
-        };
+      if (skill) {
+        runContext?.markRead(name);
+        return { name: skill.name, instructions: skill.content };
       }
-      return { name: skill.name, instructions: skill.content };
+
+      if (learnedStore) {
+        // Curated first, always: a learned skill can never shadow a git-owned
+        // one, and the name validator already refuses that collision anyway.
+        const learned = await learnedStore.get(name).catch(() => null);
+        if (learned && learned.state === "active") {
+          // Best-effort: a failed counter bump must not fail the load.
+          await learnedStore.bumpUse(name).catch(() => undefined);
+          runContext?.markRead(name);
+          return { name: learned.name, instructions: learned.body, learned: true };
+        }
+      }
+
+      const curatedNames = getAllSkills().map((s) => s.name);
+      const learnedNames = learnedStore
+        ? (await learnedStore.listActive().catch(() => [])).map((s) => s.name)
+        : [];
+      const available = [...curatedNames, ...learnedNames].join(", ");
+      return {
+        error: `Unknown skill "${name}". Available skills: ${available}`,
+      };
     },
   });
   return { load_skill };

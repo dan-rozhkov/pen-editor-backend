@@ -189,18 +189,25 @@ describe("maybeRunReview", () => {
     // result was fed back — proof the SDK didn't throw NoSuchToolError.
     expect(capturedCalls).toHaveLength(2);
     expect(JSON.stringify(capturedCalls[1].prompt)).toContain(
-      "not available during a background memory review",
+      "not available during a background self-improvement review",
     );
   });
 
-  it("skips the review entirely on a mid-turn continuation request, without bumping counters", async () => {
+  it("skips running a review on a mid-turn continuation request, but still bumps steps (turns: 0)", async () => {
+    // steps_since_skill must accumulate on every request, mid-turn included
+    // — see the steps_since_skill fix. `turns: 0` keeps turns_since_memory
+    // itself from moving on a continuation, which isn't a completed user
+    // turn. No generateText call happens either way.
     capturedCalls.length = 0;
     const { maybeRunReview } = await import("../src/ai/selfimprove/review.js");
     holders.model = reviewModel(textResult("Nothing to save."));
     const store = fakeStore(true);
 
     expect(await maybeRunReview(input({ store, turnComplete: false }))).toBe("mid-turn");
-    expect(store.bumpCounters).not.toHaveBeenCalled();
+    expect(store.bumpCounters).toHaveBeenCalledTimes(1);
+    expect(store.bumpCounters).toHaveBeenCalledWith(
+      expect.objectContaining({ turns: 0 }),
+    );
     expect(capturedCalls).toHaveLength(0);
   });
 
@@ -292,7 +299,7 @@ describe("maybeRunReview", () => {
       // that isn't in penTools at all.
       expect(capturedCalls).toHaveLength(2);
       expect(JSON.stringify(capturedCalls[1].prompt)).toContain(
-        "not available during a background memory review",
+        "not available during a background self-improvement review",
       );
     });
 
@@ -317,7 +324,7 @@ describe("maybeRunReview", () => {
         "real style guide result",
       );
       expect(JSON.stringify(capturedCalls[1].prompt)).not.toContain(
-        "not available during a background memory review",
+        "not available during a background self-improvement review",
       );
     });
   });

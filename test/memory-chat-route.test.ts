@@ -185,16 +185,22 @@ describe("POST /api/chat — review only bumps the counter on a completed turn",
     await app.close();
   });
 
-  it("does NOT bump turns_since_memory on a continuation request (pending client tool call)", async () => {
+  it("bumps steps but NOT turns_since_memory on a continuation request (pending client tool call)", async () => {
+    // A mid-turn request still calls bumpCounters — steps_since_skill must
+    // accumulate every round-trip, not just the final one (see the
+    // steps_since_skill fix in ai/selfimprove/review.ts) — but `turns` is 0:
+    // a continuation is not a completed user turn, so turns_since_memory
+    // must not move for it.
     holders.model = mockModel(toolCallStreamChunks());
     await start(true);
     await postChat({
       messages: [{ id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] }],
       userId: "11111111-1111-4111-8111-111111111111",
     });
-    // Give the fire-and-forget review a tick to (not) run.
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(store.bumpCounters).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(store.bumpCounters).toHaveBeenCalledTimes(1));
+    expect(store.bumpCounters).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: "11111111-1111-4111-8111-111111111111", turns: 0 }),
+    );
     await app.close();
   });
 });

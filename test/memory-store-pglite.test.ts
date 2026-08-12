@@ -334,4 +334,41 @@ describe("bumpCounters", () => {
     // steps_since_skill is phase 2's counter — the memory reset must not clear it.
     expect(after.stepsSinceSkill).toBe(7);
   });
+
+  // Phase 2: skillInterval is an optional add-on to the same call. Omitted →
+  // the return object must have EXACTLY the phase-1 shape (no extra key),
+  // which is what the first test in this block already pins via toEqual.
+  it("omits skillReviewDue entirely when skillInterval is not passed", async () => {
+    const result = await store.bumpCounters({ userId: "u2", turns: 1, steps: 5, memoryInterval: 3 });
+    expect(result).not.toHaveProperty("skillReviewDue");
+  });
+
+  it("computes and resets skillReviewDue independently of the memory counter", async () => {
+    let last = await store.bumpCounters({
+      userId: "u3",
+      turns: 1,
+      steps: 2,
+      memoryInterval: 100,
+      skillInterval: 3,
+    });
+    expect(last.skillReviewDue).toBe(false);
+    last = await store.bumpCounters({
+      userId: "u3",
+      turns: 1,
+      steps: 2,
+      memoryInterval: 100,
+      skillInterval: 3,
+    });
+    expect(last).toMatchObject({ stepsSinceSkill: 4, skillReviewDue: true, memoryReviewDue: false });
+
+    const after = await store.bumpCounters({
+      userId: "u3",
+      turns: 1,
+      steps: 1,
+      memoryInterval: 100,
+      skillInterval: 3,
+    });
+    // The skill reset must not touch the (unrelated, not-yet-due) memory counter.
+    expect(after).toMatchObject({ stepsSinceSkill: 1, skillReviewDue: false, turnsSinceMemory: 3 });
+  });
 });

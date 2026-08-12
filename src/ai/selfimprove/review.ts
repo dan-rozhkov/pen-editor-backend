@@ -1,13 +1,25 @@
-import { generateText, stepCountIs, type ModelMessage, type ToolSet } from "ai";
+import { generateText, stepCountIs, tool, type ModelMessage, type ToolSet } from "ai";
 import type { Config } from "../../config.js";
 import { logSession } from "../../logging.js";
 import { createModel } from "../provider.js";
-import { MEMORY_REVIEW_PROMPT } from "../memory/prompts.js";
 import { MEMORY_REVIEW_INTERVAL, type MemoryStore } from "../memory/store.js";
-import { createMemoryToolContext, getMemoryTools } from "../memory/tool.js";
+import { createMemoryToolContext, getMemoryTools, memoryInputSchema } from "../memory/tool.js";
 import { renderMemorySnapshot } from "../memory/render.js";
+import { selectReviewPrompt } from "../skills/prompts.js";
+import type { LearnedSkillStore } from "../skills/learnedStore.js";
+import { createSkillRunContext } from "../skills/runContext.js";
+import { getSelfSkillTools } from "../skills/tool.js";
+import type { TraceQueryable } from "../../tracing/traceStore.js";
 
 const REVIEW_MAX_STEPS = 8;
+
+/** Phase 2 (self-authored skills): the review fires every this many
+ * accumulated tool steps, tracked in agent_review_state.steps_since_skill
+ * (bumped unconditionally by MemoryStore.bumpCounters; this is only the
+ * due-threshold). Independent of MEMORY_REVIEW_INTERVAL, which counts USER
+ * TURNS, not tool steps — skills are learned from how a task went, which
+ * tracks with how much tool-calling happened, not how many messages it took. */
+export const SKILL_REVIEW_INTERVAL = 15;
 
 // Background review, no user waiting on it — but it must not hold a
 // multi-MB transcript (modelMessages can carry base64 image parts from
@@ -17,8 +29,26 @@ const REVIEW_MAX_STEPS = 8;
 // have to actually wait 90s to exercise the timeout path.
 const DEFAULT_REVIEW_TIMEOUT_MS = 90_000;
 
+// Generic stub message for a client-executed pen tool the model reached for
+// mid-review. NOT specific to "only the memory tool runs here" — which
+// subsystems actually run depends on what's enabled (memory-only,
+// skill-only, or both; see the reviewTools assembly below), so a blanket
+// claim about which ONE tool is available would just be wrong for the other
+// two cases. It only needs to say "not this one," not name the alternative.
 const REVIEW_TOOL_UNAVAILABLE =
-  "This tool is not available during a background memory review — only the memory tool runs here. Ignore the system prompt's tool-usage instructions for this turn.";
+  "This tool is not available during a background self-improvement review. Ignore the system prompt's tool-usage instructions for this turn.";
+
+// Second line of defense for the `memory` tool specifically: SKILL_REVIEW_PROMPT's
+// wording is conditioned on whether `memory` actually exists in reviewTools
+// (see prompts.ts's buildSkillReviewPrompt), but a model can still reach for
+// it despite correct instructions — a stale system-prompt fragment, or just
+// not reading closely. Without this stub, turnTools (built from the ACTUAL
+// turn's tool set) has no `memory` entry at all when MEMORY_ENABLED is off,
+// so buildReviewToolStubs has nothing to swap in, and the call would hit a
+// hard NoSuchToolError instead of a harmless string result — see the
+// "Prompt: SKILL_REVIEW_INTERVAL" fix in the finding this addresses.
+const MEMORY_TOOL_UNAVAILABLE =
+  "Persistent memory is disabled for this deployment — there is no memory tool in this run. Ignore any instruction that says otherwise.";
 
 // The turn's FULL system prompt (`system` below) is reused verbatim to keep
 // the provider's prefix cache warm — see the comment on `system` in
@@ -97,6 +127,20 @@ export interface MaybeRunReviewInput {
   /** Overrides DEFAULT_REVIEW_TIMEOUT_MS — test-only knob so the timeout
    * path can be exercised without actually waiting 90s. */
   reviewTimeoutMs?: number;
+  /**
+   * Phase 2: learned-skill store for skill_manage/skill_view during the
+   * review run. Undefined/null → the skill half of the review is skipped
+   * even if SELF_SKILLS_ENABLED is on (mirrors `store` being required for
+   * the memory half).
+   */
+  learnedSkillStore?: LearnedSkillStore | null;
+  /**
+   * Phase 2: direct Postgres handle skill_manage/skill_view use for their
+   * own agent_selfimprove_audit writes (agent_skills has no per-target key
+   * like memory's (user_id, target), so it has no equivalent to
+   * MemoryStore.writeAudit — see src/ai/selfimprove/auditDb.ts).
+   */
+  auditDb?: TraceQueryable | null;
 }
 
 export type ReviewOutcome = "disabled" | "mid-turn" | "not-due" | "ran" | "timed-out";
@@ -113,23 +157,68 @@ export async function maybeRunReview(
   input: MaybeRunReviewInput,
 ): Promise<ReviewOutcome> {
   const { config, store, userId } = input;
-  if (!config.MEMORY_ENABLED || !userId || !store) return "disabled";
-  // Do not even bump the counter on a mid-turn continuation request — see
-  // the `turnComplete` doc comment. Note we deliberately do NOT change the
-  // "reset only after a successful review" question here: the counter still
-  // resets as soon as the threshold is observed (see below), win or lose,
-  // so a broken model/provider gets one review attempt per interval rather
-  // than retrying on every subsequent turn.
-  if (!input.turnComplete) return "mid-turn";
+  // `store` (MemoryStore) is the shared counters/audit handle for BOTH
+  // subsystems — see the "Gated on MEMORY_ENABLED || SELF_SKILLS_ENABLED"
+  // comment in app.ts. So the precondition here is "no userId, no store, or
+  // NEITHER subsystem is on", not "memory specifically is off" — a
+  // skills-only deployment (MEMORY_ENABLED false) must still be able to run.
+  if (!userId || !store) return "disabled";
+  if (!config.MEMORY_ENABLED && !config.SELF_SKILLS_ENABLED) return "disabled";
 
   try {
+    // Bump on EVERY request, mid-turn or not — a single user message can
+    // span many `POST /api/chat` round-trips (one per client-executed tool
+    // call the browser has to run and resend), and each of those carries
+    // its own `stepCount`. Only bumping on the final, turnComplete request
+    // (as this used to) meant `steps_since_skill` only ever accumulated the
+    // LAST request's step count (usually 1, since the final step by
+    // definition made no tool calls) — "every 15 tool-call steps" collapsed
+    // into "every ~15 user turns" and lost exactly the sensitivity to
+    // how much tool-calling a task took that steps were introduced for.
+    // `turns` still only increments on the completed request — mid-turn
+    // requests are not user turns, they're continuations of one — so
+    // `turns_since_memory`'s meaning is unaffected.
     const counters = await store.bumpCounters({
       userId,
-      turns: 1,
+      turns: input.turnComplete ? 1 : 0,
       steps: input.stepCount,
       memoryInterval: MEMORY_REVIEW_INTERVAL,
+      // Only check (and possibly reset) the skill due-threshold on the
+      // COMPLETED request — omitting skillInterval mid-turn still lets
+      // steps_since_skill accumulate (that increment is unconditional in
+      // the UPDATE, see bumpCounters' own doc comment) but skips the
+      // due-check/reset that only makes sense once the turn is actually
+      // over and a review could run. Checking due mid-turn would let a
+      // threshold crossed mid-turn get silently reset with no review ever
+      // firing for it.
+      ...(config.SELF_SKILLS_ENABLED && input.turnComplete
+        ? { skillInterval: SKILL_REVIEW_INTERVAL }
+        : {}),
     });
-    if (!counters.memoryReviewDue) return "not-due";
+
+    // Do not run (or even evaluate due-ness for) a review on a mid-turn
+    // continuation request — see the `turnComplete` doc comment. The bump
+    // above already happened either way, which is the whole point of this
+    // fix: accumulation no longer waits for turnComplete, only the review
+    // itself does.
+    if (!input.turnComplete) return "mid-turn";
+
+    // The counter itself accumulates unconditionally above (steps_since_skill
+    // and turns_since_memory both always bump) — flipping a flag on later
+    // does not need a fresh user to start firing. But a DUE decision still
+    // requires the flag: bumpCounters can report a threshold crossed for a
+    // subsystem that is nonetheless off (e.g. turns_since_memory can cross
+    // memoryInterval and get silently RESET by bumpCounters even while
+    // MEMORY_ENABLED is off — the interval math has no idea about the flag
+    // — so a later flip-on does not inherit whatever had already
+    // accumulated before the flip), and that reported due-ness must never
+    // be allowed to fire a review for a disabled subsystem.
+    const due = {
+      memoryDue: config.MEMORY_ENABLED && counters.memoryReviewDue,
+      skillDue: config.SELF_SKILLS_ENABLED && Boolean(counters.skillReviewDue),
+    };
+    const reviewPromptBase = selectReviewPrompt(due, config.MEMORY_ENABLED);
+    if (!reviewPromptBase) return "not-due";
 
     const messages: ModelMessage[] = [...input.modelMessages];
     if (input.assistantText.trim()) {
@@ -143,23 +232,67 @@ export async function maybeRunReview(
     // runs, so the review can't see the entry it would otherwise duplicate.
     // Re-reading the snapshot fresh and appending it to the REVIEW'S user
     // message (never the system prompt) keeps the cached prefix untouched
-    // while still showing the model current state.
-    const freshSnapshotBlock = renderMemorySnapshot(await store.loadSnapshot(userId));
-    const reviewPrompt = freshSnapshotBlock
-      ? `${MEMORY_REVIEW_PROMPT}\n\nCurrent memory contents (do not add anything already listed here — check before every 'add'):\n\n${freshSnapshotBlock}`
-      : MEMORY_REVIEW_PROMPT;
+    // while still showing the model current state. Only fetched when the
+    // memory half is actually due — a skill-only review has nothing to gain
+    // from it.
+    let reviewPrompt = reviewPromptBase;
+    if (due.memoryDue) {
+      const freshSnapshotBlock = renderMemorySnapshot(await store.loadSnapshot(userId));
+      if (freshSnapshotBlock) {
+        reviewPrompt = `${reviewPrompt}\n\nCurrent memory contents (do not add anything already listed here — check before every 'add'):\n\n${freshSnapshotBlock}`;
+      }
+    }
     messages.push({ role: "user", content: reviewPrompt });
 
-    const ctx = createMemoryToolContext(store, userId, "background_review");
-    // Real memory tool + stubs for everything else the system prompt might
-    // steer the model towards (see buildReviewToolStubs above). The memory
-    // tool is the only one with a real effect; every other name here exists
-    // solely so an off-script call resolves instead of throwing.
+    // Tool whitelist is keyed off which SUBSYSTEMS ARE ENABLED, not which one
+    // is due — buildSkillReviewPrompt's tool-availability line assumes both
+    // may be present whenever memory is enabled at all, so a
+    // skill-triggered review can still save a memory it happens to notice,
+    // and vice versa.
+    const reviewTools: ToolSet = { ...buildReviewToolStubs(input.turnTools) };
+    if (config.MEMORY_ENABLED) {
+      const ctx = createMemoryToolContext(store, userId, "background_review");
+      Object.assign(reviewTools, getMemoryTools(ctx));
+    } else if (config.SELF_SKILLS_ENABLED) {
+      // Memory is off: `turnTools` (built from the REAL turn's tool set)
+      // never carries a `memory` entry in this configuration (see
+      // chatTurn.ts — it's only added when memoryInjected), so
+      // buildReviewToolStubs above had nothing to stub for it. Register an
+      // explicit stub so a model that calls `memory` anyway (despite the
+      // now-conditioned prompt wording — see buildSkillReviewPrompt) gets a
+      // harmless string result instead of a hard NoSuchToolError that
+      // aborts the whole review after the counter's already been bumped.
+      reviewTools.memory = tool({
+        description: "Not available in this run — persistent memory is disabled.",
+        inputSchema: memoryInputSchema,
+        execute: async () => MEMORY_TOOL_UNAVAILABLE,
+      });
+    }
+    if (config.SELF_SKILLS_ENABLED && input.learnedSkillStore && input.auditDb) {
+      Object.assign(
+        reviewTools,
+        getSelfSkillTools({
+          store: input.learnedSkillStore,
+          // A FRESH run context for this review run: read-before-write must
+          // be satisfied inside THIS run, never inherited from whatever the
+          // foreground turn happened to load() earlier.
+          runContext: createSkillRunContext(),
+          db: input.auditDb,
+          userId,
+          origin: "background_review",
+          // skill_view exists only for the review run — a normal design
+          // turn reads a skill via load_skill, which already satisfies
+          // skill_manage's read-before-write guard.
+          includeView: true,
+        }),
+      );
+    }
+
     const result = await generateText({
       model: createModel(config, input.modelOverride),
       system: input.system,
       messages,
-      tools: { ...buildReviewToolStubs(input.turnTools), ...getMemoryTools(ctx) } as ToolSet,
+      tools: reviewTools,
       stopWhen: stepCountIs(REVIEW_MAX_STEPS),
       // Nobody is waiting on this run (fire-and-forget from onFinish, after
       // the user's response already streamed) and nobody can cancel it, so

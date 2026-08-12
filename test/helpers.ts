@@ -25,6 +25,7 @@ export function makeConfig(overrides: Partial<Config> = {}): Config {
     EMBEDDINGS_MODEL: "text-embedding-004",
     MCP_AUTH_TOKEN: undefined,
     MEMORY_ENABLED: false,
+    SELF_SKILLS_ENABLED: false,
     ...overrides,
   };
 }

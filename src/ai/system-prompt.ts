@@ -6,6 +6,11 @@ export type AgentMode = (typeof AGENT_MODES)[number];
 export interface SkillCatalogEntry {
   name: string;
   description: string;
+  /** Written by the agent itself (Phase 2's agent_skills table), not a
+   * git-owned src/skills/*.md file. Rendered with a `(learned)` suffix so
+   * the model (and anyone reading a trace) can tell curated instructions
+   * from ones it wrote for itself in an earlier session. */
+  learned?: boolean;
 }
 
 export interface SystemPromptMemory {
@@ -48,14 +53,21 @@ export function buildSystemPrompt(
 
 function renderSkillCatalog(skills: SkillCatalogEntry[]): string {
   const lines = skills
-    .map((s) => `- \`${s.name}\` — ${s.description}`)
+    .map((s) => `- \`${s.name}\` — ${s.description}${s.learned ? " (learned)" : ""}`)
     .join("\n");
+  // Only rendered when at least one learned skill is present: on a fresh
+  // install (or with SELF_SKILLS_ENABLED off) the catalog is entirely
+  // curated, and the legend would be pure noise sitting in the cached
+  // system-prompt prefix for every turn.
+  const legend = skills.some((s) => s.learned)
+    ? "\n\nSkills marked `(learned)` are ones you wrote yourself in an earlier session. Load them exactly like the others; if one turns out to be wrong or outdated, fix it rather than working around it."
+    : "";
   return `
 ## Available Skills
 
 You can load extra task-specific instructions on demand. When the user's request matches one of the skills below, call the \`load_skill\` tool with its \`name\` BEFORE doing the work, then follow the returned instructions for the rest of the turn. Load at most one skill unless a task clearly spans several.
 
-${lines}
+${lines}${legend}
 
 ### FIRST DECISION (before the Mandatory flow / any other tool)
 

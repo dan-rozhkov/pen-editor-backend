@@ -26,6 +26,8 @@ import {
 import type { MemoryStore } from "../ai/memory/store.js";
 import { runReviewSafe } from "../ai/selfimprove/review.js";
 import { isPlausibleUserId } from "../lib/userId.js";
+import type { LearnedSkillStore } from "../ai/skills/learnedStore.js";
+import type { TraceQueryable } from "../tracing/traceStore.js";
 
 // Re-exported for backwards compatibility: existing tests import this
 // symbol from routes/chat.js. The implementation now lives in
@@ -102,6 +104,12 @@ export async function chatRoutes(
   config: Config,
   traceStore: TraceStore | null = null,
   memoryStore: MemoryStore | null = null,
+  // Phase 2 (self-authored skills): learnedSkillStore feeds the catalog
+  // merge + load_skill/skill_manage's read side; auditDb is skill_manage/
+  // skill_view's own handle for agent_selfimprove_audit writes. Both null by
+  // default so every existing caller (tests, ad hoc scripts) is unaffected.
+  learnedSkillStore: LearnedSkillStore | null = null,
+  auditDb: TraceQueryable | null = null,
 ) {
   const allowedModels = getAllowedModels(config);
   const allowedOrigins = parseEnvList(config.CORS_ALLOWED_ORIGINS);
@@ -163,7 +171,6 @@ export async function chatRoutes(
       taskPolicy,
       selectedModelId,
       systemPromptHash,
-      memoryInjected,
     } = await prepareChatTurn({
       config,
       messages,
@@ -171,6 +178,8 @@ export async function chatRoutes(
       modelOverride,
       userId,
       memoryStore,
+      learnedSkillStore,
+      auditDb,
     });
     const maxSteps = MAX_AGENT_STEPS;
 
@@ -262,10 +271,16 @@ export async function chatRoutes(
           );
         }
 
-        // Fire-and-forget: the response has already streamed. Only ever runs
-        // with MEMORY_ENABLED + a userId + a store — the showcase runner and
-        // every headless entry point never reach it.
-        if (memoryInjected && userId) {
+        // Fire-and-forget: the response has already streamed. `memoryStore`
+        // is the counters/audit table handle shared by BOTH subsystems (see
+        // app.ts — it is constructed whenever MEMORY_ENABLED OR
+        // SELF_SKILLS_ENABLED is on, since agent_review_state holds both
+        // counters in one row), so it can be non-null here even on a turn
+        // where memory itself was not injected (skills-only). maybeRunReview
+        // does its own per-subsystem flag/due checks; this gate is only the
+        // cheap "is there anywhere to write at all" precondition — the
+        // showcase runner and every headless entry point never reach it.
+        if (userId && memoryStore) {
           // The client auto-resends on every client-executed tool call
           // (`lastAssistantMessageIsCompleteWithToolCalls`), so one user
           // message can be many `POST /api/chat` requests. A request whose
@@ -287,6 +302,8 @@ export async function chatRoutes(
             stepCount: steps.length,
             modelOverride,
             turnComplete,
+            learnedSkillStore,
+            auditDb,
           });
         }
       },

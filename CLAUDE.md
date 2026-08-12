@@ -79,25 +79,40 @@ Three tables (migration `009_agent_memory.sql`, index in `010_...idx.sql`):
   increments on a request whose final step made **no** tool calls — i.e. a
   completed reply to the user, not one of the several `POST /api/chat`
   round-trips a single message can span via
-  `lastAssistantMessageIsCompleteWithToolCalls` on the frontend. At
-  `MEMORY_REVIEW_INTERVAL` (10) a background review turn runs, sees the
-  `memory` tool plus stubs built from the turn's ACTUAL, FULL tool set
-  (`prepareChatTurn`'s `tools` — every client-executed pen tool, `load_skill`,
-  MCP tools, web tools; passed in as `MaybeRunReviewInput.turnTools`, not
-  reconstructed from `penTools` alone) for whichever of those the shared
-  system prompt might otherwise steer it toward (same trick as
-  `src/showcase/runner.ts`'s tool emulation, so an off-script call resolves
-  instead of throwing `NoSuchToolError` — this matters because the review
-  reuses the FULL system prompt including its "call load_skill/MCP tools
-  first" instructions, not a memory-only prompt), and re-reads the memory
-  snapshot fresh into its own user message (never the cached system prompt)
-  so it can't miss a fact a foreground call already saved this same turn.
-  The run also carries its own wall-clock cap (`AbortSignal.timeout`, 90s by
-  default) since it is fire-and-forget from `onFinish` after the client has
-  already disconnected — nobody can cancel a stuck provider call otherwise,
-  and it would hold the full transcript (which can carry multi-MB base64
-  image parts) in memory indefinitely; a cancellation from that timeout is
-  logged distinctly from an ordinary review failure.
+  `lastAssistantMessageIsCompleteWithToolCalls` on the frontend.
+  `steps_since_skill` (phase 2) is different on purpose: `maybeRunReview`
+  calls `bumpCounters` on **every** request, mid-turn included, so it
+  accumulates the full step count of each round-trip a message spans, not
+  just the final one — only the DUE check (and the reset that comes with it)
+  is deferred to the completed request. Bumping only on completion (as this
+  used to) collapsed "every `SKILL_REVIEW_INTERVAL` tool-call steps" into
+  "every ~`SKILL_REVIEW_INTERVAL` user turns," since the final request's own
+  step count is normally 1. At `MEMORY_REVIEW_INTERVAL` (10) a background
+  review turn runs, sees the `memory` tool plus stubs built from the turn's
+  ACTUAL, FULL tool set (`prepareChatTurn`'s `tools` — every client-executed
+  pen tool, `load_skill`, MCP tools, web tools; passed in as
+  `MaybeRunReviewInput.turnTools`, not reconstructed from `penTools` alone)
+  for whichever of those the shared system prompt might otherwise steer it
+  toward (same trick as `src/showcase/runner.ts`'s tool emulation, so an
+  off-script call resolves instead of throwing `NoSuchToolError` — this
+  matters because the review reuses the FULL system prompt including its
+  "call load_skill/MCP tools first" instructions, not a memory-only prompt),
+  and re-reads the memory snapshot fresh into its own user message (never
+  the cached system prompt) so it can't miss a fact a foreground call
+  already saved this same turn. When a skill-only review runs with
+  `MEMORY_ENABLED` off, `turnTools` never carries a real `memory` tool
+  either (chat turns only add it when `memoryInjected`), so the review adds
+  its own harmless stub for `memory` too — `SKILL_REVIEW_PROMPT`'s
+  tool-restriction sentence is itself conditioned on whether memory is
+  actually available this run (`buildSkillReviewPrompt`,
+  `src/ai/skills/prompts.ts`), and the stub is the second line of defense
+  if the model reaches for it anyway. The run also carries its own
+  wall-clock cap (`AbortSignal.timeout`, 90s by default) since it is
+  fire-and-forget from `onFinish` after the client has already disconnected
+  — nobody can cancel a stuck provider call otherwise, and it would hold the
+  full transcript (which can carry multi-MB base64 image parts) in memory
+  indefinitely; a cancellation from that timeout is logged distinctly from
+  an ordinary review failure.
 - **`agent_selfimprove_audit`** — one row per write, `origin` ∈
   `foreground | background_review | curator`. Every mutation goes through
   `insertAuditRow` (used both stand-alone and inside `applyOperations`'s
@@ -116,6 +131,133 @@ removes one entry, `--user <id> --clear [--dry-run]` wipes both targets. Only
 `TRACE_DATABASE_URL` is required (no S3), same shape as
 `showcase:pin`/`showcase:delete` (`src/ai/memory/curator.ts` +
 `curatorRun.ts`). Every deletion writes an `origin: "curator"` audit row.
+
+## Self-authored skills (`src/ai/skills/`, phase 2 of the self-improvement loop)
+
+With **`SELF_SKILLS_ENABLED=true`** and `TRACE_DATABASE_URL` set, the agent
+maintains its own skill library in **`agent_skills`** (migration
+`011_agent_skills.sql`) — global, not per-user: the agent serves one design
+domain, so a procedure learned in one session is procedure for every
+session. `agent_review_state.steps_since_skill` (created by phase 1, acted
+on only from phase 2 onward) tracks cumulative tool-call steps; every
+`MemoryStore.bumpCounters` call now also accepts an optional
+`skillInterval`, and the review fires every **`SKILL_REVIEW_INTERVAL` (15)**
+accumulated steps, counted independently of `MEMORY_REVIEW_INTERVAL`'s user
+turns — a skill is learned from how much tool-calling a task took, not how
+many chat messages it spanned. `agent_review_state` holds both counters in
+one row per user, so `buildApp` (`src/app.ts`) constructs the shared
+`MemoryStore` whenever **either** `MEMORY_ENABLED` or `SELF_SKILLS_ENABLED`
+is on — the memory *feature* itself (snapshot injection, the `memory` tool)
+still stays fully gated by `MEMORY_ENABLED` alone inside
+`prepareChatTurn`/`maybeRunReview`.
+
+Two turn-time, backend-executed tools (`src/ai/skills/tool.ts`,
+`getSelfSkillTools`) — injected the same way `load_skill` is
+(`getSkillTools()`), so neither is a `penTools` entry and neither touches
+the cross-repo tool contract:
+- **`skill_manage`** (create/patch/delete) — offered on every normal turn
+  when the flag is on and a store is wired (`prepareChatTurn`,
+  `src/ai/chatTurn.ts`).
+- **`skill_view`** (read-only) — offered **only** to the background review
+  run (`maybeRunReview`); a normal design turn reads a skill via
+  `load_skill`, which already satisfies `skill_manage`'s read-before-write
+  guard.
+
+Guards (`src/ai/skills/validate.ts` + `tool.ts`): curated `src/skills/*.md`
+files are read-only to the tool — the error names the git-owned path. A
+learned skill's `name` may not collide with a curated skill or a `penTools`
+name **at create time** (`checkNameCollision`); that check can't see a
+curated file added *later* under a name an existing learned row already
+uses, so the curated-name guard runs again at patch/delete time — but only
+blocks `patch` there. `delete` is deliberately exempt: it only removes the
+now-dead Postgres row (never the git-owned file), which is exactly the
+cleanup a later-arriving collision calls for, and `getLearnedCatalog`
+already stops rendering the shadowed row (curated always wins a name tie —
+see the catalog paragraph below) so nothing but the DB row is stale. `patch`
+requires the exact skill to have been read via `load_skill`/`skill_view`
+**within the same run** — tracked by a per-run in-memory `SkillRunContext`
+(`src/ai/skills/runContext.ts`), fresh per HTTP request in `chatTurn.ts` and
+fresh per background-review run in `review.ts` (never shared between them);
+`delete` requires the same read plus `absorbed_into: string` (empty string =
+pruning), and reports an error rather than false success if `store.remove`
+turns out to have deleted nothing (a concurrent delete between the read and
+this call — mirrors `replaceBody`'s own "no longer exists" guard). A
+provenance guard restricts `patch`/`delete` to rows with `created_by =
+'agent'`, so a hand-seeded or human-edited row in `agent_skills` is immune
+to the autonomous reviewer; `skill_view`'s `editable` field reports the same
+thing (`created_by === 'agent'`), not just "is this a learned row," so the
+model isn't told it can write something `skill_manage` will actually refuse.
+Every store call in `skill_manage` (`get`/`create`/`replaceBody`/`remove`/
+`listActive`) is wrapped so a thrown Postgres error becomes a model-facing
+string instead of an uncaught tool error mid design-turn — matching
+`load_skill`/`skill_view`, which already did this; `create`'s race against
+its own pre-check (no `ON CONFLICT`, deliberately — see `learnedStore.ts`)
+is translated from a raw unique-violation into the same "already exists, use
+patch" guidance the pre-check itself gives. `applyPatch`
+(`src/ai/skills/validate.ts`) requires `old_string` to occur exactly once,
+including **overlapping** occurrences (`body.indexOf(oldString, first + 1)`,
+not `first + oldString.length` — the latter walks past a second match that
+starts inside the first, e.g. `"aaa"` / `"aa"`). Every write lands in
+`agent_selfimprove_audit` (`subsystem: "skill"`), through the same
+`insertAuditRow` memory uses — skill_manage/skill_view take a raw
+`TraceQueryable` (`src/ai/selfimprove/auditDb.ts`, its own small shared pool,
+mirroring `getSharedLearnedSkillStore`, `connectionTimeoutMillis: 5_000`
+like the neighboring hot-path pools since `skill_manage`'s audit write sits
+inside a turn's `execute`) rather than `MemoryStore.writeAudit`, since
+`agent_skills` is keyed by `name` alone and has no `MemoryStore` equivalent
+for a table shaped like that. Both `getSharedLearnedSkillStore` and
+`getSharedAuditDb` close the pool they're replacing on a URL change (only
+ever seen in tests/multi-config processes — production never changes
+`TRACE_DATABASE_URL` mid-process) rather than dropping it unclosed, and
+`LearnedSkillStore.close()`/the raw `TraceQueryable.end()` are both wired to
+`buildApp`'s `onClose` hook (`src/app.ts`), the same contract
+`traceStore`/`memoryStore`/`showcaseStore` already had.
+
+`prepareChatTurn` merges `agent_skills`' active rows into the system
+prompt's skills catalog (`src/ai/system-prompt.ts`) marked **`(learned)`**,
+with a short legend sentence shown only when at least one is present — a
+fresh install with an empty table renders byte-identical to pre-phase-2. A
+learned row whose name collides with a curated skill (see the guards
+paragraph above) is filtered out of the catalog entirely — curated always
+wins the tie, `load_skill` would resolve there anyway, so showing the
+learned duplicate too would just be a dead, confusing second line — and the
+merged list is capped at `MAX_LEARNED_SKILLS_IN_PROMPT` (50, `chatTurn.ts`)
+with a `console.warn` on either the shadow-filter or the cap actually
+truncating something, so a silent drop never reads as "everything loaded."
+`load_skill` resolves a learned skill exactly like a curated one and bumps
+its `use_count`/`last_used_at`. The catalog read
+(`getLearnedCatalog`/`LearnedSkillStore`, `src/ai/skills/learnedStore.ts`)
+caches **per store instance** (keyed by object identity, not one shared
+global slot — a multi-store process, e.g. tests or two differently
+configured server instances, would otherwise let `getLearnedCatalog(storeA)`
+return rows actually read through `storeB`) for 30s and, like the memory
+snapshot read, is raced against a 2s timeout in `chatTurn.ts` so a
+slow/unreachable Postgres degrades to "no learned skills this turn" instead
+of hanging `/api/chat`. Learned skills are **NOT slash-invocable** — `/name`
+stays curated-only.
+
+The background review's skill/combined prompts live in
+`src/ai/skills/prompts.ts` (`SKILL_REVIEW_PROMPT`, `buildSkillReviewPrompt`,
+`buildCombinedReviewPrompt`, `selectReviewPrompt`) — ported verbatim from
+Hermes, including the do-not-capture list (environment-dependent failures,
+negative claims about tools, transient errors that resolved, one-off task
+narratives, unresolved failures) and the preference ladder biased against
+creating new skills (patch a skill loaded this session > patch any existing
+skill that covers the class > create new, and only as a last resort). The
+review's tool whitelist is keyed off which subsystems are **enabled**, not
+which one is **due** — a skill-triggered review still gets the `memory` tool
+if `MEMORY_ENABLED` is on, and vice versa. The prompt's trailing
+tool-restriction sentence is generated by `buildSkillReviewPrompt(memoryAvailable)`
+rather than hardcoded, and `memoryAvailable` is `config.MEMORY_ENABLED` — a
+`SELF_SKILLS_ENABLED`-only deployment (a supported shape) gets "you can only
+call skill management tools," not a false claim that memory is callable
+too. `maybeRunReview` also registers a schema-accurate `memory` stub in that
+same shape (mirroring the pen-tool stubs `buildReviewToolStubs` builds from
+`turnTools`, which never carries a real `memory` entry when
+`MEMORY_ENABLED` is off) so a model that reaches for it anyway — a stale
+prompt fragment, an inattentive read — gets a harmless result instead of a
+hard `NoSuchToolError` that aborts the whole review after the counter's
+already been bumped.
 
 ## MCP server (`src/mcp/`)
 

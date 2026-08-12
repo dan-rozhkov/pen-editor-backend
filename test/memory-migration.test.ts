@@ -61,11 +61,7 @@ describe("009_agent_memory.sql", () => {
     ).rejects.toThrow();
   });
 
-  it("does not create the phase-2 agent_skills table", async () => {
-    const res = (await harness.pool.query(
-      "SELECT to_regclass('public.agent_skills') AS reg",
-      [],
-    )) as { rows: Array<{ reg: string | null }> };
-    expect(res.rows[0].reg).toBeNull();
-  });
+  // agent_skills now ships in migration 011 (see agent-skills-migration.test.ts) —
+  // this suite only asserts phase-1's own three tables, so no assertion about
+  // agent_skills belongs here anymore.
 });

@@ -23,6 +23,9 @@ import { createTraceStore, type TraceStore } from "./tracing/traceStore.js";
 import type { ShowcaseStore } from "./showcase/store.js";
 import { createMemoryStore, type MemoryStore } from "./ai/memory/store.js";
 import { memoryActivityRoutes } from "./routes/memoryActivity.js";
+import { getSharedLearnedSkillStore, type LearnedSkillStore } from "./ai/skills/learnedStore.js";
+import { getSharedAuditDb } from "./ai/selfimprove/auditDb.js";
+import type { TraceQueryable } from "./tracing/traceStore.js";
 
 export interface BuildAppOptions {
   logger?: FastifyServerOptions["logger"];
@@ -35,6 +38,9 @@ export interface BuildAppOptions {
   // Test seam: inject a fake memory store. `undefined` = create from config,
   // `null` = explicitly disabled.
   memoryStore?: MemoryStore | null;
+  // Phase 2 test seams, same undefined/null contract as memoryStore above.
+  learnedSkillStore?: LearnedSkillStore | null;
+  auditDb?: TraceQueryable | null;
   // Whether this buildApp() call is the one long-running dev server
   // instance allowed to publish/reuse/clean up the shared handshake file at
   // ~/.pen-editor/mcp.json. Defaults to false: every other caller (test
@@ -92,15 +98,22 @@ export async function buildApp(
       await traceStore.close();
     });
   }
-  // Gated on MEMORY_ENABLED here, not inside createMemoryStore: that factory
-  // is also called directly by tests wanting a store regardless of the flag
-  // (test/memory-store-pglite.test.ts), and its own contract is "config has
-  // TRACE_DATABASE_URL". The app itself must not open a second pool at the
-  // same Postgres when the feature is off.
+  // Gated on MEMORY_ENABLED || SELF_SKILLS_ENABLED here, not inside
+  // createMemoryStore: that factory is also called directly by tests
+  // wanting a store regardless of either flag (test/memory-store-pglite.test.ts),
+  // and its own contract is "config has TRACE_DATABASE_URL". The app itself
+  // must not open a second pool at the same Postgres when BOTH features are
+  // off. SELF_SKILLS_ENABLED alone still needs this store: agent_review_state
+  // holds turns_since_memory AND steps_since_skill in one row per user, and
+  // bumpCounters is the only place that reads/resets either counter — a
+  // skills-only deployment (MEMORY_ENABLED off) still needs it to track the
+  // skill review threshold, even though the memory *feature* (snapshot
+  // injection, the `memory` tool) stays fully gated by MEMORY_ENABLED alone
+  // inside prepareChatTurn/maybeRunReview.
   const memoryStore =
     options.memoryStore !== undefined
       ? options.memoryStore
-      : config.MEMORY_ENABLED
+      : config.MEMORY_ENABLED || config.SELF_SKILLS_ENABLED
         ? createMemoryStore(config)
         : null;
   if (memoryStore) {
@@ -108,7 +121,43 @@ export async function buildApp(
       await memoryStore.close();
     });
   }
-  await chatRoutes(app, config, traceStore, memoryStore);
+  // Phase 2: learnedSkillStore feeds the catalog merge + load_skill's
+  // learned-skill resolution; auditDb is skill_manage/skill_view's own
+  // handle for agent_selfimprove_audit writes. Both gated on
+  // SELF_SKILLS_ENABLED alone (unlike memoryStore above, nothing else needs
+  // agent_skills or a raw audit handle).
+  const learnedSkillStore =
+    options.learnedSkillStore !== undefined
+      ? options.learnedSkillStore
+      : config.SELF_SKILLS_ENABLED
+        ? getSharedLearnedSkillStore(config)
+        : null;
+  const auditDb =
+    options.auditDb !== undefined
+      ? options.auditDb
+      : config.SELF_SKILLS_ENABLED
+        ? getSharedAuditDb(config)
+        : null;
+  // Same close-on-shutdown contract as traceStore/memoryStore above —
+  // without these, every buildApp() call in a long-running process (or a
+  // test file with many `it`s that each build+close an app) leaked one
+  // pg.Pool per store, since nothing else ever called .close()/.end() on
+  // them. Both are shared-by-URL singletons (getSharedLearnedSkillStore /
+  // getSharedAuditDb), so this only actually closes the underlying pool
+  // once per URL, not once per buildApp() call — repeated calls against the
+  // same URL just re-close an already-closed pool, which pg treats as a
+  // harmless no-op.
+  if (learnedSkillStore) {
+    app.addHook("onClose", async () => {
+      await learnedSkillStore.close();
+    });
+  }
+  if (auditDb) {
+    app.addHook("onClose", async () => {
+      await auditDb.end();
+    });
+  }
+  await chatRoutes(app, config, traceStore, memoryStore, learnedSkillStore, auditDb);
   await memoryActivityRoutes(app, config, memoryStore);
   await modelsRoutes(app, config);
   await uploadRoutes(app, config);

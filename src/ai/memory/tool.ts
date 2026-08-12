@@ -29,7 +29,10 @@ export function createMemoryToolContext(
   return { store, userId, origin, failures: { count: 0 } };
 }
 
-const memoryInputSchema = z.object({
+// Exported so the background review can build a schema-accurate `memory`
+// stub (src/ai/selfimprove/review.ts) when persistent memory is disabled for
+// the run but the model might still reach for the tool by name.
+export const memoryInputSchema = z.object({
   target: z
     .enum(["memory", "user"])
     .describe(

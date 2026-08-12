@@ -65,6 +65,17 @@ const envSchema = z.object({
       const s = v?.toLowerCase();
       return s === "true" || s === "1";
     }),
+  // Kill switch for phase 2 (self-authored skills: agent_skills table +
+  // skill_manage/skill_view tools + the skill half of the background
+  // review). Default false until the loop is verified live. Same parsing
+  // as ENABLE_AGENT_LOGGING: z.coerce.boolean() would treat "false" as true.
+  SELF_SKILLS_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => {
+      const s = v?.toLowerCase();
+      return s === "true" || s === "1";
+    }),
 });
 
 export type Config = z.infer<typeof envSchema>;

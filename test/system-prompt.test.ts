@@ -79,6 +79,46 @@ describe("buildSystemPrompt", () => {
     expect(prompt).not.toContain("Available Skills");
   });
 
+  it("marks learned skills in the catalog and leaves curated ones unmarked", () => {
+    const prompt = buildSystemPrompt(undefined, [
+      { name: "prototype", description: "Build a clickable prototype" },
+      { name: "reading-canvas-state", description: "Read the canvas before editing", learned: true },
+    ]);
+    expect(prompt).toContain("- `prototype` — Build a clickable prototype");
+    expect(prompt).toContain(
+      "- `reading-canvas-state` — Read the canvas before editing (learned)",
+    );
+  });
+
+  it("explains what (learned) means when at least one learned skill is present", () => {
+    const prompt = buildSystemPrompt(undefined, [
+      { name: "reading-canvas-state", description: "Read the canvas first", learned: true },
+    ]);
+    expect(prompt).toContain("(learned)");
+    expect(prompt).toContain("you wrote yourself");
+  });
+
+  it("omits the (learned) legend when every skill is curated", () => {
+    const prompt = buildSystemPrompt(undefined, [
+      { name: "prototype", description: "Build a clickable prototype" },
+    ]);
+    expect(prompt).not.toContain("(learned)");
+  });
+
+  it("is byte-identical with SELF_SKILLS_ENABLED off / an empty learned catalog — this prompt sits at the front of the provider's cached prefix, so a curated-only catalog must render EXACTLY as it did before Phase 2", () => {
+    const before = buildSystemPrompt(undefined, [
+      { name: "prototype", description: "Build a mockup." },
+      { name: "polish", description: "Final visual pass." },
+    ]);
+    // Same skills, but each explicitly carries `learned: false` — the shape
+    // a caller gets when it always sets the field rather than omitting it.
+    const after = buildSystemPrompt(undefined, [
+      { name: "prototype", description: "Build a mockup.", learned: false },
+      { name: "polish", description: "Final visual pass.", learned: false },
+    ]);
+    expect(after).toBe(before);
+  });
+
   it("appends canvas context after the core prompt", () => {
     const prompt = buildSystemPrompt("<canvas state here>");
     expect(prompt).toContain("## Current Canvas Context");

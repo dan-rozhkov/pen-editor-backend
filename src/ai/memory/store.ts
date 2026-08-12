@@ -46,6 +46,15 @@ export interface ReviewCounters {
   turnsSinceMemory: number;
   stepsSinceSkill: number;
   memoryReviewDue: boolean;
+  /**
+   * Present only when the caller passed `skillInterval` to `bumpCounters`
+   * (phase 2). Omitted rather than `false` when no caller asked for it, so
+   * phase-1-only callers keep getting the exact same object shape they
+   * always have — see the `bumpCounters` test that asserts
+   * `toEqual({turnsSinceMemory, stepsSinceSkill, memoryReviewDue})` with no
+   * fourth key.
+   */
+  skillReviewDue?: boolean;
 }
 
 /** A single audited write, summarized for UI display — never carries entry
@@ -77,6 +86,14 @@ export interface MemoryStore {
     turns: number;
     steps: number;
     memoryInterval: number;
+    /**
+     * Phase 2 only: when provided, also decides `skillReviewDue` against
+     * `steps_since_skill` and resets that column in the same transaction if
+     * due. Phase 1 callers omit this and the column just keeps accumulating
+     * (still bumped by `steps` either way — that increment was always
+     * unconditional, see the UPDATE below).
+     */
+    skillInterval?: number;
   }): Promise<ReviewCounters>;
   writeAudit(entry: AuditEntry): Promise<void>;
   /**
@@ -121,8 +138,17 @@ function toEntries(value: unknown): string[] {
 // query here would land on a different connection and commit outside the
 // transaction). Both callers satisfy this minimal query surface, so one
 // function serves either.
-async function insertAuditRow(
-  db: { query(sql: string, params?: unknown[]): Promise<{ rows: unknown[] }> },
+//
+// Exported so src/ai/skills/tool.ts's skill_manage can write the exact same
+// `agent_selfimprove_audit` rows through the exact same INSERT, rather than
+// growing a second, drifting copy of this statement — the spec's "every
+// autonomous write lands in agent_selfimprove_audit" is one mechanism, not
+// one per subsystem. The return type is loosened to `Promise<unknown>` (vs.
+// MemoryPool/LearnedSkillsPool's `Promise<{rows: unknown[]}>`) purely so a
+// plain `TraceQueryable` — which only promises `Promise<unknown>` — is
+// structurally assignable here too; the function never reads the result.
+export async function insertAuditRow(
+  db: { query(sql: string, params?: unknown[]): Promise<unknown> },
   entry: AuditEntry,
 ): Promise<void> {
   await db.query(
@@ -218,7 +244,7 @@ export function createMemoryStore(
       }
     },
 
-    async bumpCounters({ userId, turns, steps, memoryInterval }) {
+    async bumpCounters({ userId, turns, steps, memoryInterval, skillInterval }) {
       const client = await db.connect();
       try {
         await client.query("BEGIN");
@@ -243,17 +269,32 @@ export function createMemoryStore(
         const turnsSinceMemory = Number(updated.rows[0].turns_since_memory);
         const stepsSinceSkill = Number(updated.rows[0].steps_since_skill);
         const memoryReviewDue = turnsSinceMemory >= memoryInterval;
+        const result: ReviewCounters = { turnsSinceMemory, stepsSinceSkill, memoryReviewDue };
+        // Only set (not just computed as false) when a caller actually asked
+        // for the skill threshold — see the field doc on ReviewCounters for
+        // why an unconditional `false` would break phase-1-only callers.
+        if (skillInterval !== undefined) {
+          result.skillReviewDue = stepsSinceSkill >= skillInterval;
+        }
 
         // Reset inside the same transaction that observed the threshold, so
-        // two concurrent requests can never both fire the review.
+        // two concurrent requests can never both fire the review. The two
+        // counters are independent: a memory-due reset must not clear
+        // steps_since_skill, and vice versa.
         if (memoryReviewDue) {
           await client.query(
             "UPDATE agent_review_state SET turns_since_memory = 0 WHERE user_id = $1",
             [userId],
           );
         }
+        if (result.skillReviewDue) {
+          await client.query(
+            "UPDATE agent_review_state SET steps_since_skill = 0 WHERE user_id = $1",
+            [userId],
+          );
+        }
         await client.query("COMMIT");
-        return { turnsSinceMemory, stepsSinceSkill, memoryReviewDue };
+        return result;
       } catch (err) {
         try {
           await client.query("ROLLBACK");
