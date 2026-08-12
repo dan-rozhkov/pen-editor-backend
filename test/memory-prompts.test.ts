@@ -14,6 +14,19 @@ describe("memory prompts", () => {
     expect(MEMORY_GUIDANCE).toContain("Do NOT save task progress");
   });
 
+  // Found by the first live smoke (2026-08-12): asked "запомни обо мне: …",
+  // deepseek answered "Запомнил." and called nothing — its own reasoning trace
+  // said the request "doesn't require any tools". Nothing was stored while the
+  // user was told it was. Both texts must name an explicit ask as a call.
+  it("treats an explicit ask to remember as a required call, in both texts", () => {
+    for (const text of [MEMORY_GUIDANCE, MEMORY_TOOL_DESCRIPTION]) {
+      expect(text).toContain("запомни");
+      expect(text.toLowerCase()).toContain("remember");
+    }
+    expect(MEMORY_GUIDANCE).toContain("call the memory tool in THIS turn");
+    expect(MEMORY_TOOL_DESCRIPTION).toContain("REQUIRES this call in the same turn");
+  });
+
   it("keeps the HOW/WHEN/IF FULL/TARGETS/SKIP blocks in the tool description", () => {
     for (const marker of ["HOW:", "WHEN:", "IF FULL:", "TARGETS:", "SKIP:"]) {
       expect(MEMORY_TOOL_DESCRIPTION).toContain(marker);
