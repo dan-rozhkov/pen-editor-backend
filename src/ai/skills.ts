@@ -176,7 +176,14 @@ export function getSkillTools(
         // Curated first, always: a learned skill can never shadow a git-owned
         // one, and the name validator already refuses that collision anyway.
         const learned = await learnedStore.get(name).catch(() => null);
-        if (learned && learned.state === "active") {
+        // `stale` is deliberately resolvable here, not just `active` — that
+        // is what makes the curator's stale period (src/ai/selfimprove/
+        // curate.ts) a real grace window: bumpUse revives a stale row back
+        // to `active` as part of the same write, so being loaded IS the way
+        // a skill proves it's still wanted. `archived` stays excluded; there
+        // is no load-time unarchive path (see reviveArchived in
+        // learnedStore.ts for the one place archival is reversible).
+        if (learned && (learned.state === "active" || learned.state === "stale")) {
           // Best-effort: a failed counter bump must not fail the load.
           await learnedStore.bumpUse(name).catch(() => undefined);
           runContext?.markRead(name);

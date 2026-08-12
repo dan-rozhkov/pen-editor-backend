@@ -70,6 +70,23 @@ export interface LearnedSkillStore {
   listActive(): Promise<LearnedSkill[]>;
   get(name: string): Promise<LearnedSkill | null>;
   create(input: { name: string; description: string; body: string }): Promise<void>;
+  /** Overwrites description/body and brings an archived, agent-authored row
+   * back to `active` with a fresh `last_used_at` — the recovery path for
+   * `skill_manage`'s `create` action landing on a name an earlier archival
+   * left behind (see tool.ts). `name` is a primary key and archived rows are
+   * never deleted (curate.ts), so a plain INSERT on that name always fails;
+   * this is what makes `create` on an archived name resurrect it instead of
+   * dead-ending in "already exists, use patch" forever, since `patch` alone
+   * can never change `state`. Returns false — not an error — when the row
+   * isn't archived, isn't agent-created, or no longer exists by the time this
+   * runs; the caller falls back to its normal already-exists handling either
+   * way. Optional on the interface so the many hand-rolled `LearnedSkillStore`
+   * test doubles that predate this method don't all need updating — every
+   * real (production or PGlite-backed) store below implements it. */
+  reviveArchived?(
+    name: string,
+    input: { description: string; body: string },
+  ): Promise<boolean>;
   replaceBody(name: string, body: string): Promise<void>;
   remove(name: string): Promise<boolean>;
   bumpUse(name: string): Promise<void>;
@@ -117,6 +134,29 @@ export function createLearnedSkillStore(
          VALUES ($1, $2, $3, 'agent')`,
         [name, description, body],
       );
+    },
+
+    async reviveArchived(name, { description, body }) {
+      // A single guarded UPDATE, not SELECT-then-UPDATE: the WHERE clause
+      // itself is the check, so there is no read-then-write gap for a
+      // concurrent writer to land in between (unlike replaceBody, which
+      // needs the row's current body in application code before it can
+      // compute a patched one — there's nothing to compute here, the new
+      // description/body come from the caller whole).
+      // `last_used_at = now()` matters as much as `state = 'active'`: without
+      // it the row's idle clock still starts from its old (already
+      // 90+-days-stale, by construction) last_used_at, and the very next
+      // curate run would immediately re-archive it — making "revival" a
+      // no-op in practice.
+      const result = (await db.query(
+        `UPDATE agent_skills
+            SET description = $2, body = $3, state = 'active',
+                last_used_at = now(), updated_at = now()
+          WHERE name = $1 AND state = 'archived' AND created_by = 'agent'
+        RETURNING name`,
+        [name, description, body],
+      )) as { rows: unknown[] };
+      return result.rows.length > 0;
     },
 
     // Read-modify-write, so it goes through SELECT ... FOR UPDATE inside a
@@ -172,8 +212,23 @@ export function createLearnedSkillStore(
     async bumpUse(name) {
       // use_count = use_count + 1 is computed server-side in one statement,
       // so Postgres's own row lock makes this atomic without a transaction.
+      //
+      // A successful load is also what un-stales a skill: `state='stale'`
+      // means "not recently used", and being used right now is precisely
+      // what that state is measuring. Reviving here (rather than leaving the
+      // row `stale` until the next curator run notices last_used_at moved)
+      // is what makes the stale period an actual grace window instead of an
+      // absorbing state a skill can only fall further from — see the
+      // "one-way door" discussion at the top of src/ai/selfimprove/curate.ts.
+      // `archived` is deliberately excluded from the CASE: this phase has no
+      // unarchive path (see skill_manage's `create`-revives-archived path in
+      // tool.ts for the one place archival IS reversible, and only there).
       await db.query(
-        "UPDATE agent_skills SET use_count = use_count + 1, last_used_at = now() WHERE name = $1",
+        `UPDATE agent_skills
+            SET use_count = use_count + 1,
+                last_used_at = now(),
+                state = CASE WHEN state = 'stale' THEN 'active' ELSE state END
+          WHERE name = $1`,
         [name],
       );
     },

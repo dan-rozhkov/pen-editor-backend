@@ -194,8 +194,44 @@ export function getSelfSkillTools(
           return { error: storeErrorMessage(err, `checking whether "${name}" already exists`) };
         }
         if (existing) {
+          // `name` is a primary key and an archived row is never deleted
+          // (src/ai/selfimprove/curate.ts), so a plain `create` on an
+          // archived name would otherwise dead-end forever: the pre-check
+          // below says "use patch", but `patch` only ever rewrites `body`
+          // (replaceBody) and can't touch `state` — the skill would stay
+          // invisible to both the catalog and load_skill no matter how many
+          // times it's "successfully" patched. Reviving is the fix, not a
+          // better error message: overwrite the archived row's content and
+          // bring it back to `active`, same as a fresh create would have
+          // produced, but at the name that was already claimed. Restricted
+          // to rows created_by === 'agent' for the same reason patch/delete
+          // are (see the provenance guard below in this file) — this tool
+          // never overwrites a human-seeded row, archived or not.
+          if (existing.state === "archived" && existing.createdBy === "agent" && store.reviveArchived) {
+            let revived: boolean;
+            try {
+              revived = await store.reviveArchived(name, { description, body });
+            } catch (err) {
+              return { error: storeErrorMessage(err, `reviving archived skill "${name}"`) };
+            }
+            if (revived) {
+              invalidateLearnedCatalog();
+              await audit("revive", { name, description, bodyLines: body.split("\n").length });
+              return {
+                ok: true,
+                message: `Revived archived skill "${name}" with new content. It will appear in your skills catalog marked (learned) on the next turn.`,
+              };
+            }
+            // Raced: the row moved again (e.g. concurrently un-archived,
+            // patched, or deleted) between the `get` above and this write —
+            // fall through to the generic already-exists error below rather
+            // than claiming a revival that didn't happen.
+          }
           return {
-            error: `A learned skill named "${name}" already exists. Use action "patch" to change it — do not replace a skill wholesale.`,
+            error:
+              existing.state === "archived" && existing.createdBy !== "agent"
+                ? `A learned skill named "${name}" already exists but is archived and not owned by the agent (created_by = "${existing.createdBy}"). It cannot be revived here — pick a different name.`
+                : `A learned skill named "${name}" already exists. Use action "patch" to change it — do not replace a skill wholesale.`,
           };
         }
 

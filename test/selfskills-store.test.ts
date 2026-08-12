@@ -127,6 +127,87 @@ describe("bumpUse / bumpView", () => {
     const skill = await store.get("a-skill");
     expect(skill).toMatchObject({ viewCount: 2, useCount: 0 });
   });
+
+  // Finding 2: a stale skill being used again is what makes the stale period
+  // a real grace window rather than a slower path to the same dead end.
+  it("bumpUse revives a stale skill back to active", async () => {
+    await store.create({ name: "a-skill", description: "d", body: "b" });
+    await harness.pool.query("UPDATE agent_skills SET state = 'stale' WHERE name = $1", [
+      "a-skill",
+    ]);
+
+    await store.bumpUse("a-skill");
+
+    const skill = await store.get("a-skill");
+    expect(skill?.state).toBe("active");
+  });
+
+  it("bumpUse does NOT revive an archived skill — there is no load-time unarchive path", async () => {
+    await store.create({ name: "a-skill", description: "d", body: "b" });
+    await harness.pool.query("UPDATE agent_skills SET state = 'archived' WHERE name = $1", [
+      "a-skill",
+    ]);
+
+    await store.bumpUse("a-skill");
+
+    const skill = await store.get("a-skill");
+    expect(skill?.state).toBe("archived");
+  });
+});
+
+// Finding 3: an archived, agent-owned row must not permanently block its own
+// name — reviveArchived is the mechanism skill_manage's `create` action uses
+// to unstick it (see selfskills-tool-manage.test.ts for the tool-level path).
+describe("reviveArchived", () => {
+  it("brings an archived, agent-owned row back to active with new content and a fresh last_used_at", async () => {
+    await store.create({ name: "a-skill", description: "old desc", body: "old body" });
+    await harness.pool.query(
+      "UPDATE agent_skills SET state = 'archived', last_used_at = now() - interval '400 days' WHERE name = $1",
+      ["a-skill"],
+    );
+
+    const revived = await store.reviveArchived!("a-skill", {
+      description: "new desc",
+      body: "new body",
+    });
+
+    expect(revived).toBe(true);
+    const skill = await store.get("a-skill");
+    expect(skill).toMatchObject({ state: "active", description: "new desc", body: "new body" });
+    const rows = (await harness.pool.query(
+      "SELECT last_used_at > now() - interval '1 minute' AS fresh FROM agent_skills WHERE name = $1",
+      ["a-skill"],
+    )) as { rows: Array<{ fresh: boolean }> };
+    expect(rows.rows[0].fresh).toBe(true);
+  });
+
+  it("does nothing to a row that is not archived", async () => {
+    await store.create({ name: "a-skill", description: "d", body: "b" });
+
+    const revived = await store.reviveArchived!("a-skill", { description: "x", body: "y" });
+
+    expect(revived).toBe(false);
+    const skill = await store.get("a-skill");
+    expect(skill).toMatchObject({ state: "active", description: "d", body: "b" });
+  });
+
+  it("does not revive an archived row it did not create", async () => {
+    await store.create({ name: "a-skill", description: "d", body: "b" });
+    await harness.pool.query(
+      "UPDATE agent_skills SET state = 'archived', created_by = 'human' WHERE name = $1",
+      ["a-skill"],
+    );
+
+    const revived = await store.reviveArchived!("a-skill", { description: "x", body: "y" });
+
+    expect(revived).toBe(false);
+    const skill = await store.get("a-skill");
+    expect(skill).toMatchObject({ state: "archived", description: "d", body: "b" });
+  });
+
+  it("returns false for a name that does not exist", async () => {
+    expect(await store.reviveArchived!("nope", { description: "x", body: "y" })).toBe(false);
+  });
 });
 
 describe("getLearnedCatalog cache", () => {

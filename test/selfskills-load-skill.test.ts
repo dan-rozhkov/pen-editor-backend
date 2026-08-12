@@ -81,6 +81,22 @@ describe("load_skill with learned skills", () => {
     expect(result.error).toContain("reading-canvas-state");
   });
 
+  // Finding 2: `stale` is a real grace period, not `archived` under a softer
+  // name — load_skill must still resolve it (and hand off to bumpUse, whose
+  // own revival logic is pinned at the learnedStore/PGlite level).
+  it("resolves a stale learned skill (the revival happens inside bumpUse)", async () => {
+    const stale = { ...learned, state: "stale" as const };
+    const store = fakeStore([stale]);
+    const tools = getSkillTools({ learnedStore: store });
+    const result = await (tools.load_skill as LoadSkill).execute({ name: "reading-canvas-state" });
+    expect(result).toMatchObject({
+      name: "reading-canvas-state",
+      instructions: learned.body,
+      learned: true,
+    });
+    expect(store.bumped).toEqual(["reading-canvas-state"]);
+  });
+
   it("does not resolve an archived learned skill", async () => {
     const archived = { ...learned, state: "archived" as const };
     const tools = getSkillTools({ learnedStore: fakeStore([archived]) });

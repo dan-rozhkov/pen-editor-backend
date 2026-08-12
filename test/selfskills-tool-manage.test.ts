@@ -52,6 +52,12 @@ function memoryStore(initial: LearnedSkill[] = []) {
     },
     async bumpUse() {},
     async bumpView() {},
+    async reviveArchived(name, { description, body }) {
+      const s = skills.get(name);
+      if (!s || s.state !== "archived" || s.createdBy !== "agent") return false;
+      skills.set(name, { ...s, description, body, state: "active" });
+      return true;
+    },
   };
   return { store, skills };
 }
@@ -198,6 +204,61 @@ describe("skill_manage — create", () => {
     expect(
       (await manage.execute({ action: "create", name: "a-skill", description: "d" })).error,
     ).toContain("body");
+  });
+
+  // Finding 3: an archived, agent-owned row must not permanently block its
+  // own name. `name` is a primary key and archived rows are never deleted,
+  // so without this, `create` on that name would always hit "already
+  // exists, use patch" — and patch can't change `state`, so the row would
+  // stay invisible forever no matter how many times it's "successfully"
+  // patched. `create` on an archived name should instead revive it.
+  it("revives an archived, agent-owned skill via create instead of dead-ending on patch", async () => {
+    const archived: LearnedSkill = { ...learned, state: "archived" };
+    const { manage, skills, db } = build([archived]);
+    const result = await manage.execute({
+      action: "create",
+      name: "reading-canvas-state",
+      description: "new description",
+      body: "# New body\nSomething else.",
+    });
+    expect(result.ok).toBe(true);
+    expect(String(result.message)).toContain("Revived");
+    expect(skills.get("reading-canvas-state")).toMatchObject({
+      state: "active",
+      description: "new description",
+      body: "# New body\nSomething else.",
+    });
+    expect(db.calls[0].params[3]).toBe("revive");
+  });
+
+  it("refuses to revive an archived skill it did not create, and does not suggest patch", async () => {
+    const archived: LearnedSkill = { ...learned, state: "archived", createdBy: "human" };
+    const { manage, skills } = build([archived]);
+    const result = await manage.execute({
+      action: "create",
+      name: "reading-canvas-state",
+      description: "d",
+      body: "b",
+    });
+    expect(result.error).toContain("not owned by the agent");
+    expect(skills.get("reading-canvas-state")).toMatchObject({
+      state: "archived",
+      createdBy: "human",
+    });
+  });
+
+  it("does not attempt to revive a merely stale (not archived) existing skill", async () => {
+    const stale: LearnedSkill = { ...learned, state: "stale" };
+    const { manage, skills } = build([stale]);
+    const result = await manage.execute({
+      action: "create",
+      name: "reading-canvas-state",
+      description: "d",
+      body: "b",
+    });
+    expect(result.error).toContain("patch");
+    expect(result.error).not.toContain("archived");
+    expect(skills.get("reading-canvas-state")!.state).toBe("stale");
   });
 
   it("writes one audit row with the create payload", async () => {

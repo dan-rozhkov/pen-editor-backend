@@ -259,6 +259,81 @@ prompt fragment, an inattentive read — gets a harmless result instead of a
 hard `NoSuchToolError` that aborts the whole review after the counter's
 already been bumped.
 
+### Deterministic skills curator (`src/ai/selfimprove/curate.ts`, phase 3)
+
+**`npm run skills:curate`** ages `agent_skills` rows so the catalog above
+doesn't grow forever: `active` unused ≥30 days (and created ≥30 days ago) →
+`stale`; `stale` unused ≥90 days total → `archived`. There is no LLM anywhere
+in this path — it is pure date arithmetic in TS against an injected clock
+(`daysUnused`/`classifySkills` in `curate.ts`), not SQL `now()`, which is what
+makes the thresholds unit-testable without freezing the database clock.
+`use_count`/`view_count` never affect the outcome; recency is the only
+signal. An `archived` row is never `DELETE`d — the curator's only write to
+`agent_skills` is `UPDATE ... SET state, updated_at`.
+
+**`stale` is a real grace period, not a second name for doomed.** It falls
+out of the catalog exactly like `archived` does (`learnedStore.listActive()`
+filters `state = 'active'`), but unlike `archived` it stays resolvable
+through `load_skill` (`src/ai/skills.ts`): a successful load on a `stale`
+skill revives it straight back to `active` and refreshes `last_used_at` in
+the same `bumpUse` write (`learnedStore.ts`). So the only way a skill
+survives being marked `stale` in error, or genuinely earns its way back, is
+to actually be loaded again before the next curator run — there is no
+separate undo command, being used again *is* the undo. `archived` has no
+such path from `load_skill` or the curator itself (still out of scope, see
+below) — the one place archival is reversible at all is `skill_manage`'s
+`create` action: because `name` is a primary key and archived rows are never
+deleted, `create`-ing at an already-archived, agent-owned name revives that
+row (overwrites description/body, resets `state` to `active`) instead of
+dead-ending in "already exists, use patch" forever — `patch` alone can never
+change `state`, so without this a mistakenly (or correctly) archived name
+would be permanently unrecoverable under its own name. See `reviveArchived`
+in `learnedStore.ts` and the `create` branch of `skill_manage` in
+`src/ai/skills/tool.ts`. `test/selfimprove-curate-pglite.test.ts` pins that
+`archived` (not `stale`) is what actually disappears from the catalog and
+`load_skill`.
+
+The CLI is **read-only by default** — inverted from the usual convention on
+purpose, since a curator that mutates by accident is worse than one that
+does nothing. `--apply` is required to write anything, to either table;
+`--dry-run` is accepted as an explicit spelling of the (already default)
+no-op, and a dry run skips `BEGIN`/`SELECT ... FOR UPDATE` entirely rather
+than opening a transaction it never intends to commit — a `--apply`-less run
+against production must not stall every concurrent `bumpUse`/`bumpView`/
+`replaceBody` for the duration of a read that was always going to write
+nothing. Before the first `UPDATE` of an `--apply` run, the *entire*
+`agent_skills` table is inserted into `agent_selfimprove_audit` as one row
+(`origin: 'curator', subsystem: 'skill', action: 'snapshot'`, `user_id:
+'system'` — skills are global, not per-user, so there is no real user to
+attribute the row to) inside the same transaction as the updates that
+follow it, all under one `SELECT ... FOR UPDATE`'d snapshot read — a skill
+takes at most one state transition per run, so archiving is always preceded
+by at least one run's worth of stale grace, and every printed report line
+is exactly one state change. Each `UPDATE` is additionally guarded by the
+row's state and `last_used_at` *as read in this run's own snapshot*
+(`... WHERE state = $fromState AND last_used_at IS NOT DISTINCT FROM
+$snapshotValue`) — redundant under real Postgres locking (a concurrent
+writer blocks on the `FOR UPDATE` row lock until this transaction commits or
+rolls back) but cheap insurance against ever silently applying a transition
+computed from a view of the row that had already moved on; a transition the
+guard skips is dropped from the returned/reported list rather than claimed.
+A run that changes nothing still prints an explicit `0 transitions` line
+(`formatCurateReport`): a curator that succeeds silently is indistinguishable
+from one that's broken. Same env-only wiring as `memory:curate` — only
+`TRACE_DATABASE_URL` is required, no S3, no LLM — and
+`src/ai/selfimprove/curateRun.ts` is a thin `runAsScript`-guarded entrypoint
+over the tested logic in `curate.ts`, same shape as
+`src/ai/memory/curatorRun.ts`. There is no `--user` scoping (unlike
+`memory:curate`) because learned skills aren't per-user to begin with.
+
+Pinning a skill against ageing, LLM-driven consolidation, and a general
+`unarchive`/restore command are still explicitly out of scope for this
+phase — the one narrow exception is `skill_manage`'s `create`-revives-an-
+archived-row path above, which exists to unblock a stuck name rather than as
+a general restore tool. See
+the phase-3 plan's Deferred section if any of those become necessary; none
+of them should be improvised into `curate.ts`.
+
 ## MCP server (`src/mcp/`)
 
 `/api/mcp` (streamable HTTP, `@modelcontextprotocol/sdk`) and `/api/mcp/ws`
