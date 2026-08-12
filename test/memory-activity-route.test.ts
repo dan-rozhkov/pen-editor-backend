@@ -31,13 +31,17 @@ afterEach(async () => {
 async function build(
   memoryStore: MemoryStore | null,
   memoryEnabled = true,
+  selfSkillsEnabled = false,
 ): Promise<void> {
-  app = await buildApp(makeConfig({ MEMORY_ENABLED: memoryEnabled }), {
-    logger: false,
-    traceStore: null,
-    showcaseStore: null,
-    memoryStore,
-  });
+  app = await buildApp(
+    makeConfig({ MEMORY_ENABLED: memoryEnabled, SELF_SKILLS_ENABLED: selfSkillsEnabled }),
+    {
+      logger: false,
+      traceStore: null,
+      showcaseStore: null,
+      memoryStore,
+    },
+  );
   url = await app.listen({ port: 0, host: "127.0.0.1" });
 }
 
@@ -138,13 +142,56 @@ describe("GET /api/memory/activity", () => {
     expect(body).toEqual({ events: [], latestId: null });
   });
 
-  it("returns 200 with empty payload when MEMORY_ENABLED is off, without querying the store", async () => {
+  it("returns 200 with empty payload when both MEMORY_ENABLED and SELF_SKILLS_ENABLED are off, without querying the store", async () => {
     const store = fakeMemoryStore();
-    await build(store, false);
+    await build(store, false, false);
     const { status, body } = await get("?userId=11111111-1111-4111-8111-111111111111");
     expect(status).toBe(200);
     expect(body).toEqual({ events: [], latestId: null });
     expect(store.listAuditActivity).not.toHaveBeenCalled();
+  });
+
+  // Code-review finding: SELF_SKILLS_ENABLED alone (MEMORY_ENABLED off) is a
+  // supported deployment shape — app.ts builds the shared memoryStore on
+  // MEMORY_ENABLED || SELF_SKILLS_ENABLED, and review.ts runs the background
+  // review (writing subsystem:'skill' audit rows) on the same condition.
+  // The route used to gate on MEMORY_ENABLED alone, which made it discard
+  // those real rows and always answer "nothing happened" — dead-ending the
+  // skills-only toast.
+  it("queries the store and returns skill events when only SELF_SKILLS_ENABLED is on", async () => {
+    const store = fakeMemoryStore({
+      listAuditActivity: vi.fn(async () => ({
+        events: [
+          {
+            id: 7,
+            subsystem: "skill",
+            action: "create",
+            origin: "background_review",
+            createdAt: "2026-08-12T10:00:00.000Z",
+          },
+        ],
+        latestId: 7,
+      })),
+    });
+    await build(store, false, true);
+    const { status, body } = await get("?userId=11111111-1111-4111-8111-111111111111");
+    expect(status).toBe(200);
+    expect(body).toEqual({
+      events: [
+        {
+          id: 7,
+          subsystem: "skill",
+          action: "create",
+          origin: "background_review",
+          created_at: "2026-08-12T10:00:00.000Z",
+        },
+      ],
+      latestId: 7,
+    });
+    expect(store.listAuditActivity).toHaveBeenCalledWith({
+      userId: "11111111-1111-4111-8111-111111111111",
+      sinceId: undefined,
+    });
   });
 
   // Finding 2: this route is polled after every chat turn, so a DB hiccup

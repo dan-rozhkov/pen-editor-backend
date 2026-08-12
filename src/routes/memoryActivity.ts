@@ -34,7 +34,15 @@ export async function memoryActivityRoutes(
       return reply.status(400).send({ error: "Invalid query parameters" });
     }
 
-    if (!config.MEMORY_ENABLED || !memoryStore) {
+    // `memoryStore` itself is shared by both subsystems (app.ts builds it
+    // whenever MEMORY_ENABLED || SELF_SKILLS_ENABLED is on — see that file's
+    // comment), and the background review writes `subsystem: 'skill'` audit
+    // rows under SELF_SKILLS_ENABLED alone (review.ts). Gating this route on
+    // MEMORY_ENABLED alone made a skills-only deployment (MEMORY_ENABLED
+    // false, SELF_SKILLS_ENABLED true) write real audit rows the toast could
+    // never read back — the endpoint always claimed "nothing happened" even
+    // though `memoryStore` was live. Gate on whichever subsystem is on.
+    if ((!config.MEMORY_ENABLED && !config.SELF_SKILLS_ENABLED) || !memoryStore) {
       return reply.send({ events: [], latestId: null });
     }
 
