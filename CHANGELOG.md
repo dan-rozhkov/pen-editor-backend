@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While on `0.x`, minor bumps may include breaking changes.
 
+## [0.38.0] - 2026-08-12
+
+The self-improvement loop, all three phases. The design agent can now remember
+a user across sessions, write and maintain its own skills, and age the unused
+ones out again. Both halves are behind kill switches that default to `false`
+(`MEMORY_ENABLED`, `SELF_SKILLS_ENABLED`) — with them off, the tool set and the
+system prompt are byte-identical to 0.37.0, so the provider's prefix cache is
+untouched and nothing about an ordinary turn changes. Neither has yet run
+against a live model; verify before enabling in production. Design:
+`docs/superpowers/specs/2026-08-11-self-improvement-loop-spec.md`.
+
+### Added
+- **Phase 1 — per-user persistent memory.** Three tables (migrations `009`/`010`): `agent_memory` (`memory`/`user` entries per user under a char budget), `agent_review_state` (cumulative counters), `agent_selfimprove_audit` (a row for every autonomous write, from day one). A backend-executed `memory` tool applies `add`/`replace`/`remove` batches atomically with the budget checked on the final state, a terminal non-echoing success, a 3-failure circuit breaker, and an exact-duplicate `add` treated as a silent no-op. The snapshot is injected into the stable tier of the system prompt. A background review runs from `onFinish` every `MEMORY_REVIEW_INTERVAL` (10) *completed* user turns — the several `POST /api/chat` round-trips one message spans do not each count — is never persisted into the session, is capped by an abort signal, re-reads the snapshot so it cannot duplicate what the foreground already saved, and is handed stubs for the whole turn tool set so an off-script call cannot kill it with `NoSuchToolError`.
+- **Phase 2 — self-authored skills.** `agent_skills` (migration `011`, global rather than per-user: the agent serves one design domain). Two backend-executed tools injected like `load_skill` and deliberately outside `penTools`, so no cross-repo tool contract is touched: `skill_view`, and `skill_manage` (create/patch/delete). Learned skills appear in the next turn's catalog marked `(learned)` and load exactly like curated ones. Guards, because a self-writing library fails predictably: ≤60-char description, ≤200-line body on create and after a patch, kebab-case names that cannot collide with a curated skill or a tool, read-before-write within the same run, `absorbed_into` on delete (empty string = pruning), and a provenance check so the reviewer only edits what it authored. Curated `src/skills/*.md` stay git-owned and unwritable, and only they are slash-invocable.
+- **Phase 3 — `npm run skills:curate`**, a deterministic, LLM-free maintenance pass so the catalog stops growing forever: 30 days unused `active` → `stale`, 90 → `archived`. It never deletes a row, `--apply` is required to write anything, the default run takes no locks at all (safe to point at production), and an applying run snapshots the whole table into the audit log inside the same transaction before the first update. Each update is guarded by the state and `last_used_at` this run actually read, so a skill loaded concurrently is skipped rather than staled behind the chat turn's back.
+- **`GET /api/memory/activity`** — a read-only UI-visibility signal (summaries only, never entry contents) so the frontend can announce a background write. Degrades to an empty result rather than a 5xx.
+- **`npm run memory:curate`** — the repair path for memory entries: list users, show a user's entries, remove one, or clear both targets, each with `--dry-run` and an audit row. Entries reach the *system* prompt and live forever, so a way to read and remove them cannot wait for a later phase.
+
+### Changed
+- `stale` is a real reprieve rather than a waiting room: a stale skill leaves the prompt catalog but stays loadable, and loading it makes it active again. Being used is the only undo — which is exactly the signal the curator ages on. Creating a skill whose name belongs to an archived row revives that row, since the name is the primary key and rows are never deleted.
+- `createPgPool` takes an optional `connectionTimeoutMillis`, used only by the hot-path pools. pg's default is to wait forever, and in pg-pool that timer also bounds queue waits — applying it to every caller would make a first-run migration that holds a client for a few seconds fail unrelated queries.
+- The showcase theme pool is now comfortably larger than the 10-theme exclusion window `pickTheme` skips; at the old size the gallery had almost nothing left to choose from and started cycling domains.
+
+### Fixed
+- `GET /api/memory/activity` was gated on `MEMORY_ENABLED` alone, while the review runner and the store both come up on `MEMORY_ENABLED || SELF_SKILLS_ENABLED` — a skills-only deployment wrote `subsystem:'skill'` audit rows the endpoint then refused to return, so a background skill write could never be announced.
+
 ## [0.37.0] - 2026-08-09
 
 ### Added
