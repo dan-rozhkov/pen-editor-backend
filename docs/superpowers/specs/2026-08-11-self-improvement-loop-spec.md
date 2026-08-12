@@ -1,7 +1,16 @@
 # Self-Improvement Loop (Hermes-style): Persistent Memory + Self-Authored Skills
 
 **Date:** 2026-08-11
-**Status:** Spec approved, plans in `docs/superpowers/plans/2026-08-11-selfimprove-phase{1,2,3}-*.md`
+**Status:** **SHIPPED** in backend v0.38.0 / frontend v0.75.0 (2026-08-12), all three phases. Both kill switches (`MEMORY_ENABLED`, `SELF_SKILLS_ENABLED`) default to `false`, and the loop has **not yet run against a live model** — verify before enabling in production.
+
+> **Read `CLAUDE.md`, not this file, for how the shipped system works.** Its
+> "Persistent agent memory", "Self-authored skills" and "Deterministic skills
+> curator" sections describe the code as built. This spec and the three phase
+> plans are kept as the record of *why* each decision was made; the behavioural
+> contract below held, but several module paths and signatures named in the
+> plans never existed — see the "As shipped" block at the top of each plan.
+
+**Plans:** `docs/superpowers/plans/2026-08-11-selfimprove-phase{1,2,3}-*.md`
 **Origin:** Reverse-engineering of `NousResearch/hermes-agent`'s memory + skill self-creation loop (session research 2026-08-11). We replicate the mechanism natively in `pen-editor-backend` instead of adopting Hermes as a harness.
 
 ## Problem

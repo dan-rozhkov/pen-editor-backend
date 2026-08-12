@@ -1,5 +1,25 @@
 # Phase 1 — Persistent per-user memory (self-improvement loop)
 
+> ## As shipped (v0.38.0, 2026-08-12) — read this before the plan below
+>
+> Implemented and merged; the plan is kept for its rationale, not as an API
+> reference. `CLAUDE.md`'s "Persistent agent memory" section describes the code
+> as built. Where the two disagree, the code wins.
+>
+> - Modules: `src/ai/memory/{types,apply,render,prompts,store,tool,curator,curatorRun}.ts`
+>   and `src/ai/selfimprove/review.ts`. There is no `src/ai/selfimprove/db.ts`,
+>   `audit.ts` or `reviewState.ts` — `MemoryStore` (`store.ts`) owns the pool,
+>   the `FOR UPDATE` transactions, the counters and `insertAuditRow`.
+> - Migrations landed as `009_agent_memory.sql` (+ `010_agent_audit_user_id_idx.sql`),
+>   not `009_selfimprove.sql`.
+> - Beyond the plan, review found and fixed: the review run needs stubs for the
+>   *whole* turn tool set (the shared system prompt steers it at `load_skill`),
+>   the turn counter must ignore mid-turn tool round-trips, the review must
+>   re-read the snapshot, and `userId` is shape-validated.
+>
+> **Not done:** the manual live smoke in Task 12. Nothing here has run against a
+> real model.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Give the design agent persistent, per-user memory in Postgres that is written by the model itself through a backend-executed `memory` tool, injected into every turn's system prompt, and refreshed by a background review pass that runs after the user's response has already streamed.

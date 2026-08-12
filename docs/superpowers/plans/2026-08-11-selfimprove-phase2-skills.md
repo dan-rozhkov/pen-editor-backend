@@ -1,5 +1,30 @@
 # Phase 2 — Self-Authored Skills (`agent_skills`, `skill_manage`, `skill_view`, skill review pass)
 
+> ## As shipped (v0.38.0, 2026-08-12) — read this before the plan below
+>
+> Implemented and merged; kept for rationale, not as an API reference. See
+> `CLAUDE.md`'s "Self-authored skills" section for the built system.
+>
+> - **The "Depends on Phase 1" list below is wrong.** It was written before
+>   Phase 1 existed and names modules that never shipped (`selfimprove/db.ts`,
+>   `audit.ts`, `reviewState.ts`, `getSelfImproveDb`, `009_selfimprove.sql`).
+>   Its instruction to rename Phase 1's symbols to match was **not** followed —
+>   the plan was adapted to the code instead, which is the right order and the
+>   rule to apply to any future phase.
+> - Modules as built: `src/ai/skills/{validate,learnedStore,runContext,tool,prompts}.ts`,
+>   `src/ai/selfimprove/auditDb.ts`, migration `011_agent_skills.sql`.
+> - Beyond the plan, review found and fixed: a skills-only deployment needs a
+>   `memory` stub and a conditional tool sentence in the review prompt;
+>   `steps_since_skill` must accumulate across mid-turn requests; a learned
+>   skill shadowed by a later curated file must be hidden *and* deletable; the
+>   catalog cache must be keyed per store; `applyPatch` must catch overlapping
+>   matches.
+> - **Learned skills are global, not per-user** — deliberate (see Global
+>   Constraints), and the one place the shipped behaviour most often surprises
+>   people, since memory *is* per-user.
+>
+> **Not done:** the manual live smoke. Nothing here has run against a real model.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Spec:** `docs/superpowers/specs/2026-08-11-self-improvement-loop-spec.md` (its "Locked interfaces" section is binding).

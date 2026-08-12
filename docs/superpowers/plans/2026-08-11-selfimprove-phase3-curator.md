@@ -1,5 +1,31 @@
 # Self-Improvement Loop — Phase 3: Deterministic Skills Curator
 
+> ## As shipped (v0.38.0, 2026-08-12) — read this before the plan below
+>
+> Implemented and merged; kept for rationale, not as an API reference. See
+> `CLAUDE.md`'s "Deterministic skills curator" section for the built system.
+>
+> - Modules landed in `src/ai/selfimprove/curate.ts` + `curateRun.ts` (not
+>   `src/selfimprove/`), wired like `src/ai/memory/curatorRun.ts`. There is no
+>   `openSelfImproveContext`. Task 1's harness already existed as
+>   `test/pgliteShowcaseHelpers.ts`'s `createPgliteHarness`.
+> - **One locked decision was overturned by review, deliberately.** The plan
+>   assumed `stale` was a grace period, but Phase 2 filtered it out of both the
+>   catalog *and* `load_skill`, which made it absorbing: a staled skill could
+>   never be used again, so `last_used_at` could never advance and archiving was
+>   unconditional. As shipped, `stale` leaves the prompt catalog but stays
+>   loadable, and loading it restores `active`. Being used is the only undo —
+>   which is the signal this pass ages on.
+> - Also beyond the plan: `create` on an archived name revives that row (the
+>   name is the PK and rows are never deleted, so `patch` could never make it
+>   visible); each `UPDATE` is guarded by the state and `last_used_at` this run
+>   read, so a concurrently loaded skill is skipped; a dry run takes no locks.
+>
+> **Not done:** Task 8's manual live-Postgres smoke. `.env`'s
+> `TRACE_DATABASE_URL` points at the shared render.com database, and mutating
+> it unattended was not a call to make — run `npm run skills:curate` by hand
+> (it is read-only without `--apply`) before relying on it.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal**
