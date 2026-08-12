@@ -116,4 +116,24 @@ describe("loadConfig", () => {
     expect(overridden.TRACE_RAW_TTL_DAYS).toBe(7);
     expect(overridden.TRACE_DATABASE_URL).toContain("postgres://");
   });
+
+  it("defaults MEMORY_ENABLED to false and honors only true/1", () => {
+    process.env = { OPENROUTER_API_KEY: "key" } as NodeJS.ProcessEnv;
+    expect(loadConfig().MEMORY_ENABLED).toBe(false);
+
+    for (const [value, expected] of [
+      ["true", true],
+      ["TRUE", true],
+      ["1", true],
+      ["false", false],
+      ["0", false],
+      ["", false],
+    ] as [string, boolean][]) {
+      process.env = {
+        OPENROUTER_API_KEY: "key",
+        MEMORY_ENABLED: value,
+      } as NodeJS.ProcessEnv;
+      expect(loadConfig().MEMORY_ENABLED).toBe(expected);
+    }
+  });
 });

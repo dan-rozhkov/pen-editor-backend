@@ -21,6 +21,8 @@ import { showcaseRoutes } from "./routes/showcase.js";
 import { uploadRoutes } from "./routes/upload.js";
 import { createTraceStore, type TraceStore } from "./tracing/traceStore.js";
 import type { ShowcaseStore } from "./showcase/store.js";
+import { createMemoryStore, type MemoryStore } from "./ai/memory/store.js";
+import { memoryActivityRoutes } from "./routes/memoryActivity.js";
 
 export interface BuildAppOptions {
   logger?: FastifyServerOptions["logger"];
@@ -30,6 +32,9 @@ export interface BuildAppOptions {
   // Test seam: inject a fake showcase store. `undefined` = create from
   // config, `null` = explicitly disabled.
   showcaseStore?: ShowcaseStore | null;
+  // Test seam: inject a fake memory store. `undefined` = create from config,
+  // `null` = explicitly disabled.
+  memoryStore?: MemoryStore | null;
   // Whether this buildApp() call is the one long-running dev server
   // instance allowed to publish/reuse/clean up the shared handshake file at
   // ~/.pen-editor/mcp.json. Defaults to false: every other caller (test
@@ -87,7 +92,24 @@ export async function buildApp(
       await traceStore.close();
     });
   }
-  await chatRoutes(app, config, traceStore);
+  // Gated on MEMORY_ENABLED here, not inside createMemoryStore: that factory
+  // is also called directly by tests wanting a store regardless of the flag
+  // (test/memory-store-pglite.test.ts), and its own contract is "config has
+  // TRACE_DATABASE_URL". The app itself must not open a second pool at the
+  // same Postgres when the feature is off.
+  const memoryStore =
+    options.memoryStore !== undefined
+      ? options.memoryStore
+      : config.MEMORY_ENABLED
+        ? createMemoryStore(config)
+        : null;
+  if (memoryStore) {
+    app.addHook("onClose", async () => {
+      await memoryStore.close();
+    });
+  }
+  await chatRoutes(app, config, traceStore, memoryStore);
+  await memoryActivityRoutes(app, config, memoryStore);
   await modelsRoutes(app, config);
   await uploadRoutes(app, config);
   await generateImageRoutes(app, config);

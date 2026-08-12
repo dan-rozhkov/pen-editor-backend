@@ -31,8 +31,41 @@ export interface TraceStore {
 // Shared pool factory: idle-client errors must never crash whichever process
 // created the pool (chat server or the analyze worker), so every pool we
 // create gets an 'error' listener wired up from the start.
-export function createPgPool(connectionString: string, max = 3): pg.Pool {
-  const pool = new pg.Pool({ connectionString, max });
+//
+// connectionTimeoutMillis bounds how long a `connect()`/pool-level `query()`
+// can wait to acquire a TCP connection — pg's own default is 0 (wait
+// forever). It is opt-in per pool, NOT a blanket default: every caller of
+// `createPgPool` gets its OWN separate `pg.Pool` instance (traceStore,
+// memoryStore, analysis, curator, showcase, startup migrations), and only
+// the memory pool sits in a request's hot path (`/api/chat`'s
+// `prepareChatTurn` snapshot read — see MEMORY_SNAPSHOT_TIMEOUT_MS in
+// chatTurn.ts, which bounds the query itself but not the wait for a free
+// pool slot). That one must fail fast rather than hang a user's request
+// indefinitely. Every other caller here is batch/CLI-ish (trace writes,
+// nightly analysis, the curator CLI, showcase generation, one-shot startup
+// migrations) and should keep pg's old "wait for a slot" semantics — under a
+// burst of concurrent work against a small `max`, erroring instead of
+// queueing would turn a slow patch into a failed one for no reason.
+// Deliberately NOT a global `statement_timeout` either: some of these
+// callers run legitimately long queries, and a statement timeout would cut
+// those off mid-query instead of just failing fast on a dead connection.
+export function buildPgPoolOptions(
+  connectionString: string,
+  options: { max?: number; connectionTimeoutMillis?: number } = {},
+): pg.PoolConfig {
+  const { max = 3, connectionTimeoutMillis } = options;
+  const config: pg.PoolConfig = { connectionString, max };
+  if (connectionTimeoutMillis !== undefined) {
+    config.connectionTimeoutMillis = connectionTimeoutMillis;
+  }
+  return config;
+}
+
+export function createPgPool(
+  connectionString: string,
+  options: { max?: number; connectionTimeoutMillis?: number } = {},
+): pg.Pool {
+  const pool = new pg.Pool(buildPgPoolOptions(connectionString, options));
   pool.on("error", (err) => console.error("[db] pool error:", err.message));
   return pool;
 }

@@ -21,6 +21,35 @@ import {
   getSkill,
   getSkillTools,
 } from "./skills.js";
+import { renderMemorySnapshot } from "./memory/render.js";
+import { createMemoryToolContext, getMemoryTools } from "./memory/tool.js";
+import type { MemoryStore } from "./memory/store.js";
+
+// Bounds the memory-snapshot read on top of (not instead of) the pool's own
+// connectionTimeoutMillis (src/tracing/traceStore.ts): that setting only
+// covers acquiring a connection, but a connection that IS acquired can still
+// hang mid-query if the network black-holes packets after the handshake
+// (no RST, so the client never sees a rejected promise). Racing the read
+// against a short local timer is what actually caps every request's worst
+// case, since a hang here — not an exception — is exactly what a plain
+// try/catch cannot degrade from.
+const MEMORY_SNAPSHOT_TIMEOUT_MS = 2_000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
 
 // Strips reasoning/thinking blocks and provider metadata from chat history.
 // Some providers reject stale/invalid thinking signatures when prior assistant turns are replayed.
@@ -72,6 +101,10 @@ export interface PrepareChatTurnInput {
   messages: Array<Record<string, unknown>>;
   canvasContext?: string;
   modelOverride?: string;
+  /** Client-generated stable anonymous id. Absent → memory is disabled for
+   * this turn (the showcase runner and every headless entry point). */
+  userId?: string;
+  memoryStore?: MemoryStore | null;
 }
 
 export interface PreparedChatTurn {
@@ -84,6 +117,10 @@ export interface PreparedChatTurn {
   systemPromptHash: string;
   /** Name of the skill named by the slash command on the current message, if any. */
   slashSkillName: string | undefined;
+  /** True when both the snapshot and the `memory` tool were added to this
+   * turn — the review runner uses it to decide whether a review is possible
+   * at all. */
+  memoryInjected: boolean;
 }
 
 // Assembles everything streamText needs for a turn: slash-command skill
@@ -184,7 +221,34 @@ export async function prepareChatTurn(
     name: s.name,
     description: s.description,
   }));
-  const system = buildSystemPrompt(canvasContext, skillCatalog);
+
+  // Memory is per-user and opt-in twice over: the kill switch AND a userId.
+  // A snapshot read that fails must degrade to an ordinary turn rather than
+  // failing the user's request — losing memory for one turn is recoverable,
+  // losing the turn is not.
+  const memoryStore = input.memoryStore ?? null;
+  const memoryEligible = Boolean(config.MEMORY_ENABLED && input.userId && memoryStore);
+  let memorySnapshotBlock = "";
+  let memoryInjected = false;
+  if (memoryEligible && memoryStore && input.userId) {
+    try {
+      memorySnapshotBlock = renderMemorySnapshot(
+        await withTimeout(
+          memoryStore.loadSnapshot(input.userId),
+          MEMORY_SNAPSHOT_TIMEOUT_MS,
+          "[memory] snapshot read",
+        ),
+      );
+      memoryInjected = true;
+    } catch (err) {
+      console.error("[memory] snapshot read failed; continuing without memory:", err);
+    }
+  }
+
+  const system = buildSystemPrompt(canvasContext, skillCatalog, {
+    memoryGuidance: memoryInjected,
+    memorySnapshot: memorySnapshotBlock,
+  });
   const selectedModelId = modelOverride ?? config.OPENROUTER_MODEL;
   const systemPromptHash = createHash("sha256")
     .update(system)
@@ -220,6 +284,12 @@ export async function prepareChatTurn(
     ...mcpTools,
     ...getSkillTools(),
   } as ToolSet;
+  if (memoryInjected && memoryStore && input.userId) {
+    Object.assign(
+      tools,
+      getMemoryTools(createMemoryToolContext(memoryStore, input.userId, "foreground")),
+    );
+  }
   if (taskPolicy !== "native") {
     tools.batch_design = makeBatchDesignTool({ embedOnly: true });
     delete tools.draw_vector;
@@ -234,5 +304,6 @@ export async function prepareChatTurn(
     selectedModelId,
     systemPromptHash,
     slashSkillName,
+    memoryInjected,
   };
 }

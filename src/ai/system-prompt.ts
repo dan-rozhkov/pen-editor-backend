@@ -1,3 +1,5 @@
+import { MEMORY_GUIDANCE } from "./memory/prompts.js";
+
 export const AGENT_MODES = ["edits", "prototype", "research"] as const;
 export type AgentMode = (typeof AGENT_MODES)[number];
 
@@ -6,14 +8,35 @@ export interface SkillCatalogEntry {
   description: string;
 }
 
+export interface SystemPromptMemory {
+  /** Include MEMORY_GUIDANCE — only ever true when the memory tool is
+   * actually in the tool set for this turn. Guidance without the tool is an
+   * instruction the model cannot follow. */
+  memoryGuidance?: boolean;
+  /** Pre-rendered snapshot block (see ai/memory/render.ts). Empty = omit. */
+  memorySnapshot?: string;
+}
+
 export function buildSystemPrompt(
   canvasContext?: string,
   skills: SkillCatalogEntry[] = [],
+  memory: SystemPromptMemory = {},
 ): string {
   const parts: string[] = [CORE_PROMPT];
 
+  // Stable tier: sits directly after the core prompt so the cached prefix
+  // grows by a fixed block, while the per-user snapshot below stays near the
+  // varying tail alongside the canvas context.
+  if (memory.memoryGuidance) {
+    parts.push(`\n## Persistent Memory\n\n${MEMORY_GUIDANCE}`);
+  }
+
   if (skills.length > 0) {
     parts.push(renderSkillCatalog(skills));
+  }
+
+  if (memory.memorySnapshot) {
+    parts.push(`\n${memory.memorySnapshot}`);
   }
 
   if (canvasContext) {

@@ -1,11 +1,37 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  buildPgPoolOptions,
   createTraceStore,
   writeRawTraceSafe,
   type RawTraceRow,
   type TraceQueryable,
 } from "../src/tracing/traceStore.js";
 import { makeConfig } from "./helpers.js";
+
+// Finding 3: connectionTimeoutMillis must be opt-in per pool, not a blanket
+// default baked into createPgPool — only the memory store's pool (the one
+// sitting in /api/chat's hot path) should get it. `buildPgPoolOptions` is
+// the pure options-builder factored out of `createPgPool` specifically so
+// this can be asserted without spinning up a real pg.Pool/DB connection.
+describe("buildPgPoolOptions", () => {
+  it("omits connectionTimeoutMillis when not explicitly requested — pg's own 'wait forever' default applies", () => {
+    const options = buildPgPoolOptions("postgres://example");
+    expect(options.connectionTimeoutMillis).toBeUndefined();
+    expect(options.max).toBe(3);
+    expect(options.connectionString).toBe("postgres://example");
+  });
+
+  it("includes connectionTimeoutMillis only when the caller opts in", () => {
+    const options = buildPgPoolOptions("postgres://example", { connectionTimeoutMillis: 5000 });
+    expect(options.connectionTimeoutMillis).toBe(5000);
+  });
+
+  it("still allows overriding max independently of the timeout", () => {
+    const options = buildPgPoolOptions("postgres://example", { max: 10 });
+    expect(options.max).toBe(10);
+    expect(options.connectionTimeoutMillis).toBeUndefined();
+  });
+});
 
 function fakePool(): TraceQueryable & { calls: Array<{ sql: string; params?: unknown[] }> } {
   const calls: Array<{ sql: string; params?: unknown[] }> = [];

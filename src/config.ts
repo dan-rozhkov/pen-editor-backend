@@ -54,6 +54,17 @@ const envSchema = z.object({
     .string()
     .min(16, "MCP_AUTH_TOKEN must be at least 16 characters")
     .optional(),
+  // --- Self-improvement loop (phase 1: persistent per-user memory) ---
+  // Kill switch for the memory snapshot + `memory` tool + background review.
+  // Same "true"/"1"-only transform as ENABLE_AGENT_LOGGING: z.coerce.boolean()
+  // would treat "false" as true. Default false until verified live.
+  MEMORY_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => {
+      const s = v?.toLowerCase();
+      return s === "true" || s === "1";
+    }),
 });
 
 export type Config = z.infer<typeof envSchema>;

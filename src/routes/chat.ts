@@ -23,6 +23,9 @@ import {
   prepareChatTurn,
   sanitizeMessagesForProvider,
 } from "../ai/chatTurn.js";
+import type { MemoryStore } from "../ai/memory/store.js";
+import { runReviewSafe } from "../ai/selfimprove/review.js";
+import { isPlausibleUserId } from "../lib/userId.js";
 
 // Re-exported for backwards compatibility: existing tests import this
 // symbol from routes/chat.js. The implementation now lives in
@@ -82,12 +85,23 @@ const chatBodySchema = z.object({
   canvasContext: z.string().optional(),
   model: z.string().optional(),
   agentMode: z.enum(AGENT_MODES).optional(),
+  // Client-generated stable anonymous id (localStorage `pen.userId`). Absent
+  // → every memory feature is silently off for this request, which is what
+  // keeps the showcase runner and any older client working untouched. The
+  // 1..64 bound here is only a coarse sanity/DoS guard (still 400s a grossly
+  // malformed value like a 65-char string) — the actual UUID-shape check
+  // (isPlausibleUserId) runs AFTER this parse succeeds and, on failure,
+  // treats the id as absent rather than 400ing: an older/malformed client
+  // must silently fall back to a memory-free turn, not get an error for a
+  // field it doesn't know the shape contract of.
+  userId: z.string().min(1).max(64).optional(),
 });
 
 export async function chatRoutes(
   app: FastifyInstance,
   config: Config,
   traceStore: TraceStore | null = null,
+  memoryStore: MemoryStore | null = null,
 ) {
   const allowedModels = getAllowedModels(config);
   const allowedOrigins = parseEnvList(config.CORS_ALLOWED_ORIGINS);
@@ -107,7 +121,13 @@ export async function chatRoutes(
       canvasContext,
       model: modelOverride,
       agentMode = "edits",
+      userId: rawUserId,
     } = parsed.data;
+
+    // A shape-invalid userId (e.g. an older client, or a malformed value)
+    // is treated as absent rather than rejected — see the field's doc
+    // comment on chatBodySchema above.
+    const userId = rawUserId && isPlausibleUserId(rawUserId) ? rawUserId : undefined;
 
     if (modelOverride && !allowedModels.includes(modelOverride)) {
       return reply.status(400).send({
@@ -143,11 +163,14 @@ export async function chatRoutes(
       taskPolicy,
       selectedModelId,
       systemPromptHash,
+      memoryInjected,
     } = await prepareChatTurn({
       config,
       messages,
       canvasContext,
       modelOverride,
+      userId,
+      memoryStore,
     });
     const maxSteps = MAX_AGENT_STEPS;
 
@@ -237,6 +260,34 @@ export async function chatRoutes(
               outputTokens: usage.outputTokens ?? 0,
             }),
           );
+        }
+
+        // Fire-and-forget: the response has already streamed. Only ever runs
+        // with MEMORY_ENABLED + a userId + a store — the showcase runner and
+        // every headless entry point never reach it.
+        if (memoryInjected && userId) {
+          // The client auto-resends on every client-executed tool call
+          // (`lastAssistantMessageIsCompleteWithToolCalls`), so one user
+          // message can be many `POST /api/chat` requests. A request whose
+          // final step still has tool calls is a continuation — the model
+          // handed work back to the browser and this request never produced
+          // a reply the user actually saw — so only a step-less final step
+          // counts as a completed user turn. See the `turnComplete` doc
+          // comment on MaybeRunReviewInput for what this fixes.
+          const lastStep = steps[steps.length - 1];
+          const turnComplete = !lastStep || lastStep.toolCalls.length === 0;
+          runReviewSafe({
+            config,
+            store: memoryStore,
+            userId,
+            system,
+            turnTools: tools,
+            modelMessages,
+            assistantText: steps.map((s) => s.text).join("\n").trim(),
+            stepCount: steps.length,
+            modelOverride,
+            turnComplete,
+          });
         }
       },
     });

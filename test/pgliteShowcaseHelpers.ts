@@ -59,36 +59,71 @@ function adaptPglite(db: PGlite): TraceQueryable {
   };
 }
 
-export interface PgliteShowcaseHarness {
+export interface PgliteQueryClient {
+  query(sql: string, params?: unknown[]): Promise<{ rows: unknown[] }>;
+  release(): void;
+}
+
+// Pool-shaped view over the single PGlite instance. PGlite is one connection,
+// so BEGIN/COMMIT issued through `connect()` can never straddle two clients —
+// which is exactly what makes it a valid stand-in for the `SELECT … FOR UPDATE`
+// transactions the memory store runs against a real pg.Pool.
+export interface PglitePool {
+  connect(): Promise<PgliteQueryClient>;
+  query(sql: string, params?: unknown[]): Promise<{ rows: unknown[] }>;
+  end(): Promise<void>;
+}
+
+export interface PgliteHarness {
   db: TraceQueryable;
+  pool: PglitePool;
   reset(): Promise<void>;
   close(): Promise<void>;
 }
 
-/** Boots a fresh in-memory PGlite instance and applies the real showcase
- * migrations against it once. Call `reset()` between tests to clear rows
- * without paying migration cost again. */
-export async function createPgliteShowcaseHarness(): Promise<PgliteShowcaseHarness> {
+/** Boots a fresh in-memory PGlite instance and applies the real migrations
+ * against it once. `reset()` truncates `truncateTables` without paying the
+ * migration cost again. */
+export async function createPgliteHarness(
+  truncateTables: string[],
+): Promise<PgliteHarness> {
   const pglite = new PGlite();
   const db = adaptPglite(pglite);
 
   const allFiles = (await readdir(MIGRATIONS_DIR)).filter((f) => f.endsWith(".sql"));
   const files = allFiles.filter((f) => !SKIP_MIGRATIONS.has(f));
-  const dir = await mkdtemp(join(tmpdir(), "pglite-showcase-migrations-"));
+  const dir = await mkdtemp(join(tmpdir(), "pglite-migrations-"));
   for (const file of files) {
     await copyFile(join(MIGRATIONS_DIR, file), join(dir, file));
   }
   await migrate(db, dir);
 
+  const client: PgliteQueryClient = {
+    query: (sql, params) => db.query(sql, params) as Promise<{ rows: unknown[] }>,
+    release: () => {},
+  };
+
   return {
     db,
+    pool: {
+      connect: async () => client,
+      query: (sql, params) => db.query(sql, params) as Promise<{ rows: unknown[] }>,
+      end: () => db.end(),
+    },
     async reset() {
+      if (truncateTables.length === 0) return;
       await pglite.exec(
-        "TRUNCATE TABLE showcase_screens, showcase_app_likes RESTART IDENTITY CASCADE",
+        `TRUNCATE TABLE ${truncateTables.join(", ")} RESTART IDENTITY CASCADE`,
       );
     },
     async close() {
       await pglite.close();
     },
   };
+}
+
+export type PgliteShowcaseHarness = PgliteHarness;
+
+export function createPgliteShowcaseHarness(): Promise<PgliteShowcaseHarness> {
+  return createPgliteHarness(["showcase_screens", "showcase_app_likes"]);
 }

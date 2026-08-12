@@ -46,6 +46,77 @@ summarized before it existed — but only while their `raw_traces` rows survive
 `TRACE_RAW_TTL_DAYS`. The report gains a "Corrections & memory requests" section.
 Spec: `docs/superpowers/specs/2026-07-17-session-insights-design.md`.
 
+## Persistent agent memory (`src/ai/memory/`, `src/ai/selfimprove/review.ts`)
+
+Phase 1 of the self-improvement loop: per-user, cross-session facts injected
+into every turn's system prompt. Gated by **`MEMORY_ENABLED`** (and, on top of
+that, a per-request `userId` — absent for the showcase runner and any older
+client, which is what keeps them memory-free with zero code changes). Needs
+`TRACE_DATABASE_URL` (same Postgres as traces/showcase — no separate memory
+DB var, deliberately, per the config convention elsewhere in this file).
+
+`userId` is client-supplied and only shape-validated, never authenticated
+(`src/lib/userId.ts`'s `isPlausibleUserId` — a canonical dashed UUID or the
+32-char no-dash hex fallback `pen-editor/src/lib/userId.ts` produces on a
+non-secure context). The chat route (`chatBodySchema`) still bounds it to
+1..64 chars as a coarse sanity/DoS guard, but a shape-invalid value past that
+is treated as ABSENT, not rejected — an older/malformed client silently falls
+back to a memory-free turn rather than 400ing. `GET /api/memory/activity`
+takes the opposite stance and 400s outright on a shape-invalid `userId`: that
+route reads back a user's audit trail, so a low-entropy id colliding across
+two different callers (e.g. both send `"test"`) is exactly the leak this
+guards against, and a degraded-but-real 200 would be worse than an error.
+
+Three tables (migration `009_agent_memory.sql`, index in `010_...idx.sql`):
+- **`agent_memory`** — `(user_id, target)` → `entries jsonb` (a `string[]`).
+  `target` is `'memory'` (the agent's own notes) or `'user'` (who the user
+  is); each has its own char budget (`MEMORY_LIMITS` in `types.ts`) checked
+  on the joined, separator-included string. The `memory` tool
+  (`src/ai/memory/tool.ts`) applies `add`/`replace`/`remove` batches
+  atomically (`apply.ts`); an exact-duplicate `add` (after trim) is a silent
+  no-op, not a second copy.
+- **`agent_review_state`** — per-user counters. `turns_since_memory` only
+  increments on a request whose final step made **no** tool calls — i.e. a
+  completed reply to the user, not one of the several `POST /api/chat`
+  round-trips a single message can span via
+  `lastAssistantMessageIsCompleteWithToolCalls` on the frontend. At
+  `MEMORY_REVIEW_INTERVAL` (10) a background review turn runs, sees the
+  `memory` tool plus stubs built from the turn's ACTUAL, FULL tool set
+  (`prepareChatTurn`'s `tools` — every client-executed pen tool, `load_skill`,
+  MCP tools, web tools; passed in as `MaybeRunReviewInput.turnTools`, not
+  reconstructed from `penTools` alone) for whichever of those the shared
+  system prompt might otherwise steer it toward (same trick as
+  `src/showcase/runner.ts`'s tool emulation, so an off-script call resolves
+  instead of throwing `NoSuchToolError` — this matters because the review
+  reuses the FULL system prompt including its "call load_skill/MCP tools
+  first" instructions, not a memory-only prompt), and re-reads the memory
+  snapshot fresh into its own user message (never the cached system prompt)
+  so it can't miss a fact a foreground call already saved this same turn.
+  The run also carries its own wall-clock cap (`AbortSignal.timeout`, 90s by
+  default) since it is fire-and-forget from `onFinish` after the client has
+  already disconnected — nobody can cancel a stuck provider call otherwise,
+  and it would hold the full transcript (which can carry multi-MB base64
+  image parts) in memory indefinitely; a cancellation from that timeout is
+  logged distinctly from an ordinary review failure.
+- **`agent_selfimprove_audit`** — one row per write, `origin` ∈
+  `foreground | background_review | curator`. Every mutation goes through
+  `insertAuditRow` (used both stand-alone and inside `applyOperations`'s
+  transaction) — there is no code path that changes memory without a row
+  here.
+
+**`GET /api/memory/activity?userId=...&sinceId=...`**
+(`src/routes/memoryActivity.ts`) is a read-only UI-visibility signal for a
+"memory updated" toast — never a 5xx for a disabled/missing backend, always
+`{events: [], latestId: null}` in that case.
+
+**`npm run memory:curate`** is the repair path (no route/UI touches memory
+otherwise): `--list-users` discovers ids, `--user <id>` shows both targets,
+`--user <id> --target <memory|user> --entry "<substring>" [--dry-run]`
+removes one entry, `--user <id> --clear [--dry-run]` wipes both targets. Only
+`TRACE_DATABASE_URL` is required (no S3), same shape as
+`showcase:pin`/`showcase:delete` (`src/ai/memory/curator.ts` +
+`curatorRun.ts`). Every deletion writes an `origin: "curator"` audit row.
+
 ## MCP server (`src/mcp/`)
 
 `/api/mcp` (streamable HTTP, `@modelcontextprotocol/sdk`) and `/api/mcp/ws`
