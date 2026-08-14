@@ -181,8 +181,8 @@ export const DEFAULT_MODELS: ModelOption[] = [
     supportsVision: true,
   },
   {
-    id: "google/gemini-3.6-flash",
-    label: "Gemini 3.6 Flash",
+    id: "google/gemini-3.7-flash",
+    label: "Gemini 3.7 Flash",
     supportsVision: true,
   },
 ];
