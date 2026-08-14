@@ -1,5 +1,5 @@
 import type { Config } from "../config.js";
-import { createS3Client, uploadImage } from "./s3.js";
+import { resolveS3Target, uploadImage } from "./s3.js";
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 
@@ -89,9 +89,9 @@ export async function generateImage(
 
   const { mimeType, buffer } = decodeDataUrl(dataUrl);
 
-  const s3 = createS3Client(config);
-  if (s3 && config.S3_BUCKET && config.S3_ENDPOINT) {
-    const url = await uploadImage(s3, config.S3_BUCKET, config.S3_ENDPOINT, buffer, mimeType);
+  const s3Target = resolveS3Target(config);
+  if (s3Target) {
+    const url = await uploadImage(s3Target, buffer, mimeType);
     return { url, mimeType };
   }
 

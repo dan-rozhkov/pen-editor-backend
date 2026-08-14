@@ -46,6 +46,13 @@ const envSchema = z.object({
   // object ACLs at all (public access is a bucket-level setting) and the header
   // is meaningless there. Set it to an empty string to omit the header.
   S3_OBJECT_ACL: z.string().default("public-read"),
+  // Comma-separated public bases we no longer write to but must still READ:
+  // after a provider migration, every already-published screen's HTML still
+  // points its <img> tags at the old host, and `/api/showcase/image` only
+  // proxies URLs on an allowlisted prefix (the bucket has no CORS — FIR-62).
+  // Without this the gallery's old screens lose their images the moment
+  // S3_ENDPOINT moves. Read-only: nothing ever uploads here.
+  S3_LEGACY_PUBLIC_BASE_URLS: z.string().optional(),
   // Image generation is slow; a hung OpenRouter image endpoint must not hold
   // the client connection/request context open forever (see withTimeout in
   // src/ai/mcp.ts for the analogous MCP-side guard).
@@ -161,15 +168,6 @@ export const DEFAULT_MODELS: ModelOption[] = [
   {
     id: "deepseek/deepseek-v4-pro",
     label: "DeepSeek V4 Pro",
-    supportsVision: false,
-  },
-  // The dated snapshot the showcase runner pins (SHOWCASE_MODEL_ID). Listed
-  // here for its metadata, not for the picker: an id missing from this table
-  // is assumed vision-capable by `isVisionCapable`, which would send image
-  // parts straight to a text-only model instead of describing them first.
-  {
-    id: "deepseek/deepseek-v4-pro-0813",
-    label: "DeepSeek V4 Pro (0813)",
     supportsVision: false,
   },
   { id: "tencent/hy3", label: "Hy3", supportsVision: false },

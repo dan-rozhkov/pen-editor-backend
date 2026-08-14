@@ -1,10 +1,11 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import type { Config } from "../config.js";
+import { parseEnvList, type Config } from "../config.js";
 import { createShowcaseStore, type ShowcaseStore, type ShowcaseScreenSource } from "../showcase/store.js";
 // platform.js, not screenshot.js: the latter imports `playwright`, a
 // devDependency that a production install never has.
 import { showcaseViewport } from "../showcase/platform.js";
+import { resolveS3PublicBase } from "../services/s3.js";
 
 // Same pattern as `src/showcase/run.ts`/`reencodeRun.ts`: a single stuck S3
 // object must not hang this request (or a whole `Promise.all`) forever.
@@ -104,27 +105,42 @@ const imageProxyQuerySchema = z.object({
   url: z.string().url().max(4096),
 });
 
+// Timeweb has served the same public buckets from both hostnames over the
+// lifetime of the showcase, and published HTML contains both spellings. Every
+// prefix gets its twin — including migrated-away ones, which is the only case
+// left once the configured base is another provider's entirely: an operator
+// listing just the `.com` spelling in S3_LEGACY_PUBLIC_BASE_URLS would
+// otherwise 403 every `.cloud`-spelled image in the back catalogue.
+function withTimewebAlias(prefix: URL): URL[] {
+  const aliasHost =
+    prefix.hostname === "s3.timeweb.cloud"
+      ? "s3.timeweb.com"
+      : prefix.hostname === "s3.timeweb.com"
+        ? "s3.timeweb.cloud"
+        : null;
+  if (!aliasHost) return [prefix];
+  const alias = new URL(prefix.href);
+  alias.hostname = aliasHost;
+  return [prefix, alias];
+}
+
 function editorImagePrefixes(config: Config): URL[] {
-  if (!config.S3_ENDPOINT || !config.S3_BUCKET) return [];
+  const base = resolveS3PublicBase(config);
+  if (!base) return [];
   try {
-    const configured = new URL(
-      `${config.S3_ENDPOINT.replace(/\/$/, "")}/${config.S3_BUCKET}/pen-editor/`,
-    );
-    const prefixes = [configured];
-    // Timeweb has served the same public buckets from both hostnames over the
-    // lifetime of the showcase. Keep old `.com` objects readable after the
-    // configured SDK endpoint moved to `.cloud` (and vice versa), without
-    // widening the allowlist to another provider, bucket, or key prefix.
-    let aliasHost: string | null = null;
-    if (configured.hostname === "s3.timeweb.cloud") {
-      aliasHost = "s3.timeweb.com";
-    } else if (configured.hostname === "s3.timeweb.com") {
-      aliasHost = "s3.timeweb.cloud";
-    }
-    if (aliasHost) {
-      const alias = new URL(configured.href);
-      alias.hostname = aliasHost;
-      prefixes.push(alias);
+    const prefixes = withTimewebAlias(new URL(`${base}/pen-editor/`));
+    // Bases we migrated away from. Their objects stay readable (and their
+    // URLs stay embedded in already-published HTML) long after we stop
+    // uploading there — see S3_LEGACY_PUBLIC_BASE_URLS. A malformed entry is
+    // skipped rather than taking the whole allowlist down with it.
+    for (const legacy of parseEnvList(config.S3_LEGACY_PUBLIC_BASE_URLS)) {
+      try {
+        prefixes.push(
+          ...withTimewebAlias(new URL(`${legacy.replace(/\/$/, "")}/pen-editor/`)),
+        );
+      } catch {
+        console.warn(`[showcase] ignoring malformed legacy S3 base: ${legacy}`);
+      }
     }
     return prefixes;
   } catch {
@@ -156,15 +172,20 @@ export async function showcaseRoutes(
   const store =
     storeOverride !== undefined ? storeOverride : createShowcaseStore(config);
 
+  // Config-derived and therefore fixed for the process: computing it per
+  // request would also re-log the malformed-entry warning on every proxied
+  // image, which a single gallery page load fans out into dozens of lines.
+  const imageProxyPrefixes = editorImagePrefixes(config);
+
   // Pixi uploads image pixels to WebGL, which requires a CORS-readable
-  // response. Our public Timeweb S3 objects are intentionally simple public
-  // files and currently omit Access-Control-Allow-Origin, even though a plain
-  // <img> can display them. Proxy only the immutable `pen-editor/` prefix of
-  // the configured bucket — never an arbitrary caller-provided host — so
-  // converted showcase photos remain renderable without creating an SSRF
-  // endpoint.
+  // response. Our public S3 objects are intentionally simple public files and
+  // currently omit Access-Control-Allow-Origin, even though a plain <img> can
+  // display them. Proxy only the immutable `pen-editor/` prefix of the
+  // configured (or migrated-away) bucket — never an arbitrary caller-provided
+  // host — so converted showcase photos remain renderable without creating an
+  // SSRF endpoint.
   app.get("/api/image-proxy", async (request, reply) => {
-    const prefixes = editorImagePrefixes(config);
+    const prefixes = imageProxyPrefixes;
     if (prefixes.length === 0) {
       return reply.status(503).send({ error: "S3 storage is not configured" });
     }

@@ -401,6 +401,23 @@ second env var, since a second URL pointing elsewhere would silently split the
 schema) plus all four `S3_*` vars, and a one-time
 `npx playwright install chromium`. Spec: FIR-61.
 
+**Object storage is not assumed to be path-style.** Everything that writes an
+object goes through `resolveS3Target` (`src/services/s3.ts`) and everything
+that needs a public URL takes it from what `uploadObject`/`upload` returns —
+never by concatenating endpoint + bucket + key, which is what
+`S3_PUBLIC_BASE_URL` exists to break: on Cloudflare R2 the SDK endpoint
+(`<account>.r2.cloudflarestorage.com`) only answers signed API calls, and reads
+come from an `r2.dev` subdomain or custom domain with no bucket in the path.
+Two more vars complete that story: **`S3_OBJECT_ACL`** (empty on R2 — it has no
+object ACLs and the header is rejected, so a non-empty value fails every PUT)
+and **`S3_LEGACY_PUBLIC_BASE_URLS`** (comma-separated bases we no longer write
+to but must still read). The last one is not optional after a migration:
+`/api/image-proxy` only proxies allowlisted prefixes because the buckets have
+no CORS (FIR-62), and every already-published screen's HTML still points its
+`<img>` tags at the old host — omit it and the back catalogue silently loses
+its photos. Both timeweb spellings (`.com`/`.cloud`) of any listed base are
+allowlisted automatically.
+
 `--dry-run=<dir>` runs that same real generation — same theme pick, same
 palette avoidance, same `/prototype` turn — but publishes nothing: it skips
 the screen upload and the `showcase_screens` insert, writing each screen's

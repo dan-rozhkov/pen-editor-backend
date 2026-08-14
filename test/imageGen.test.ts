@@ -2,12 +2,15 @@ import { afterEach, describe, it, expect, vi } from "vitest";
 import { makeConfig } from "./helpers.js";
 
 // Mock the S3 module so the S3 branch is deterministic and the no-S3 branch returns null.
-vi.mock("../src/services/s3.js", () => ({
-  createS3Client: vi.fn(),
-  uploadImage: vi.fn(),
-}));
+vi.mock("../src/services/s3.js", async (importOriginal) => {
+  // resolveS3Target stays real (it is a pure config reader apart from
+  // constructing the SDK client), so this pins which public base and ACL
+  // generateImage would actually upload with.
+  const actual = await importOriginal<typeof import("../src/services/s3.js")>();
+  return { ...actual, uploadImage: vi.fn() };
+});
 
-import { createS3Client, uploadImage } from "../src/services/s3.js";
+import { uploadImage } from "../src/services/s3.js";
 import { generateImage, ImageGenerationTimeoutError } from "../src/services/imageGen.js";
 
 const DATA_URL = "data:image/png;base64,aGVsbG8="; // "hello"
@@ -26,7 +29,6 @@ afterEach(() => {
 
 describe("generateImage", () => {
   it("sends an OpenRouter image request and returns the data URL when S3 is not configured", async () => {
-    vi.mocked(createS3Client).mockReturnValue(null);
     const fetchMock = vi.fn(async () =>
       okResponse({ choices: [{ message: { images: [{ image_url: { url: DATA_URL } }] } }] }),
     );
@@ -51,7 +53,6 @@ describe("generateImage", () => {
   });
 
   it("uploads to S3 and returns the https URL when S3 is configured", async () => {
-    vi.mocked(createS3Client).mockReturnValue({} as never);
     vi.mocked(uploadImage).mockResolvedValue("https://cdn.example.com/pen-editor/x.png");
     vi.stubGlobal(
       "fetch",
@@ -71,27 +72,53 @@ describe("generateImage", () => {
 
     expect(result.url).toBe("https://cdn.example.com/pen-editor/x.png");
     expect(uploadImage).toHaveBeenCalledOnce();
-    const [, bucket, endpoint, buffer, mimeType] = vi.mocked(uploadImage).mock.calls[0];
-    expect(bucket).toBe("bucket");
-    expect(endpoint).toBe("https://s3.example.com");
+    const [target, buffer, mimeType] = vi.mocked(uploadImage).mock.calls[0];
+    expect(target.bucket).toBe("bucket");
+    expect(target.publicBase).toBe("https://s3.example.com/bucket");
+    expect(target.acl).toBe("public-read");
     expect(Buffer.isBuffer(buffer)).toBe(true);
     expect(mimeType).toBe("image/png");
   });
 
+  it("uploads generated images to the R2-style public base with no ACL", async () => {
+    // This file has no global mock reset, so calls accumulate across tests.
+    vi.mocked(uploadImage).mockClear();
+    vi.mocked(uploadImage).mockResolvedValue("https://pub-abc.r2.dev/pen-editor/x.png");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        okResponse({ choices: [{ message: { images: [{ image_url: { url: DATA_URL } }] } }] }),
+      ),
+    );
+
+    const config = {
+      ...makeConfig(),
+      S3_ENDPOINT: "https://acc.r2.cloudflarestorage.com",
+      S3_BUCKET: "pen-editor",
+      S3_ACCESS_KEY_ID: "ak",
+      S3_SECRET_ACCESS_KEY: "sk",
+      S3_PUBLIC_BASE_URL: "https://pub-abc.r2.dev",
+      S3_OBJECT_ACL: "",
+    };
+    await generateImage(config, "a cat");
+
+    const [target] = vi.mocked(uploadImage).mock.calls[0];
+    expect(target.publicBase).toBe("https://pub-abc.r2.dev");
+    expect(target.bucket).toBe("pen-editor");
+    expect(target.acl).toBeUndefined();
+  });
+
   it("throws when the response contains no image", async () => {
-    vi.mocked(createS3Client).mockReturnValue(null);
     vi.stubGlobal("fetch", vi.fn(async () => okResponse({ choices: [{ message: { content: "no image here" } }] })));
     await expect(generateImage(makeConfig(), "x")).rejects.toThrow(/no image/i);
   });
 
   it("throws when OpenRouter returns a non-2xx status", async () => {
-    vi.mocked(createS3Client).mockReturnValue(null);
     vi.stubGlobal("fetch", vi.fn(async () => new Response("boom", { status: 500 })));
     await expect(generateImage(makeConfig(), "x")).rejects.toThrow(/failed/i);
   });
 
   it("throws when the data URL mime type is not an image type", async () => {
-    vi.mocked(createS3Client).mockReturnValue(null);
     const NON_IMAGE_DATA_URL = "data:text/html;base64,aGVsbG8=";
     vi.stubGlobal(
       "fetch",
@@ -105,7 +132,6 @@ describe("generateImage", () => {
   });
 
   it("extracts a data URL from message content when images is absent", async () => {
-    vi.mocked(createS3Client).mockReturnValue(null);
     vi.stubGlobal(
       "fetch",
       vi.fn(async () =>
@@ -122,7 +148,6 @@ describe("generateImage", () => {
   });
 
   it("throws ImageGenerationTimeoutError when the OpenRouter request exceeds the configured timeout", async () => {
-    vi.mocked(createS3Client).mockReturnValue(null);
     // Mimic real fetch's behavior of rejecting with the abort signal's reason
     // once the signal fires, instead of ever resolving.
     vi.stubGlobal(

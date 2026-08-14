@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import type { Config } from "../config.js";
-import { createS3Client, uploadImage } from "../services/s3.js";
+import { resolveS3Target, uploadImage } from "../services/s3.js";
 import {
   sniffImageType,
   SUPPORTED_IMAGE_TYPES_LABEL,
@@ -19,10 +19,12 @@ function parseDataUri(dataUri: string): Buffer {
 }
 
 export async function uploadRoutes(app: FastifyInstance, config: Config) {
-  const s3Client = createS3Client(config);
+  // One guard for the whole route: the target is null under exactly the
+  // conditions that used to be checked field by field here.
+  const s3Target = resolveS3Target(config);
 
   app.post("/api/upload-image", async (request, reply) => {
-    if (!s3Client || !config.S3_BUCKET || !config.S3_ENDPOINT) {
+    if (!s3Target) {
       return reply
         .status(503)
         .send({ error: "S3 storage is not configured" });
@@ -59,13 +61,7 @@ export async function uploadRoutes(app: FastifyInstance, config: Config) {
         .send({ error: `Image too large: ${buffer.length} bytes (max ${MAX_SIZE})` });
     }
 
-    const url = await uploadImage(
-      s3Client,
-      config.S3_BUCKET,
-      config.S3_ENDPOINT,
-      buffer,
-      mimeType,
-    );
+    const url = await uploadImage(s3Target, buffer, mimeType);
 
     return reply.send({ url });
   });

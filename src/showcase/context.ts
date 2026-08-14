@@ -2,7 +2,7 @@ import { loadConfig, type Config } from "../config.js";
 import { createPgPool } from "../tracing/traceStore.js";
 import { migrate } from "../analysis/migrate.js";
 import { createShowcaseStore, type ShowcaseStore } from "./store.js";
-import { createS3Client, uploadObject } from "../services/s3.js";
+import { resolveS3Target, uploadObject } from "../services/s3.js";
 import type { S3Client } from "@aws-sdk/client-s3";
 
 // Env validation + Postgres/S3 wiring shared by every showcase entrypoint.
@@ -30,7 +30,10 @@ export interface ShowcaseDbContext {
 export interface ShowcaseContext extends ShowcaseDbContext {
   s3Client: S3Client;
   bucket: string;
-  endpoint: string;
+  // Deliberately no `endpoint`: every public URL comes back from `upload`,
+  // which resolves the public base itself. A field here had no consumers and
+  // only invited callers to rebuild URLs by hand — the exact mistake that
+  // breaks on a provider whose read host differs from its write host.
   upload(key: string, body: Buffer, contentType: string): Promise<string>;
 }
 
@@ -55,24 +58,21 @@ export async function openShowcaseContext(
   }
 
   let s3Part:
-    | Pick<ShowcaseContext, "s3Client" | "bucket" | "endpoint" | "upload">
+    | Pick<ShowcaseContext, "s3Client" | "bucket" | "upload">
     | undefined;
   if (requireS3) {
-    const s3Client = createS3Client(config);
-    if (!s3Client || !config.S3_BUCKET || !config.S3_ENDPOINT) {
+    const target = resolveS3Target(config);
+    if (!target) {
       console.error(
         `[${tag}] S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY are all required`,
       );
       process.exit(1);
     }
-    const bucket = config.S3_BUCKET;
-    const endpoint = config.S3_ENDPOINT;
     s3Part = {
-      s3Client,
-      bucket,
-      endpoint,
+      s3Client: target.client,
+      bucket: target.bucket,
       upload: (key, body, contentType) =>
-        uploadObject(s3Client, bucket, endpoint, key, body, contentType),
+        uploadObject(target, key, body, contentType),
     };
   }
 

@@ -657,6 +657,69 @@ describe("GET /api/image-proxy", () => {
     expect(fetchMock).not.toHaveBeenCalled();
     await instance.close();
   });
+
+  // After a provider migration the bucket we upload to changes, but every
+  // already-published screen's HTML still points at the old one. Without the
+  // legacy list those screens lose their images the moment S3_ENDPOINT moves.
+  describe("after a provider migration", () => {
+    const migrated = makeConfig({
+      S3_ENDPOINT: "https://acc.r2.cloudflarestorage.com",
+      S3_BUCKET: "pen-editor",
+      S3_PUBLIC_BASE_URL: "https://pub-abc.r2.dev",
+      S3_LEGACY_PUBLIC_BASE_URLS:
+        " https://s3.timeweb.com/old-bucket/ , not a url ",
+    });
+
+    it.each([
+      ["the new public base", "https://pub-abc.r2.dev/pen-editor/photo.png"],
+      ["a legacy base", "https://s3.timeweb.com/old-bucket/pen-editor/photo.png"],
+    ])("proxies %s", async (_label, source) => {
+      const fetchMock = vi.fn(
+        async () =>
+          new Response(new Uint8Array([0x89, 0x50]), {
+            headers: { "content-type": "image/png" },
+          }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const instance = await buildApp(migrated, {
+        logger: false,
+        showcaseStore: fakeStore(),
+      });
+      const res = await instance.inject({
+        method: "GET",
+        url: `/api/image-proxy?url=${encodeURIComponent(source)}`,
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(fetchMock).toHaveBeenCalledWith(
+        new URL(source),
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      );
+      await instance.close();
+    });
+
+    it("does not widen the allowlist to another bucket or key prefix", async () => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+      const instance = await buildApp(migrated, {
+        logger: false,
+        showcaseStore: fakeStore(),
+      });
+      for (const source of [
+        "https://s3.timeweb.com/other-bucket/pen-editor/photo.png",
+        "https://s3.timeweb.com/old-bucket/generated/photo.png",
+        "https://pub-abc.r2.dev/showcase/photo.png",
+      ]) {
+        const res = await instance.inject({
+          method: "GET",
+          url: `/api/image-proxy?url=${encodeURIComponent(source)}`,
+        });
+        expect(res.statusCode).toBe(403);
+      }
+      expect(fetchMock).not.toHaveBeenCalled();
+      await instance.close();
+    });
+  });
 });
 
 describe("POST /api/showcase/:runId/like", () => {

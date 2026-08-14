@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../src/app.js";
-import { createS3Client } from "../src/services/s3.js";
+import { resolveS3Target } from "../src/services/s3.js";
 import { makeConfig } from "./helpers.js";
 import type { Config } from "../src/config.js";
 
@@ -11,10 +11,26 @@ import type { Config } from "../src/config.js";
 const UPLOADED_URL = "https://cdn.example.test/pen-editor/uploaded.png";
 const uploadImageMock = vi.fn(async () => UPLOADED_URL);
 
-vi.mock("../src/services/s3.js", () => ({
-  createS3Client: vi.fn(() => ({ sentinel: true })),
-  uploadImage: (...args: unknown[]) => uploadImageMock(...(args as [])),
-}));
+vi.mock("../src/services/s3.js", async (importOriginal) => {
+  // The target is faked (its real form would construct an SDK client) but
+  // still derived from the config it is handed, so the route's 503 guard is
+  // driven by configuration rather than by a hardcoded stub answer.
+  const actual = await importOriginal<typeof import("../src/services/s3.js")>();
+  return {
+    ...actual,
+    resolveS3Target: vi.fn((config: Config) =>
+      config.S3_BUCKET && config.S3_ENDPOINT
+        ? {
+            client: { sentinel: true },
+            publicBase: `${config.S3_ENDPOINT}/${config.S3_BUCKET}`,
+            bucket: config.S3_BUCKET,
+            acl: "public-read",
+          }
+        : null,
+    ),
+    uploadImage: (...args: unknown[]) => uploadImageMock(...(args as [])),
+  };
+});
 
 const S3_CONFIG: Partial<Config> = {
   S3_ENDPOINT: "https://s3.example.test",
@@ -59,11 +75,11 @@ describe("POST /api/upload-image", () => {
     expect(uploadImageMock).not.toHaveBeenCalled();
   });
 
-  it("returns 503 when the S3 client cannot be created despite full config", async () => {
-    // Exercise the `!s3Client` branch specifically: full config present, but
-    // createS3Client returns null (e.g. SDK init failure). createS3Client is
-    // called once at route registration, so override just that next call.
-    vi.mocked(createS3Client).mockReturnValueOnce(null);
+  it("returns 503 when the S3 target cannot be built despite full config", async () => {
+    // Exercise the null-target branch specifically: full config present, but
+    // the target can't be built (e.g. SDK init failure). It is resolved once
+    // at route registration, so override just that next call.
+    vi.mocked(resolveS3Target).mockReturnValueOnce(null);
     const base = await startServer(makeConfig(S3_CONFIG));
     const res = await postJson(base, { image: pngDataUri });
     expect(res.status).toBe(503);
@@ -78,15 +94,17 @@ describe("POST /api/upload-image", () => {
     expect(await res.json()).toEqual({ url: UPLOADED_URL });
     expect(uploadImageMock).toHaveBeenCalledTimes(1);
     // the buffer passed to S3 must be the decoded PNG, mime sniffed server-side
-    const [, , , buffer, mime] = uploadImageMock.mock.calls[0] as unknown as [
-      unknown,
-      string,
-      string,
+    const [target, buffer, mime] = uploadImageMock.mock.calls[0] as unknown as [
+      { publicBase: string; bucket: string },
       Buffer,
       string,
     ];
     expect(Buffer.from(buffer).equals(PNG)).toBe(true);
     expect(mime).toBe("image/png");
+    // Public base, not the SDK endpoint — the two differ on R2, and this is
+    // what decides which host lands in the stored URL.
+    expect(target.publicBase).toBe("https://s3.example.test/bucket");
+    expect(target.bucket).toBe("bucket");
   });
 
   it("returns 400 when the JSON body has no image field", async () => {
