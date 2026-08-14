@@ -128,6 +128,31 @@ describe("runShowcaseGeneration", () => {
     expect(result.screens).toEqual([{ name: "Only", htmlContent: "<div>Only</div>" }]);
   });
 
+  it("does not offer get_screenshot — there is no browser to take one", async () => {
+    // The system prompt recommends get_screenshot for verifying a finished
+    // screen, so advertising it here would buy a guaranteed-wasted step in
+    // every autonomous run. analyze_image is backend-executed and stays.
+    const offered: string[][] = [];
+    let call = 0;
+    const results = [textResult("done")];
+    holders.model = new MockLanguageModelV3({
+      doGenerate: async (options) => {
+        offered.push((options.tools ?? []).map((t) => t.name));
+        const result = results[Math.min(call, results.length - 1)];
+        call += 1;
+        return result;
+      },
+    });
+
+    await runShowcaseGeneration(makeConfig(), "мобильный банк");
+
+    expect(offered.length).toBeGreaterThan(0);
+    for (const names of offered) {
+      expect(names).not.toContain("get_screenshot");
+      expect(names).toContain("analyze_image");
+    }
+  });
+
   it("truncates to at most 5 screens when the model produces more", async () => {
     const operations = Array.from(
       { length: 7 },

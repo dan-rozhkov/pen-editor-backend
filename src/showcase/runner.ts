@@ -209,6 +209,14 @@ function instrumentTools(
     issuedImageUrls.push(url),
   );
 
+  // There is no browser here, so a screenshot can never be taken — and unlike
+  // the tools below, a stub that reports itself unavailable is not good enough:
+  // the system prompt actively recommends get_screenshot for verifying a
+  // finished screen, so leaving it advertised buys a guaranteed-wasted step in
+  // every run. Drop it instead. (analyze_image stays: it is backend-executed
+  // and works fine here, e.g. to look at a generated image.)
+  delete instrumented.get_screenshot;
+
   for (const name of Object.keys(instrumented)) {
     const entry = instrumented[name] as { execute?: unknown };
     if (typeof entry.execute === "function") continue; // static tool, leave as-is

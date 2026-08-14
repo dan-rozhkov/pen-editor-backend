@@ -1,5 +1,8 @@
 import { tool } from "ai";
 import { z } from "zod";
+import type { Config } from "../config.js";
+import { describeImage } from "../services/vision.js";
+import { parseScreenshotDataUrl } from "./screenshotOutput.js";
 
 const MAX_BATCH_DESIGN_OPERATIONS = 25;
 
@@ -671,6 +674,40 @@ export async function getStyleGuideImpl(args: { tags?: string[]; name?: string }
   };
 }
 
+// Backend-executed, unlike every native design tool: it calls the auxiliary
+// vision model directly (src/services/vision.ts) rather than dispatching to
+// the browser, so it works regardless of whether the main model is
+// vision-capable. `config` is threaded in exactly like batch_design's
+// `embedOnly` override (see makeBatchDesignTool + prepareChatTurn): the
+// static `penTools.analyze_image` entry below exists so the tool-name/schema
+// contract test can see it without a Config, but prepareChatTurn always
+// rebuilds it with the real per-request config before streamText runs.
+export function makeAnalyzeImageTool(config?: Config) {
+  return tool({
+    description:
+      "Look at an image by URL and get back a detailed text description — colors, layout, typography, text content, UI controls, imagery. Use this to inspect an image already in the design (a fill, an embed's <img>), a reference screenshot, or something you just made with generate_image/generate_frame_image. Works independently of which model is driving the conversation. Pass a specific question to have the description focus on it.",
+    inputSchema: z.object({
+      imageUrl: z
+        .string()
+        .describe("http(s):// or data: URL of the image to analyze."),
+      question: z
+        .string()
+        .optional()
+        .describe("Optional specific question to answer about the image, beyond a general description."),
+    }),
+    execute: async ({ imageUrl, question }) => {
+      if (!config) {
+        // Only reachable through the config-less static entry below, which
+        // prepareChatTurn always replaces — so this is a wiring bug, not an
+        // operator misconfiguration, and it must not read like one.
+        return "Image analysis is unavailable in this context (the tool was not given a server config).";
+      }
+      const result = await describeImage({ image: imageUrl, question, config });
+      return result.text;
+    },
+  });
+}
+
 export const penTools = {
   // ── Reading & Navigation ──────────────────────────────────────────
 
@@ -692,15 +729,35 @@ export const penTools = {
     inputSchema: z.object(snapshotLayoutInputShape),
   }),
 
-  // get_screenshot is intentionally disabled: the agent has no visual-verification
-  // tool. Do not re-enable without a product decision (see plans/002).
-  // get_screenshot: tool({
-  //   description:
-  //     "Take a screenshot of a specific node for visual verification. Use this after making changes to confirm they look correct. Returns an image.",
-  //   inputSchema: z.object({
-  //     nodeId: z.string().describe("The ID of the node to screenshot."),
-  //   }),
-  // }),
+  // Client-executed (the browser renders and captures the node). Only
+  // advertised for a turn when the main model is vision-capable or a
+  // VISION_MODEL is configured to describe it instead — see the gate in
+  // prepareChatTurn (src/ai/chatTurn.ts), which deletes this entry from the
+  // per-request tool set otherwise so a phantom tool nobody could act on is
+  // never offered.
+  get_screenshot: tool({
+    description:
+      "Take a screenshot of a specific node for visual verification. Use this after finishing a screen or when a result looks suspicious — it costs a round trip (and, on a text-only model, a second vision-model call that returns a description rather than the image itself), so prefer snapshot_layout/batch_get for routine structural checks. Returns an image.",
+    inputSchema: z.object({
+      nodeId: z.string().describe("The ID of the node to screenshot."),
+    }),
+    // Without this the handler's `JSON.stringify({ imageData: "data:..." })`
+    // would reach the model as a few hundred KB of base64 *text* — unreadable
+    // and enormously expensive, and re-sent on every later step of the turn.
+    // Promote it to a real image part instead; applyVisionPreprocessing
+    // (src/ai/vision-messages.ts) then swaps that part for a text description
+    // if the model turns out to be vision-less, so both paths work.
+    toModelOutput: ({ output }) => {
+      const image = parseScreenshotDataUrl(output);
+      if (!image) {
+        return { type: "text", value: typeof output === "string" ? output : JSON.stringify(output) };
+      }
+      return {
+        type: "content",
+        value: [{ type: "image-data", data: image.base64, mediaType: image.mediaType }],
+      };
+    },
+  }),
 
   get_variables: tool({
     description:
@@ -1240,4 +1297,6 @@ Returns the created/updated style ids and names (with a created|updated status) 
         .describe("ID of the frame whose fill should become the generated image"),
     }),
   }),
+
+  analyze_image: makeAnalyzeImageTool(),
 };

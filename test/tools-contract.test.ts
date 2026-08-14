@@ -23,6 +23,7 @@ describe("penTools registry", () => {
         "generate_frame_image",
         "generate_image",
         "get_editor_state",
+        "get_screenshot",
         "get_guidelines",
         "get_style_guide",
         "get_style_guide_tags",
@@ -49,6 +50,7 @@ describe("penTools registry", () => {
         "update_plugin",
         "list_plugins",
         "ask_user",
+        "analyze_image",
       ].sort(),
     );
   });
@@ -90,6 +92,7 @@ describe("penTools registry", () => {
       "update_plugin",
       "list_plugins",
       "ask_user",
+      "get_screenshot",
     ] as const) {
       expect(hasExecute(name), `${name} must be client-executed`).toBe(false);
     }
@@ -99,6 +102,7 @@ describe("penTools registry", () => {
       "get_guidelines",
       "get_style_guide",
       "get_style_guide_tags",
+      "analyze_image",
     ] as const) {
       expect(hasExecute(name), `${name} must execute on the backend`).toBe(true);
     }

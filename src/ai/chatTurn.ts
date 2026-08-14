@@ -9,9 +9,11 @@ import {
 import { randomUUID, createHash } from "node:crypto";
 import type { Config } from "../config.js";
 import { createModel } from "./provider.js";
-import { penTools, makeBatchDesignTool } from "./tools.js";
+import { penTools, makeBatchDesignTool, makeAnalyzeImageTool } from "./tools.js";
 import { buildSystemPrompt } from "./system-prompt.js";
 import { resolveTaskPolicy, type TaskPolicy } from "./taskPolicy.js";
+import { applyVisionPreprocessing, modelSupportsVision } from "./vision-messages.js";
+import { isVisionConfigured } from "../services/vision.js";
 import { getMCPTools } from "./mcp.js";
 import { getWebTools } from "./web-search.js";
 import {
@@ -358,9 +360,20 @@ export async function prepareChatTurn(
     return sanitized.messages;
   })();
 
-  const modelMessages = await convertToModelMessages(
+  const convertedMessages = await convertToModelMessages(
     normalizedMessages as unknown as UIMessage[],
   );
+
+  // Our analog of Hermes's decide_image_input_mode, run once right before
+  // streamText sees the messages: a vision-capable model gets these back
+  // unchanged, a vision-less one gets every image (user attachment or
+  // get_screenshot result) replaced with a text description. Shared by
+  // /api/chat and the showcase runner via this same function, so neither
+  // can send a raw image part to a text-only model.
+  const modelMessages = await applyVisionPreprocessing(convertedMessages, {
+    config,
+    modelId: selectedModelId,
+  });
 
   // Structural backstop for prototype/slides: swap in the embed-only
   // batch_design variant so a native frame/rect/text create op is rejected
@@ -412,6 +425,27 @@ export async function prepareChatTurn(
   if (taskPolicy !== "native") {
     tools.batch_design = makeBatchDesignTool({ embedOnly: true });
     delete tools.draw_vector;
+  }
+
+  // analyze_image needs this request's real config (VISION_MODEL etc.) to
+  // actually call the vision service — the static penTools entry only
+  // exists so the tool-name contract test can see its schema without one.
+  // With no VISION_MODEL it has nothing to call, so it is dropped rather
+  // than left to burn a step reporting itself unavailable.
+  if (isVisionConfigured(config)) {
+    tools.analyze_image = makeAnalyzeImageTool(config);
+  } else {
+    delete tools.analyze_image;
+  }
+
+  // Structural gate (mirrors the embed-only guard above): get_screenshot is
+  // client-executed and returns an image, so it is only useful when the
+  // main model can read that image natively, or a VISION_MODEL is
+  // configured to describe it instead. Otherwise it's a phantom tool nobody
+  // could act on, so it's removed from the per-request set rather than
+  // merely discouraged in the prompt.
+  if (!modelSupportsVision(config, selectedModelId) && !isVisionConfigured(config)) {
+    delete tools.get_screenshot;
   }
 
   return {

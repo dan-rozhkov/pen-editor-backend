@@ -34,9 +34,8 @@ describe("MCP bridged/static tool contract", () => {
     }
   });
 
-  it("every bridged MCP tool except get_screenshot has a matching penTools schema", () => {
+  it("every bridged MCP tool has a matching penTools schema", () => {
     for (const name of BRIDGED_TOOL_NAMES) {
-      if (name === "get_screenshot") continue; // intentionally chat-disabled, MCP-only
       expect(name in penTools, name).toBe(true);
     }
   });

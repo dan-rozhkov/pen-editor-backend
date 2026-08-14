@@ -94,4 +94,77 @@ describe("prepareChatTurn", () => {
     expect(turn.tools.batch_design).toBe(penTools.batch_design);
     expect(turn.tools.draw_vector).toBe(penTools.draw_vector);
   });
+
+  describe("get_screenshot gate", () => {
+    // makeConfig()'s default OPENROUTER_MODEL (deepseek/deepseek-v4-pro) is
+    // vision-less per DEFAULT_MODELS in src/config.ts.
+    it("is absent when the model is vision-less and no VISION_MODEL is configured", async () => {
+      const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+
+      const config = makeConfig({ VISION_MODEL: "" });
+      const messages = [userMessage("make the header bigger")];
+
+      const turn = await prepareChatTurn({ config, messages });
+
+      expect(turn.tools.get_screenshot).toBeUndefined();
+    });
+
+    it("is present when a VISION_MODEL is configured, even for a vision-less main model", async () => {
+      const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+
+      const config = makeConfig({ VISION_MODEL: "google/gemini-2.5-flash" });
+      const messages = [userMessage("make the header bigger")];
+
+      const turn = await prepareChatTurn({ config, messages });
+
+      expect(turn.tools.get_screenshot).toBeDefined();
+    });
+
+    it("is present when the main model is vision-capable, even with vision unconfigured", async () => {
+      const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+
+      const config = makeConfig({ VISION_MODEL: "" });
+      const messages = [userMessage("make the header bigger")];
+
+      const turn = await prepareChatTurn({
+        config,
+        messages,
+        modelOverride: "google/gemini-2.5-flash",
+      });
+
+      expect(turn.tools.get_screenshot).toBeDefined();
+    });
+  });
+
+  describe("analyze_image gate", () => {
+    it("is absent with no VISION_MODEL — it would have nothing to call", async () => {
+      const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+
+      const turn = await prepareChatTurn({
+        config: makeConfig({ VISION_MODEL: "" }),
+        messages: [userMessage("look at this reference")],
+      });
+
+      expect(turn.tools.analyze_image).toBeUndefined();
+    });
+
+    it("is present, and carries this request's config, when vision is configured", async () => {
+      const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+
+      const turn = await prepareChatTurn({
+        config: makeConfig({ VISION_MODEL: "google/gemini-2.5-flash" }),
+        messages: [userMessage("look at this reference")],
+      });
+
+      expect(turn.tools.analyze_image).toBeDefined();
+      // A config-less static entry would answer with the wiring-bug message
+      // instead of actually calling the vision service.
+      const result = await (
+        turn.tools.analyze_image as {
+          execute: (args: { imageUrl: string }) => Promise<string>;
+        }
+      ).execute({ imageUrl: "https://example.com/a.png" });
+      expect(result).not.toContain("was not given a server config");
+    });
+  });
 });

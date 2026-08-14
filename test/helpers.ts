@@ -26,6 +26,9 @@ export function makeConfig(overrides: Partial<Config> = {}): Config {
     MCP_AUTH_TOKEN: undefined,
     MEMORY_ENABLED: false,
     SELF_SKILLS_ENABLED: false,
+    VISION_MODEL: "google/gemini-2.5-flash",
+    VISION_MAX_TOKENS: 1200,
+    VISION_TIMEOUT_MS: 120_000,
     ...overrides,
   };
 }

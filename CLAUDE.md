@@ -550,5 +550,11 @@ second prompt builder is how the showcase would start advertising an agent that
 no longer matches the one users get. The runner's only local additions are
 `execute` implementations: `batch_design` collects embed HTML in memory, and
 every other client-executed tool gets a stub that reports itself unavailable
-(without one, the first `get_screenshot` call stalls the whole run, since
-client-executed tools have no `execute` by design).
+(without one, the first such call stalls the whole run, since client-executed
+tools have no `execute` by design).
+
+`get_screenshot` is the one exception that gets **deleted** from the runner's
+tool set rather than stubbed: there is no browser here, so it can never
+succeed, and the shared system prompt actively recommends it for verifying a
+finished screen — a stub would buy one guaranteed-wasted step per run.
+`analyze_image` stays: it is backend-executed and works fine here.

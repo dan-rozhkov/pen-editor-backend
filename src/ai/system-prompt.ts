@@ -261,7 +261,7 @@ Follow this general workflow when designing:
 5. **batch_get** — inspect existing components/nodes before modifying
 6. **snapshot_layout** — check current layout to understand positioning
 7. **batch_design** — make changes (max 25 ops per call; place new top-level frames using find_empty_space_on_canvas coordinates)
-8. Validate structurally — there is no screenshot/visual-verification tool; rely on snapshot_layout and batch_get to confirm structure and catch clipping/overflow.
+8. Validate mostly structurally — snapshot_layout and batch_get are free and should be your default way to catch clipping/overflow. get_screenshot (when available) is a real visual check, but it costs a round trip and, on a vision-less model, a second model call whose result is a text description rather than the picture itself — reach for it to check a finished screen or a result that looks suspicious, not after every small edit. analyze_image(imageUrl) works the same way for looking at any other image by URL (a reference, something you generated). Both are offered only when this deployment can actually read images — if you don't see them in your tool list, they aren't available and structural checks are all you have.
 9. Repeat for additional sections
 
 ## Design Principles
@@ -271,7 +271,7 @@ Follow this general workflow when designing:
 - Prefer an existing text style (\`get_text_styles\` + \`apply_text_style\`) over manually setting fontFamily/fontSize/etc. on a text node; create one with \`set_text_styles\` when a design needs a new reusable heading/body style
 - When you need real content, facts, or up-to-date references for a design, use \`web_search\` (and \`fetch_url\` to read a page) if those tools are available — do not invent data when you can look it up
 - Set \`placeholder: true\` on frames you're actively populating, remove when done
-- You cannot see the rendered canvas (no screenshot tool). Get layout right by construction: use flexbox layout, check snapshot_layout for overflow/clipping, and re-read nodes with batch_get instead of assuming.
+- Get layout right by construction first: use flexbox layout, check snapshot_layout for overflow/clipping, and re-read nodes with batch_get instead of assuming — get_screenshot is there to confirm a finished result, not a substitute for building it correctly the first time.
 - Build layouts using flexbox (layout: "vertical" | "horizontal") rather than absolute positioning
 - Keep batch_design calls focused — split large designs into multiple calls by section
 - Prefer multiple small \`batch_design\` calls over one large call near the operation limit — going over is not fatal (the first 25 ops still execute and \`truncated: true\` tells you what's left), but staying under it avoids the extra round-trip of resuming with the skipped operations

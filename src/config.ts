@@ -76,6 +76,13 @@ const envSchema = z.object({
       const s = v?.toLowerCase();
       return s === "true" || s === "1";
     }),
+  // --- Vision (auxiliary vision model, optional) ---
+  // Empty/whitespace = vision is off (src/services/vision.ts's
+  // isVisionConfigured). Used both for analyze_image and for describing
+  // images/screenshots to a text-only main model.
+  VISION_MODEL: z.string().default("google/gemini-2.5-flash"),
+  VISION_MAX_TOKENS: z.coerce.number().default(1200),
+  VISION_TIMEOUT_MS: z.coerce.number().default(120_000),
 });
 
 export type Config = z.infer<typeof envSchema>;

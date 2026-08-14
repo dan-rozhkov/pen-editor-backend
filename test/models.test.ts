@@ -71,6 +71,7 @@ describe("GET /api/models", () => {
     const body = (await res.json()) as {
       models: ModelOption[];
       default: string;
+      visionFallback: boolean;
     };
     expect(body.default).toBe(DEFAULT_MODELS[0].id);
     expect(body.models).toEqual(getModels(makeConfig({
@@ -78,5 +79,15 @@ describe("GET /api/models", () => {
       OPENROUTER_ALLOWED_MODELS: "custom/extra",
     })));
     expect(body.models.some((m) => m.id === "custom/extra")).toBe(true);
+    // VISION_MODEL defaults to a non-empty value in makeConfig(), so the
+    // server reports it can fall back to auxiliary vision for any model.
+    expect(body.visionFallback).toBe(true);
+  });
+
+  it("reports visionFallback: false when VISION_MODEL is empty", async () => {
+    const base = await start(makeConfig({ VISION_MODEL: "" }));
+    const res = await fetch(`${base}/api/models`);
+    const body = (await res.json()) as { visionFallback: boolean };
+    expect(body.visionFallback).toBe(false);
   });
 });
