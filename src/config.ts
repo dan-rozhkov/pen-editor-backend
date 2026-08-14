@@ -34,6 +34,18 @@ const envSchema = z.object({
   S3_ACCESS_KEY_ID: z.string().optional(),
   S3_SECRET_ACCESS_KEY: z.string().optional(),
   S3_REGION: z.string().default("ru-1"),
+  // Where the public reads the objects we PUT. Path-style providers (timeweb)
+  // serve them straight off the S3 endpoint, which is why this stayed implicit
+  // for so long — `${S3_ENDPOINT}/${S3_BUCKET}` is still the default. Cloudflare
+  // R2 splits the two: its S3 endpoint (`<account>.r2.cloudflarestorage.com`)
+  // only ever answers signed API calls, and public reads go through an
+  // `r2.dev` subdomain or a custom domain. Set this to that domain — the bucket
+  // is NOT part of the path there, so the value is a full base URL, not a host.
+  S3_PUBLIC_BASE_URL: z.string().url().optional(),
+  // Per-object canned ACL. Timeweb needs `public-read` on every PUT; R2 has no
+  // object ACLs at all (public access is a bucket-level setting) and the header
+  // is meaningless there. Set it to an empty string to omit the header.
+  S3_OBJECT_ACL: z.string().default("public-read"),
   // Image generation is slow; a hung OpenRouter image endpoint must not hold
   // the client connection/request context open forever (see withTimeout in
   // src/ai/mcp.ts for the analogous MCP-side guard).
@@ -149,6 +161,15 @@ export const DEFAULT_MODELS: ModelOption[] = [
   {
     id: "deepseek/deepseek-v4-pro",
     label: "DeepSeek V4 Pro",
+    supportsVision: false,
+  },
+  // The dated snapshot the showcase runner pins (SHOWCASE_MODEL_ID). Listed
+  // here for its metadata, not for the picker: an id missing from this table
+  // is assumed vision-capable by `isVisionCapable`, which would send image
+  // parts straight to a text-only model instead of describing them first.
+  {
+    id: "deepseek/deepseek-v4-pro-0813",
+    label: "DeepSeek V4 Pro (0813)",
     supportsVision: false,
   },
   { id: "tencent/hy3", label: "Hy3", supportsVision: false },

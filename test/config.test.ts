@@ -55,6 +55,7 @@ describe("getAllowedModels", () => {
       "xiaomi/mimo-v2.5",
       "deepseek/deepseek-v4-flash",
       "deepseek/deepseek-v4-pro",
+      "deepseek/deepseek-v4-pro-0813",
       "tencent/hy3",
       "nvidia/nemotron-3-ultra-550b-a55b",
       "stepfun/step-3.7-flash",

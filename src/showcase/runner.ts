@@ -19,7 +19,12 @@ export const MAX_SHOWCASE_SCREENS = 5;
 // deepseek clustering on warm-cream/terracotta palettes and skipping
 // prototype.md's THESIS/OWN-WORLD direction contract — watch for that
 // returning, and override per run with `--model=` if it does.
-export const SHOWCASE_MODEL_ID = "deepseek/deepseek-v4-pro";
+//
+// Pinned to the dated 0813 snapshot since 2026-08-15 (by request), so a
+// silent upstream reroll of the floating alias can't change what the
+// gallery generates mid-stream. `/api/chat` still reads OPENROUTER_MODEL
+// and is untouched by this.
+export const SHOWCASE_MODEL_ID = "deepseek/deepseek-v4-pro-0813";
 
 // Generous but bounded step budget: ask_user -> get_editor_state ->
 // get_guidelines -> batch_design (+ a retry or two) comfortably fits.
