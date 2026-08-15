@@ -31,7 +31,6 @@ export function makeConfig(overrides: Partial<Config> = {}): Config {
     EMBEDDINGS_API_KEY: undefined,
     EMBEDDINGS_MODEL: "text-embedding-004",
     MCP_AUTH_TOKEN: undefined,
-    SHOWCASE_PUBLISH_TOKEN: undefined,
     MEMORY_ENABLED: false,
     SELF_SKILLS_ENABLED: false,
     // The real defaults, not hardcoded numbers: a test that pins a threshold

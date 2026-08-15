@@ -95,15 +95,6 @@ const envSchema = z.object({
     .string()
     .min(16, "MCP_AUTH_TOKEN must be at least 16 characters")
     .optional(),
-  // --- Showcase editor publish (optional) ---
-  // Bearer token gating POST /api/showcase/publish — the one route that lets
-  // an internet-reachable client write onto the public gallery (see
-  // src/routes/showcasePublish.ts). Same environment-dependent stance as
-  // MCP_AUTH_TOKEN (src/mcp/autoToken.ts): mandatory in production (unset
-  // there means the route 503s), optional elsewhere (unset in dev means the
-  // route stays open, matching the `npm run dev` workflow this route was
-  // built against), and enforced whenever it IS set, in any environment.
-  SHOWCASE_PUBLISH_TOKEN: z.string().optional(),
   // --- Self-improvement loop (phase 1: persistent per-user memory) ---
   // Kill switch for the memory snapshot + `memory` tool + background review.
   // Same "true"/"1"-only transform as ENABLE_AGENT_LOGGING: z.coerce.boolean()

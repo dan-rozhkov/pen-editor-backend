@@ -23,6 +23,11 @@ const S3_CONFIG = makeConfig({
 const MOBILE_CSS = { width: 390, height: 844 };
 const MOBILE_PX = { width: 780, height: 1688 };
 
+// A realistic dashed-UUID client id — same shape `crypto.randomUUID()`
+// produces in pen-editor/src/lib/userId.ts. Not tied to any real user; just
+// needs to pass `isPlausibleUserId`.
+const VALID_USER_ID = "8f14e45f-ceea-4b23-9e4a-1f7e3a2b9c0d";
+
 async function pngBuffer(width: number, height: number): Promise<Buffer> {
   return sharp({
     create: { width, height, channels: 4, background: { r: 10, g: 20, b: 30, alpha: 1 } },
@@ -74,21 +79,10 @@ function deferred<T>(): Deferred<T> {
 
 let app: FastifyInstance | undefined;
 
-// NODE_ENV controls the production/non-production auth gate branch (see
-// isDevEnvironment in src/mcp/autoToken.ts, reused by showcasePublish.ts).
-// Snapshot/restore per test so a test that sets it to "production" can never
-// leak into a neighbouring test file.
-const ORIGINAL_NODE_ENV = process.env.NODE_ENV;
-
 afterEach(async () => {
   if (app) {
     await app.close();
     app = undefined;
-  }
-  if (ORIGINAL_NODE_ENV === undefined) {
-    delete process.env.NODE_ENV;
-  } else {
-    process.env.NODE_ENV = ORIGINAL_NODE_ENV;
   }
   vi.restoreAllMocks();
 });
@@ -108,6 +102,7 @@ function validBody(overrides: Record<string, unknown> = {}) {
   return {
     theme: "Habit tracker",
     prompt: "A minimal daily habit tracker.",
+    userId: VALID_USER_ID,
     screens: [
       {
         name: "Onboarding",
@@ -252,6 +247,52 @@ describe("POST /api/showcase/publish", () => {
     });
     expect(res.statusCode).toBe(400);
     expect(res.json().error).toMatch(/HTML is \d+ bytes/);
+  });
+
+  it("returns 400 when userId is missing", async () => {
+    const image = await pngDataUrl(MOBILE_PX.width, MOBILE_PX.height);
+    const instance = await build(fakeStore());
+    const body = validBody({
+      screens: [{ name: "Onboarding", htmlContent: "<html></html>", image, ...MOBILE_CSS }],
+    }) as Record<string, unknown>;
+    delete body.userId;
+    const res = await instance.inject({
+      method: "POST",
+      url: "/api/showcase/publish",
+      payload: body,
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("returns 400 when userId is shape-invalid", async () => {
+    const image = await pngDataUrl(MOBILE_PX.width, MOBILE_PX.height);
+    const instance = await build(fakeStore());
+    const res = await instance.inject({
+      method: "POST",
+      url: "/api/showcase/publish",
+      payload: validBody({
+        userId: "test",
+        screens: [{ name: "Onboarding", htmlContent: "<html></html>", image, ...MOBILE_CSS }],
+      }),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/userId/i);
+  });
+
+  it("accepts the 32-char no-dash hex fallback userId form", async () => {
+    const image = await pngDataUrl(MOBILE_PX.width, MOBILE_PX.height);
+    const instance = await build(fakeStore(), {
+      upload: async (key) => `https://cdn.example.test/${key}`,
+    });
+    const res = await instance.inject({
+      method: "POST",
+      url: "/api/showcase/publish",
+      payload: validBody({
+        userId: "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+        screens: [{ name: "Onboarding", htmlContent: "<html></html>", image, ...MOBILE_CSS }],
+      }),
+    });
+    expect(res.statusCode).toBe(200);
   });
 
   it("returns 400 when coverIndex is out of range", async () => {
@@ -450,94 +491,5 @@ describe("POST /api/showcase/publish", () => {
     gate.resolve();
     await hungReq; // let the hung request settle in the background
     nowSpy.mockRestore();
-  });
-});
-
-describe("POST /api/showcase/publish — auth gate (SHOWCASE_PUBLISH_TOKEN)", () => {
-  it("503s in production when SHOWCASE_PUBLISH_TOKEN is unset", async () => {
-    process.env.NODE_ENV = "production";
-    const image = await pngDataUrl(MOBILE_PX.width, MOBILE_PX.height);
-    const instance = await build(fakeStore(), {}, S3_CONFIG);
-    const res = await instance.inject({
-      method: "POST",
-      url: "/api/showcase/publish",
-      payload: validBody({
-        screens: [{ name: "Onboarding", htmlContent: "<html></html>", image, ...MOBILE_CSS }],
-      }),
-    });
-    expect(res.statusCode).toBe(503);
-  });
-
-  it("401s in production with a missing or wrong bearer token", async () => {
-    process.env.NODE_ENV = "production";
-    const config = makeConfig({ ...S3_CONFIG, SHOWCASE_PUBLISH_TOKEN: "s3cr3t" });
-    const image = await pngDataUrl(MOBILE_PX.width, MOBILE_PX.height);
-    const instance = await build(fakeStore(), {}, config);
-
-    const missing = await instance.inject({
-      method: "POST",
-      url: "/api/showcase/publish",
-      payload: validBody({
-        screens: [{ name: "Onboarding", htmlContent: "<html></html>", image, ...MOBILE_CSS }],
-      }),
-    });
-    expect(missing.statusCode).toBe(401);
-
-    const wrong = await instance.inject({
-      method: "POST",
-      url: "/api/showcase/publish",
-      headers: { authorization: "Bearer nope" },
-      payload: validBody({
-        screens: [{ name: "Onboarding", htmlContent: "<html></html>", image, ...MOBILE_CSS }],
-      }),
-    });
-    expect(wrong.statusCode).toBe(401);
-  });
-
-  it("200s in production with the correct bearer token", async () => {
-    process.env.NODE_ENV = "production";
-    const config = makeConfig({ ...S3_CONFIG, SHOWCASE_PUBLISH_TOKEN: "s3cr3t" });
-    const image = await pngDataUrl(MOBILE_PX.width, MOBILE_PX.height);
-    const upload: ShowcasePublishDeps["upload"] = async (key) => `https://cdn.example.test/${key}`;
-    const instance = await build(fakeStore(), { upload }, config);
-    const res = await instance.inject({
-      method: "POST",
-      url: "/api/showcase/publish",
-      headers: { authorization: "Bearer s3cr3t" },
-      payload: validBody({
-        screens: [{ name: "Onboarding", htmlContent: "<html></html>", image, ...MOBILE_CSS }],
-      }),
-    });
-    expect(res.statusCode).toBe(200);
-  });
-
-  it("200s in non-production with no token configured (unauthenticated, matches npm run dev)", async () => {
-    process.env.NODE_ENV = "development";
-    const image = await pngDataUrl(MOBILE_PX.width, MOBILE_PX.height);
-    const upload: ShowcasePublishDeps["upload"] = async (key) => `https://cdn.example.test/${key}`;
-    const instance = await build(fakeStore(), { upload }, S3_CONFIG);
-    const res = await instance.inject({
-      method: "POST",
-      url: "/api/showcase/publish",
-      payload: validBody({
-        screens: [{ name: "Onboarding", htmlContent: "<html></html>", image, ...MOBILE_CSS }],
-      }),
-    });
-    expect(res.statusCode).toBe(200);
-  });
-
-  it("401s in non-production when a token IS configured but not sent", async () => {
-    process.env.NODE_ENV = "development";
-    const config = makeConfig({ ...S3_CONFIG, SHOWCASE_PUBLISH_TOKEN: "s3cr3t" });
-    const image = await pngDataUrl(MOBILE_PX.width, MOBILE_PX.height);
-    const instance = await build(fakeStore(), {}, config);
-    const res = await instance.inject({
-      method: "POST",
-      url: "/api/showcase/publish",
-      payload: validBody({
-        screens: [{ name: "Onboarding", htmlContent: "<html></html>", image, ...MOBILE_CSS }],
-      }),
-    });
-    expect(res.statusCode).toBe(401);
   });
 });

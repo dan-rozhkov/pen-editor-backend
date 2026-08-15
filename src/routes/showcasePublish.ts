@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import sharp from "sharp";
 import type { Config } from "../config.js";
@@ -9,13 +9,23 @@ import { MAX_SHOWCASE_SCREENS } from "../showcase/runner.js";
 import { showcaseViewport, type ShowcasePlatform } from "../showcase/platform.js";
 import { resolveS3Target, uploadObject, type S3Target } from "../services/s3.js";
 import { sniffImageType } from "../services/imageTypes.js";
-import { isDevEnvironment } from "../mcp/autoToken.js";
-import { constantTimeEqual, extractBearerToken } from "../mcp/auth.js";
+import { isPlausibleUserId } from "../lib/userId.js";
 
 // POST /api/showcase/publish — the third caller of `publishScreens` (after
 // `showcase:generate` and `showcase:ingest`), and the only one reachable over
 // HTTP from the design agent's own tool set (`publish_to_showcase` in
 // src/ai/tools.ts, client-executed on the frontend).
+//
+// Not authenticated, and the required `userId` below does not change that —
+// it is a speed bump, not a security boundary (same framing as
+// `isPlausibleUserId` and `chatBodySchema.userId` in src/routes/chat.ts):
+// it stops a trivially-shaped direct `curl` from writing to the public
+// homepage, nothing more. This is still the only internet-reachable write
+// path onto the public homepage (every other writer into `showcase_screens`
+// — `showcase:generate`, `showcase:ingest`, `showcase:pin`, `showcase:delete`
+// — is an operator-run CLI with no HTTP surface). There is no unpublish
+// route; cleanup after a bad publish is an operator running
+// `npm run showcase:delete` by hand, using the `runId` this route returns.
 //
 // There is no headless browser in this path, by design: `src/showcase/
 // screenshot.ts` imports `playwright`, a devDependency a production install
@@ -83,6 +93,13 @@ const publishBodySchema = z.object({
   platform: z.enum(["mobile", "desktop"]).optional(),
   coverIndex: z.number().int().positive().optional(),
   screens: z.array(screenSchema).min(1).max(MAX_SHOWCASE_SCREENS),
+  // Same anonymous client id `/api/chat`'s `chatBodySchema.userId` carries
+  // (`pen-editor/src/lib/userId.ts`, min/max mirrored from there), but
+  // **required** here rather than optional. Bounded to 1..64 chars as the
+  // same coarse sanity/DoS guard chat.ts uses; the actual shape check
+  // (`isPlausibleUserId`) happens below, after parsing, so it can produce
+  // its own clear 400 rather than a generic Zod issue.
+  userId: z.string().min(1).max(64),
 });
 
 // Strict base64 charset + padding check. `Buffer.from(str, "base64")` never
@@ -110,44 +127,6 @@ function decodeImage(image: string): Buffer {
 export interface ShowcasePublishDeps {
   /** Defaults to the real S3 upload (resolveS3Target + uploadObject); injected in tests. */
   upload?: (key: string, body: Buffer, contentType: string) => Promise<string>;
-}
-
-// Gate for this route specifically — every OTHER writer into
-// `showcase_screens` (`showcase:generate`, `showcase:ingest`,
-// `showcase:pin`, `showcase:delete`) is an operator-run CLI with no HTTP
-// surface at all. This is the only unauthenticated write path onto the
-// public homepage: without a gate, anyone who can reach the deployed
-// backend could POST five arbitrary HTML documents + PNGs and have them
-// appear as a card on `/`, labelled with a client-supplied `model`, and
-// there is no unpublish route — cleanup requires an operator running
-// `npm run showcase:delete` by hand. Follows the exact same
-// environment-dependent stance `MCP_AUTH_TOKEN` takes (src/mcp/autoToken.ts):
-// mandatory in production, optional-but-still-enforced-when-set everywhere
-// else, so the operator's own `npm run dev` workflow (where all showcase
-// publishing happens today) stays frictionless.
-function checkPublishAuth(
-  config: Config,
-  request: FastifyRequest,
-  reply: FastifyReply,
-): boolean {
-  if (!isDevEnvironment()) {
-    if (!config.SHOWCASE_PUBLISH_TOKEN) {
-      reply.status(503).send({
-        error: "Publishing from the editor is not enabled on this server",
-      });
-      return false;
-    }
-  } else if (!config.SHOWCASE_PUBLISH_TOKEN) {
-    // Non-production, no token configured: allow, matching MCP's
-    // relaxed-locally stance.
-    return true;
-  }
-  const token = extractBearerToken(request.headers.authorization);
-  if (!token || !constantTimeEqual(token, config.SHOWCASE_PUBLISH_TOKEN)) {
-    reply.status(401).send({ error: "Unauthorized" });
-    return false;
-  }
-  return true;
 }
 
 export async function showcasePublishRoutes(
@@ -190,16 +169,6 @@ export async function showcasePublishRoutes(
     "/api/showcase/publish",
     {
       bodyLimit: PUBLISH_BODY_LIMIT,
-      // Runs before Fastify parses the (up to 24 MB) body: an unauthenticated
-      // request should never pay for parsing a payload it's about to be
-      // rejected for.
-      // Returning `reply` is what actually halts the lifecycle in an async
-      // hook that has already answered — without it Fastify goes on to run
-      // the handler, which then tries to send a second response onto an
-      // already-answered request.
-      onRequest: async (request, reply) => {
-        if (!checkPublishAuth(config, request, reply)) return reply;
-      },
     },
     async (request, reply) => {
       if (!store) {
@@ -224,6 +193,18 @@ export async function showcasePublishRoutes(
         });
       }
       const body = parsed.data;
+
+      // Deliberately stricter than chat.ts: there, a shape-invalid userId is
+      // treated as ABSENT and the turn just degrades to memory-free — chat
+      // still works either way. Here the id is the *only* gate between a
+      // stray `curl` and a write to the public homepage, so silently
+      // downgrading to "no id" would defeat the point of requiring one at
+      // all. Fail loudly instead.
+      if (!isPlausibleUserId(body.userId)) {
+        return reply.status(400).send({
+          error: "userId is not a plausible client id (expected a UUID-shaped string)",
+        });
+      }
 
       if (body.coverIndex !== undefined && body.coverIndex > body.screens.length) {
         return reply.status(400).send({

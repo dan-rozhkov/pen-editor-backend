@@ -663,18 +663,22 @@ timeout, so a hung PUT would otherwise wedge the flag until the process
 restarts) is reclaimed instead of 409ing forever; this does not serialize
 across replicas (Render can scale this service out) or turn a second
 legitimate caller into a queued request — it just 409s them, same as before.
+A 502 from `publishScreens` failing partway through carries `runId` and a
+best-effort `publishedCount` so the orphaned app can be named for
+`npm run showcase:delete --app <runId>` — the loop is not atomic and earlier
+screens in the same call can already be published and visible.
 
-**Gated by `SHOWCASE_PUBLISH_TOKEN`** — this is the only internet-reachable
-write path onto the public homepage (every other writer into
-`showcase_screens` is an operator-run CLI), and there is no unpublish route,
-so an unauthenticated version of this endpoint would let anyone POST five
-arbitrary HTML documents + PNGs onto `/`. Same environment-dependent stance
-as `MCP_AUTH_TOKEN` (see the MCP section above): in production the var is
-mandatory — unset means the route 503s — and when set (in any environment)
-a request needs `Authorization: Bearer <token>` or it 401s; in non-production
-with the var unset, the route is open, keeping `npm run dev` (where all
-showcase publishing happens today) frictionless. A 502 from `publishScreens`
-failing partway through carries `runId` and a best-effort `publishedCount` so
-the orphaned app can be named for `npm run showcase:delete --app <runId>` —
-the loop is not atomic and earlier screens in the same call can already be
-published and visible.
+**This route is not authenticated, and the required `userId` does not change
+that.** The body must carry a `userId` (same anonymous client id
+`chatBodySchema.userId` carries on `/api/chat`, 1..64 chars, shape-checked
+with `isPlausibleUserId`) or the request 400s — but this is a speed bump,
+not a security boundary: it stops a trivially-shaped direct `curl`, nothing
+more. Unlike chat.ts (where a shape-invalid id is treated as ABSENT and the
+turn just degrades to memory-free), a shape-invalid id here is a hard 400 —
+this id is the only thing standing between a stray `curl` and a write to the
+public homepage, so failing loudly is the point. It is still the only
+internet-reachable write path onto the public homepage (every other writer
+into `showcase_screens` — `showcase:generate`, `showcase:ingest`,
+`showcase:pin`, `showcase:delete` — is an operator-run CLI with no HTTP
+surface), and there is no unpublish route: cleanup after a bad publish is an
+operator running `npm run showcase:delete --app <runId>` by hand.
