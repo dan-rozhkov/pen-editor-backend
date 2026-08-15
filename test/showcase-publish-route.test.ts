@@ -443,11 +443,21 @@ describe("POST /api/showcase/publish", () => {
     let now = Date.now();
     const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
 
-    let uploadCalls = 0;
     const gate = deferred<void>();
+    // Resolved from inside the stub the moment the hung request has actually
+    // reached `upload`. Waiting on THIS rather than on a fixed sleep is what
+    // makes the test deterministic: the hang is claimed by the first upload
+    // CALL, not by a particular request, so on a slow runner (CI under v8
+    // coverage) a fixed 20ms wait could elapse before the first request got
+    // as far as uploading — and then the *reclaiming* request further down,
+    // the one asserted to return 200, would be the one stuck on the gate,
+    // and this test would time out instead of failing meaningfully.
+    const reachedUpload = deferred<void>();
+    let firstUploadSeen = false;
     const upload: ShowcasePublishDeps["upload"] = async (key) => {
-      uploadCalls++;
-      if (uploadCalls === 1) {
+      if (!firstUploadSeen) {
+        firstUploadSeen = true;
+        reachedUpload.resolve();
         // Simulates a hung PUT: never resolves within this test, so the
         // first request never reaches `finally` and never clears `busy`.
         await gate.promise;
@@ -464,7 +474,7 @@ describe("POST /api/showcase/publish", () => {
         screens: [{ name: "Onboarding", htmlContent: "<html></html>", image, ...MOBILE_CSS }],
       }),
     });
-    await new Promise((r) => setTimeout(r, 20));
+    await reachedUpload.promise;
 
     // Still within the window: busy, 409.
     const stillBusyRes = await instance.inject({
