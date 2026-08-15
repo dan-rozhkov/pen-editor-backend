@@ -405,7 +405,49 @@ describe("maybeRunReview", () => {
         }),
     });
 
-    const outcome = await maybeRunReview(input({ reviewTimeoutMs: 20 }));
+    const store = fakeStore(true);
+    const outcome = await maybeRunReview(input({ store, reviewTimeoutMs: 20 }));
     expect(outcome).toBe("timed-out");
+
+    // Found live on 2026-08-15: a production session reset BOTH counters and
+    // then produced no audit row for six minutes, because the row was only
+    // written on the completed path. That is indistinguishable from "the
+    // review never fired" — the exact confusion this row exists to end — and
+    // it hides the failures most worth knowing about.
+    expect(store.writeAudit).toHaveBeenCalledWith(
+      expect.objectContaining({ subsystem: "review", action: "timed-out" }),
+    );
   }, 10_000);
+
+  it("audits a review that throws, and reports the error on the row", async () => {
+    const { maybeRunReview } = await import("../src/ai/selfimprove/review.js");
+    holders.model = new MockLanguageModelV3({
+      doGenerate: async () => {
+        throw new Error("provider exploded");
+      },
+    });
+    const store = fakeStore(true);
+
+    expect(await maybeRunReview(input({ store }))).toBe("disabled");
+    const entry = (store.writeAudit as unknown as { mock: { calls: Array<[Record<string, unknown>]> } })
+      .mock.calls.map(([e]) => e)
+      .find((e) => e.subsystem === "review");
+    expect(entry).toMatchObject({ action: "failed" });
+    expect(String((entry!.payload as { error: unknown }).error)).toContain("provider exploded");
+  });
+
+  // A throw BEFORE generateText is not a review that failed — it is one that
+  // never started. Recording it as a failure would corrupt the very ratio the
+  // row exists to measure.
+  it("writes no review row when the run dies before it ever reaches the model", async () => {
+    const { maybeRunReview } = await import("../src/ai/selfimprove/review.js");
+    holders.model = reviewModel(textResult("Nothing to save."));
+    const store = fakeStore(true);
+    (store.bumpCounters as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error("postgres is down"),
+    );
+
+    expect(await maybeRunReview(input({ store }))).toBe("disabled");
+    expect(store.writeAudit).not.toHaveBeenCalled();
+  });
 });

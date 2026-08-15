@@ -26,6 +26,40 @@ const REVIEW_MAX_STEPS = 8;
 // themselves are audited by the tools, through their own rows.
 const REVIEW_WRITE_TOOLS = new Set(["memory", "skill_manage"]);
 
+/**
+ * Writes the one-row-per-run observation. Best-effort: this is
+ * instrumentation, and a failed insert must never turn a review that did its
+ * job into a logged failure, nor mask the original error on the failure
+ * paths.
+ *
+ * It is a standalone helper rather than inline code because the row has to be
+ * written from FOUR places — completed-and-saved, completed-and-declined,
+ * timed out, and threw. Writing it only on the completed path (as this first
+ * shipped) left the instrumentation blind to exactly the failures worth
+ * knowing about: a live production session on 2026-08-15 reset both counters
+ * and then produced no row at all for six minutes, which is indistinguishable
+ * from "the review never fired" — the precise confusion this row exists to
+ * end.
+ */
+async function writeReviewAudit(
+  store: MemoryStore,
+  userId: string,
+  action: "saved" | "nothing-saved" | "timed-out" | "failed",
+  payload: Record<string, unknown>,
+): Promise<void> {
+  try {
+    await store.writeAudit({
+      userId,
+      origin: "background_review",
+      subsystem: "review",
+      action,
+      payload,
+    });
+  } catch (err) {
+    console.error("[review] failed to write review audit row:", err);
+  }
+}
+
 // Background review, no user waiting on it — but it must not hold a
 // multi-MB transcript (modelMessages can carry base64 image parts from
 // earlier turns) in memory forever if the provider hangs. 90s is generous
@@ -170,6 +204,11 @@ export async function maybeRunReview(
   if (!userId || !store) return "disabled";
   if (!config.MEMORY_ENABLED && !config.SELF_SKILLS_ENABLED) return "disabled";
 
+  // Hoisted out of the try so the catch can tell a review that FAILED from
+  // one that never started, and can still describe which counters fired.
+  let started = false;
+  let dueForAudit: Record<string, unknown> = {};
+
   try {
     // Bump on EVERY request, mid-turn or not — a single user message can
     // span many `POST /api/chat` round-trips (one per client-executed tool
@@ -293,6 +332,8 @@ export async function maybeRunReview(
       );
     }
 
+    started = true;
+    dueForAudit = { memoryDue: due.memoryDue, skillDue: due.skillDue };
     const result = await generateText({
       model: createModel(config, input.modelOverride),
       system: input.system,
@@ -308,38 +349,21 @@ export async function maybeRunReview(
 
     // One row per run, saved or not — the only signal that distinguishes "the
     // review never fired" from "it fired and declined" on a deployment with
-    // ENABLE_AGENT_LOGGING off (i.e. production). Best-effort by design: this
-    // is instrumentation, and a failed audit insert must not turn a review
-    // that did its job into a logged failure.
+    // ENABLE_AGENT_LOGGING off (i.e. production).
     const calledTools = result.steps.flatMap((step) =>
       step.toolCalls.map((tc: { toolName?: unknown }) => String(tc.toolName ?? "")),
     );
     const wrote = calledTools.some((name) => REVIEW_WRITE_TOOLS.has(name));
-    // try/catch rather than `.catch()` on the returned promise: the outer
-    // catch below turns any throw here into a "disabled" outcome and a
-    // review-failed log line, which would misreport a review that in fact
-    // completed and saved.
-    try {
-      await store.writeAudit({
-        userId,
-        origin: "background_review",
-        subsystem: "review",
-        action: wrote ? "saved" : "nothing-saved",
-        payload: {
-          memoryDue: due.memoryDue,
-          skillDue: due.skillDue,
-          steps: result.steps.length,
-          // Every tool the run reached for, not just the writing ones: a
-          // review burning its steps on stubbed pen tools looks identical to
-          // one that genuinely had nothing to save, and only this field tells
-          // them apart.
-          toolsCalled: calledTools,
-          finishReason: result.finishReason,
-        },
-      });
-    } catch (err) {
-      console.error("[review] failed to write review audit row:", err);
-    }
+    await writeReviewAudit(store, userId, wrote ? "saved" : "nothing-saved", {
+      memoryDue: due.memoryDue,
+      skillDue: due.skillDue,
+      steps: result.steps.length,
+      // Every tool the run reached for, not just the writing ones: a review
+      // burning its steps on stubbed pen tools looks identical to one that
+      // genuinely had nothing to save, and only this field tells them apart.
+      toolsCalled: calledTools,
+      finishReason: result.finishReason,
+    });
 
     if (config.ENABLE_AGENT_LOGGING) {
       await logSession({
@@ -380,14 +404,31 @@ export async function maybeRunReview(
     // raises from generateText — check it explicitly so a stuck/slow
     // provider shows up in logs as a cancellation, not lumped in with e.g.
     // an auth failure or a malformed response.
-    if (isReviewTimeoutError(err)) {
+    const timedOut = isReviewTimeoutError(err);
+    if (timedOut) {
       console.error(
         `[review] memory review cancelled: exceeded ${input.reviewTimeoutMs ?? DEFAULT_REVIEW_TIMEOUT_MS}ms wall-clock limit`,
       );
-      return "timed-out";
+    } else {
+      console.error("[review] memory review failed:", err);
     }
-    console.error("[review] memory review failed:", err);
-    return "disabled";
+
+    // Audit the failure too, but ONLY once the run had actually reached
+    // generateText. A throw from the setup above (bumpCounters, the snapshot
+    // read) is not a review that failed — it is a review that never started,
+    // and recording it as one would corrupt the very ratio this row exists to
+    // measure. `store`/`userId` are non-null past the guard at the top, but
+    // `started` is what makes the distinction; note the counters have already
+    // been reset by then, so a silent failure here costs a whole interval.
+    if (started && store && userId) {
+      await writeReviewAudit(store, userId, timedOut ? "timed-out" : "failed", {
+        ...dueForAudit,
+        error: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+        timeoutMs: input.reviewTimeoutMs ?? DEFAULT_REVIEW_TIMEOUT_MS,
+      });
+    }
+
+    return timedOut ? "timed-out" : "disabled";
   }
 }
 

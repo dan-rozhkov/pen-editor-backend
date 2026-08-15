@@ -127,10 +127,17 @@ Three tables (migration `009_agent_memory.sql`, index in `010_...idx.sql`):
   `insertAuditRow` (used both stand-alone and inside `applyOperations`'s
   transaction) — there is no code path that changes memory without a row
   here. `subsystem` is `memory | skill | review`: the first two are WRITES,
-  `review` is an OBSERVATION — one row per background review run
-  (`action: saved | nothing-saved`, payload carrying the due flags, step
-  count, `toolsCalled` and `finishReason`), written whether or not the run
-  saved anything. Without it a review that ran and declined left no trace
+  `review` is an OBSERVATION — one row per background review run, written
+  whether or not the run saved anything, and on **all four** outcomes:
+  `saved` / `nothing-saved` (payload: due flags, step count, `toolsCalled`,
+  `finishReason`) and `timed-out` / `failed` (payload: due flags, `error`,
+  `timeoutMs`). Covering only the completed path — how this first shipped —
+  left the instrumentation blind to exactly the failures worth knowing about:
+  a live session on 2026-08-15 reset both counters and then produced no row
+  for six minutes, which reads identically to "the review never fired". A
+  throw from the SETUP (before `generateText`) writes nothing on purpose:
+  that is a review that never started, not one that failed, and counting it
+  would corrupt the ratio the row exists to measure. Without it a review that ran and declined left no trace
   anywhere on a deployment with `ENABLE_AGENT_LOGGING` off (i.e. production),
   which made "the review never fires" and "the review fires and says nothing
   to save" indistinguishable — and those two have opposite fixes. `review`
