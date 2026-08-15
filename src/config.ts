@@ -1,5 +1,27 @@
 import { z } from "zod";
 
+/**
+ * Completed user turns between background memory reviews.
+ *
+ * Was 10, which measured the loop in its scarcest unit: one design message
+ * spans 8-12 `POST /api/chat` round-trips but exactly one completed turn, so
+ * a full day of real traffic (96 requests across 18 sessions on 2026-08-13)
+ * bought one or two reviews and the agent effectively never saved anything
+ * it was not explicitly told to save. 4 keeps a review from riding every
+ * single turn while putting one within reach of a normal session.
+ */
+export const DEFAULT_MEMORY_REVIEW_INTERVAL = 4;
+
+/**
+ * Accumulated tool-call steps between background skill reviews. Unchanged at
+ * 15: this threshold demonstrably fires (skill reviews ran throughout the
+ * 08-13 traffic) and still produced one skill total, so the skill half's
+ * problem is yield, not frequency — lowering it would only buy more
+ * "Nothing to save." runs. Revisit once the per-run audit rows show what
+ * fraction of reviews actually decline.
+ */
+export const DEFAULT_SKILL_REVIEW_INTERVAL = 15;
+
 const envSchema = z.object({
   PORT: z.coerce.number().default(3001),
   HOST: z.string().default("0.0.0.0"),
@@ -95,6 +117,17 @@ const envSchema = z.object({
       const s = v?.toLowerCase();
       return s === "true" || s === "1";
     }),
+  // How many COMPLETED user turns between memory reviews, and how many
+  // accumulated tool-call steps between skill reviews. Env-overridable
+  // because the right value is a property of how a deployment is actually
+  // used, not of the code: a design turn spans many `POST /api/chat`
+  // round-trips but only one user turn, so the memory counter ticks in the
+  // scarcest unit the loop has. Tuning that on production traffic must not
+  // require a code change and a deploy. `.min(1)` because 0 would make
+  // `>= interval` true on every single request and fire a full background
+  // generateText per round-trip.
+  MEMORY_REVIEW_INTERVAL: z.coerce.number().int().min(1).default(DEFAULT_MEMORY_REVIEW_INTERVAL),
+  SKILL_REVIEW_INTERVAL: z.coerce.number().int().min(1).default(DEFAULT_SKILL_REVIEW_INTERVAL),
   // --- Vision (auxiliary vision model, optional) ---
   // Empty/whitespace = vision is off (src/services/vision.ts's
   // isVisionConfigured). Used both for analyze_image and for describing

@@ -25,6 +25,7 @@ export const MEMORY_REVIEW_PROMPT = `Review the conversation above and consider 
 Focus on:
 1. Has the user revealed things about themselves — their persona, desires, preferences, or personal details worth remembering?
 2. Has the user expressed expectations about how you should behave, their work style, or ways they want you to operate?
+3. Did YOU learn something durable about operating here — a tool that behaved differently than its description implied, a convention this document or this user's files follow, an approach that reliably worked or reliably failed on this canvas? Points 1 and 2 go to target 'user'; this one goes to target 'memory', which is your own notes. Both halves matter: a memory holding only facts about the user leaves you rediscovering the same environment every session.
 
 If something stands out, save it using the memory tool. If nothing is worth saving, just say 'Nothing to save.' and stop.
 

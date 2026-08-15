@@ -1,6 +1,7 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { makeConfig } from "./helpers.js";
 import { loadSkills } from "../src/ai/skills.js";
+import { SELF_SKILLS_GUIDANCE } from "../src/ai/skills/prompts.js";
 import { invalidateLearnedCatalog } from "../src/ai/skills/learnedStore.js";
 import type { LearnedSkill, LearnedSkillStore } from "../src/ai/skills/learnedStore.js";
 import type { TraceQueryable } from "../src/tracing/traceStore.js";
@@ -67,6 +68,51 @@ describe("prepareChatTurn — self-authored skills", () => {
     expect(turn.tools.skill_view).toBeUndefined();
     expect(turn.system).not.toContain("a-skill");
     expect(turn.learnedSkillNames).toEqual([]);
+    // Guidance follows the tool, exactly like memoryGuidance: telling a model
+    // to patch its skills when `skill_manage` isn't in the tool set is an
+    // instruction it cannot act on.
+    expect(turn.system).not.toContain(SELF_SKILLS_GUIDANCE);
+  });
+
+  // Until this existed the foreground had NO skill-writing pressure at all —
+  // memory had MEMORY_GUIDANCE, skill_manage had only its tool description —
+  // and the whole skill half of the loop rode on the background review.
+  it("adds the foreground skill guidance whenever skill_manage is actually offered", async () => {
+    const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+    const turn = await prepareChatTurn({
+      config: makeConfig({ TRACE_DATABASE_URL: "postgres://x", SELF_SKILLS_ENABLED: true }),
+      messages: [userMessage("hi")],
+      userId: "u1",
+      learnedSkillStore: storeWith([learned]),
+      auditDb: noopDb,
+      canvasContext: "{}",
+    });
+
+    expect(turn.tools.skill_manage).toBeDefined();
+    expect(turn.system).toContain(SELF_SKILLS_GUIDANCE);
+    // After the catalog it refers to, still ahead of the varying tail.
+    expect(turn.system.indexOf("## Available Skills")).toBeLessThan(
+      turn.system.indexOf(SELF_SKILLS_GUIDANCE),
+    );
+    expect(turn.system.indexOf(SELF_SKILLS_GUIDANCE)).toBeLessThan(
+      turn.system.indexOf("## Current Canvas Context"),
+    );
+  });
+
+  // The store is what actually decides whether the tool gets wired, so the
+  // flag alone must not be enough to print guidance for a missing tool.
+  it("omits the guidance when the flag is on but no store is wired", async () => {
+    const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+    const turn = await prepareChatTurn({
+      config: makeConfig({ TRACE_DATABASE_URL: "postgres://x", SELF_SKILLS_ENABLED: true }),
+      messages: [userMessage("hi")],
+      userId: "u1",
+      learnedSkillStore: null,
+      auditDb: noopDb,
+    });
+
+    expect(turn.tools.skill_manage).toBeUndefined();
+    expect(turn.system).not.toContain(SELF_SKILLS_GUIDANCE);
   });
 
   it("adds skill_manage (but never skill_view) and merges the learned catalog when on", async () => {

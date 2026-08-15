@@ -5,6 +5,7 @@ import type { ModelMessage, ToolSet } from "ai";
 import { tool } from "ai";
 import { z } from "zod";
 import { makeConfig } from "./helpers.js";
+import { DEFAULT_MEMORY_REVIEW_INTERVAL } from "../src/config.js";
 import { MEMORY_REVIEW_PROMPT } from "../src/ai/memory/prompts.js";
 import { penTools } from "../src/ai/tools.js";
 import type { MemoryStore } from "../src/ai/memory/store.js";
@@ -135,7 +136,9 @@ describe("maybeRunReview", () => {
       userId: "u1",
       turns: 1,
       steps: 3,
-      memoryInterval: 10,
+      // The configured threshold is passed through verbatim — the review
+      // owns no copy of it.
+      memoryInterval: DEFAULT_MEMORY_REVIEW_INTERVAL,
     });
     expect(capturedCalls).toHaveLength(0);
   });
@@ -191,6 +194,62 @@ describe("maybeRunReview", () => {
     expect(JSON.stringify(capturedCalls[1].prompt)).toContain(
       "not available during a background self-improvement review",
     );
+  });
+
+  // Instrumentation, and the reason for it: a review that runs and declines
+  // leaves no trace anywhere in production (ENABLE_AGENT_LOGGING is off
+  // there), so "the review never fired" and "it fired and saved nothing"
+  // were indistinguishable — and they call for opposite fixes.
+  it("audits every review run, including one that saves nothing", async () => {
+    const { maybeRunReview } = await import("../src/ai/selfimprove/review.js");
+    holders.model = reviewModel(textResult("Nothing to save."));
+    const store = fakeStore(true);
+
+    expect(await maybeRunReview(input({ store }))).toBe("ran");
+    expect(store.writeAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: "u1",
+        origin: "background_review",
+        subsystem: "review",
+        action: "nothing-saved",
+      }),
+    );
+  });
+
+  it("labels a review that wrote something 'saved', and records which tools it reached for", async () => {
+    const { maybeRunReview } = await import("../src/ai/selfimprove/review.js");
+    holders.model = multiStepReviewModel([
+      toolCallResult("memory", {
+        target: "user",
+        operations: [{ action: "add", content: "Prefers short answers" }],
+      }),
+      textResult("Saved."),
+    ]);
+    const store = fakeStore(true);
+
+    expect(await maybeRunReview(input({ store }))).toBe("ran");
+    const entry = (store.writeAudit as unknown as { mock: { calls: Array<[Record<string, unknown>]> } })
+      .mock.calls.map(([e]) => e)
+      .find((e) => e.subsystem === "review");
+    expect(entry).toMatchObject({ action: "saved" });
+    // toolsCalled carries EVERY tool, not just the writing ones: a review
+    // burning its steps on stubbed pen tools looks identical to one that
+    // genuinely had nothing to save, and only this field separates them.
+    expect((entry!.payload as { toolsCalled: string[] }).toolsCalled).toContain("memory");
+    expect(entry!.payload).toMatchObject({ memoryDue: true });
+  });
+
+  // A failed audit insert is instrumentation failing, not the review failing
+  // — reporting "disabled" here would mislabel a run that did its job.
+  it("still reports 'ran' when the audit insert itself fails", async () => {
+    const { maybeRunReview } = await import("../src/ai/selfimprove/review.js");
+    holders.model = reviewModel(textResult("Nothing to save."));
+    const store = fakeStore(true);
+    (store.writeAudit as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error("audit table is gone"),
+    );
+
+    expect(await maybeRunReview(input({ store }))).toBe("ran");
   });
 
   it("skips running a review on a mid-turn continuation request, but still bumps steps (turns: 0)", async () => {

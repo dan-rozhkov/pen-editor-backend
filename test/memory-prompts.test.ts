@@ -34,6 +34,16 @@ describe("memory prompts", () => {
     expect(MEMORY_TOOL_DESCRIPTION).toContain("one batch call finishes the update, so don't repeat it");
   });
 
+  // Every stored row in production was target='user'; target='memory' — the
+  // agent's own notes — had never once been written. Both of the review
+  // prompt's original focus points ask about the USER, so the half of memory
+  // that compounds across sessions was never solicited at all.
+  it("asks the review about the agent's own operating knowledge, not just the user", () => {
+    expect(MEMORY_REVIEW_PROMPT).toContain("Did YOU learn something durable about operating here");
+    expect(MEMORY_REVIEW_PROMPT).toContain("target 'memory'");
+    expect(MEMORY_REVIEW_PROMPT).toContain("target 'user'");
+  });
+
   it("tells the review run it may only call the memory tool", () => {
     expect(MEMORY_REVIEW_PROMPT).toContain("You can only call the memory tool.");
     expect(MEMORY_REVIEW_PROMPT).toContain("Nothing to save.");

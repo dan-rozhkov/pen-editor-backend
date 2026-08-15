@@ -1,5 +1,23 @@
 import { MEMORY_REVIEW_PROMPT } from "../memory/prompts.js";
 
+// Stable tier of the system prompt, alongside MEMORY_GUIDANCE and under the
+// same rule: rendered ONLY when `skill_manage` is genuinely in this turn's
+// tool set. Until this existed the foreground had no skill-writing pressure
+// at all — MEMORY_GUIDANCE had a counterpart paragraph, `skill_manage` had
+// only its tool description — and the entire skill half of the loop depended
+// on a background review firing every SKILL_REVIEW_INTERVAL steps. One
+// learned skill in the library over the loop's whole lifetime is what that
+// asymmetry bought.
+//
+// It stays deliberately narrow: patching a skill mid-task is cheap and
+// self-limiting, CREATING one is where a library fills up with
+// "fix-the-thing-2026-08-11" entries, so creation is pushed to the
+// background review where SKILL_REVIEW_PROMPT's preference ladder governs it.
+export const SELF_SKILLS_GUIDANCE = `You maintain your own skill library. The \`skill_manage\` tool writes to it, and \`load_skill\` reads any entry marked \`(learned)\` in the skills catalog.
+When the user corrects HOW you work — your process, your format, an approach they do not want repeated — and a skill governs that class of task, patch that skill in the SAME turn, right after you act on the correction. A correction you only apply in this conversation is one the user has to give you again next week.
+Patch, don't accumulate: fold the lesson into the skill that was loaded this session, or the one covering that class of work. Creating a new skill is a last resort, and one the background review is better placed to judge — do not create one mid-task just to record something that happened today.
+Do NOT write a skill about a one-off task, a transient error that resolved, or a tool that was merely unavailable at the time.`;
+
 // Trailing user message of the background review run when only the skill
 // counter fired. Ported verbatim (Hermes). Do not paraphrase: the bias
 // against creating new skills, and the do-not-capture list, are the two

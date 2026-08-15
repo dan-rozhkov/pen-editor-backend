@@ -7,8 +7,9 @@ import {
   type MemoryTarget,
 } from "./types.js";
 
-/** Every user turn counts; the review fires (and the counter resets) at 10. */
-export const MEMORY_REVIEW_INTERVAL = 10;
+// The memory-review threshold lives in config.ts
+// (MEMORY_REVIEW_INTERVAL / DEFAULT_MEMORY_REVIEW_INTERVAL) so a deployment
+// can tune it without a code change — see the comment there.
 
 // The memory pool is the one `createPgPool` caller that sits in the hot path
 // of every `/api/chat` request (via prepareChatTurn's snapshot read) — see
@@ -34,10 +35,23 @@ export interface MemoryPool {
 
 export type AuditOrigin = "foreground" | "background_review" | "curator";
 
+/**
+ * `memory` and `skill` are WRITES — something actually changed. `review` is
+ * an OBSERVATION: one row per background review run, written whether or not
+ * the run saved anything. Without it a review that ran and declined leaves
+ * no trace anywhere (ENABLE_AGENT_LOGGING is off in production), which makes
+ * "the review never fires" and "the review fires and says nothing to save"
+ * indistinguishable — the two have opposite fixes. `review` rows are
+ * deliberately excluded from `listAuditActivity`: that feed drives the
+ * user-facing "memory updated" toast, and a run that changed nothing is not
+ * something to notify anyone about.
+ */
+export type AuditSubsystem = "memory" | "skill" | "review";
+
 export interface AuditEntry {
   userId: string;
   origin: AuditOrigin;
-  subsystem: "memory" | "skill";
+  subsystem: AuditSubsystem;
   action: string;
   payload: Record<string, unknown>;
 }
@@ -310,8 +324,15 @@ export function createMemoryStore(
     writeAudit,
 
     async listAuditActivity({ userId, sinceId, limit = AUDIT_ACTIVITY_LIMIT }) {
+      // Both halves filter out `review` rows (see AuditSubsystem): they are
+      // observations of a run, not writes, and the toast this feeds must not
+      // fire for a review that changed nothing. Filtering the MAX too — not
+      // just the page — matters: an anchor id taken from a review row would
+      // sit above the last real write, so a caller that polls with it would
+      // never be told about writes it had not already seen.
       const maxResult = (await db.query(
-        "SELECT MAX(id) AS max_id FROM agent_selfimprove_audit WHERE user_id = $1",
+        `SELECT MAX(id) AS max_id FROM agent_selfimprove_audit
+          WHERE user_id = $1 AND subsystem <> 'review'`,
         [userId],
       )) as { rows: Array<{ max_id: string | number | null }> };
       const rawMaxId = maxResult.rows[0]?.max_id;
@@ -328,7 +349,7 @@ export function createMemoryStore(
       const rows = (await db.query(
         `SELECT id, subsystem, action, origin, created_at
            FROM agent_selfimprove_audit
-          WHERE user_id = $1 AND id > $2
+          WHERE user_id = $1 AND id > $2 AND subsystem <> 'review'
           ORDER BY id ASC
           LIMIT $3`,
         [userId, sinceId, limit],

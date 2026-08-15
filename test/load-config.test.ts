@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { loadConfig } from "../src/config.js";
+import {
+  DEFAULT_MEMORY_REVIEW_INTERVAL,
+  DEFAULT_SKILL_REVIEW_INTERVAL,
+  loadConfig,
+} from "../src/config.js";
 
 // loadConfig reads process.env and calls process.exit(1) on a bad env.
 // We swap process.env per test and make process.exit throw so we can assert
@@ -30,6 +34,34 @@ describe("loadConfig", () => {
     expect(config.S3_REGION).toBe("ru-1");
     expect(config.ENABLE_AGENT_LOGGING).toBe(false);
     expect(config.OPENROUTER_ALLOWED_MODELS).toBeUndefined();
+  });
+
+  // The right threshold is a property of how a deployment is actually used,
+  // so it must be tunable on production traffic without a code change.
+  it("takes the review intervals from the env, defaulting to the shipped values", () => {
+    process.env = { OPENROUTER_API_KEY: "key" } as NodeJS.ProcessEnv;
+    expect(loadConfig().MEMORY_REVIEW_INTERVAL).toBe(DEFAULT_MEMORY_REVIEW_INTERVAL);
+    expect(loadConfig().SKILL_REVIEW_INTERVAL).toBe(DEFAULT_SKILL_REVIEW_INTERVAL);
+
+    process.env = {
+      OPENROUTER_API_KEY: "key",
+      MEMORY_REVIEW_INTERVAL: "2",
+      SKILL_REVIEW_INTERVAL: "25",
+    } as NodeJS.ProcessEnv;
+    const config = loadConfig();
+    expect(config.MEMORY_REVIEW_INTERVAL).toBe(2);
+    expect(config.SKILL_REVIEW_INTERVAL).toBe(25);
+  });
+
+  // 0 would make `counter >= interval` true on every request and fire a full
+  // background generateText per round-trip — refuse it at load time rather
+  // than discover it as a bill.
+  it("refuses an interval below 1", () => {
+    process.env = {
+      OPENROUTER_API_KEY: "key",
+      MEMORY_REVIEW_INTERVAL: "0",
+    } as NodeJS.ProcessEnv;
+    expect(() => loadConfig()).toThrow("process.exit(1)");
   });
 
   it("coerces PORT to a number and ENABLE_AGENT_LOGGING to a boolean", () => {

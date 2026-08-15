@@ -254,6 +254,14 @@ describe("self-improvement loop — end to end", () => {
       const config = makeConfig({
         MEMORY_ENABLED: true,
         SELF_SKILLS_ENABLED: true,
+        // Pinned, not inherited from the shipped default: the scenarios below
+        // are a hand-choreographed 10-turn script (mid-turn continuation at
+        // turn 9, both counters crossing together on turn 10) whose whole
+        // point is the ORDER of events around the threshold, not the
+        // threshold's value. Pinning it here keeps that story readable when
+        // the production default is tuned, and it exercises the override
+        // path at the same time.
+        MEMORY_REVIEW_INTERVAL: 10,
         // Unused directly (the pool below is injected instead) but required:
         // createMemoryStore's own gate is "config has TRACE_DATABASE_URL",
         // independent of whether a pool was injected — see
@@ -520,10 +528,16 @@ describe("self-improvement loop — end to end", () => {
 
       const rows = await auditRows(USER_A);
       const reviewRows = rows.filter((r) => r.origin === "background_review");
-      // Exactly the one write the scripted review model made — proves the
-      // review actually ran with a real, working `memory` tool bound to
-      // origin 'background_review', not just that SOME row appeared.
-      expect(reviewRows).toEqual([{ origin: "background_review", subsystem: "memory", action: "add" }]);
+      // Exactly the one write the scripted review model made, plus the
+      // observation row the run always writes — the write proves the review
+      // ran with a real, working `memory` tool bound to origin
+      // 'background_review'; the `review` row is what makes a run that saves
+      // NOTHING visible too (see AuditSubsystem in memory/store.ts), and it
+      // is labelled `saved` here precisely because this run did write.
+      expect(reviewRows).toEqual([
+        { origin: "background_review", subsystem: "memory", action: "add" },
+        { origin: "background_review", subsystem: "review", action: "saved" },
+      ]);
 
       // GET /api/memory/activity surfaces exactly this event — a UI-facing
       // read of the same row, never the deleted/mutated content itself.
@@ -535,6 +549,17 @@ describe("self-improvement loop — end to end", () => {
       expect(reviewEvent).toBeDefined();
       expect(reviewEvent).not.toHaveProperty("payload");
       expect(Object.keys(reviewEvent!).sort()).toEqual(["action", "created_at", "id", "origin", "subsystem"]);
+
+      // ...and the observation row does NOT appear in it. This feed drives
+      // the user-facing "memory updated" toast; a review that merely RAN is
+      // not something to notify anyone about, and once reviews fire every
+      // few turns it would fire the toast almost continuously.
+      expect(beforeJson.events.some((e) => e.subsystem === "review")).toBe(false);
+      // The anchor id must skip review rows too, or a poller would take an
+      // id above the last real write and never be told about writes it had
+      // not already seen.
+      const lastWriteId = Math.max(...beforeJson.events.map((e) => Number(e.id)));
+      expect(beforeJson.latestId).toBe(lastWriteId);
     });
 
     // ------------------------------------------------------------------

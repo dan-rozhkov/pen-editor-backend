@@ -74,7 +74,12 @@ Three tables (migration `009_agent_memory.sql`, index in `010_...idx.sql`):
   on the joined, separator-included string. The `memory` tool
   (`src/ai/memory/tool.ts`) applies `add`/`replace`/`remove` batches
   atomically (`apply.ts`); an exact-duplicate `add` (after trim) is a silent
-  no-op, not a second copy.
+  no-op, not a second copy. **`MEMORY_REVIEW_PROMPT` has a third focus point
+  aimed squarely at `target: 'memory'`** — every row production had ever
+  stored was `target: 'user'`, because both of the prompt's original focus
+  points asked only about the user, so the half of memory that compounds
+  across sessions (tool quirks, conventions, what worked on this canvas) was
+  never solicited at all.
 - **`agent_review_state`** — per-user counters. `turns_since_memory` only
   increments on a request whose final step made **no** tool calls — i.e. a
   completed reply to the user, not one of the several `POST /api/chat`
@@ -87,7 +92,11 @@ Three tables (migration `009_agent_memory.sql`, index in `010_...idx.sql`):
   is deferred to the completed request. Bumping only on completion (as this
   used to) collapsed "every `SKILL_REVIEW_INTERVAL` tool-call steps" into
   "every ~`SKILL_REVIEW_INTERVAL` user turns," since the final request's own
-  step count is normally 1. At `MEMORY_REVIEW_INTERVAL` (10) a background
+  step count is normally 1. At `MEMORY_REVIEW_INTERVAL` (**4**, was 10 —
+  both thresholds now live in `src/config.ts` as env-overridable values with
+  `DEFAULT_MEMORY_REVIEW_INTERVAL`/`DEFAULT_SKILL_REVIEW_INTERVAL` as
+  defaults, so a deployment can tune them on real traffic without a code
+  change) a background
   review turn runs, sees the `memory` tool plus stubs built from the turn's
   ACTUAL, FULL tool set (`prepareChatTurn`'s `tools` — every client-executed
   pen tool, `load_skill`, MCP tools, web tools; passed in as
@@ -117,7 +126,30 @@ Three tables (migration `009_agent_memory.sql`, index in `010_...idx.sql`):
   `foreground | background_review | curator`. Every mutation goes through
   `insertAuditRow` (used both stand-alone and inside `applyOperations`'s
   transaction) — there is no code path that changes memory without a row
-  here.
+  here. `subsystem` is `memory | skill | review`: the first two are WRITES,
+  `review` is an OBSERVATION — one row per background review run
+  (`action: saved | nothing-saved`, payload carrying the due flags, step
+  count, `toolsCalled` and `finishReason`), written whether or not the run
+  saved anything. Without it a review that ran and declined left no trace
+  anywhere on a deployment with `ENABLE_AGENT_LOGGING` off (i.e. production),
+  which made "the review never fires" and "the review fires and says nothing
+  to save" indistinguishable — and those two have opposite fixes. `review`
+  rows are deliberately filtered out of `listAuditActivity` (both the page
+  AND the `latestId` anchor — an anchor taken from a review row would sit
+  above the last real write and hide writes from a polling client), since
+  that feed drives the user-facing "memory updated" toast and a run that
+  changed nothing is not something to notify anyone about. The audit write
+  is best-effort in `review.ts`: a failed insert logs and still reports the
+  run as `ran`, rather than mislabelling a review that did its job.
+
+  **Reading the instrumentation:**
+  ```sql
+  SELECT action, count(*), max(created_at) FROM agent_selfimprove_audit
+   WHERE subsystem = 'review' GROUP BY 1;
+  ```
+  A high `nothing-saved` share means the prompts are declining, not that the
+  thresholds are too high — lower `MEMORY_REVIEW_INTERVAL` only when the
+  reviews are not firing in the first place.
 
 **`GET /api/memory/activity?userId=...&sinceId=...`**
 (`src/routes/memoryActivity.ts`) is a read-only UI-visibility signal for a
@@ -141,8 +173,9 @@ domain, so a procedure learned in one session is procedure for every
 session. `agent_review_state.steps_since_skill` (created by phase 1, acted
 on only from phase 2 onward) tracks cumulative tool-call steps; every
 `MemoryStore.bumpCounters` call now also accepts an optional
-`skillInterval`, and the review fires every **`SKILL_REVIEW_INTERVAL` (15)**
-accumulated steps, counted independently of `MEMORY_REVIEW_INTERVAL`'s user
+`skillInterval`, and the review fires every **`SKILL_REVIEW_INTERVAL` (15,
+env-overridable)** accumulated steps, counted independently of
+`MEMORY_REVIEW_INTERVAL`'s user
 turns — a skill is learned from how much tool-calling a task took, not how
 many chat messages it spanned. `agent_review_state` holds both counters in
 one row per user, so `buildApp` (`src/app.ts`) constructs the shared
@@ -235,6 +268,22 @@ snapshot read, is raced against a 2s timeout in `chatTurn.ts` so a
 slow/unreachable Postgres degrades to "no learned skills this turn" instead
 of hanging `/api/chat`. Learned skills are **NOT slash-invocable** — `/name`
 stays curated-only.
+
+**`SELF_SKILLS_GUIDANCE`** (`src/ai/skills/prompts.ts`) is the foreground
+half, rendered into the stable tier of the system prompt as `## Your Own
+Skills` — after the skills catalog it refers to, before the varying tail —
+and **only when `skill_manage` is genuinely in this turn's tool set**
+(`selfSkillsGuidance` in `buildSystemPrompt`, computed in `chatTurn.ts` as
+`learnedStore && auditDb`), the same rule `memoryGuidance` follows: guidance
+without the tool is an instruction the model cannot act on. It exists because
+memory had `MEMORY_GUIDANCE` from day one while `skill_manage` had only its
+tool description, so the entire skill half of the loop depended on a
+background review firing — one learned skill in the library over the loop's
+whole lifetime is what that asymmetry bought. It deliberately asks only for
+PATCHES (fold a correction into the skill that governs that class of work, in
+the same turn); CREATING a skill is pushed to the background review, where
+`SKILL_REVIEW_PROMPT`'s preference ladder is what keeps the library from
+filling with `fix-the-thing-2026-08-11` entries.
 
 The background review's skill/combined prompts live in
 `src/ai/skills/prompts.ts` (`SKILL_REVIEW_PROMPT`, `buildSkillReviewPrompt`,

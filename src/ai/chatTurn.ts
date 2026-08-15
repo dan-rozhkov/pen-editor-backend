@@ -340,9 +340,18 @@ export async function prepareChatTurn(
     }
   }
 
+  // Hoisted above the system prompt (the tool wiring that consumes it is
+  // further down): whether `skill_manage` will actually be in this turn's
+  // tool set decides whether the prompt may talk about writing skills.
+  // Guidance without the tool is an instruction the model cannot follow —
+  // the same rule memoryGuidance already follows.
+  const auditDb = config.SELF_SKILLS_ENABLED ? (input.auditDb ?? null) : null;
+  const selfSkillsInjected = Boolean(learnedStore && auditDb);
+
   const system = buildSystemPrompt(canvasContext, skillCatalog, {
     memoryGuidance: memoryInjected,
     memorySnapshot: memorySnapshotBlock,
+    selfSkillsGuidance: selfSkillsInjected,
   });
   const selectedModelId = modelOverride ?? config.OPENROUTER_MODEL;
   const systemPromptHash = createHash("sha256")
@@ -401,7 +410,6 @@ export async function prepareChatTurn(
       getMemoryTools(createMemoryToolContext(memoryStore, input.userId, "foreground")),
     );
   }
-  const auditDb = config.SELF_SKILLS_ENABLED ? (input.auditDb ?? null) : null;
   if (learnedStore && auditDb) {
     Object.assign(
       tools,

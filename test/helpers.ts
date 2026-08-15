@@ -1,4 +1,8 @@
-import type { Config } from "../src/config.js";
+import {
+  DEFAULT_MEMORY_REVIEW_INTERVAL,
+  DEFAULT_SKILL_REVIEW_INTERVAL,
+  type Config,
+} from "../src/config.js";
 
 // Test config built directly as an object — no env vars, no real API keys.
 export function makeConfig(overrides: Partial<Config> = {}): Config {
@@ -29,6 +33,11 @@ export function makeConfig(overrides: Partial<Config> = {}): Config {
     MCP_AUTH_TOKEN: undefined,
     MEMORY_ENABLED: false,
     SELF_SKILLS_ENABLED: false,
+    // The real defaults, not hardcoded numbers: a test that pins a threshold
+    // should fail when the shipped default moves, not quietly keep testing
+    // the old one.
+    MEMORY_REVIEW_INTERVAL: DEFAULT_MEMORY_REVIEW_INTERVAL,
+    SKILL_REVIEW_INTERVAL: DEFAULT_SKILL_REVIEW_INTERVAL,
     VISION_MODEL: "google/gemini-2.5-flash",
     VISION_MAX_TOKENS: 1200,
     VISION_TIMEOUT_MS: 120_000,

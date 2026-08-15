@@ -1,4 +1,5 @@
 import { MEMORY_GUIDANCE } from "./memory/prompts.js";
+import { SELF_SKILLS_GUIDANCE } from "./skills/prompts.js";
 
 export const AGENT_MODES = ["edits", "prototype", "research"] as const;
 export type AgentMode = (typeof AGENT_MODES)[number];
@@ -20,6 +21,9 @@ export interface SystemPromptMemory {
   memoryGuidance?: boolean;
   /** Pre-rendered snapshot block (see ai/memory/render.ts). Empty = omit. */
   memorySnapshot?: string;
+  /** Include SELF_SKILLS_GUIDANCE — only ever true when `skill_manage` is
+   * actually in this turn's tool set, same rule as memoryGuidance. */
+  selfSkillsGuidance?: boolean;
 }
 
 export function buildSystemPrompt(
@@ -38,6 +42,13 @@ export function buildSystemPrompt(
 
   if (skills.length > 0) {
     parts.push(renderSkillCatalog(skills));
+  }
+
+  // After the catalog (it talks about entries in it) but still ahead of the
+  // per-user snapshot and the canvas context, so the varying tail of the
+  // prompt stays where it was.
+  if (memory.selfSkillsGuidance) {
+    parts.push(`\n## Your Own Skills\n\n${SELF_SKILLS_GUIDANCE}`);
   }
 
   if (memory.memorySnapshot) {

@@ -2,7 +2,7 @@ import { generateText, stepCountIs, tool, type ModelMessage, type ToolSet } from
 import type { Config } from "../../config.js";
 import { logSession } from "../../logging.js";
 import { createModel } from "../provider.js";
-import { MEMORY_REVIEW_INTERVAL, type MemoryStore } from "../memory/store.js";
+import type { MemoryStore } from "../memory/store.js";
 import { createMemoryToolContext, getMemoryTools, memoryInputSchema } from "../memory/tool.js";
 import { renderMemorySnapshot } from "../memory/render.js";
 import { selectReviewPrompt } from "../skills/prompts.js";
@@ -13,13 +13,18 @@ import type { TraceQueryable } from "../../tracing/traceStore.js";
 
 const REVIEW_MAX_STEPS = 8;
 
-/** Phase 2 (self-authored skills): the review fires every this many
- * accumulated tool steps, tracked in agent_review_state.steps_since_skill
- * (bumped unconditionally by MemoryStore.bumpCounters; this is only the
- * due-threshold). Independent of MEMORY_REVIEW_INTERVAL, which counts USER
- * TURNS, not tool steps — skills are learned from how a task went, which
- * tracks with how much tool-calling happened, not how many messages it took. */
-export const SKILL_REVIEW_INTERVAL = 15;
+/* Both review thresholds now live in config.ts
+ * (MEMORY_REVIEW_INTERVAL / SKILL_REVIEW_INTERVAL, defaults
+ * DEFAULT_MEMORY_REVIEW_INTERVAL / DEFAULT_SKILL_REVIEW_INTERVAL) so they can
+ * be tuned per deployment. They stay independent quantities: the memory one
+ * counts USER TURNS, the skill one counts accumulated TOOL STEPS — a skill is
+ * learned from how much tool-calling a task took, not how many messages it
+ * spanned. */
+
+// Tool names that mean the review actually WROTE something. Used only to
+// label the per-run audit row (`saved` vs `nothing-saved`) — the writes
+// themselves are audited by the tools, through their own rows.
+const REVIEW_WRITE_TOOLS = new Set(["memory", "skill_manage"]);
 
 // Background review, no user waiting on it — but it must not hold a
 // multi-MB transcript (modelMessages can carry base64 image parts from
@@ -182,7 +187,7 @@ export async function maybeRunReview(
       userId,
       turns: input.turnComplete ? 1 : 0,
       steps: input.stepCount,
-      memoryInterval: MEMORY_REVIEW_INTERVAL,
+      memoryInterval: config.MEMORY_REVIEW_INTERVAL,
       // Only check (and possibly reset) the skill due-threshold on the
       // COMPLETED request — omitting skillInterval mid-turn still lets
       // steps_since_skill accumulate (that increment is unconditional in
@@ -192,7 +197,7 @@ export async function maybeRunReview(
       // threshold crossed mid-turn get silently reset with no review ever
       // firing for it.
       ...(config.SELF_SKILLS_ENABLED && input.turnComplete
-        ? { skillInterval: SKILL_REVIEW_INTERVAL }
+        ? { skillInterval: config.SKILL_REVIEW_INTERVAL }
         : {}),
     });
 
@@ -300,6 +305,41 @@ export async function maybeRunReview(
       // abort it — see DEFAULT_REVIEW_TIMEOUT_MS above for why.
       abortSignal: AbortSignal.timeout(input.reviewTimeoutMs ?? DEFAULT_REVIEW_TIMEOUT_MS),
     });
+
+    // One row per run, saved or not — the only signal that distinguishes "the
+    // review never fired" from "it fired and declined" on a deployment with
+    // ENABLE_AGENT_LOGGING off (i.e. production). Best-effort by design: this
+    // is instrumentation, and a failed audit insert must not turn a review
+    // that did its job into a logged failure.
+    const calledTools = result.steps.flatMap((step) =>
+      step.toolCalls.map((tc: { toolName?: unknown }) => String(tc.toolName ?? "")),
+    );
+    const wrote = calledTools.some((name) => REVIEW_WRITE_TOOLS.has(name));
+    // try/catch rather than `.catch()` on the returned promise: the outer
+    // catch below turns any throw here into a "disabled" outcome and a
+    // review-failed log line, which would misreport a review that in fact
+    // completed and saved.
+    try {
+      await store.writeAudit({
+        userId,
+        origin: "background_review",
+        subsystem: "review",
+        action: wrote ? "saved" : "nothing-saved",
+        payload: {
+          memoryDue: due.memoryDue,
+          skillDue: due.skillDue,
+          steps: result.steps.length,
+          // Every tool the run reached for, not just the writing ones: a
+          // review burning its steps on stubbed pen tools looks identical to
+          // one that genuinely had nothing to save, and only this field tells
+          // them apart.
+          toolsCalled: calledTools,
+          finishReason: result.finishReason,
+        },
+      });
+    } catch (err) {
+      console.error("[review] failed to write review audit row:", err);
+    }
 
     if (config.ENABLE_AGENT_LOGGING) {
       await logSession({
