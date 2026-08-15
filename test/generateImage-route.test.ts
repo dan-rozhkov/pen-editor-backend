@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, it, expect, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, it, expect, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { makeConfig } from "./helpers.js";
 
@@ -8,6 +8,7 @@ vi.mock("../src/services/imageGen.js", async (importOriginal) => {
 });
 import { generateImage, ImageGenerationTimeoutError } from "../src/services/imageGen.js";
 import { buildApp } from "../src/app.js";
+import type { AnalyticsClient, AnalyticsEvent } from "../src/analytics/posthog.js";
 
 let app: FastifyInstance;
 let url: string;
@@ -68,5 +69,91 @@ describe("POST /api/generate-image", () => {
     const res = await post({ prompt: "x" });
     expect(res.status).toBe(504);
     expect(await res.json()).toMatchObject({ error: expect.stringContaining("timed out") });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Analytics: $process_person_profile scoping + user-cancel vs provider-failure
+// (findings #3 and #4). A separate app instance so a recording analytics
+// client can be injected without disturbing the shared `app` above.
+// ---------------------------------------------------------------------------
+
+describe("POST /api/generate-image analytics", () => {
+  let analyticsApp: FastifyInstance;
+  let analyticsUrl: string;
+  let events: AnalyticsEvent[];
+
+  function recordingAnalyticsClient(): AnalyticsClient {
+    return {
+      capture(event) {
+        events.push(event);
+      },
+      async shutdown() {},
+    };
+  }
+
+  beforeAll(async () => {
+    events = [];
+    analyticsApp = await buildApp(makeConfig(), {
+      logger: false,
+      analytics: recordingAnalyticsClient(),
+    });
+    analyticsUrl = await analyticsApp.listen({ port: 0, host: "127.0.0.1" });
+  });
+
+  afterAll(async () => {
+    await analyticsApp.close();
+  });
+
+  afterEach(() => {
+    events.length = 0;
+  });
+
+  it("marks a successful image_generated event as not person-scoped", async () => {
+    vi.mocked(generateImage).mockResolvedValue({ url: "data:image/png;base64,AAAA", mimeType: "image/png" });
+    await fetch(`${analyticsUrl}/api/generate-image`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: "a sunset" }),
+    });
+    // The route's own `onResponse` hook also fires a generic `api_request`
+    // event for this route (it's not in ANALYTICS_EXCLUDED_ROUTES) — filter
+    // to `image_generated` rather than asserting the total event count.
+    const imageEvents = events.filter((e) => e.event === "image_generated");
+    expect(imageEvents).toHaveLength(1);
+    expect(imageEvents[0].properties).toMatchObject({ ok: true, $process_person_profile: false });
+  });
+
+  it("captures a user cancel as error_kind: aborted, not a provider failure", async () => {
+    vi.mocked(generateImage).mockImplementation(
+      (_config, _prompt, signal) =>
+        new Promise((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(new Error("provider call aborted")));
+        }),
+    );
+
+    const clientAbort = new AbortController();
+    const fetchPromise = fetch(`${analyticsUrl}/api/generate-image`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: "a sunset" }),
+      signal: clientAbort.signal,
+    }).catch(() => undefined);
+
+    // Give the request a moment to reach the route handler before the client
+    // disconnects, so reply.raw's "close" listener is already registered.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    clientAbort.abort();
+    await fetchPromise;
+
+    await vi.waitFor(() =>
+      expect(events.some((e) => e.event === "image_generated")).toBe(true),
+    );
+    const imageEvent = events.find((e) => e.event === "image_generated")!;
+    expect(imageEvent.properties).toMatchObject({
+      ok: false,
+      error_kind: "aborted",
+      $process_person_profile: false,
+    });
   });
 });
