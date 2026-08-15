@@ -135,6 +135,13 @@ const envSchema = z.object({
   VISION_MODEL: z.string().default("google/gemini-2.5-flash"),
   VISION_MAX_TOKENS: z.coerce.number().default(1200),
   VISION_TIMEOUT_MS: z.coerce.number().default(120_000),
+  // --- Product analytics (PostHog, optional) ---
+  // Empty/unset key = analytics fully off: createAnalyticsClient (src/analytics/
+  // posthog.ts) returns a no-op, no posthog-node instance, no network calls.
+  // This is the default in dev, tests and CI. The host default only matters
+  // once a key is actually set.
+  POSTHOG_API_KEY: z.string().optional(),
+  POSTHOG_HOST: z.string().default("https://us.i.posthog.com"),
 });
 
 export type Config = z.infer<typeof envSchema>;

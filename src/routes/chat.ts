@@ -28,6 +28,7 @@ import { runReviewSafe } from "../ai/selfimprove/review.js";
 import { isPlausibleUserId } from "../lib/userId.js";
 import type { LearnedSkillStore } from "../ai/skills/learnedStore.js";
 import type { TraceQueryable } from "../tracing/traceStore.js";
+import type { AnalyticsClient } from "../analytics/posthog.js";
 
 // Re-exported for backwards compatibility: existing tests import this
 // symbol from routes/chat.js. The implementation now lives in
@@ -55,6 +56,27 @@ export function streamErrorMessage(error: unknown): string {
   return "An error occurred.";
 }
 const MAX_AGENT_STEPS = 12;
+
+// Coarse, PII-free error category for the `agent_turn_failed` analytics
+// event — never the raw error message (which can carry provider response
+// bodies, or in principle echo user content back). Kept intentionally small;
+// widen only with named categories, never a raw string.
+export function classifyErrorKind(error: unknown): string {
+  if (error instanceof Error) {
+    if (error.name === "AbortError" || /abort/i.test(error.message)) {
+      return "aborted";
+    }
+    if (/timeout|timed\s*out/i.test(error.name) || /timeout|timed\s*out/i.test(error.message)) {
+      return "timeout";
+    }
+    // AI SDK provider errors (e.g. APICallError -> name "AI_APICallError")
+    // thrown out of streamText/doStream.
+    if (/^AI_/.test(error.name) || /api|provider/i.test(error.name)) {
+      return "provider_error";
+    }
+  }
+  return "unknown";
+}
 
 // Shared by onFinish/onAbort: turns AI SDK step results into the trimmed
 // shape used for both session logging (logSteps) and trace payloads.
@@ -110,6 +132,12 @@ export async function chatRoutes(
   // default so every existing caller (tests, ad hoc scripts) is unaffected.
   learnedSkillStore: LearnedSkillStore | null = null,
   auditDb: TraceQueryable | null = null,
+  // Product analytics (PostHog). Null by default so every existing caller
+  // (tests, ad hoc scripts) is unaffected, same undefined/null-elsewhere
+  // contract as the stores above — buildApp always passes a real client
+  // (a no-op one when POSTHOG_API_KEY is unset), so `null` only shows up in
+  // tests that construct chatRoutes directly.
+  analytics: AnalyticsClient | null = null,
 ) {
   const allowedModels = getAllowedModels(config);
   const allowedOrigins = parseEnvList(config.CORS_ALLOWED_ORIGINS);
@@ -117,6 +145,21 @@ export async function chatRoutes(
   app.post("/api/chat", async (request, reply) => {
     const parsed = chatBodySchema.safeParse(request.body);
     if (!parsed.success) {
+      // Best-effort distinctId: the body failed shape validation, so we
+      // can't trust `parsed.data`, but a malformed body can still carry a
+      // plausible-looking `id`/`userId` worth joining client events on. Any
+      // other shape just falls back to "anonymous" — this is a coarse,
+      // PII-free join key, never the raw invalid body.
+      const rawBody = request.body as Record<string, unknown> | undefined;
+      const fallbackDistinctId =
+        (typeof rawBody?.userId === "string" && rawBody.userId) ||
+        (typeof rawBody?.id === "string" && rawBody.id) ||
+        "anonymous";
+      analytics?.capture({
+        event: "agent_turn_failed",
+        distinctId: fallbackDistinctId,
+        properties: { error_kind: "invalid_request" },
+      });
       return reply.status(400).send({
         error: "Invalid request body",
         details: parsed.error.format(),
@@ -137,7 +180,22 @@ export async function chatRoutes(
     // comment on chatBodySchema above.
     const userId = rawUserId && isPlausibleUserId(rawUserId) ? rawUserId : undefined;
 
+    const traceSessionId = chatSessionId ?? `anon-${randomUUID()}`;
+    // Same id the frontend's PostHog capture (if any) would use for this
+    // person, so client and server events join on one distinct id: the
+    // client-supplied anonymous userId when shape-valid, else the (always
+    // present) session id, else a hardcoded fallback for a caller that
+    // somehow supplies neither. Computed early (rather than after the
+    // model/image checks below) so every rejection path below — not just a
+    // successful turn — can tag its agent_turn_failed event with it.
+    const analyticsDistinctId = userId ?? traceSessionId ?? "anonymous";
+
     if (modelOverride && !allowedModels.includes(modelOverride)) {
+      analytics?.capture({
+        event: "agent_turn_failed",
+        distinctId: analyticsDistinctId,
+        properties: { error_kind: "model_not_allowed" },
+      });
       return reply.status(400).send({
         error: `Model "${modelOverride}" is not allowed. Allowed models: ${allowedModels.join(", ")}`,
       });
@@ -156,12 +214,42 @@ export async function chatRoutes(
       return Math.max(max, count);
     }, 0);
     if (maxImagesInOneMessage > MAX_IMAGE_PARTS) {
+      analytics?.capture({
+        event: "agent_turn_failed",
+        distinctId: analyticsDistinctId,
+        properties: { error_kind: "too_many_images" },
+      });
       return reply.status(400).send({
         error: `Too many images in a single message: ${maxImagesInOneMessage} attached, maximum is ${MAX_IMAGE_PARTS} per message`,
       });
     }
 
-    const traceSessionId = chatSessionId ?? `anon-${randomUUID()}`;
+    const requestStartedAt = Date.now();
+
+    let preparedTurn: Awaited<ReturnType<typeof prepareChatTurn>>;
+    try {
+      preparedTurn = await prepareChatTurn({
+        config,
+        messages,
+        canvasContext,
+        modelOverride,
+        userId,
+        memoryStore,
+        learnedSkillStore,
+        auditDb,
+        });
+    } catch (err) {
+      // MCP/provider/skill setup failure before the model even starts
+      // streaming — otherwise silent, since agent_turn_completed/failed
+      // below only fire once streamText is reached.
+      request.log.error(err);
+      analytics?.capture({
+        event: "agent_turn_failed",
+        distinctId: analyticsDistinctId,
+        properties: { error_kind: "prepare_failed" },
+      });
+      throw err;
+    }
 
     const {
       model,
@@ -171,16 +259,8 @@ export async function chatRoutes(
       taskPolicy,
       selectedModelId,
       systemPromptHash,
-    } = await prepareChatTurn({
-      config,
-      messages,
-      canvasContext,
-      modelOverride,
-      userId,
-      memoryStore,
-      learnedSkillStore,
-      auditDb,
-    });
+      slashSkillName,
+    } = preparedTurn;
     const maxSteps = MAX_AGENT_STEPS;
 
     // Abort the LLM stream when the client disconnects mid-response, so we
@@ -234,11 +314,49 @@ export async function chatRoutes(
             buildTraceRow(mapSteps(steps), "client-aborted"),
           );
         }
+
+        analytics?.capture({
+          event: "agent_turn_failed",
+          distinctId: analyticsDistinctId,
+          properties: { model: selectedModelId, error_kind: "aborted" },
+        });
       },
       onFinish({ usage, steps }) {
         console.log(
           `[tokens] input: ${usage.inputTokens}, output: ${usage.outputTokens}, cache read: ${usage.inputTokenDetails?.cacheReadTokens ?? "n/a"}`,
         );
+
+        // The client auto-resends on every client-executed tool call
+        // (`lastAssistantMessageIsCompleteWithToolCalls`), so one user
+        // message can be many `POST /api/chat` requests, each firing its own
+        // agent_turn_completed with a partial duration_ms/tool_call_count. A
+        // request whose final step still has tool calls is a continuation —
+        // the model handed work back to the browser and this request never
+        // produced a reply the user actually saw — so only a step-less final
+        // step is a real, complete user turn. Computed once here (not
+        // recomputed) and reused both for the analytics property below and
+        // for runReviewSafe's own turnComplete gate further down.
+        const lastStep = steps[steps.length - 1];
+        const turnComplete = !lastStep || lastStep.toolCalls.length === 0;
+
+        analytics?.capture({
+          event: "agent_turn_completed",
+          distinctId: analyticsDistinctId,
+          properties: {
+            model: selectedModelId,
+            duration_ms: Date.now() - requestStartedAt,
+            tool_call_count: steps.reduce((n, s) => n + s.toolCalls.length, 0),
+            prompt_tokens: usage.inputTokens ?? 0,
+            completion_tokens: usage.outputTokens ?? 0,
+            finish_reason: steps[steps.length - 1]?.finishReason ?? null,
+            mode: agentMode,
+            skill: slashSkillName ?? null,
+            // See the turnComplete doc comment above: filter to this when
+            // computing headline metrics from raw event counts, since a
+            // single user turn can otherwise emit several partial events.
+            turn_complete: turnComplete,
+          },
+        });
 
         // Only pay for the step-mapping work when something will consume it.
         const logSteps =
@@ -281,16 +399,9 @@ export async function chatRoutes(
         // cheap "is there anywhere to write at all" precondition — the
         // showcase runner and every headless entry point never reach it.
         if (userId && memoryStore) {
-          // The client auto-resends on every client-executed tool call
-          // (`lastAssistantMessageIsCompleteWithToolCalls`), so one user
-          // message can be many `POST /api/chat` requests. A request whose
-          // final step still has tool calls is a continuation — the model
-          // handed work back to the browser and this request never produced
-          // a reply the user actually saw — so only a step-less final step
-          // counts as a completed user turn. See the `turnComplete` doc
+          // turnComplete computed once above, shared with the
+          // agent_turn_completed capture. See the `turnComplete` doc
           // comment on MaybeRunReviewInput for what this fixes.
-          const lastStep = steps[steps.length - 1];
-          const turnComplete = !lastStep || lastStep.toolCalls.length === 0;
           runReviewSafe({
             config,
             store: memoryStore,
@@ -330,6 +441,16 @@ export async function chatRoutes(
             ),
           );
         }
+
+        analytics?.capture({
+          event: "agent_turn_failed",
+          distinctId: analyticsDistinctId,
+          properties: {
+            model: selectedModelId,
+            error_kind: classifyErrorKind(error),
+          },
+        });
+
         return streamErrorMessage(error);
       },
     });

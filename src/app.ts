@@ -27,6 +27,7 @@ import { memoryActivityRoutes } from "./routes/memoryActivity.js";
 import { getSharedLearnedSkillStore, type LearnedSkillStore } from "./ai/skills/learnedStore.js";
 import { getSharedAuditDb } from "./ai/selfimprove/auditDb.js";
 import type { TraceQueryable } from "./tracing/traceStore.js";
+import { createAnalyticsClient, type AnalyticsClient } from "./analytics/posthog.js";
 
 export interface BuildAppOptions {
   logger?: FastifyServerOptions["logger"];
@@ -42,6 +43,12 @@ export interface BuildAppOptions {
   // Phase 2 test seams, same undefined/null contract as memoryStore above.
   learnedSkillStore?: LearnedSkillStore | null;
   auditDb?: TraceQueryable | null;
+  // Test seam: inject a fake analytics client (e.g. one that records
+  // captures in memory). `undefined` = build the real one from config
+  // (POSTHOG_API_KEY unset → a no-op client, same shape either way — unlike
+  // the stores above there is no `null` variant, since "analytics off" is
+  // already represented by the no-op client rather than by omitting one).
+  analytics?: AnalyticsClient;
   // Whether this buildApp() call is the one long-running dev server
   // instance allowed to publish/reuse/clean up the shared handshake file at
   // ~/.pen-editor/mcp.json. Defaults to false: every other caller (test
@@ -158,11 +165,83 @@ export async function buildApp(
       await auditDb.end();
     });
   }
-  await chatRoutes(app, config, traceStore, memoryStore, learnedSkillStore, auditDb);
+  // Product analytics (PostHog). Always a real object — never null — since
+  // "disabled" is represented by createAnalyticsClient's own no-op client
+  // rather than by a null test seam, unlike the stores above.
+  const analytics =
+    options.analytics ??
+    createAnalyticsClient({
+      apiKey: config.POSTHOG_API_KEY,
+      host: config.POSTHOG_HOST,
+    });
+  app.addHook("onClose", async () => {
+    await analytics.shutdown();
+  });
+
+  // Generic HTTP health signal: one `api_request` event per response, for
+  // every route EXCEPT the ones explicitly excluded below. Registered before
+  // any route so it observes every request — this must stay above every
+  // route registration below (including any inside an encapsulated
+  // app.register() plugin), or a route registered above this line would
+  // silently go unobserved: Fastify resolves root-level hook arrays at
+  // ready(), so a hook registered after a route still happens to fire for
+  // it today, but only by accident of registration order, not because
+  // hook-then-route ordering is required. Excluded on purpose:
+  //   - "/api/chat": uses reply.hijack() (see chat.ts), so Fastify's normal
+  //     onResponse semantics don't apply to it reliably — it already emits
+  //     its own explicit agent_turn_completed/agent_turn_failed events with
+  //     richer, non-PII detail than a generic route/status/duration row
+  //     could carry.
+  //   - "/api/image-proxy": a high-frequency asset proxy (every showcase
+  //     screen's every <img>), not a product action — logging it would burn
+  //     a meaningful share of PostHog's free event budget for no signal.
+  //   - "/api/mcp", "/api/mcp/ws": the MCP surface — loopback-only in dev,
+  //     bearer-token gated in production, and /api/mcp/ws is a WebSocket
+  //     upgrade that never reaches onResponse in the first place.
+  const ANALYTICS_EXCLUDED_ROUTES = new Set([
+    "/api/chat",
+    "/api/image-proxy",
+    "/api/mcp",
+    "/api/mcp/ws",
+  ]);
+  app.addHook("onResponse", async (request, reply) => {
+    const route = request.routeOptions.url;
+    if (!route || ANALYTICS_EXCLUDED_ROUTES.has(route)) return;
+    analytics.capture({
+      event: "api_request",
+      // No per-visitor id is available on a generic route (unlike chat,
+      // which carries userId) — group these under one fixed id rather than
+      // inventing a fake per-request one that would fragment PostHog's
+      // per-person event count for no benefit.
+      distinctId: "api",
+      properties: {
+        route,
+        method: request.method,
+        status_code: reply.statusCode,
+        duration_ms: reply.elapsedTime,
+        // No real person behind this fixed "api" distinctId — without this,
+        // PostHog would build one person profile carrying the server's
+        // entire request volume and bill it in the pricier person-profile
+        // tier. agent_turn_completed/failed and showcase_published carry a
+        // real anonymous user id and stay person-scoped (no flag).
+        $process_person_profile: false,
+      },
+    });
+  });
+
+  await chatRoutes(
+    app,
+    config,
+    traceStore,
+    memoryStore,
+    learnedSkillStore,
+    auditDb,
+    analytics,
+  );
   await memoryActivityRoutes(app, config, memoryStore);
   await modelsRoutes(app, config);
   await uploadRoutes(app, config);
-  await generateImageRoutes(app, config);
+  await generateImageRoutes(app, config, analytics);
   await prototypeLinkRoutes(app, config);
   const showcaseStore = await showcaseRoutes(app, config, options.showcaseStore);
   if (showcaseStore) {
@@ -172,7 +251,7 @@ export async function buildApp(
   }
   // Same store instance showcaseRoutes returned — never a second one, or
   // the two routes would race two independent Postgres pools.
-  await showcasePublishRoutes(app, config, showcaseStore);
+  await showcasePublishRoutes(app, config, showcaseStore, undefined, analytics);
 
   app.setErrorHandler((error, _request, reply) => {
     app.log.error(error);

@@ -46,6 +46,56 @@ summarized before it existed — but only while their `raw_traces` rows survive
 `TRACE_RAW_TTL_DAYS`. The report gains a "Corrections & memory requests" section.
 Spec: `docs/superpowers/specs/2026-07-17-session-insights-design.md`.
 
+## Product analytics (`src/analytics/`)
+
+**Additive to, and a different system from, `src/analysis/`/trace analysis
+above** — the name similarity is coincidental (or at least pre-existing) and
+worth flagging on sight: `src/analysis/` is LLM-driven content analysis of
+`raw_traces`/`session_insights` (what happened in a session, summarized by a
+model); `src/analytics/` is plain product-analytics event counting (PostHog)
+— no LLM anywhere in this path, and no session content ever reaches it.
+
+`src/analytics/posthog.ts`'s `createAnalyticsClient({apiKey, host})` returns
+a real `posthog-node`-backed client when `POSTHOG_API_KEY` is set, or a
+**no-op client** (no `posthog-node` instance, no network) when it's
+unset — the default in dev, tests, and CI. `capture()` is synchronous,
+fire-and-forget, and wrapped in try/catch so a PostHog outage or a bad
+property never breaks a request path; `shutdown()` is awaited from
+`buildApp`'s `onClose` hook (same close-on-shutdown contract as
+`traceStore`/`memoryStore`) so buffered events flush before the process
+exits. `BuildAppOptions.analytics` is the test seam, threaded into
+`chatRoutes`/`generateImageRoutes`/`showcasePublishRoutes` exactly like
+`traceStore` — unlike the stores, though, there is no `null` variant: the
+no-op client already represents "off".
+
+**Hard rule: no PII.** Never send prompt text, message content, document
+content, user emails, or raw error messages — only enums, ids, counts,
+durations, model names, and coarse error categories (e.g. `error_kind:
+'aborted' | 'provider_error' | 'timeout' | 'unknown'`, never the exception's
+own `.message`). `test/analytics.test.ts` asserts this explicitly for the
+chat route: it captures a message containing a marker string and checks that
+string never appears anywhere in any captured event's properties.
+
+Events today: `agent_turn_completed`/`agent_turn_failed` (`src/routes/
+chat.ts`, at the same `onFinish`/`onAbort`/stream-`onError` callbacks that
+already write trace rows — `distinctId` is the client's `userId` when
+shape-valid, else the request's session id, else `'anonymous'`, so frontend
+and backend events join on one person), `showcase_published` (`src/routes/
+showcasePublish.ts`), `image_generated` (`src/routes/generateImage.ts`), and
+a generic `api_request` fired from an `onResponse` hook in `src/app.ts` for
+every route except `/api/chat` (hijacked — see chat.ts's own richer events
+above), `/api/image-proxy` (high-frequency asset proxy, not a product
+action), and `/api/mcp`/`/api/mcp/ws` (auth-gated surface; the WS route
+never reaches `onResponse` anyway).
+
+**Adding a new event:** call `analytics.capture({event, distinctId,
+properties})` at the point the underlying data is already computed (don't
+recompute anything analytics-only); keep `properties` to the enums/
+ids/counts/durations shape above; if the route doesn't yet receive an
+`AnalyticsClient`, thread it through the same way `chatRoutes` does (a
+nullable positional param defaulting to `null`, wired from `buildApp`) and
+extend `test/analytics.test.ts`.
+
 ## Persistent agent memory (`src/ai/memory/`, `src/ai/selfimprove/review.ts`)
 
 Phase 1 of the self-improvement loop: per-user, cross-session facts injected

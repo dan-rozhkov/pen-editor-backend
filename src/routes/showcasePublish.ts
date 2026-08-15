@@ -10,6 +10,7 @@ import { showcaseViewport, type ShowcasePlatform } from "../showcase/platform.js
 import { resolveS3Target, uploadObject, type S3Target } from "../services/s3.js";
 import { sniffImageType } from "../services/imageTypes.js";
 import { isPlausibleUserId } from "../lib/userId.js";
+import type { AnalyticsClient } from "../analytics/posthog.js";
 
 // POST /api/showcase/publish — the third caller of `publishScreens` (after
 // `showcase:generate` and `showcase:ingest`), and the only one reachable over
@@ -134,6 +135,10 @@ export async function showcasePublishRoutes(
   config: Config,
   store: ShowcaseStore | null,
   deps: ShowcasePublishDeps = {},
+  // Null by default so every existing caller (tests, ad hoc scripts) is
+  // unaffected — same undefined/null-elsewhere contract chat.ts's
+  // `analytics` param follows.
+  analytics: AnalyticsClient | null = null,
 ): Promise<void> {
   // Hoisted to registration time, not created per request: `createS3Client`
   // does `new S3Client({...})` unconditionally and it is never destroyed, so
@@ -404,6 +409,12 @@ export async function showcasePublishRoutes(
             publishedCount,
           });
         }
+
+        analytics?.capture({
+          event: "showcase_published",
+          distinctId: body.userId,
+          properties: { screen_count: published.length, platform },
+        });
 
         return reply.status(200).send({ runId, platform, screens: published });
       } finally {
