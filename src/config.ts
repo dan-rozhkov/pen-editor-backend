@@ -139,9 +139,13 @@ const envSchema = z.object({
   // Empty/unset key = analytics fully off: createAnalyticsClient (src/analytics/
   // posthog.ts) returns a no-op, no posthog-node instance, no network calls.
   // This is the default in dev, tests and CI. The host default only matters
-  // once a key is actually set.
+  // once a key is actually set — but when it does, it matters silently: the
+  // wrong region's ingest endpoint answers 200 to an unknown key and drops
+  // the event, so a US/EU mismatch looks exactly like a working setup with no
+  // traffic. It defaults to the EU cloud because that is where this project's
+  // PostHog instance lives; a US-cloud deployment must set POSTHOG_HOST.
   POSTHOG_API_KEY: z.string().optional(),
-  POSTHOG_HOST: z.string().default("https://us.i.posthog.com"),
+  POSTHOG_HOST: z.string().default("https://eu.i.posthog.com"),
 });
 
 export type Config = z.infer<typeof envSchema>;
