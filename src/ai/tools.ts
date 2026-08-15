@@ -1299,4 +1299,38 @@ Returns the created/updated style ids and names (with a created|updated status) 
   }),
 
   analyze_image: makeAnalyzeImageTool(),
+
+  publish_to_showcase: tool({
+    description:
+      "Publish canvas screens the user made to the PUBLIC showcase gallery at `/` as one app (at most 5 screens). Client-executed: POSTs the named screens' HTML plus a rasterized PNG (the editor's own export path, 2x scale) to the backend, which normalizes/screenshots-in-place/uploads/stores them exactly like an autonomous showcase run. Each screen must be exactly the target platform's viewport size (mobile 390x844, desktop 1440x1024) or the call is rejected — resize or rebuild the screen first, this tool never resizes for you. Publishing is public and irreversible from here (there is no unpublish tool). Never call this unless the user explicitly asked to publish/showcase these screens — on a vague request, confirm which screens and under what app name first.",
+    inputSchema: z.object({
+      theme: z
+        .string()
+        .min(1)
+        .describe('Short name of the app/flow as it appears in the gallery, e.g. "Habit tracker".'),
+      prompt: z
+        .string()
+        .optional()
+        .describe("One sentence on what this app is — recorded with the run."),
+      platform: z
+        .enum(["mobile", "desktop"])
+        .optional()
+        .describe(
+          "Device class of the screens. Defaults to mobile (390x844); desktop is 1440x1024.",
+        ),
+      screens: z
+        .array(
+          z.object({
+            nodeId: z.string().describe("Id of the frame or embed node holding one screen."),
+            title: z.string().min(1).describe('Screen title shown in the gallery, e.g. "Onboarding".'),
+            cover: z
+              .boolean()
+              .optional()
+              .describe("Mark exactly one screen as the app's cover in the gallery."),
+          }),
+        )
+        .min(1)
+        .max(5),
+    }),
+  }),
 };

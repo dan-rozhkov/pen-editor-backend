@@ -18,6 +18,7 @@ import {
 import { modelsRoutes } from "./routes/models.js";
 import { prototypeLinkRoutes } from "./routes/prototype-link.js";
 import { showcaseRoutes } from "./routes/showcase.js";
+import { showcasePublishRoutes } from "./routes/showcasePublish.js";
 import { uploadRoutes } from "./routes/upload.js";
 import { createTraceStore, type TraceStore } from "./tracing/traceStore.js";
 import type { ShowcaseStore } from "./showcase/store.js";
@@ -169,6 +170,9 @@ export async function buildApp(
       await showcaseStore.close();
     });
   }
+  // Same store instance showcaseRoutes returned — never a second one, or
+  // the two routes would race two independent Postgres pools.
+  await showcasePublishRoutes(app, config, showcaseStore);
 
   app.setErrorHandler((error, _request, reply) => {
     app.log.error(error);

@@ -631,3 +631,50 @@ tool set rather than stubbed: there is no browser here, so it can never
 succeed, and the shared system prompt actively recommends it for verifying a
 finished screen — a stub would buy one guaranteed-wasted step per run.
 `analyze_image` stays: it is backend-executed and works fine here.
+
+### Publishing from the editor itself (`POST /api/showcase/publish`)
+
+The third caller of `publishScreens` (`src/routes/showcasePublish.ts`), and
+the only one reachable from inside a live editing session: the design agent's
+`publish_to_showcase` tool (`src/ai/tools.ts`, client-executed) lets a user
+put screens they made **on the canvas** onto the public gallery, not just
+screens an autonomous run or a hand-authored manifest produced. There is no
+headless browser anywhere in this path, on purpose — the route never imports
+`screenshot.ts` (or `playwright`) — because it doesn't need one: the screens
+already exist as pixels on the client's own canvas, so the frontend
+rasterizes each one itself with the editor's own export path
+(`renderNodeToCanvas`, Pixi extract + embed compositing, at 2x scale) and
+POSTs HTML + PNG per screen. The route validates size/type/dimensions (PNG
+only, sniffed rather than trusted; CSS size must match `showcaseViewport`
+exactly; decoded pixels must be that viewport ×2), then injects a
+`PublishDeps.screenshot` that just returns the client-supplied PNG for
+whichever screen `publishScreens`'s own sequential loop is currently on — so
+normalize/derivatives/S3 keys/the DB row/the cover pin are byte-for-byte what
+`showcase:generate`/`showcase:ingest` produce. One gap, same as
+`showcase:ingest`'s hand-authored screens: `publishScreens` stores
+`normalizeShowcaseHtml(html)`, but the client rasterized the *un-normalized*
+HTML straight off the canvas, so a screen with unstyled form controls can
+differ very slightly between its stored markup and its published pixels.
+Requests are serialized with an in-module busy flag (409 while one is in
+flight) rather than queued, since there's one agent per session and an
+actionable "retry" beats an open-ended wait. A publish stuck longer than
+`PUBLISH_STALE_MS` (5 minutes — `createS3Client` sets no request/connection
+timeout, so a hung PUT would otherwise wedge the flag until the process
+restarts) is reclaimed instead of 409ing forever; this does not serialize
+across replicas (Render can scale this service out) or turn a second
+legitimate caller into a queued request — it just 409s them, same as before.
+
+**Gated by `SHOWCASE_PUBLISH_TOKEN`** — this is the only internet-reachable
+write path onto the public homepage (every other writer into
+`showcase_screens` is an operator-run CLI), and there is no unpublish route,
+so an unauthenticated version of this endpoint would let anyone POST five
+arbitrary HTML documents + PNGs onto `/`. Same environment-dependent stance
+as `MCP_AUTH_TOKEN` (see the MCP section above): in production the var is
+mandatory — unset means the route 503s — and when set (in any environment)
+a request needs `Authorization: Bearer <token>` or it 401s; in non-production
+with the var unset, the route is open, keeping `npm run dev` (where all
+showcase publishing happens today) frictionless. A 502 from `publishScreens`
+failing partway through carries `runId` and a best-effort `publishedCount` so
+the orphaned app can be named for `npm run showcase:delete --app <runId>` —
+the loop is not atomic and earlier screens in the same call can already be
+published and visible.

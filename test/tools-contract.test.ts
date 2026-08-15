@@ -51,6 +51,7 @@ describe("penTools registry", () => {
         "list_plugins",
         "ask_user",
         "analyze_image",
+        "publish_to_showcase",
       ].sort(),
     );
   });
@@ -93,6 +94,7 @@ describe("penTools registry", () => {
       "list_plugins",
       "ask_user",
       "get_screenshot",
+      "publish_to_showcase",
     ] as const) {
       expect(hasExecute(name), `${name} must be client-executed`).toBe(false);
     }
@@ -981,6 +983,73 @@ describe("ask_user schema", () => {
           { id: "dup", label: "A", type: "text" },
           { id: "dup", label: "B", type: "text" },
         ],
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe("publish_to_showcase schema", () => {
+  const schema = schemaOf("publish_to_showcase");
+
+  it("accepts a valid multi-screen payload", () => {
+    const result = schema.safeParse({
+      theme: "Habit tracker",
+      prompt: "A minimal daily habit tracker with streaks.",
+      platform: "mobile",
+      screens: [
+        { nodeId: "n1", title: "Onboarding", cover: true },
+        { nodeId: "n2", title: "Today" },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts the minimal shape (theme + one screen, no optional fields)", () => {
+    expect(
+      schema.safeParse({
+        theme: "Habit tracker",
+        screens: [{ nodeId: "n1", title: "Onboarding" }],
+      }).success,
+    ).toBe(true);
+  });
+
+  it("rejects a screen without a title", () => {
+    expect(
+      schema.safeParse({
+        theme: "Habit tracker",
+        screens: [{ nodeId: "n1" }],
+      }).success,
+    ).toBe(false);
+    expect(
+      schema.safeParse({
+        theme: "Habit tracker",
+        screens: [{ nodeId: "n1", title: "" }],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects more than 5 screens", () => {
+    const screens = Array.from({ length: 6 }, (_, i) => ({
+      nodeId: `n${i}`,
+      title: `Screen ${i}`,
+    }));
+    expect(schema.safeParse({ theme: "Habit tracker", screens }).success).toBe(false);
+  });
+
+  it("requires theme and a non-empty screens array", () => {
+    expect(schema.safeParse({}).success).toBe(false);
+    expect(schema.safeParse({ theme: "Habit tracker", screens: [] }).success).toBe(false);
+    expect(
+      schema.safeParse({ screens: [{ nodeId: "n1", title: "Onboarding" }] }).success,
+    ).toBe(false);
+  });
+
+  it("rejects an invalid platform value", () => {
+    expect(
+      schema.safeParse({
+        theme: "Habit tracker",
+        platform: "tablet",
+        screens: [{ nodeId: "n1", title: "Onboarding" }],
       }).success,
     ).toBe(false);
   });
