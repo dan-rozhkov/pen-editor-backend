@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { getSkillTools, loadSkills } from "../src/ai/skills.js";
 import { createSkillRunContext } from "../src/ai/skills/runContext.js";
 import type { LearnedSkill, LearnedSkillStore } from "../src/ai/skills/learnedStore.js";
+import type { UserSkill, UserSkillStore } from "../src/ai/skills/userStore.js";
 import { makeConfig } from "./helpers.js";
 import { getSharedLearnedSkillStore } from "../src/ai/skills/learnedStore.js";
 
@@ -128,5 +129,78 @@ describe("load_skill with learned skills", () => {
     expect((result.error as string).split("Available skills:")[1]).not.toContain(
       "reading-canvas-state",
     );
+  });
+});
+
+// Code-review finding 4: a user skill can shadow a learned skill of the same
+// name (user_skills' name validator only guards against curated/penTools
+// collisions, never against agent_skills — see checkUserSkillNameCollision's
+// doc comment). If load_skill's user-skill branch marked the name as read in
+// the shared SkillRunContext, that read would then satisfy skill_manage's
+// read-before-write guard for a DIFFERENT document — the learned skill of
+// the same name — whose body the agent never actually saw. `delete` only
+// requires read + absorbed_into (no body comparison), so this would unlock
+// deleting a learned skill through a read that never touched it.
+describe("load_skill with a user skill shadowing a learned skill of the same name", () => {
+  beforeAll(async () => {
+    await loadSkills();
+  });
+
+  function fakeUserSkillStore(skills: UserSkill[]): UserSkillStore {
+    return {
+      async list(userId) {
+        return skills.filter((s) => s.userId === userId);
+      },
+      async listEnabled(userId) {
+        return skills.filter((s) => s.userId === userId && s.enabled);
+      },
+      async get(userId, name) {
+        return skills.find((s) => s.userId === userId && s.name === name) ?? null;
+      },
+      async create() {
+        throw new Error("not used in this test");
+      },
+      async update() {
+        return null;
+      },
+      async remove() {
+        return false;
+      },
+      async bumpUse() {},
+      async count() {
+        return skills.length;
+      },
+      async close() {},
+    };
+  }
+
+  const shadowedName = "reading-canvas-state";
+  const userSkill: UserSkill = {
+    userId: "u1",
+    name: shadowedName,
+    description: "the user's own version",
+    body: "USER VERSION — not the learned body",
+    enabled: true,
+    source: "manual",
+    useCount: 0,
+    lastUsedAt: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+
+  it("resolves the user skill (user wins the tie against learned) but does NOT mark it read", async () => {
+    const runContext = createSkillRunContext();
+    const learnedStore = fakeStore([learned]); // same `learned` fixture, same name
+    const userSkills = { store: fakeUserSkillStore([userSkill]), userId: "u1" };
+    const tools = getSkillTools({ learnedStore, runContext, userSkills });
+
+    const result = await (tools.load_skill as LoadSkill).execute({ name: shadowedName });
+    expect(result.custom).toBe(true);
+    expect(result.instructions).toBe(userSkill.body);
+
+    // The critical assertion: a load that resolved to the USER skill must
+    // not authorize skill_manage to patch/delete the LEARNED skill of the
+    // same name — that would be writing to a document this call never read.
+    expect(runContext.hasRead(shadowedName)).toBe(false);
   });
 });

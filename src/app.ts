@@ -25,6 +25,8 @@ import type { ShowcaseStore } from "./showcase/store.js";
 import { createMemoryStore, type MemoryStore } from "./ai/memory/store.js";
 import { memoryActivityRoutes } from "./routes/memoryActivity.js";
 import { getSharedLearnedSkillStore, type LearnedSkillStore } from "./ai/skills/learnedStore.js";
+import { getSharedUserSkillStore, type UserSkillStore } from "./ai/skills/userStore.js";
+import { userSkillRoutes } from "./routes/userSkills.js";
 import { getSharedAuditDb } from "./ai/selfimprove/auditDb.js";
 import type { TraceQueryable } from "./tracing/traceStore.js";
 import { createAnalyticsClient, type AnalyticsClient } from "./analytics/posthog.js";
@@ -43,6 +45,10 @@ export interface BuildAppOptions {
   // Phase 2 test seams, same undefined/null contract as memoryStore above.
   learnedSkillStore?: LearnedSkillStore | null;
   auditDb?: TraceQueryable | null;
+  // Test seam for the per-user UserSkillStore, same undefined/null contract
+  // as memoryStore/learnedSkillStore above — a route test injects a fake
+  // store instead of exercising getSharedUserSkillStore's real Postgres pool.
+  userSkillStore?: UserSkillStore | null;
   // Test seam: inject a fake analytics client (e.g. one that records
   // captures in memory). `undefined` = build the real one from config
   // (POSTHOG_API_KEY unset → a no-op client, same shape either way — unlike
@@ -165,6 +171,22 @@ export async function buildApp(
       await auditDb.end();
     });
   }
+  // User-authored skills (per-user, unlike agent_skills above): no feature
+  // flag gates this — a store is wired whenever TRACE_DATABASE_URL is
+  // configured, same as memoryStore's TRACE_DATABASE_URL-only branch. This
+  // owns the store's lifecycle (close-on-shutdown, same contract as every
+  // other store above) AND is threaded into chatRoutes below — the store
+  // also feeds prepareChatTurn's user-skill catalog/slash-resolution/
+  // load_skill branch, not just userSkillRoutes' CRUD surface.
+  const userSkillStore =
+    options.userSkillStore !== undefined
+      ? options.userSkillStore
+      : getSharedUserSkillStore(config.TRACE_DATABASE_URL);
+  if (userSkillStore) {
+    app.addHook("onClose", async () => {
+      await userSkillStore.close();
+    });
+  }
   // Product analytics (PostHog). Always a real object — never null — since
   // "disabled" is represented by createAnalyticsClient's own no-op client
   // rather than by a null test seam, unlike the stores above.
@@ -236,9 +258,11 @@ export async function buildApp(
     memoryStore,
     learnedSkillStore,
     auditDb,
+    userSkillStore,
     analytics,
   );
   await memoryActivityRoutes(app, config, memoryStore);
+  await userSkillRoutes(app, config, userSkillStore);
   await modelsRoutes(app, config);
   await uploadRoutes(app, config);
   await generateImageRoutes(app, config, analytics);

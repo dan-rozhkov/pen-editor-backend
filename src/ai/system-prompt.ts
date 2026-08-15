@@ -12,6 +12,12 @@ export interface SkillCatalogEntry {
    * the model (and anyone reading a trace) can tell curated instructions
    * from ones it wrote for itself in an earlier session. */
   learned?: boolean;
+  /** Authored by the USER themselves (the user_skills table), Figma-style
+   * custom skills. Rendered with a `(custom)` suffix, mutually exclusive
+   * with `learned` in practice — chatTurn.ts's merge gives a user skill
+   * precedence over a same-named learned one, so a single catalog entry
+   * never carries both markers. */
+  custom?: boolean;
 }
 
 export interface SystemPromptMemory {
@@ -64,15 +70,31 @@ export function buildSystemPrompt(
 
 function renderSkillCatalog(skills: SkillCatalogEntry[]): string {
   const lines = skills
-    .map((s) => `- \`${s.name}\` — ${s.description}${s.learned ? " (learned)" : ""}`)
+    .map(
+      (s) =>
+        `- \`${s.name}\` — ${s.description}${s.learned ? " (learned)" : ""}${s.custom ? " (custom)" : ""}`,
+    )
     .join("\n");
-  // Only rendered when at least one learned skill is present: on a fresh
-  // install (or with SELF_SKILLS_ENABLED off) the catalog is entirely
-  // curated, and the legend would be pure noise sitting in the cached
-  // system-prompt prefix for every turn.
-  const legend = skills.some((s) => s.learned)
-    ? "\n\nSkills marked `(learned)` are ones you wrote yourself in an earlier session. Load them exactly like the others; if one turns out to be wrong or outdated, fix it rather than working around it."
-    : "";
+  // Only rendered when at least one learned and/or custom skill is present:
+  // on a fresh install (SELF_SKILLS_ENABLED off, no user skills) the catalog
+  // is entirely curated, and a legend would be pure noise sitting in the
+  // cached system-prompt prefix for every turn. A user with zero custom
+  // skills and SELF_SKILLS_ENABLED off must render byte-identical to before
+  // this marker existed, which is exactly the `hasLearned && !hasCustom`
+  // branch below — its string is untouched from the original.
+  const hasLearned = skills.some((s) => s.learned);
+  const hasCustom = skills.some((s) => s.custom);
+  let legend = "";
+  if (hasLearned && hasCustom) {
+    legend =
+      "\n\nSkills marked `(learned)` are ones you wrote yourself in an earlier session; skills marked `(custom)` are ones the user created themselves. Load them exactly like the others; if a `(learned)` one turns out to be wrong or outdated, fix it rather than working around it.";
+  } else if (hasLearned) {
+    legend =
+      "\n\nSkills marked `(learned)` are ones you wrote yourself in an earlier session. Load them exactly like the others; if one turns out to be wrong or outdated, fix it rather than working around it.";
+  } else if (hasCustom) {
+    legend =
+      "\n\nSkills marked `(custom)` are ones the user created themselves. Load them exactly like the others.";
+  }
   return `
 ## Available Skills
 

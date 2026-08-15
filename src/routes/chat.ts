@@ -28,6 +28,7 @@ import { runReviewSafe } from "../ai/selfimprove/review.js";
 import { isPlausibleUserId } from "../lib/userId.js";
 import type { LearnedSkillStore } from "../ai/skills/learnedStore.js";
 import type { TraceQueryable } from "../tracing/traceStore.js";
+import type { UserSkillStore } from "../ai/skills/userStore.js";
 import type { AnalyticsClient } from "../analytics/posthog.js";
 
 // Re-exported for backwards compatibility: existing tests import this
@@ -132,6 +133,12 @@ export async function chatRoutes(
   // default so every existing caller (tests, ad hoc scripts) is unaffected.
   learnedSkillStore: LearnedSkillStore | null = null,
   auditDb: TraceQueryable | null = null,
+  // Per-user custom skills (Figma-style "your own skills"): feeds the
+  // catalog's `(custom)` entries, `/my-skill` slash resolution, and
+  // load_skill's user branch in prepareChatTurn below. Null by default so
+  // every existing caller (tests, ad hoc scripts) is unaffected, same
+  // contract as learnedSkillStore/auditDb above.
+  userSkillStore: UserSkillStore | null = null,
   // Product analytics (PostHog). Null by default so every existing caller
   // (tests, ad hoc scripts) is unaffected, same undefined/null-elsewhere
   // contract as the stores above — buildApp always passes a real client
@@ -237,7 +244,8 @@ export async function chatRoutes(
         memoryStore,
         learnedSkillStore,
         auditDb,
-        });
+        userSkillStore,
+      });
     } catch (err) {
       // MCP/provider/skill setup failure before the model even starts
       // streaming — otherwise silent, since agent_turn_completed/failed

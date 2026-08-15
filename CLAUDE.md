@@ -440,6 +440,68 @@ a general restore tool. See
 the phase-3 plan's Deferred section if any of those become necessary; none
 of them should be improvised into `curate.ts`.
 
+## Custom user skills (`src/ai/skills/userStore.ts`, `src/routes/userSkills.ts`)
+
+The third skill source, and the only one a **user** writes: modelled on Figma's
+"custom skills for the Figma agent" — a single Markdown document with
+`name`/`description` frontmatter that the agent follows when it is invoked.
+Curated `src/skills/*.md` are git-owned and global; `agent_skills` are
+agent-authored and global; **`user_skills` (migration `012`) is per-`userId`**,
+keyed `(user_id, name)`. That is the whole difference, and it is why this table
+is the one skill store scoped by the same anonymous, never-authenticated client
+id `agent_memory` uses (`src/lib/userId.ts` → `isPlausibleUserId`).
+
+Name resolution is **curated > user > learned**, everywhere — catalog rendering,
+`load_skill`, and slash commands. A user skill's name is validated against
+curated names and `penTools` at write time (`validateUserSkill.ts`), so it can
+never shadow a git-owned skill; it is deliberately NOT validated against
+`agent_skills`, so a user skill *can* shadow a learned one. That shadowing is
+why `load_skill`'s user branch does **not** call `runContext.markRead(name)`:
+the read-before-write guard exists for the agent's own library, and marking a
+name read on a user skill would let `skill_manage` delete a learned skill of the
+same name whose body the agent never saw.
+
+Unlike learned skills, user skills **are slash-invocable** — `/my-skill` is the
+headline behavior. `prepareChatTurn`'s existing `detectSkillCommand` block falls
+back to `userSkillStore.get(userId, name)` (enabled rows only) when `getSkill`
+misses, and injects the body through the same synthetic `lookup_skill`
+tool-call pair, so prompt caching is unaffected. Both that lookup and the
+catalog read are raced against `USER_SKILLS_TIMEOUT_MS` (2s), because the
+slash path fires on **any** message starting with `/` — `detectSkillCommand`
+happily reads a pasted `/Users/foo/bar` as skill name `Users` — and an acquired
+-but-stalled Postgres connection would otherwise hang `/api/chat` itself.
+
+The enabled catalog is cached per `(store instance, userId)` for 15s
+(`userSkillCatalog.ts`, a WeakMap keyed by store identity like
+`getLearnedCatalog`, never one global slot) and merged into the system prompt's
+catalog marked **`(custom)`**, capped at `MAX_USER_SKILLS_IN_PROMPT`. A user
+with no custom skills renders **byte-identical** to before the feature existed —
+pinned by a test. Every mutating route calls `invalidateUserSkillCatalog`, or a
+skill the user just disabled stays advertised in the prompt for up to 15s while
+`load_skill` already answers "Unknown skill".
+
+`src/routes/userSkills.ts` is the CRUD surface — `GET/POST /api/user-skills`,
+`PATCH/DELETE /api/user-skills/:name`, plus `POST /api/user-skills/generate`
+(Figma's "describe your workflow and let the agent write the skill": one
+`generateObject` call, returns a `{name, description, body}` draft and persists
+**nothing** — the client reviews it first). `userId` is a hard **400** on every
+one of them, the `GET /api/memory/activity` stance rather than chat.ts's
+silent-degrade one, since these routes read and write one person's library.
+With no `TRACE_DATABASE_URL`, GET answers `200 {skills: [], available: false}`
+and writes answer 503 — never a 5xx for a backend that simply isn't configured.
+A POST body may carry raw uploaded Markdown: `parseUserSkillMarkdown` fills
+`name`/`description` from its frontmatter, which is what makes "drag a `.md`
+in" work without the client having to parse anything itself.
+
+The store is wired in `buildApp` whenever `TRACE_DATABASE_URL` is set (no
+feature flag) and threaded into **both** `userSkillRoutes` and `chatRoutes` →
+`prepareChatTurn`. That second half is the one that actually makes the feature
+do anything, and it is covered by `test/chat-route-user-skills.test.ts` over
+real HTTP rather than a direct `prepareChatTurn` call — the first version of
+this feature registered the routes but never passed the store to `chatRoutes`,
+so every skill a user created was silently ignored by every turn, and a
+unit test of `prepareChatTurn` could not have caught it.
+
 ## MCP server (`src/mcp/`)
 
 `/api/mcp` (streamable HTTP, `@modelcontextprotocol/sdk`) and `/api/mcp/ws`

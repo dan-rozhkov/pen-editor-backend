@@ -30,6 +30,8 @@ import { getLearnedCatalog, type LearnedSkill, type LearnedSkillStore } from "./
 import { createSkillRunContext } from "./skills/runContext.js";
 import { getSelfSkillTools } from "./skills/tool.js";
 import type { TraceQueryable } from "../tracing/traceStore.js";
+import { getUserSkillCatalog } from "./skills/userSkillCatalog.js";
+import type { UserSkill, UserSkillStore } from "./skills/userStore.js";
 
 // Bounds the memory-snapshot read on top of (not instead of) the pool's own
 // connectionTimeoutMillis (src/tracing/traceStore.ts): that setting only
@@ -55,6 +57,18 @@ const LEARNED_SKILLS_TIMEOUT_MS = 2_000;
 // class-level skills, per SKILL_REVIEW_PROMPT's bias against sprawl) never
 // hits it in practice, but still bounded rather than unlimited.
 const MAX_LEARNED_SKILLS_IN_PROMPT = 50;
+
+// Same reasoning as LEARNED_SKILLS_TIMEOUT_MS, but for the per-user custom
+// skill catalog: getUserSkillCatalog already caches (15s TTL) and catches
+// thrown errors, so this timeout only covers the "acquired but never
+// responds" Postgres case a plain try/catch can't degrade from.
+const USER_SKILLS_TIMEOUT_MS = 2_000;
+
+// Mirrors MAX_LEARNED_SKILLS_IN_PROMPT — bounds one user's custom-skill
+// catalog in the prompt. The store's own MAX_SKILLS_PER_USER cap (50, see
+// validateUserSkill.ts) already keeps a single user under this in practice;
+// this is the same defense-in-depth the learned cap is.
+const MAX_USER_SKILLS_IN_PROMPT = 50;
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -141,6 +155,14 @@ export interface PrepareChatTurnInput {
    * learnedSkillStore.
    */
   auditDb?: TraceQueryable | null;
+  /**
+   * User skills (Figma-style custom skills, per-userId, user_skills table).
+   * Undefined/null → no custom skills for this turn — the showcase runner
+   * and any caller that doesn't wire one (or has no userId) stay exactly
+   * the pre-user-skills turn. Unlike learnedSkillStore this has no feature
+   * flag: presence of BOTH a store AND input.userId is what gates it.
+   */
+  userSkillStore?: UserSkillStore | null;
 }
 
 export interface PreparedChatTurn {
@@ -228,6 +250,38 @@ export async function prepareChatTurn(
         if (skill) {
           skillContent = skill.content;
           setText(detected.userText);
+        } else if (input.userSkillStore && input.userId) {
+          // The headline Figma behavior: `/my-skill` resolves to a user's
+          // own custom skill exactly like a curated one — same synthetic
+          // lookup_skill injection below, same text-stripping via setText.
+          // Curated always wins the name tie (checked above); a DISABLED
+          // user skill is deliberately not resolvable here either, mirroring
+          // load_skill's own enabled check in skills.ts.
+          //
+          // This fires on ANY message starting with "/" — a pasted path
+          // like "/Users/foo/bar" matches detectSkillCommand's regex too —
+          // so it is NOT a rare path; every such message reaches Postgres.
+          // A `.catch()` alone only degrades a REJECTED promise, not a
+          // connection that was acquired but never responds (no RST on a
+          // network black-hole), so this needs the same withTimeout guard
+          // as the catalog read below or a hung DB stalls /api/chat on
+          // every slash-shaped message, not just genuine skill invocations.
+          const userSkill = await withTimeout(
+            input.userSkillStore.get(input.userId, detected.skillName),
+            USER_SKILLS_TIMEOUT_MS,
+            "[userskills] slash-command lookup",
+          ).catch(() => null);
+          if (userSkill && userSkill.enabled) {
+            skillContent = userSkill.body;
+            setText(detected.userText);
+            // Best-effort AND bounded: a failed or hung counter bump must
+            // not fail — or stall — the turn.
+            await withTimeout(
+              input.userSkillStore.bumpUse(input.userId, detected.skillName),
+              USER_SKILLS_TIMEOUT_MS,
+              "[userskills] slash-command bumpUse",
+            ).catch(() => undefined);
+          }
         }
       }
     }
@@ -277,21 +331,69 @@ export async function prepareChatTurn(
     }
   }
 
-  // A learned skill's name can outlive its usefulness if a human later adds
-  // a curated skill under the same name (checkNameCollision only guards
-  // `create` time — it can't see a file that doesn't exist yet). Without
-  // this filter the catalog would render the name TWICE ("(learned)" and
-  // not), and load_skill always resolves the curated one anyway (see
-  // getSkill/getAllSkills precedence in skills.ts), so the learned entry
-  // would be dead weight the model can never actually reach — curated wins
-  // ties, always. skill_manage's curatedGuard still lets an agent DELETE
-  // the now-shadowed row directly (see tool.ts); this only controls what's
-  // rendered in the prompt.
+  // User skills (Figma-style custom skills). No feature flag, unlike
+  // learnedStore above: presence of BOTH a store AND a userId is what gates
+  // it, mirroring memoryEligible's stance elsewhere in this function — the
+  // showcase runner and any caller with no userId simply never populate
+  // this, and stay exactly the pre-user-skills turn. Same race-against-a-
+  // timeout shape as the learned catalog read, so a slow/unreachable
+  // Postgres degrades to "no user skills this turn" instead of hanging
+  // /api/chat; getUserSkillCatalog itself caches per (store, userId) for
+  // 15s and catches thrown errors, so this timeout only covers the
+  // "acquired but never responds" case a plain try/catch can't.
+  const userSkillStore = input.userSkillStore ?? null;
+  let userSkills: UserSkill[] = [];
+  if (userSkillStore && input.userId) {
+    try {
+      userSkills = await withTimeout(
+        getUserSkillCatalog(userSkillStore, input.userId),
+        USER_SKILLS_TIMEOUT_MS,
+        "[userskills] catalog read",
+      );
+    } catch (err) {
+      console.error("[userskills] catalog read timed out; continuing without user skills:", err);
+    }
+  }
+
+  // A learned or user skill's name can outlive its usefulness if a human
+  // later adds a curated skill under the same name (checkNameCollision only
+  // guards `create` time — it can't see a file that doesn't exist yet).
+  // Without this filter the catalog would render the name TWICE, and
+  // load_skill always resolves the curated one anyway (see getSkill/
+  // getAllSkills precedence in skills.ts), so the shadowed entry would be
+  // dead weight the model can never actually reach — curated wins ties,
+  // always. skill_manage's curatedGuard still lets an agent DELETE a
+  // now-shadowed learned row directly (see tool.ts); this only controls
+  // what's rendered in the prompt.
   const curatedNames = new Set(getAllSkills().map((s) => s.name));
-  const visibleLearnedSkills = learnedSkills.filter((s) => !curatedNames.has(s.name));
+
+  const visibleUserSkills = userSkills.filter((s) => !curatedNames.has(s.name));
+  if (visibleUserSkills.length !== userSkills.length) {
+    console.warn(
+      `[userskills] ${userSkills.length - visibleUserSkills.length} user skill(s) hidden from the catalog — shadowed by a curated skill of the same name.`,
+    );
+  }
+  // Same cap reasoning as MAX_LEARNED_SKILLS_IN_PROMPT — bounds the prompt's
+  // size and makes truncation visible rather than silent, even though
+  // MAX_SKILLS_PER_USER (validateUserSkill.ts) already keeps a single user
+  // under this in practice.
+  const boundedUserSkills = visibleUserSkills.slice(0, MAX_USER_SKILLS_IN_PROMPT);
+  if (visibleUserSkills.length > MAX_USER_SKILLS_IN_PROMPT) {
+    console.warn(
+      `[userskills] user skill catalog truncated to ${MAX_USER_SKILLS_IN_PROMPT} of ${visibleUserSkills.length} enabled user skills.`,
+    );
+  }
+
+  // A user skill wins over a learned one on a name tie (curated always wins
+  // over both) — so a learned row shadowed by this user's own custom skill
+  // of the same name is filtered out here too, on top of the curated filter.
+  const userNames = new Set(boundedUserSkills.map((s) => s.name));
+  const visibleLearnedSkills = learnedSkills.filter(
+    (s) => !curatedNames.has(s.name) && !userNames.has(s.name),
+  );
   if (visibleLearnedSkills.length !== learnedSkills.length) {
     console.warn(
-      `[selfskills] ${learnedSkills.length - visibleLearnedSkills.length} learned skill(s) hidden from the catalog — shadowed by a curated skill of the same name.`,
+      `[selfskills] ${learnedSkills.length - visibleLearnedSkills.length} learned skill(s) hidden from the catalog — shadowed by a curated or user skill of the same name.`,
     );
   }
 
@@ -310,6 +412,11 @@ export async function prepareChatTurn(
 
   const skillCatalog = [
     ...getAllSkills().map((s) => ({ name: s.name, description: s.description })),
+    ...boundedUserSkills.map((s) => ({
+      name: s.name,
+      description: s.description,
+      custom: true as const,
+    })),
     ...boundedLearnedSkills.map((s) => ({
       name: s.name,
       description: s.description,
@@ -402,7 +509,11 @@ export async function prepareChatTurn(
     ...penTools,
     ...getWebTools(config),
     ...mcpTools,
-    ...getSkillTools({ learnedStore, runContext: skillRunContext }),
+    ...getSkillTools({
+      learnedStore,
+      runContext: skillRunContext,
+      userSkills: userSkillStore && input.userId ? { store: userSkillStore, userId: input.userId } : null,
+    }),
   } as ToolSet;
   if (memoryInjected && memoryStore && input.userId) {
     Object.assign(

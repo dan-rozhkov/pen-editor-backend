@@ -5,6 +5,7 @@ import { tool } from "ai";
 import { z } from "zod";
 import type { LearnedSkillStore } from "./skills/learnedStore.js";
 import type { SkillRunContext } from "./skills/runContext.js";
+import type { UserSkillStore } from "./skills/userStore.js";
 
 export interface SkillArg {
   name: string;
@@ -21,14 +22,18 @@ export interface Skill {
 
 const skillsMap = new Map<string, Skill>();
 
-interface Frontmatter {
+// Exported (additive) so validateUserSkill.ts's parseUserSkillMarkdown can
+// reuse the exact same `--- ... ---` frontmatter shape for user-uploaded
+// .md skills instead of re-implementing a second parser that could drift
+// from this one.
+export interface Frontmatter {
   name?: string;
   description?: string;
   args: SkillArg[];
   body: string;
 }
 
-function parseFrontmatter(raw: string): Frontmatter {
+export function parseFrontmatter(raw: string): Frontmatter {
   const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/);
   if (!match) return { args: [], body: raw };
 
@@ -150,12 +155,19 @@ export interface SkillToolsOptions {
   learnedStore?: LearnedSkillStore | null;
   /** When wired, a successful load counts as "read" for skill_manage's guard. */
   runContext?: SkillRunContext;
+  /** When wired, load_skill also resolves THIS user's own custom skills —
+   * enabled ones only (a disabled skill is the user's way of hiding it
+   * without deleting it, so it must not be reachable by name either).
+   * Resolution order is curated -> user -> learned: a user skill can never
+   * shadow a curated one (the name validator already refuses that collision
+   * at create time), but it DOES shadow a learned skill of the same name. */
+  userSkills?: { store: UserSkillStore; userId: string } | null;
 }
 
 export function getSkillTools(
   options: SkillToolsOptions = {},
 ): Record<string, unknown> {
-  const { learnedStore, runContext } = options;
+  const { learnedStore, runContext, userSkills } = options;
 
   const load_skill = tool({
     description:
@@ -170,6 +182,36 @@ export function getSkillTools(
       if (skill) {
         runContext?.markRead(name);
         return { name: skill.name, instructions: skill.content };
+      }
+
+      if (userSkills) {
+        // Checked before learnedStore: user wins over learned on a name tie
+        // (curated already won above, unconditionally). Disabled rows are
+        // deliberately excluded here too, not just from the catalog — an
+        // enabled-only get would be simplest, but the store's `get` returns
+        // regardless of `enabled` so this checks explicitly.
+        const userSkill = await userSkills.store
+          .get(userSkills.userId, name)
+          .catch(() => null);
+        if (userSkill && userSkill.enabled) {
+          // Best-effort: a failed counter bump must not fail the load.
+          await userSkills.store.bumpUse(userSkills.userId, name).catch(() => undefined);
+          // Deliberately NOT runContext?.markRead(name) here. The run
+          // context exists for skill_manage's read-before-write guard on
+          // the agent's OWN learned-skill library (agent_skills) — a user
+          // skill is a different document under the same shared name. User
+          // skill names are validated only against curated skills/penTools
+          // (checkUserSkillNameCollision), never against agent_skills, so a
+          // user skill CAN shadow a learned one at this name (see the
+          // resolution-order comment on SkillToolsOptions above — user wins
+          // the tie here). If this load marked the name read, a later
+          // skill_manage `delete` on the LEARNED skill of the same name
+          // would pass the read-before-write guard using a read whose body
+          // the agent never actually saw (delete only needs read +
+          // absorbed_into, no body comparison) — unlocking a write to a
+          // library entry this call never touched.
+          return { name: userSkill.name, instructions: userSkill.body, custom: true };
+        }
       }
 
       if (learnedStore) {
@@ -192,10 +234,15 @@ export function getSkillTools(
       }
 
       const curatedNames = getAllSkills().map((s) => s.name);
+      const userNames = userSkills
+        ? (await userSkills.store.listEnabled(userSkills.userId).catch(() => [])).map(
+            (s) => s.name,
+          )
+        : [];
       const learnedNames = learnedStore
         ? (await learnedStore.listActive().catch(() => [])).map((s) => s.name)
         : [];
-      const available = [...curatedNames, ...learnedNames].join(", ");
+      const available = [...curatedNames, ...userNames, ...learnedNames].join(", ");
       return {
         error: `Unknown skill "${name}". Available skills: ${available}`,
       };
