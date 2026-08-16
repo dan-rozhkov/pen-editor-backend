@@ -332,7 +332,19 @@ export async function userSkillRoutes(
     }
   });
 
-  app.post("/api/user-skills/generate", async (request, reply) => {
+  app.post(
+    "/api/user-skills/generate",
+    {
+      config: {
+        // The one route in this file that calls an LLM (generateObject) —
+        // its CRUD siblings above are cheap Postgres reads/writes and stay
+        // unthrottled. userId is only shape-checked, not authenticated, so
+        // this is the same unauthenticated-paid-call profile as
+        // generate-image/prototype-link.
+        rateLimit: { max: 10, timeWindow: "1 minute" },
+      },
+    },
+    async (request, reply) => {
     const parsed = generateBodySchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({
@@ -354,5 +366,6 @@ export async function userSkillRoutes(
       app.log.error({ err }, "[user-skills] generate failed");
       return reply.status(502).send({ error: "Failed to generate a skill draft." });
     }
-  });
+    },
+  );
 }

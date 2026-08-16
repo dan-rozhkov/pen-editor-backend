@@ -97,6 +97,50 @@ describe("rate limiting", () => {
     });
   });
 
+  describe("POST /api/showcase/publish", () => {
+    // No showcase store/S3 configured in makeConfig() by default, so the
+    // handler 503s immediately after the rate-limit check — that's fine
+    // here: the point is only that the request reaches the handler at all
+    // (not rate-limited) vs. gets short-circuited with a 429.
+    it("allows a request under the limit through to the handler", async () => {
+      const res = await fetch(`${url}/api/showcase/publish`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      expect(res.status).not.toBe(429);
+    });
+
+    it("returns 429 once the per-IP limit is exceeded within the window", async () => {
+      // Route limit is 10/min/IP (src/routes/showcasePublish.ts).
+      const responses = await burst("/api/showcase/publish", {}, 11);
+      const statuses = responses.map((r) => r.status);
+      expect(statuses.slice(0, 10).every((s) => s !== 429)).toBe(true);
+      expect(statuses[10]).toBe(429);
+    });
+  });
+
+  describe("POST /api/user-skills/generate", () => {
+    const validBody = { prompt: "summarize the current design system" };
+
+    it("allows a request under the limit through to the handler", async () => {
+      const res = await fetch(`${url}/api/user-skills/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(validBody),
+      });
+      expect(res.status).not.toBe(429);
+    });
+
+    it("returns 429 once the per-IP limit is exceeded within the window", async () => {
+      // Route limit is 10/min/IP (src/routes/userSkills.ts).
+      const responses = await burst("/api/user-skills/generate", validBody, 11);
+      const statuses = responses.map((r) => r.status);
+      expect(statuses.slice(0, 10).every((s) => s !== 429)).toBe(true);
+      expect(statuses[10]).toBe(429);
+    });
+  });
+
   describe("unrelated routes are not rate-limited by this change", () => {
     it("GET /api/models tolerates far more than 10 requests/minute", async () => {
       const responses: Response[] = [];

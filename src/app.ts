@@ -105,7 +105,13 @@ export async function buildApp(
     // @fastify/rate-limit's default keyGenerator keys on (src/plugins/
     // rateLimit.ts) — collapsing all traffic into one shared bucket instead
     // of isolating abusive clients per-IP.
-    trustProxy: true,
+    // `1`, not `true`: Render is a single reverse-proxy hop. `true` trusts
+    // the entire X-Forwarded-For chain, so a client sending its own fake
+    // XFF header would have that value trusted as request.ip — letting it
+    // mint a fresh identity on every request and bypass the limiter
+    // entirely. `1` trusts exactly one hop back (Render's), which is the
+    // only proxy-appended entry a client cannot forge.
+    trustProxy: 1,
   });
 
   await registerCors(app, config);

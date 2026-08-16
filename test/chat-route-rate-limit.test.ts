@@ -8,8 +8,8 @@ import { makeConfig } from "./helpers.js";
 
 // Confirms @fastify/rate-limit's route-level config.rateLimit still fires a
 // 429 on /api/chat despite the handler calling reply.hijack() and piping to
-// reply.raw — the plugin's check runs as a preHandler, which executes before
-// the route handler body (and therefore before hijack()) regardless.
+// reply.raw — the plugin's check runs on the onRequest hook, which executes
+// before the route handler body (and therefore before hijack()) regardless.
 
 const USAGE = {
   inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
@@ -93,8 +93,8 @@ describe("POST /api/chat rate limiting", () => {
     expect(statuses[60]).toBe(429);
 
     // The 429 must be a real, well-formed Fastify response — not a hung or
-    // truncated stream — confirming the rate-limit check ran as a
-    // preHandler and short-circuited before the handler's reply.hijack().
+    // truncated stream — confirming the rate-limit check ran on the
+    // onRequest hook and short-circuited before the handler's reply.hijack().
     const body = await responses[60].json();
     expect(body).toHaveProperty("error");
   });

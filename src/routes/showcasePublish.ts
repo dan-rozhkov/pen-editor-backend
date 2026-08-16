@@ -174,6 +174,15 @@ export async function showcasePublishRoutes(
     "/api/showcase/publish",
     {
       bodyLimit: PUBLISH_BODY_LIMIT,
+      config: {
+        // Unauthenticated (userId is only shape-checked, see the route's own
+        // "not a security boundary" comment above) and the one internet-
+        // reachable write path onto the public homepage — each call triggers
+        // real S3 PUTs plus a Postgres insert per screen. 10/min/IP is
+        // generous for one live editing session publishing a batch of
+        // screens, while bounding an automated loop of publishes.
+        rateLimit: { max: 10, timeWindow: "1 minute" },
+      },
     },
     async (request, reply) => {
       if (!store) {

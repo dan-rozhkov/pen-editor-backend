@@ -159,10 +159,10 @@ export async function chatRoutes(
         // easily fire several tool-round-trip requests per minute. 60/min/IP
         // still bounds a runaway client loop or scripted abuse without
         // getting in the way of normal chat usage. This route hijacks the
-        // reply (see below), but @fastify/rate-limit's check runs as a
-        // preHandler — before this handler ever calls reply.hijack() — so
-        // the 429 response fires normally; confirmed by
-        // test/chat-route-rate-limit.test.ts.
+        // reply (see below), but @fastify/rate-limit's check runs on the
+        // onRequest hook — before preHandler, and well before this handler
+        // ever calls reply.hijack() — so the 429 response fires normally;
+        // confirmed by test/chat-route-rate-limit.test.ts.
         rateLimit: { max: 60, timeWindow: "1 minute" },
       },
     },
