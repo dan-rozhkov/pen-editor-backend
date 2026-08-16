@@ -5,6 +5,7 @@ import Fastify, {
 import type { Config } from "./config.js";
 import { registerCors } from "./plugins/cors.js";
 import { registerMultipart } from "./plugins/multipart.js";
+import { registerRateLimit } from "./plugins/rateLimit.js";
 import { chatRoutes } from "./routes/chat.js";
 import { generateImageRoutes } from "./routes/generateImage.js";
 import { mcpRoutes } from "./mcp/routes.js";
@@ -98,10 +99,18 @@ export async function buildApp(
   const app = Fastify({
     logger: options.logger ?? buildDefaultLogger(),
     bodyLimit: 10 * 1024 * 1024, // 10 MB — base64 images can be 2-5 MB each
+    // Render terminates TLS at a reverse proxy, so the raw socket address is
+    // always the proxy's, never the real client's. Without this, every
+    // external request resolves to the same request.ip — which is what
+    // @fastify/rate-limit's default keyGenerator keys on (src/plugins/
+    // rateLimit.ts) — collapsing all traffic into one shared bucket instead
+    // of isolating abusive clients per-IP.
+    trustProxy: true,
   });
 
   await registerCors(app, config);
   await registerMultipart(app);
+  await registerRateLimit(app);
 
   const traceStore =
     options.traceStore !== undefined

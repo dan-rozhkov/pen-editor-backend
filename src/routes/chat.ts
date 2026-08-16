@@ -149,7 +149,24 @@ export async function chatRoutes(
   const allowedModels = getAllowedModels(config);
   const allowedOrigins = parseEnvList(config.CORS_ALLOWED_ORIGINS);
 
-  app.post("/api/chat", async (request, reply) => {
+  app.post(
+    "/api/chat",
+    {
+      config: {
+        // Looser than generate-image/prototype-link: a real user chats far
+        // more often than they trigger a paid image generation or a
+        // one-shot prototype-link pass — a single active editing session can
+        // easily fire several tool-round-trip requests per minute. 60/min/IP
+        // still bounds a runaway client loop or scripted abuse without
+        // getting in the way of normal chat usage. This route hijacks the
+        // reply (see below), but @fastify/rate-limit's check runs as a
+        // preHandler — before this handler ever calls reply.hijack() — so
+        // the 429 response fires normally; confirmed by
+        // test/chat-route-rate-limit.test.ts.
+        rateLimit: { max: 60, timeWindow: "1 minute" },
+      },
+    },
+    async (request, reply) => {
     const parsed = chatBodySchema.safeParse(request.body);
     if (!parsed.success) {
       // Best-effort distinctId: the body failed shape validation, so we
@@ -465,7 +482,8 @@ export async function chatRoutes(
 
     // Tell Fastify we already handled the response.
     reply.hijack();
-  });
+    },
+  );
 
   app.get("/api/skills", async (_request, reply) => {
     const skills = getAllSkills().map((s) => ({
