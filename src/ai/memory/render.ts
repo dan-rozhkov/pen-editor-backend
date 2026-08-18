@@ -23,10 +23,19 @@ export function renderMemoryBlock(target: MemoryTarget, entries: string[]): stri
 // success response is terminal precisely because this block is already stale
 // the moment a write lands.
 export function renderMemorySnapshot(snapshot: MemorySnapshot): string {
-  return [
+  const blocks = [
     renderMemoryBlock("user", snapshot.user),
     renderMemoryBlock("memory", snapshot.memory),
-  ]
-    .filter(Boolean)
-    .join("\n\n");
+  ].filter(Boolean);
+  if (blocks.length === 0) return "";
+  // A process/workflow preference stored here (e.g. "skip ask_user and show
+  // a first draft directly", "always add a dark-theme variant") is a
+  // standing instruction from THIS user across sessions. It overrides
+  // default flow instructions stated earlier in this prompt or in a loaded
+  // skill (the create-new "ask_user first" rule, a skill's own "Ask first"
+  // step, etc.) — apply it as the default for this and every future
+  // matching task, not just as a fact to keep in mind.
+  const priorityNote =
+    "If an entry below states a process/workflow preference (how to start a task, what to always include), it overrides default flow instructions given earlier in this prompt or in a loaded skill — follow it instead of the default.";
+  return [priorityNote, ...blocks].join("\n\n");
 }
