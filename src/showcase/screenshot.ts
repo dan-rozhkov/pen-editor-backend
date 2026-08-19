@@ -140,10 +140,11 @@ async function clearBottomBarOverlap(page: Page): Promise<number> {
 // Everything positioned `fixed` — and everything `absolute` under a static
 // body, which is what the agent emits — is laid out against the INITIAL
 // CONTAINING BLOCK, i.e. the viewport. The screenshot, meanwhile, crops to the
-// <body> box. When the design declares its own device preset (375x812, per the
-// prototype skill) and the viewport is SHOWCASE_VIEWPORT (390x844), those two
-// boxes differ on BOTH axes, and every full-bleed overlay lands 15px too far
-// right and 32px too low:
+// <body> box. Those two boxes are the same size only while the design's own
+// device preset matches SHOWCASE_VIEWPORT — they agree today (both 390x844 for
+// mobile), but hand-authored screens and anything built against the older
+// 375x812 preset still differ on BOTH axes, and then every full-bleed overlay
+// lands 15px too far right and 32px too low:
 //   - a bottom sheet with `left:0;right:0` is 390 wide inside a 375 crop, so
 //     its right padding falls outside the picture and its buttons come out
 //     glued to — and shaved by — the right edge;
@@ -193,8 +194,9 @@ async function matchViewportToBody(
 // Screen-level bars hang off the VIEWPORT, not the <body> box: `fixed` always
 // does, and `absolute` does too whenever no ancestor is positioned — which is
 // the normal case, since the agent leaves <body> `static`. So a design whose
-// body is shorter than SHOWCASE_VIEWPORT (375x812 is what the agent actually
-// emits) leaves its tab bar sitting below the body box, and the body-element
+// body is shorter than SHOWCASE_VIEWPORT (a screen authored against a smaller
+// device preset, or one whose body height is content-derived) leaves its tab
+// bar sitting below the body box, and the body-element
 // screenshot in `screenshotHtml` slices the bar's last rows off. That was
 // visible on real gallery cards as a tab bar with its labels cut in half.
 //
@@ -446,8 +448,8 @@ export async function screenshotHtml(
   }
 
   // Screenshot the <body> box rather than the page. The agent lays its screens
-  // out at a fixed device width of its own choosing (375x812 is what it
-  // actually emits), which rarely equals SHOWCASE_VIEWPORT — a full-page shot
+  // out at a fixed device width of its own choosing, which does not always
+  // equal SHOWCASE_VIEWPORT — a full-page shot
   // then bakes a strip of empty background down the right edge and along the
   // bottom of every card in the gallery. An element screenshot crops to what
   // the design actually occupies, and degrades to the same result as fullPage

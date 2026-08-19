@@ -225,7 +225,7 @@ describe.skipIf(Boolean(process.env.CI)).each([
   });
 
   // Live regression, run d60b7a4e screen 1: the design declares its own device
-  // preset (e.g. 375x812 for mobile) while the browser viewport is the
+  // preset (e.g. an older 375x812 mobile screen) while the browser viewport is the
   // showcase's own (390x844 for mobile, 1440x1024 for desktop). A bottom
   // sheet at `left:0;right:0` is laid out against the viewport, so it came out
   // wider than a narrower declared crop — its right padding fell outside the

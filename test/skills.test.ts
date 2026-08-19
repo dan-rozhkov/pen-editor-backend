@@ -6,6 +6,7 @@ import {
   getSkillTools,
   loadSkills,
 } from "../src/ai/skills.js";
+import { SHOWCASE_VIEWPORTS } from "../src/showcase/platform.js";
 
 describe("detectSkillCommand", () => {
   it("detects a valid skill command and extracts the user text", () => {
@@ -205,6 +206,18 @@ describe("loadSkills / getSkill", () => {
     expect(proto.content).toMatch(/\*\*Fallback, in this order:\*\*/);
     // Device chrome: no unrequested status bar / device frame.
     expect(proto.content).toContain("NO device/OS chrome");
+  });
+
+  it("keeps the prototype skill's mobile preset equal to the showcase viewport", () => {
+    // These drifted once (skill 375x812 vs viewport 390x844) and the cost was
+    // invisible: the agent authored screens in one box, Playwright shot them
+    // in another, and publish_to_showcase — which demands the viewport size
+    // exactly — rejected the result. Assert against SHOWCASE_VIEWPORTS rather
+    // than a literal so the two can only be changed together.
+    const proto = getSkill("prototype")!;
+    const { width, height } = SHOWCASE_VIEWPORTS.mobile;
+    expect(proto.content).toContain(`width: ${width}, height: ${height}`);
+    expect(proto.content).not.toMatch(/width: 375, height: 812/);
   });
 
   it("pins the multi-screen and slides-handoff rules in the prototype skill", () => {

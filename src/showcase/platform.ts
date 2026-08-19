@@ -22,8 +22,11 @@ export function isShowcasePlatform(value: string): value is ShowcasePlatform {
 // `deviceScaleFactor: 2` means the stored PNG/WebP comes out at 2x these — so
 // these, not the stored image dimensions, are the CSS box a screen's HTML
 // belongs in. Desktop's 1440x1024 matches the prototype skill's own "Otherwise
-// (default desktop)" device preset (src/skills/prototype.md), same as mobile's
-// 390x844 is an iPhone-ish viewport around the skill's 375x812 mobile preset.
+// (default desktop)" device preset (src/skills/prototype.md), and mobile's
+// 390x844 is that same skill's mobile preset. Keep the two in step: when they
+// disagree the agent authors screens in one box and they get screenshotted in
+// another, which is what every overlay/crop repair in screenshot.ts exists to
+// paper over.
 //
 // They live here, not in screenshot.ts, because screenshot.ts imports
 // `playwright` — a devDependency. The API routes need these numbers to hand

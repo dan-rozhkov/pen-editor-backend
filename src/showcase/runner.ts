@@ -69,7 +69,7 @@ export function buildShowcasePrompt(
   // "desktop web app" rather than "mobile app" is what steers
   // src/skills/prototype.md into its "Otherwise (default desktop)" device
   // preset (width: 1440, height: 1024) instead of the mobile/phone branch
-  // (375x812) — the skill matches on the subject phrase, not a flag, so the
+  // (390x844) — the skill matches on the subject phrase, not a flag, so the
   // wording here is what does the routing, without editing the skill itself.
   const platform = options.platform ?? DEFAULT_SHOWCASE_PLATFORM;
   const subject = platform === "desktop" ? "desktop web app" : "mobile app";

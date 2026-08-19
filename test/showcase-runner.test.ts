@@ -282,7 +282,7 @@ describe("buildShowcasePrompt", () => {
   it("uses the desktop web app subject phrase for platform: desktop", () => {
     // This exact phrase is what routes src/skills/prototype.md into its
     // "Otherwise (default desktop)" device preset (1440x1024) instead of the
-    // mobile/phone branch (375x812) — the skill matches on wording, not a
+    // mobile/phone branch (390x844) — the skill matches on wording, not a
     // flag, so the literal string is load-bearing.
     const prompt = buildShowcasePrompt("sleep tracker", { platform: "desktop" });
     expect(prompt).toContain("/prototype desktop web app — sleep tracker");
