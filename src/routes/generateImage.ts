@@ -19,10 +19,15 @@ export async function generateImageRoutes(
     {
       config: {
         // Each request triggers a paid external image-generation call, and
-        // the route is unauthenticated — 10/min/IP is generous for a single
-        // legitimate user iterating on an image (a few tries per minute)
-        // while still bounding the cost of a script hammering this endpoint.
-        rateLimit: { max: 10, timeWindow: "1 minute" },
+        // the route is unauthenticated, so it stays capped per IP. The ceiling
+        // is 20/min rather than 10 because one `/prototype` turn now authors
+        // its photography here (the prototype skill budgets ~8 generations per
+        // design, issued in parallel): at 10 a single design consumed the whole
+        // minute, and a follow-up prototype or a `/slides` deck got 429s that
+        // surface to the model as failed generations and silently fall back to
+        // stock. 20 fits one design plus headroom while still bounding what a
+        // script hammering this endpoint can spend.
+        rateLimit: { max: 20, timeWindow: "1 minute" },
       },
     },
     async (request, reply) => {

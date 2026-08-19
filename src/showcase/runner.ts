@@ -55,12 +55,13 @@ export const MAX_GENERATED_IMAGES = 8;
 // and the prototype skill (src/skills/prototype.md) — the same machinery
 // /api/chat uses, never a hand-rolled prompt.
 //
-// The imagery clause deliberately overrides the skill's picsum.photos default
-// for large images only. It lives in the user message, not in the skill file,
-// because the skill is shared with production chat — where making every
-// prototype request wait on image generation would be a very different
-// product decision. Placed after the injected skill instructions, it reads as
-// the requester's requirement rather than a contradiction of them.
+// The imagery RULE itself now lives in the skill file (src/skills/prototype.md,
+// "Images"): generated photography is what a prototype ships with everywhere,
+// chat included, and picsum is the fallback. What stays here is the part that
+// is genuinely run-specific — the hard MAX_GENERATED_IMAGES ceiling, which
+// only the headless runner enforces (it is the thing counting the calls).
+// Placed after the injected skill instructions, it reads as the requester's
+// requirement rather than a contradiction of them.
 export function buildShowcasePrompt(
   theme: string,
   options: { avoidHueFamilies?: string[]; platform?: ShowcasePlatform } = {},
@@ -94,12 +95,10 @@ export function buildShowcasePrompt(
   return (
     `/prototype ${subject} — ${theme}, up to 5 screens of a single user flow, ` +
     `one consistent visual style. Write all UI copy in English.${paletteClause}\n\n` +
-    `Imagery: for LARGE images — hero, cover art, content card, product shot — ` +
-    `do not use picsum. Call generate_image with a detailed description of the shot in this ` +
-    `app's style and put the returned url into <img src> or background-image. ` +
-    `Small stuff (avatars, micro-previews, icons) stays as the skill prescribes — picsum or initials. ` +
-    `At most ${MAX_GENERATED_IMAGES} generations for the whole run: the most prominent shots first. ` +
-    `If the tool returns a note about a placeholder, use the url it sent as is and do not call it again.`
+    `Imagery: follow the skill's rule — meaningful photos come from generate_image, ` +
+    `micro imagery stays on picsum. The budget for this run is a hard ${MAX_GENERATED_IMAGES} generations: ` +
+    `spend them on the most prominent shots first. If the tool returns a note about a placeholder, ` +
+    `use the url it sent as is and do not call it again.`
   );
 }
 

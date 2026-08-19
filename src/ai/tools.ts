@@ -1351,7 +1351,7 @@ Returns the created/updated style ids and names (with a created|updated status) 
 
   generate_image: tool({
     description:
-      "Generate an image from a text prompt and show it in the chat. Use when the user asks for an illustration, photo, texture, or background that is NOT being applied to a specific frame. Returns the image URL, which is rendered inline in the chat.",
+      "Generate an image from a text prompt. Use when the user asks for an illustration, photo, texture, or background that is NOT being applied to a specific frame, and to author the photography inside a prototype/slide embed rather than falling back to stock placeholders. Returns a hosted image URL: it is rendered inline in the chat and can be used directly in an embed's HTML (`<img src>` / `background-image`). If the call errors, or comes back with a note (a placeholder, a spent budget, or an inline `data:` URL that must stay out of HTML), follow that note — use the URL it returned only where the note allows, otherwise a stock placeholder — and do not retry it.",
     inputSchema: z.object({
       prompt: z.string().describe("Detailed description of the image to generate"),
     }),

@@ -179,6 +179,9 @@ describe("loadSkills / getSkill", () => {
     expect(slides.content.toLowerCase()).toContain("filmstrip");
     // Shared theme/master enforced across slides.
     expect(slides.content).toContain(":root{}");
+    // Deck photography is generated too, with picsum as the stated fallback.
+    expect(slides.content).toContain("generate_image");
+    expect(slides.content).toContain("picsum.photos");
   });
 
   it("pins the design-default prompt rules in the prototype skill", () => {
@@ -191,8 +194,15 @@ describe("loadSkills / getSkill", () => {
     // Typography: single-family default, no multi-family primary stacks table.
     expect(proto.content).toContain("ONE font family per design");
     expect(proto.content).not.toContain("Recommended font stacks");
-    // Images: picsum stand-in fear addressed; gradient-as-photo banned.
-    expect(proto.content).toContain("picsum.photos is reliable");
+    // Images: external-image stand-in fear addressed; gradient-as-photo banned.
+    expect(proto.content).toContain("DO render inside embeds");
+    // Meaningful photography is generated, not pulled from stock — with a
+    // budget, a micro-imagery carve-out, and an explicit stock fallback for
+    // the turns where generation isn't available.
+    expect(proto.content).toContain("generate_image");
+    expect(proto.content).toMatch(/stock is the fallback, not the default/i);
+    expect(proto.content).toMatch(/Micro imagery stays on stock/i);
+    expect(proto.content).toMatch(/\*\*Fallback, in this order:\*\*/);
     // Device chrome: no unrequested status bar / device frame.
     expect(proto.content).toContain("NO device/OS chrome");
   });

@@ -62,12 +62,13 @@ describe("rate limiting", () => {
     });
 
     it("returns 429 once the per-IP limit is exceeded within the window", async () => {
-      // Route limit is 10/min/IP (src/routes/generateImage.ts) — 11 requests
-      // in a row must push the 11th over it.
-      const responses = await burst("/api/generate-image", { prompt: "x" }, 11);
+      // Route limit is 20/min/IP (src/routes/generateImage.ts) — one design's
+      // ~8 generations plus headroom — so 21 requests in a row must push the
+      // 21st over it.
+      const responses = await burst("/api/generate-image", { prompt: "x" }, 21);
       const statuses = responses.map((r) => r.status);
-      expect(statuses.slice(0, 10).every((s) => s === 200)).toBe(true);
-      expect(statuses[10]).toBe(429);
+      expect(statuses.slice(0, 20).every((s) => s === 200)).toBe(true);
+      expect(statuses[20]).toBe(429);
     });
   });
 

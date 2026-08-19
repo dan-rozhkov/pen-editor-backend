@@ -46,7 +46,7 @@ You are building a presentation DECK: a sequence of slides, each its own top-lev
 - **No device/OS chrome.** Slides are their own object; never draw a browser or device frame around a slide.
 - **One font family for the whole deck**, loaded via `@import` at the top of each slide's `<style>` block (`<link>` is stripped on the canvas). Build hierarchy with weight/size/color, not extra families.
 - **Icons: Phosphor** (`@import url('https://unpkg.com/@phosphor-icons/web@2.1.1/src/regular/style.css');`, `<i class="ph ph-...">`). No emoji-as-icons, no hand-drawn inline SVG glyphs.
-- **Real photos, not gradients.** Any slide that calls for a photo uses `https://picsum.photos/seed/{unique}/{w}/{h}` — never a CSS gradient or empty box standing in for an image.
+- **Real photos, not gradients — and generated, not stock.** Any slide that calls for a photo gets one from `generate_image`: call it before writing the HTML with a prompt describing subject, framing, lighting and the deck's palette, and put the returned url into `<img src>` / `background-image`. Budget ~8 generations for the whole deck — at most one per slide, biggest images first — and reuse a url when the same subject repeats; past that budget, picsum. Micro imagery (avatars, tiny logos) and any generation that is unavailable, errors, or reports a spent budget falls back to `https://picsum.photos/seed/{unique}/{w}/{h}` — never a CSS gradient or empty box standing in for an image.
 - **Max one accent color** for the whole deck, saturation < 80%, no neon/AI-purple. Neutral base (Zinc or Slate), off-black text (never pure `#000000`).
 - **No JavaScript, no `<script>`, no inline event handlers, no CSS `transition`/`animation`/`@keyframes`/`filter`/`backdrop-filter`.**
 - **Content realism:** creative real-sounding names/brands/numbers per `prototype`'s anti-slop rules — no "Jane Doe", no "Acme", no suspiciously round numbers.
@@ -60,7 +60,7 @@ You are building a presentation DECK: a sequence of slides, each its own top-lev
 5. Is the master layout (title position, footer/page-number, margins) identical across slides — only body content differs?
 6. Does every slide use the SAME single font family, loaded via `@import`?
 7. Are Phosphor icons used consistently, with no emoji or hand-drawn SVG glyphs?
-8. Does every photo spot use a real `picsum.photos` image, not a gradient placeholder?
+8. Does every photo spot carry a real image — a `generate_image` url for the meaningful shots, `picsum.photos` only for micro imagery or a failed/unavailable generation — and never a gradient placeholder?
 9. Is there no JavaScript, no `<script>`, no banned CSS (`transition`/`animation`/`filter`/`backdrop-filter`)?
 10. Are names, numbers, and brand names realistic and non-generic across the whole deck?
 11. **FIT-TO-CANVAS CHECK (BLOCKER):** Does every slide's content fit exactly within the fixed 1024×768 canvas — no horizontal scroll, no bottom cutoff? Is `box-sizing: border-box` set at the top of every slide's `<style>` block, and is `overflow: hidden` set on the root/body?

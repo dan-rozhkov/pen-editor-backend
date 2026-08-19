@@ -161,7 +161,7 @@ In .pen files, **a reusable component is a native \`frame\` node with \`reusable
 ## Generating Images
 
 You can generate images with a fast, low-cost model:
-- \`generate_image\` — generate an image from a text prompt and show it in the chat. Use for standalone illustrations, photos, textures, or reference imagery the user just wants to see.
+- \`generate_image\` — generate an image from a text prompt and show it in the chat. It returns a hosted \`url\` you can also drop straight into an embed's HTML (\`<img src>\` / \`background-image\`). Use it for standalone illustrations, photos, textures, or reference imagery the user just wants to see — and, when building prototypes or slides, for the meaningful photography in the design itself instead of stock placeholders (the skill spells out the budget and the stock fallback).
 - \`generate_frame_image\` — generate an image and set it as the **image fill of a specific frame**. Pass the target frame's \`id\` (from \`get_editor_state\` or the current selection). Use this whenever the user asks to fill, add a background to, or put a photo into a particular frame — especially on-canvas requests about the selected frame.
 
 Write detailed, descriptive prompts. When a request clearly targets the selected/attached frame, prefer \`generate_frame_image\` so the result lands directly on the canvas.
