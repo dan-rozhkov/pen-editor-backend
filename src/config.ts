@@ -22,6 +22,15 @@ export const DEFAULT_MEMORY_REVIEW_INTERVAL = 4;
  */
 export const DEFAULT_SKILL_REVIEW_INTERVAL = 15;
 
+/**
+ * Distinct sessions an L2 scenario must be confirmed in before it can make a
+ * background review due. 3 mirrors the "not an anecdote" bar `bucketAtoms`/
+ * `extractScenarios` already apply at extraction time (min 2 sessions) with
+ * one extra session of margin, since this threshold is what actually
+ * triggers an LLM call rather than just naming a pattern.
+ */
+export const DEFAULT_SCENARIO_CONFIRM_THRESHOLD = 3;
+
 const envSchema = z.object({
   PORT: z.coerce.number().default(3001),
   HOST: z.string().default("0.0.0.0"),
@@ -128,6 +137,27 @@ const envSchema = z.object({
   // generateText per round-trip.
   MEMORY_REVIEW_INTERVAL: z.coerce.number().int().min(1).default(DEFAULT_MEMORY_REVIEW_INTERVAL),
   SKILL_REVIEW_INTERVAL: z.coerce.number().int().min(1).default(DEFAULT_SKILL_REVIEW_INTERVAL),
+  // Kill switch for the L2 scenario layer (agent_scenarios + the review's
+  // third due-source). Unlike MEMORY_ENABLED/SELF_SKILLS_ENABLED this
+  // defaults ON: the layer is inert without traces and an `npm run analyze`
+  // run to populate it, so leaving it on costs nothing on a deployment that
+  // never mines a scenario — fetchDueScenarios just returns []. Parsed the
+  // other way round from the other two flags for that reason: only the
+  // literal string "false" turns it off, everything else (including unset)
+  // stays true.
+  SCENARIOS_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v !== "false")
+    .pipe(z.boolean()),
+  // Distinct sessions an L2 scenario needs before it can trigger a review.
+  // `.min(2)` because 1 would defeat the whole point of an L2 layer — a
+  // single session is exactly what the per-turn review already sees.
+  SCENARIO_CONFIRM_THRESHOLD: z.coerce
+    .number()
+    .int()
+    .min(2)
+    .default(DEFAULT_SCENARIO_CONFIRM_THRESHOLD),
   // --- Vision (auxiliary vision model, optional) ---
   // Empty/whitespace = vision is off (src/services/vision.ts's
   // isVisionConfigured). Used both for analyze_image and for describing

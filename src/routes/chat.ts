@@ -305,6 +305,9 @@ export async function chatRoutes(
       usage?: { inputTokens?: number; outputTokens?: number },
     ) => ({
       sessionId: traceSessionId,
+      // Already validated by isPlausibleUserId above — an implausible client
+      // value never lands in the trace, it's just absent.
+      userId: userId ?? null,
       model: selectedModelId,
       agentMode,
       payload: {

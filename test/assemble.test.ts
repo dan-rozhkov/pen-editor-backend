@@ -57,6 +57,18 @@ describe("assembleSession", () => {
     expect(s.startedAt.toISOString()).toBe("2026-07-15T10:00:00.000Z");
     expect(s.endedAt.toISOString()).toBe("2026-07-15T10:01:00.000Z");
   });
+
+  it("takes user_id from the session's rows, null when absent", () => {
+    const base = { model: "m", agent_mode: "edits", stream_error: null, input_tokens: 0, output_tokens: 0 };
+    const withUser = assembleSession([
+      { id: 1, session_id: "s", created_at: new Date(1), payload: { messages: [] }, user_id: "u1", ...base },
+    ]);
+    expect(withUser.userId).toBe("u1");
+    const without = assembleSession([
+      { id: 1, session_id: "s", created_at: new Date(1), payload: { messages: [] }, ...base },
+    ]);
+    expect(without.userId).toBeNull();
+  });
 });
 
 describe("renderSessionText", () => {

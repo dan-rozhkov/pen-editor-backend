@@ -27,12 +27,23 @@ afterEach(async () => {
   createMemoryStoreMock.mockClear();
 });
 
+// auditDb defaults to a REAL shared-by-URL pool whenever
+// config.SELF_SKILLS_ENABLED || config.SCENARIOS_ENABLED, and makeConfig
+// defaults SCENARIOS_ENABLED to true (see src/app.ts / test/helpers.ts).
+// This file only cares about memoryStore gating, so every case below pins
+// `auditDb: null` (and `learnedSkillStore: null`, for symmetry) to keep it
+// out of scope — without this, two `buildApp()` calls in this file sharing
+// one TRACE_DATABASE_URL would both register an onClose hook against the
+// SAME singleton pool (getSharedAuditDb is shared-by-URL), and the second
+// app.close() would throw "Called end on pool more than once".
+const NO_AUDIT_OPTIONS = { auditDb: null, learnedSkillStore: null } as const;
+
 describe("buildApp — memory store gating", () => {
   it("does not construct a memory store when MEMORY_ENABLED is off, even with TRACE_DATABASE_URL set", async () => {
     const { buildApp } = await import("../src/app.js");
     app = await buildApp(
       makeConfig({ MEMORY_ENABLED: false, TRACE_DATABASE_URL: "postgres://unused" }),
-      { logger: false, traceStore: null, showcaseStore: null },
+      { logger: false, traceStore: null, showcaseStore: null, ...NO_AUDIT_OPTIONS },
     );
     expect(createMemoryStoreMock).not.toHaveBeenCalled();
   });
@@ -41,7 +52,7 @@ describe("buildApp — memory store gating", () => {
     const { buildApp } = await import("../src/app.js");
     app = await buildApp(
       makeConfig({ MEMORY_ENABLED: true, TRACE_DATABASE_URL: "postgres://unused" }),
-      { logger: false, traceStore: null, showcaseStore: null },
+      { logger: false, traceStore: null, showcaseStore: null, ...NO_AUDIT_OPTIONS },
     );
     expect(createMemoryStoreMock).toHaveBeenCalledTimes(1);
   });
@@ -53,6 +64,7 @@ describe("buildApp — memory store gating", () => {
       traceStore: null,
       showcaseStore: null,
       memoryStore: null,
+      ...NO_AUDIT_OPTIONS,
     });
     expect(createMemoryStoreMock).not.toHaveBeenCalled();
   });
@@ -61,7 +73,7 @@ describe("buildApp — memory store gating", () => {
     const { buildApp } = await import("../src/app.js");
     app = await buildApp(
       makeConfig({ MEMORY_ENABLED: false, TRACE_DATABASE_URL: "postgres://unused" }),
-      { logger: false, traceStore: null, showcaseStore: null },
+      { logger: false, traceStore: null, showcaseStore: null, ...NO_AUDIT_OPTIONS },
     );
     const url = await app.listen({ port: 0, host: "127.0.0.1" });
     const res = await fetch(

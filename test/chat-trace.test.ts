@@ -126,6 +126,7 @@ describe("chat route trace writing", () => {
     const res = await postChat(url, {
       id: "tab-123-1",
       messages: [userMessage("hello")],
+      userId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
     });
     expect(res.status).toBe(200);
     await res.text(); // drain the SSE stream so onFinish fires
@@ -134,6 +135,35 @@ describe("chat route trace writing", () => {
     expect(store.rows[0].agentMode).toBe("edits");
     expect(store.rows[0].payload.messages).toHaveLength(1);
     expect(store.rows[0].payload.systemPromptHash).toMatch(/^[0-9a-f]{16}$/);
+    expect(store.rows[0].userId).toBe("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+    await app.close();
+  });
+
+  it("writes a null userId when the request body has none", async () => {
+    holders.model = mockModel(textStreamChunks("hi"));
+    const store = recordingTraceStore();
+    const { app, url } = await startServer(makeConfig(), store);
+    await (
+      await postChat(url, { id: "tab-nouser-1", messages: [userMessage("hello")] })
+    ).text();
+    await vi.waitFor(() => expect(store.rows).toHaveLength(1));
+    expect(store.rows[0].userId).toBeNull();
+    await app.close();
+  });
+
+  it("writes a null userId when the body's userId is shape-invalid", async () => {
+    holders.model = mockModel(textStreamChunks("hi"));
+    const store = recordingTraceStore();
+    const { app, url } = await startServer(makeConfig(), store);
+    await (
+      await postChat(url, {
+        id: "tab-baduser-1",
+        messages: [userMessage("hello")],
+        userId: "not-a-real-id",
+      })
+    ).text();
+    await vi.waitFor(() => expect(store.rows).toHaveLength(1));
+    expect(store.rows[0].userId).toBeNull();
     await app.close();
   });
 

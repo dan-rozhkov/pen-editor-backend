@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_MODELS,
+  DEFAULT_SCENARIO_CONFIRM_THRESHOLD,
   getAllowedModels,
   getDefaultModel,
   isOriginAllowed,
@@ -110,6 +111,19 @@ describe("OPENROUTER_IMAGE_MODEL config", () => {
     const config = makeConfig();
     expect(config.OPENROUTER_IMAGE_MODEL).toBe(
       "google/gemini-3.1-flash-lite-image",
+    );
+  });
+});
+
+// Real env-string parsing (the "false" cutoff, min(2) rejection) is covered
+// in load-config.test.ts alongside the other *_ENABLED flags; this just
+// pins the shipped defaults makeConfig() hands out to every other test.
+describe("scenario layer config", () => {
+  it("defaults the scenario layer on with a threshold of 3", () => {
+    const config = makeConfig();
+    expect(config.SCENARIOS_ENABLED).toBe(true);
+    expect(config.SCENARIO_CONFIRM_THRESHOLD).toBe(
+      DEFAULT_SCENARIO_CONFIRM_THRESHOLD,
     );
   });
 });

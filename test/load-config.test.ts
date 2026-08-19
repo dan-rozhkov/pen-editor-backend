@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_MEMORY_REVIEW_INTERVAL,
+  DEFAULT_SCENARIO_CONFIRM_THRESHOLD,
   DEFAULT_SKILL_REVIEW_INTERVAL,
   loadConfig,
 } from "../src/config.js";
@@ -187,5 +188,51 @@ describe("loadConfig", () => {
       } as NodeJS.ProcessEnv;
       expect(loadConfig().SELF_SKILLS_ENABLED).toBe(expected);
     }
+  });
+
+  // Opposite default from MEMORY_ENABLED/SELF_SKILLS_ENABLED on purpose: the
+  // L2 layer is inert without traces and an analysis run, so it defaults on.
+  it("defaults SCENARIOS_ENABLED to true and only 'false' turns it off", () => {
+    process.env = { OPENROUTER_API_KEY: "key" } as NodeJS.ProcessEnv;
+    expect(loadConfig().SCENARIOS_ENABLED).toBe(true);
+
+    for (const [value, expected] of [
+      ["true", true],
+      ["1", true],
+      ["anything", true],
+      ["false", false],
+    ] as [string, boolean][]) {
+      process.env = {
+        OPENROUTER_API_KEY: "key",
+        SCENARIOS_ENABLED: value,
+      } as NodeJS.ProcessEnv;
+      expect(loadConfig().SCENARIOS_ENABLED, `value=${JSON.stringify(value)}`).toBe(
+        expected,
+      );
+    }
+  });
+
+  it("defaults the scenario confirmation threshold to 3 and accepts an override", () => {
+    process.env = { OPENROUTER_API_KEY: "key" } as NodeJS.ProcessEnv;
+    expect(loadConfig().SCENARIO_CONFIRM_THRESHOLD).toBe(
+      DEFAULT_SCENARIO_CONFIRM_THRESHOLD,
+    );
+
+    process.env = {
+      OPENROUTER_API_KEY: "key",
+      SCENARIO_CONFIRM_THRESHOLD: "5",
+    } as NodeJS.ProcessEnv;
+    expect(loadConfig().SCENARIO_CONFIRM_THRESHOLD).toBe(5);
+  });
+
+  // A threshold of 1 would let a single session make a review due, which is
+  // exactly what the per-turn review already covers — the whole point of
+  // the L2 layer is repetition across MORE than one session.
+  it("refuses a scenario confirmation threshold below 2", () => {
+    process.env = {
+      OPENROUTER_API_KEY: "key",
+      SCENARIO_CONFIRM_THRESHOLD: "1",
+    } as NodeJS.ProcessEnv;
+    expect(() => loadConfig()).toThrow("process.exit(1)");
   });
 });

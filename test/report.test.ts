@@ -164,3 +164,28 @@ describe("insights section", () => {
     expect(md).not.toContain("rule 13");
   });
 });
+
+describe("scenario metric section", () => {
+  it("reports the saved-rate split between scenario-backed and counter-only reviews", () => {
+    const md = renderReport({
+      ...input,
+      scenarioMetric: { withScenarios: { runs: 4, saved: 3 }, without: { runs: 20, saved: 1 } },
+    });
+    expect(md).toContain("## Self-improvement reviews");
+    expect(md).toContain("3/4");
+    expect(md).toContain("1/20");
+  });
+
+  it("omits the section entirely when the metric is absent", () => {
+    expect(renderReport(input)).not.toContain("## Self-improvement reviews");
+  });
+
+  it("avoids a NaN rate when a population has zero runs", () => {
+    const md = renderReport({
+      ...input,
+      scenarioMetric: { withScenarios: { runs: 0, saved: 0 }, without: { runs: 5, saved: 2 } },
+    });
+    expect(md).toContain("n/a");
+    expect(md).not.toContain("NaN");
+  });
+});

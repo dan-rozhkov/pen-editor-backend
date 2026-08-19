@@ -1,5 +1,6 @@
 import {
   DEFAULT_MEMORY_REVIEW_INTERVAL,
+  DEFAULT_SCENARIO_CONFIRM_THRESHOLD,
   DEFAULT_SKILL_REVIEW_INTERVAL,
   type Config,
 } from "../src/config.js";
@@ -33,11 +34,13 @@ export function makeConfig(overrides: Partial<Config> = {}): Config {
     MCP_AUTH_TOKEN: undefined,
     MEMORY_ENABLED: false,
     SELF_SKILLS_ENABLED: false,
+    SCENARIOS_ENABLED: true,
     // The real defaults, not hardcoded numbers: a test that pins a threshold
     // should fail when the shipped default moves, not quietly keep testing
     // the old one.
     MEMORY_REVIEW_INTERVAL: DEFAULT_MEMORY_REVIEW_INTERVAL,
     SKILL_REVIEW_INTERVAL: DEFAULT_SKILL_REVIEW_INTERVAL,
+    SCENARIO_CONFIRM_THRESHOLD: DEFAULT_SCENARIO_CONFIRM_THRESHOLD,
     VISION_MODEL: "google/gemini-2.5-flash",
     VISION_MAX_TOKENS: 1200,
     VISION_TIMEOUT_MS: 120_000,

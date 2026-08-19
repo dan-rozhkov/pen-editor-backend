@@ -2,6 +2,9 @@ export interface RawTraceDbRow {
   id: number;
   session_id: string;
   created_at: Date;
+  // Same anonymous id carried on RawTraceRow (traceStore.ts); absent on rows
+  // written before the column existed or on a turn without a plausible id.
+  user_id?: string | null;
   model: string;
   agent_mode: string;
   payload: { messages?: unknown[]; steps?: unknown[]; systemPromptHash?: string };
@@ -12,6 +15,9 @@ export interface RawTraceDbRow {
 
 export interface AssembledSession {
   sessionId: string;
+  // First non-null user_id among the session's rows, else null. Feeds
+  // session_summaries.user_id (src/analysis/run.ts).
+  userId: string | null;
   model: string;
   agentMode: string;
   startedAt: Date;
@@ -44,6 +50,9 @@ export function assembleSession(rows: RawTraceDbRow[]): AssembledSession {
   const last = sorted[sorted.length - 1];
   return {
     sessionId: last.session_id,
+    // First non-null wins: one session is one client, and later rows of a
+    // session can only lose the id (an older client tab), never change it.
+    userId: sorted.find((r) => r.user_id)?.user_id ?? null,
     model: last.model,
     agentMode: last.agent_mode,
     startedAt: sorted[0].created_at,

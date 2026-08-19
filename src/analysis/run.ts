@@ -12,10 +12,23 @@ import { clusterSummaries } from "./cluster.js";
 import { renderReport, type ReportInsights } from "./report.js";
 import { scrubPii } from "./pii.js";
 import { extractInsights, type SessionInsights } from "./insights.js";
+import { bucketAtoms, extractScenarios, type InsightRowForScenarios } from "./scenarios.js";
+import { upsertScenario } from "./scenarioStore.js";
 
 // Must match migrations/001_init.sql's `embedding vector(768)` column and the
 // text-embedding-004 model's output dimension (see embeddings.ts).
 const EMBEDDING_DIMENSIONS = 768;
+
+// One LLM call per bucket: bound a single run's cost on a deployment with
+// many users. Skipped buckets are logged, never silently dropped.
+// KNOWN LIMITATION: there is no rotation across runs. bucketAtoms places the
+// global bucket first specifically so it always survives this cap; but
+// per-user buckets past index MAX_SCENARIO_BUCKETS_PER_RUN are decided by
+// Map insertion order, not by priority or recency, and a bucket that lands
+// there is skipped on EVERY run, not just this one. Fine for today's
+// de-facto single-user deployment; a real fix needs actual rotation
+// (e.g. round-robin by userId across runs) once this stops being true.
+const MAX_SCENARIO_BUCKETS_PER_RUN = 20;
 
 export function parseWindowDays(argv: string[]): number | null {
   const arg = argv.find((a) => a.startsWith("--window-days="));
@@ -176,12 +189,13 @@ async function main(): Promise<void> {
         }
         await pool.query(
           `INSERT INTO session_summaries
-             (session_id, user_goal, summary, outcome, tool_errors, frustration,
+             (session_id, user_id, user_goal, summary, outcome, tool_errors, frustration,
               model, agent_mode, step_count, embedding, pii_check_passed)
-           VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10::vector,$11)
+           VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10,$11::vector,$12)
            ON CONFLICT (session_id) DO NOTHING`,
           [
             session_id,
+            session.userId,
             summary.user_goal,
             summary.summary,
             summary.outcome,
@@ -248,6 +262,75 @@ async function main(): Promise<void> {
       console.log(`[analyze] ${failedInsights} session(s) failed insight extraction`);
     }
 
+    // 1c. Build the L2 scenario layer from the L1 atoms of the window. One
+    // LLM call per bucket (a user, or the unattributed global pool), and
+    // only for buckets that could possibly show repetition — see
+    // bucketAtoms. Never runs in the chat path; this is the only writer.
+    if (config.SCENARIOS_ENABLED) {
+      // ORDER BY recency: bucketAtoms's MAX_ATOMS_PER_BUCKET cap keeps the
+      // first N atoms it sees per bucket, so rows must arrive freshest-first
+      // or a capped bucket would be trained on its OLDEST evidence instead.
+      const { rows: insightsForScenarios } = await pool.query<InsightRowForScenarios>(
+        `SELECT si.session_id, ss.user_id, si.errors, si.corrections, si.memory_requests
+           FROM session_insights si
+           JOIN session_summaries ss ON ss.session_id = si.session_id
+          WHERE ss.pii_check_passed
+            AND ($1::int IS NULL OR ss.created_at > now() - make_interval(days => $1::int))
+          ORDER BY ss.created_at DESC`,
+        [windowDays],
+      );
+      const buckets = bucketAtoms(insightsForScenarios);
+      const considered = buckets.slice(0, MAX_SCENARIO_BUCKETS_PER_RUN);
+      if (buckets.length > considered.length) {
+        // Never truncate silently. NOTE this is not "skipped this run" as if
+        // rotated in next time: bucketAtoms only guarantees the global
+        // bucket survives the cap (it's placed first); which per-user
+        // buckets land past the cap depends on Map insertion order, not
+        // recency, and there is no rotation across runs — a bucket that
+        // lands past the cap today stays past it every run until the mix of
+        // users/buckets changes. See MAX_SCENARIO_BUCKETS_PER_RUN's comment.
+        console.log(
+          `[analyze] ${buckets.length - considered.length} scenario bucket(s) permanently skipped this and every run (cap ${MAX_SCENARIO_BUCKETS_PER_RUN}, no rotation)`,
+        );
+      }
+      for (const bucket of considered) {
+        if (bucket.truncatedAtoms > 0) {
+          // Also never silent: a capped bucket was trained on a subset of
+          // its evidence, not all of it (see MAX_ATOMS_PER_BUCKET).
+          console.log(
+            `[analyze] scenario bucket ${bucket.scope}${bucket.userId ? `:${bucket.userId}` : ""} truncated ${bucket.truncatedAtoms} atom(s) to fit MAX_ATOMS_PER_BUCKET`,
+          );
+        }
+        try {
+          const extracted = await extractScenarios(model, bucket.atoms);
+          for (const scenario of extracted) {
+            let embedding: number[] | null = null;
+            if (embedder) {
+              try {
+                embedding = await embedder.embed(scenario.title);
+              } catch (err) {
+                console.warn("[analyze] scenario embedding failed:", err);
+              }
+            }
+            const outcome = await upsertScenario(pool, {
+              scope: bucket.scope,
+              userId: bucket.userId,
+              kind: scenario.kind,
+              title: scenario.title,
+              recipe: scenario.recipe,
+              sessionIds: scenario.session_ids,
+              embedding,
+            });
+            console.log(`[analyze] scenario ${outcome}: ${scenario.title}`);
+          }
+        } catch (err) {
+          // One bucket's LLM/DB failure must not sink the whole run — the
+          // remaining buckets, and clustering below, still matter.
+          console.error(`[analyze] scenario extraction failed for ${bucket.scope}:`, err);
+        }
+      }
+    }
+
     // 2. Cluster the window and write a report.
     const { rows: summaries } = await pool.query<{
       id: number;
@@ -294,6 +377,31 @@ async function main(): Promise<void> {
            AND ($1::int IS NULL OR ss.created_at > now() - make_interval(days => $1::int))`,
         [windowDays],
       );
+      // Both populations from one pass over the audit log: a review "had
+      // evidence" iff its payload carries a non-empty scenario_ids array.
+      // This is the metric the whole L2 layer is judged by — see
+      // ReportScenarioMetric.
+      const { rows: reviewRuns } = await pool.query<{
+        with_scenarios: boolean;
+        saved: boolean;
+      }>(
+        `SELECT jsonb_array_length(COALESCE(payload->'scenario_ids','[]'::jsonb)) > 0 AS with_scenarios,
+                action = 'saved' AS saved
+           FROM agent_selfimprove_audit
+          WHERE origin = 'background_review' AND subsystem = 'review'
+            AND ($1::int IS NULL OR created_at > now() - make_interval(days => $1::int))`,
+        [windowDays],
+      );
+      const scenarioMetric = {
+        withScenarios: { runs: 0, saved: 0 },
+        without: { runs: 0, saved: 0 },
+      };
+      for (const r of reviewRuns) {
+        const bucket = r.with_scenarios ? scenarioMetric.withScenarios : scenarioMetric.without;
+        bucket.runs += 1;
+        if (r.saved) bucket.saved += 1;
+      }
+
       const date = new Date().toISOString().slice(0, 10);
       const reportMd = renderReport({
         date,
@@ -308,6 +416,7 @@ async function main(): Promise<void> {
         previousClusters: prevClusters,
         ...tally(summaries),
         insights: tallyInsights(insightRows),
+        scenarioMetric,
       });
 
       const client = await pool.connect();

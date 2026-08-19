@@ -9,6 +9,10 @@ export interface RawTracePayload {
 
 export interface RawTraceRow {
   sessionId: string;
+  // Client-generated anonymous id (localStorage `pen.userId`), already shape-
+  // validated by the route (isPlausibleUserId) before it ever reaches here.
+  // Absent/null for older clients or a turn where the id failed validation.
+  userId?: string | null;
   model: string;
   agentMode: string;
   payload: RawTracePayload;
@@ -82,10 +86,11 @@ export function createTraceStore(
     async writeRawTrace(row) {
       await db.query(
         `INSERT INTO raw_traces
-           (session_id, model, agent_mode, payload, stream_error, input_tokens, output_tokens)
-         VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)`,
+           (session_id, user_id, model, agent_mode, payload, stream_error, input_tokens, output_tokens)
+         VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)`,
         [
           row.sessionId,
+          row.userId ?? null,
           row.model,
           row.agentMode,
           JSON.stringify(row.payload),

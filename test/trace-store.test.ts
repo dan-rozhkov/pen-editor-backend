@@ -70,7 +70,8 @@ describe("createTraceStore", () => {
     expect(pool.calls).toHaveLength(1);
     expect(pool.calls[0].sql).toContain("INSERT INTO raw_traces");
     expect(pool.calls[0].params?.[0]).toBe("tab-1-1");
-    expect(JSON.parse(pool.calls[0].params?.[3] as string)).toEqual(row.payload);
+    expect(pool.calls[0].params?.[1]).toBeNull(); // no userId on this fixture row
+    expect(JSON.parse(pool.calls[0].params?.[4] as string)).toEqual(row.payload);
   });
 });
 

@@ -10,6 +10,13 @@ import type { LearnedSkillStore } from "../skills/learnedStore.js";
 import { createSkillRunContext } from "../skills/runContext.js";
 import { getSelfSkillTools } from "../skills/tool.js";
 import type { TraceQueryable } from "../../tracing/traceStore.js";
+import {
+  fetchDueScenarios,
+  markScenariosOffered,
+  renderScenarioBlock,
+  settleScenarios,
+  type DueScenario,
+} from "./scenarioFeed.js";
 
 const REVIEW_MAX_STEPS = 8;
 
@@ -208,6 +215,11 @@ export async function maybeRunReview(
   // one that never started, and can still describe which counters fired.
   let started = false;
   let dueForAudit: Record<string, unknown> = {};
+  // Hoisted alongside dueForAudit for the same reason: the catch block needs
+  // to write scenario_ids into the timed-out/failed audit row too (see the
+  // comment at that write site), and `scenarios` itself is scoped inside the
+  // try below.
+  let scenariosForAudit: DueScenario[] = [];
 
   try {
     // Bump on EVERY request, mid-turn or not — a single user message can
@@ -261,8 +273,61 @@ export async function maybeRunReview(
       memoryDue: config.MEMORY_ENABLED && counters.memoryReviewDue,
       skillDue: config.SELF_SKILLS_ENABLED && Boolean(counters.skillReviewDue),
     };
+    // Third due-source: a pattern already confirmed by several past sessions.
+    // The two counters above ask "has enough happened lately?" — this asks
+    // "is there standing evidence worth acting on?", which a single-session
+    // review structurally cannot see (it only ever looks at the one
+    // conversation in front of it). Read-only and cheap (one indexed SELECT
+    // with a small LIMIT), and only worth checking once the turn is actually
+    // complete — same reasoning as the skill due-check above.
+    let scenarios: DueScenario[] = [];
+    if (config.SCENARIOS_ENABLED && input.auditDb) {
+      try {
+        scenarios = await fetchDueScenarios(
+          input.auditDb,
+          userId,
+          config.SCENARIO_CONFIRM_THRESHOLD,
+        );
+      } catch (err) {
+        // Evidence is an enhancement on top of the counter-driven review, not
+        // a replacement for it: losing the ability to read scenarios must
+        // never cost the user a review that the counters had already earned
+        // — so the failure is logged and swallowed, not rethrown.
+        console.error("[review] failed to read due scenarios:", err);
+      }
+    }
+
     const reviewPromptBase = selectReviewPrompt(due, config.MEMORY_ENABLED);
-    if (!reviewPromptBase) return "not-due";
+    // A confirmed scenario can carry a review on its own, even with both
+    // counters cold (memoryDue: false, skillDue: false) — selectReviewPrompt
+    // returns null for that all-false `due`, so without this fallback the
+    // function would return "not-due" despite having real evidence to show
+    // the model. There's no dedicated "scenario-only" prompt variant: it
+    // falls back to whichever subsystem prompt the deployment has enabled,
+    // exactly the prompt a counter-triggered review for that subsystem would
+    // have used, so the scenario block (added below) rides on infrastructure
+    // that already exists rather than inventing a fourth prompt shape.
+    // The `due` flags used to pick a prompt when NOTHING is fetched fresh:
+    // a scenario-only review (both counters cold) still has to pick between
+    // MEMORY_REVIEW_PROMPT / buildSkillReviewPrompt / the combined prompt,
+    // and it does so by pretending both subsystems are "due" whenever
+    // they're enabled at all — same fallback selectReviewPrompt would see
+    // from a counter-triggered review, just synthesized instead of read from
+    // bumpCounters. Tracked as its own variable (not thrown away after
+    // picking promptBase) because the memory-snapshot block below needs to
+    // know whether THIS due-shape — not the original counter-derived one —
+    // is what actually put MEMORY_REVIEW_PROMPT into the prompt.
+    const scenarioFallbackDue = {
+      memoryDue: config.MEMORY_ENABLED,
+      skillDue: config.SELF_SKILLS_ENABLED,
+    };
+    const promptBase =
+      reviewPromptBase ??
+      (scenarios.length > 0 ? selectReviewPrompt(scenarioFallbackDue, config.MEMORY_ENABLED) : null);
+    if (!promptBase) return "not-due";
+    // Whichever due-shape actually produced `promptBase` — the real one when
+    // a counter fired, the synthesized one when only scenario evidence did.
+    const promptDue = reviewPromptBase !== null ? due : scenarioFallbackDue;
 
     const messages: ModelMessage[] = [...input.modelMessages];
     if (input.assistantText.trim()) {
@@ -276,16 +341,30 @@ export async function maybeRunReview(
     // runs, so the review can't see the entry it would otherwise duplicate.
     // Re-reading the snapshot fresh and appending it to the REVIEW'S user
     // message (never the system prompt) keeps the cached prefix untouched
-    // while still showing the model current state. Only fetched when the
-    // memory half is actually due — a skill-only review has nothing to gain
-    // from it.
-    let reviewPrompt = reviewPromptBase;
-    if (due.memoryDue) {
+    // while still showing the model current state. Gated on `promptDue`
+    // (the due-shape that actually chose `promptBase`), NOT the raw
+    // counter-derived `due` — a scenario-only review (both counters cold)
+    // still gets MEMORY_REVIEW_PROMPT whenever memory is enabled at all (see
+    // scenarioFallbackDue above), and that prompt tells the model to save
+    // via the memory tool without listing what is already saved unless this
+    // block is attached. Gating on `due.memoryDue` here left exactly that
+    // case getting the "go save something" prompt with no memory snapshot to
+    // check against first, which is the precise duplicate-write failure this
+    // snapshot exists to prevent. A skill-only review still has nothing to
+    // gain from it, so the gate stays off in that case either way.
+    let reviewPrompt = promptBase;
+    if (promptDue.memoryDue) {
       const freshSnapshotBlock = renderMemorySnapshot(await store.loadSnapshot(userId));
       if (freshSnapshotBlock) {
         reviewPrompt = `${reviewPrompt}\n\nCurrent memory contents (do not add anything already listed here — check before every 'add'):\n\n${freshSnapshotBlock}`;
       }
     }
+    // Evidence goes in the review's USER message, appended after the memory
+    // snapshot — never in `system`, which is reused verbatim above to keep
+    // the provider's prefix cache warm. renderScenarioBlock returns "" for
+    // an empty list, so this is a no-op when nothing is due.
+    const scenarioBlock = renderScenarioBlock(scenarios);
+    if (scenarioBlock) reviewPrompt = `${reviewPrompt}\n\n${scenarioBlock}`;
     messages.push({ role: "user", content: reviewPrompt });
 
     // Tool whitelist is keyed off which SUBSYSTEMS ARE ENABLED, not which one
@@ -332,8 +411,26 @@ export async function maybeRunReview(
       );
     }
 
+    // Mark the offer BEFORE generateText, not after: if the run times out or
+    // throws below, the scenario must still count as offered — otherwise a
+    // provider that reliably hangs on this prompt would keep the same
+    // scenario "due" forever, offering it every single review run instead of
+    // retiring it after two silent offers. A crash mid-run costing one offer
+    // is the acceptable trade against a review that never terminates.
+    if (scenarios.length > 0 && input.auditDb) {
+      try {
+        await markScenariosOffered(
+          input.auditDb,
+          scenarios.map((s) => s.id),
+        );
+      } catch (err) {
+        console.error("[review] failed to mark scenarios offered:", err);
+      }
+    }
+
     started = true;
     dueForAudit = { memoryDue: due.memoryDue, skillDue: due.skillDue };
+    scenariosForAudit = scenarios;
     const result = await generateText({
       model: createModel(config, input.modelOverride),
       system: input.system,
@@ -354,9 +451,37 @@ export async function maybeRunReview(
       step.toolCalls.map((tc: { toolName?: unknown }) => String(tc.toolName ?? "")),
     );
     const wrote = calledTools.some((name) => REVIEW_WRITE_TOOLS.has(name));
+    // Which write tool(s) actually fired, deduped — this is what
+    // settleScenarios records into `distilled_into` so a distilled scenario
+    // can be traced forward to what it became (a memory entry, a skill, or
+    // both), not just tagged with the constant "the background review did
+    // it". Order-stable dedup via Set rather than sorting: the calling order
+    // (memory before skill_manage, say) is itself information worth keeping.
+    const writeToolNames = [...new Set(calledTools.filter((name) => REVIEW_WRITE_TOOLS.has(name)))];
+
+    // Settle every offered scenario against the SAME `wrote` signal the audit
+    // row below uses — one review, one outcome, applied identically to
+    // "did this save anything" and "did this act on the evidence it was
+    // shown". A settle failure must not cost the run its already-earned
+    // audit row, so it is logged and swallowed, matching every other
+    // best-effort write in this function.
+    if (scenarios.length > 0 && input.auditDb) {
+      try {
+        await settleScenarios(input.auditDb, scenarios, wrote, writeToolNames);
+      } catch (err) {
+        console.error("[review] failed to settle scenarios:", err);
+      }
+    }
+
     await writeReviewAudit(store, userId, wrote ? "saved" : "nothing-saved", {
       memoryDue: due.memoryDue,
       skillDue: due.skillDue,
+      // The metric the whole scenario layer is judged by: saved-rate on runs
+      // WITH evidence vs. runs without. Always an array — empty, not
+      // omitted, when no scenario was due — so both populations are
+      // countable from a single query over this column rather than needing
+      // a second query for "runs where the key is absent".
+      scenario_ids: scenarios.map((s) => s.id),
       steps: result.steps.length,
       // Every tool the run reached for, not just the writing ones: a review
       // burning its steps on stubbed pen tools looks identical to one that
@@ -423,6 +548,18 @@ export async function maybeRunReview(
     if (started && store && userId) {
       await writeReviewAudit(store, userId, timedOut ? "timed-out" : "failed", {
         ...dueForAudit,
+        // Same field, same shape as the success path (`scenario_ids`, always
+        // an array) — omitting it here was the bug: run.ts classifies a run
+        // as "with evidence" by a non-empty `payload->'scenario_ids'`, so a
+        // timed-out/failed row that never wrote this key silently fell into
+        // the "no evidence" bucket even when scenarios WERE offered (recall
+        // markScenariosOffered already ran before generateText, specifically
+        // so a crash mid-run still counts as an offer). Scenario-carrying
+        // reviews run a longer prompt and are the more likely to time out,
+        // so that misclassification systematically flattered the
+        // no-evidence control group in exactly the comparison this metric
+        // exists to make.
+        scenario_ids: scenariosForAudit.map((s) => s.id),
         error: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
         timeoutMs: input.reviewTimeoutMs ?? DEFAULT_REVIEW_TIMEOUT_MS,
       });

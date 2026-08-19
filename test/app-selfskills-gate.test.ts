@@ -40,10 +40,18 @@ afterEach(async () => {
 });
 
 describe("buildApp — self-authored-skills store gating", () => {
-  it("does not construct learnedSkillStore/auditDb when SELF_SKILLS_ENABLED is off", async () => {
+  it("does not construct learnedSkillStore/auditDb when SELF_SKILLS_ENABLED and SCENARIOS_ENABLED are both off", async () => {
     const { buildApp } = await import("../src/app.js");
     app = await buildApp(
-      makeConfig({ SELF_SKILLS_ENABLED: false, TRACE_DATABASE_URL: "postgres://unused" }),
+      makeConfig({
+        SELF_SKILLS_ENABLED: false,
+        // auditDb is also gated on SCENARIOS_ENABLED (see the dedicated
+        // describe block below) — makeConfig defaults it to true, so it
+        // must be turned off here too or this test would no longer be
+        // isolating the SELF_SKILLS_ENABLED gate.
+        SCENARIOS_ENABLED: false,
+        TRACE_DATABASE_URL: "postgres://unused",
+      }),
       { logger: false, traceStore: null, showcaseStore: null },
     );
     expect(getSharedLearnedSkillStoreMock).not.toHaveBeenCalled();
@@ -121,5 +129,46 @@ describe("buildApp — self-authored-skills store gating", () => {
     app = undefined;
     expect(learnedSkillStoreClose).toHaveBeenCalledTimes(1);
     expect(auditDbEnd).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Defect: auditDb used to be gated on SELF_SKILLS_ENABLED alone, but
+// review.ts's scenario read (`config.SCENARIOS_ENABLED && input.auditDb`)
+// needs the SAME handle. SCENARIOS_ENABLED defaults to true independent of
+// SELF_SKILLS_ENABLED, so a memory-only deployment (MEMORY_ENABLED=true,
+// SELF_SKILLS_ENABLED=false) got auditDb === null forever: maybeRunReview
+// silently never read a scenario on that deployment, even though the
+// analysis side kept mining them into agent_scenarios.
+describe("buildApp — auditDb gating also covers SCENARIOS_ENABLED", () => {
+  it("constructs auditDb when SCENARIOS_ENABLED is on even though SELF_SKILLS_ENABLED is off", async () => {
+    const { buildApp } = await import("../src/app.js");
+    app = await buildApp(
+      makeConfig({
+        SELF_SKILLS_ENABLED: false,
+        SCENARIOS_ENABLED: true,
+        MEMORY_ENABLED: true,
+        TRACE_DATABASE_URL: "postgres://unused",
+      }),
+      { logger: false, traceStore: null, showcaseStore: null },
+    );
+    expect(getSharedAuditDbMock).toHaveBeenCalledTimes(1);
+    // Must not flip the skill-tool gate — that stays keyed on
+    // SELF_SKILLS_ENABLED alone (review.ts: `config.SELF_SKILLS_ENABLED &&
+    // input.learnedSkillStore && input.auditDb`), so learnedSkillStore is
+    // still never constructed for a scenarios-only, skills-off deployment.
+    expect(getSharedLearnedSkillStoreMock).not.toHaveBeenCalled();
+  });
+
+  it("does not construct auditDb when both SELF_SKILLS_ENABLED and SCENARIOS_ENABLED are off", async () => {
+    const { buildApp } = await import("../src/app.js");
+    app = await buildApp(
+      makeConfig({
+        SELF_SKILLS_ENABLED: false,
+        SCENARIOS_ENABLED: false,
+        TRACE_DATABASE_URL: "postgres://unused",
+      }),
+      { logger: false, traceStore: null, showcaseStore: null },
+    );
+    expect(getSharedAuditDbMock).not.toHaveBeenCalled();
   });
 });

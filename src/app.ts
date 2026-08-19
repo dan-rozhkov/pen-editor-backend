@@ -151,20 +151,33 @@ export async function buildApp(
     });
   }
   // Phase 2: learnedSkillStore feeds the catalog merge + load_skill's
-  // learned-skill resolution; auditDb is skill_manage/skill_view's own
-  // handle for agent_selfimprove_audit writes. Both gated on
-  // SELF_SKILLS_ENABLED alone (unlike memoryStore above, nothing else needs
-  // agent_skills or a raw audit handle).
+  // learned-skill resolution — gated on SELF_SKILLS_ENABLED alone, nothing
+  // else needs agent_skills.
   const learnedSkillStore =
     options.learnedSkillStore !== undefined
       ? options.learnedSkillStore
       : config.SELF_SKILLS_ENABLED
         ? getSharedLearnedSkillStore(config)
         : null;
+  // auditDb is a raw Postgres handle with TWO independent consumers:
+  // skill_manage/skill_view's own agent_selfimprove_audit writes
+  // (SELF_SKILLS_ENABLED), and fetchDueScenarios/markScenariosOffered/
+  // settleScenarios reading and mutating agent_scenarios in maybeRunReview
+  // (SCENARIOS_ENABLED). Gating this on SELF_SKILLS_ENABLED alone (as it
+  // originally shipped) meant a memory-only deployment
+  // (MEMORY_ENABLED=true, SELF_SKILLS_ENABLED=false — SCENARIOS_ENABLED
+  // defaults to true independent of both) never got an auditDb at all:
+  // maybeRunReview's `config.SCENARIOS_ENABLED && input.auditDb` check saw
+  // auditDb === null and silently skipped scenario evidence on every
+  // review, forever — the analysis side kept mining scenarios that no
+  // review could ever read. getSharedAuditDb itself is harmless to call
+  // with SCENARIOS_ENABLED on but no TRACE_DATABASE_URL configured — it
+  // just returns null — so OR-ing in SCENARIOS_ENABLED here cannot start a
+  // pool that wouldn't otherwise exist.
   const auditDb =
     options.auditDb !== undefined
       ? options.auditDb
-      : config.SELF_SKILLS_ENABLED
+      : config.SELF_SKILLS_ENABLED || config.SCENARIOS_ENABLED
         ? getSharedAuditDb(config)
         : null;
   // Same close-on-shutdown contract as traceStore/memoryStore above —

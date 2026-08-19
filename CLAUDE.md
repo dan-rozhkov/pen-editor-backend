@@ -440,6 +440,32 @@ a general restore tool. See
 the phase-3 plan's Deferred section if any of those become necessary; none
 of them should be improvised into `curate.ts`.
 
+### L2 scenario layer (`src/analysis/scenarios.ts`, `scenarioStore.ts`, `src/ai/selfimprove/scenarioFeed.ts`)
+
+Sits between L1 atoms (`session_insights`) and L3 (`agent_memory`/`agent_skills`):
+a pattern confirmed by *several* sessions, not one. Mined **offline only**, in
+`npm run analyze` (`src/analysis/run.ts`) — never in the chat hot path. Each run
+buckets L1 atoms per user (plus one global bucket for sessions with no
+`user_id`), runs one LLM extraction pass per viable bucket, and upserts into
+`agent_scenarios`, merging into a near-duplicate row (cosine distance ≤
+`SCENARIO_DEDUP_MAX_DISTANCE` over a `jsonb number[]` title embedding — no
+pgvector, PGlite can't `CREATE EXTENSION vector`) instead of inserting a new
+one; `confirmations` is always **distinct session ids**, never atom count.
+`maybeRunReview` reads it as a third due-source, alongside the memory/skill
+counters: an `open`/`offered` scenario at or above `SCENARIO_CONFIRM_THRESHOLD`
+(default 3) makes a review due even with cold counters. Scenario text is
+rendered into the review's **user message only** — right where the memory
+snapshot already goes — and never touches the system prompt, because
+`maybeRunReview` reuses `input.system` verbatim to keep the provider prefix
+cache warm. A four-state machine (`open → offered → distilled | rejected`)
+caps a scenario at **two offers**: `offer_count` increments before the review
+LLM call (so a crash mid-run still counts as an offer), and a second silent
+offer — the review wrote nothing — retires the row as `rejected` for good.
+`agent_selfimprove_audit` rows from this path carry `payload.scenario_ids`;
+`npm run analyze`'s report renders the saved-rate split between reviews that
+had scenario evidence and reviews that didn't (`## Self-improvement reviews`
+in `renderReport`) — the number the whole layer is judged by.
+
 ## Custom user skills (`src/ai/skills/userStore.ts`, `src/routes/userSkills.ts`)
 
 The third skill source, and the only one a **user** writes: modelled on Figma's
