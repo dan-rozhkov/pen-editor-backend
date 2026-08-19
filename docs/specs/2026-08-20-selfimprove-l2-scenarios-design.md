@@ -110,10 +110,14 @@ raw_traces ──► session_summaries ──► session_insights ──► agen
 но форма прохода копируется с него один в один: `generateObject`, zod-схема,
 системный промпт с правилом «actionable, а не тематический».
 
-Дедуп с уже существующими строками — по эмбеддингу `title` через уже
-подключённые pgvector и `createEmbedder` (`src/analysis/embeddings.ts`,
-768 измерений). Косинусное расстояние < 0.15 к существующей строке того же
-`scope`/`user_id` → это тот же сценарий: `confirmations += число новых
+Дедуп с уже существующими строками — по эмбеддингу `title` из уже
+подключённого `createEmbedder` (`src/analysis/embeddings.ts`, 768 измерений).
+Вектор хранится **как `jsonb`-массив чисел, а не как `vector(768)`**: PGlite,
+на котором гоняются SQL-тесты, не умеет `CREATE EXTENSION vector` (поэтому
+`test/pgliteShowcaseHelpers.ts` пропускает `001`/`002`), строк здесь десятки, а
+косинус в JS — чистая функция, которую можно проверить юнит-тестом. Косинусное
+расстояние < 0.15 к существующей строке того же `scope`/`user_id` → это тот же
+сценарий: `confirmations += число новых
 сессий`, `session_ids` объединяются, `last_seen_at = now()`. Иначе — insert.
 
 **Инвариант:** `confirmations` считает **различные `session_id`**, а не
@@ -134,7 +138,7 @@ CREATE TABLE IF NOT EXISTS agent_scenarios (
   recipe         TEXT NOT NULL,              -- 2-4 строки: что делать иначе
   confirmations  INTEGER NOT NULL DEFAULT 1, -- число РАЗЛИЧНЫХ сессий
   session_ids    TEXT[] NOT NULL,
-  embedding      vector(768),
+  embedding      JSONB,                      -- number[]; НЕ pgvector, см. ниже
   state          TEXT NOT NULL DEFAULT 'open'
                    CHECK (state IN ('open','offered','distilled','rejected')),
   offer_count    INTEGER NOT NULL DEFAULT 0,
