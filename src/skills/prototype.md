@@ -397,3 +397,9 @@ Before generating the final htmlContent, verify every point:
 15. If variables were provided in canvas context, are they defined in a `:root {}` block and referenced via `var()` throughout the HTML?
 16. **FIT-TO-CANVAS CHECK (BLOCKER):** Does the content fit exactly within the embed's declared `width`×`height` — no horizontal scroll, no bottom cutoff? Is `box-sizing: border-box` set at the top of the `<style>` block, and is `overflow: hidden` set on the root/body?
 17. **FORM-CONTROL CHECK:** Does every `<button>`, `<input>`, `<select>` and `<textarea>` in the HTML get its font, color, background and border from YOUR CSS? A control left on the browser's defaults ships with a system bevel and an Arial label. If the reset line from "CSS mechanics" is missing, add it.
+
+## Editing screens you already made
+
+Use `read_embed_html` (mode `grep`) to get the exact fragment, then `edit_embed_html` to replace it.
+Rewriting the whole `htmlContent` through `batch_design` is reserved for replacing a screen with a
+different concept — never for a tweak.

@@ -790,6 +790,75 @@ export const penTools = {
     }),
   }),
 
+  read_embed_html: tool({
+    description:
+      "Read part of an existing embed node's HTML without pulling the whole document into context. " +
+      "`outline` (default) returns the tag structure with attributes intact and text/deep subtrees elided — " +
+      "use it to see how a screen is built. `grep` returns the lines matching a literal substring with surrounding " +
+      "context — use it to get byte-exact anchors for edit_embed_html. `full` returns the entire HTML; avoid it " +
+      "unless you are genuinely rewriting the screen. Always read before editing: edit_embed_html matches text exactly.",
+    inputSchema: z
+      .object({
+        nodeId: z.string().describe("Id of the embed node to read."),
+        mode: z
+          .enum(["outline", "grep", "full"])
+          .default("outline")
+          .describe("outline = elided structure, grep = matches for `pattern`, full = entire HTML."),
+        pattern: z
+          .string()
+          .optional()
+          .describe("Literal substring to search for (not a regex). Required when mode is 'grep'."),
+        contextLines: z
+          .number()
+          .int()
+          .min(0)
+          .max(20)
+          .default(2)
+          .describe("Lines of context around each grep match."),
+        maxDepth: z
+          .number()
+          .int()
+          .min(1)
+          .max(12)
+          .default(4)
+          .describe("Nesting depth kept in outline mode; deeper subtrees are summarized."),
+      })
+      .refine((a) => a.mode !== "grep" || (a.pattern ?? "").length > 0, {
+        message: "pattern is required when mode is 'grep'",
+      }),
+  }),
+
+  edit_embed_html: tool({
+    description:
+      "Apply targeted text edits to an existing embed node's HTML instead of rewriting the whole screen. " +
+      "Each edit replaces an exact substring (`oldString`) with `newString`; an empty `newString` deletes the match. " +
+      "ALWAYS use this — never batch_design `U(id, {htmlContent: ...})` — when changing part of a screen that already " +
+      "exists: rewriting a whole screen costs thousands of tokens and silently drifts parts you were not asked to touch. " +
+      "Read the fragment with read_embed_html first; matching is exact, with no whitespace normalization. " +
+      "Each oldString must occur exactly once unless replaceAll is true. Edits apply in order and atomically — if any " +
+      "edit fails to match, nothing is changed.",
+    inputSchema: z.object({
+      nodeId: z.string().describe("Id of the embed node to edit."),
+      edits: z
+        .array(
+          z.object({
+            oldString: z
+              .string()
+              .min(1)
+              .describe("Exact substring to find. Must occur exactly once unless replaceAll is true."),
+            newString: z.string().describe("Replacement text. An empty string deletes the matched fragment."),
+            replaceAll: z
+              .boolean()
+              .optional()
+              .describe("Replace every occurrence instead of requiring a unique match."),
+          }),
+        )
+        .min(1)
+        .max(20)
+        .describe("Edits applied in order, each against the result of the previous one."),
+    }),
+  }),
+
   boolean_operation: tool({
     description:
       "Combine 2+ selected shape nodes (rectangle/ellipse/polygon/path) into a single flattened path using a boolean operation, replacing the originals in one undoable step — useful for cutouts, icons, and complex silhouettes. `union` merges outlines, `subtract` cuts the upper shapes out of the bottom-most one, `intersect` keeps only the overlapping area, `exclude` keeps everything except the overlap (XOR), `flatten` merges outlines like union but is meant for normalizing a multi-shape selection into one editable path. Order matters for subtract/exclude — shapes are combined bottom-to-top by their current z-order (layer stacking), not by the order of nodeIds. All nodes must share the same parent.",

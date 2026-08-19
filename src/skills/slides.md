@@ -64,3 +64,9 @@ You are building a presentation DECK: a sequence of slides, each its own top-lev
 9. Is there no JavaScript, no `<script>`, no banned CSS (`transition`/`animation`/`filter`/`backdrop-filter`)?
 10. Are names, numbers, and brand names realistic and non-generic across the whole deck?
 11. **FIT-TO-CANVAS CHECK (BLOCKER):** Does every slide's content fit exactly within the fixed 1024×768 canvas — no horizontal scroll, no bottom cutoff? Is `box-sizing: border-box` set at the top of every slide's `<style>` block, and is `overflow: hidden` set on the root/body?
+
+## Editing screens you already made
+
+Use `read_embed_html` (mode `grep`) to get the exact fragment, then `edit_embed_html` to replace it.
+Rewriting the whole `htmlContent` through `batch_design` is reserved for replacing a screen with a
+different concept — never for a tweak.

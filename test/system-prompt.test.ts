@@ -125,3 +125,12 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("<canvas state here>");
   });
 });
+
+describe("editing an existing embed", () => {
+  it("routes partial screen edits to edit_embed_html, not batch_design", () => {
+    const prompt = buildSystemPrompt();
+    expect(prompt).toContain("edit_embed_html");
+    expect(prompt).toContain("read_embed_html");
+    expect(prompt).toContain("Editing an existing embed");
+  });
+});

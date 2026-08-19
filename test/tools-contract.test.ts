@@ -40,6 +40,8 @@ describe("penTools registry", () => {
         "resolve_comment",
         "leave_comment",
         "rename_layers",
+        "read_embed_html",
+        "edit_embed_html",
         "replace_all_matching_properties",
         "search_all_unique_properties",
         "set_export_settings",
@@ -80,6 +82,8 @@ describe("penTools registry", () => {
       "find_empty_space_on_canvas",
       "search_all_unique_properties",
       "rename_layers",
+      "read_embed_html",
+      "edit_embed_html",
       "generate_image",
       "generate_frame_image",
       "boolean_operation",
@@ -1052,5 +1056,47 @@ describe("publish_to_showcase schema", () => {
         screens: [{ nodeId: "n1", title: "Onboarding" }],
       }).success,
     ).toBe(false);
+  });
+});
+
+describe("edit_embed_html schema", () => {
+  const schema = (penTools.edit_embed_html as { inputSchema: z.ZodTypeAny }).inputSchema;
+
+  it("accepts a minimal single edit", () => {
+    const parsed = schema.parse({
+      nodeId: "embed1",
+      edits: [{ oldString: "#111", newString: "#222" }],
+    });
+    expect(parsed.edits[0].replaceAll).toBeUndefined();
+  });
+
+  it("rejects an empty edits array", () => {
+    expect(() => schema.parse({ nodeId: "embed1", edits: [] })).toThrow();
+  });
+
+  it("rejects more than 20 edits", () => {
+    const edits = Array.from({ length: 21 }, (_, i) => ({ oldString: `a${i}`, newString: "b" }));
+    expect(() => schema.parse({ nodeId: "embed1", edits })).toThrow();
+  });
+
+  it("rejects an empty oldString but allows an empty newString (deletion)", () => {
+    expect(() => schema.parse({ nodeId: "e", edits: [{ oldString: "", newString: "x" }] })).toThrow();
+    expect(() => schema.parse({ nodeId: "e", edits: [{ oldString: "x", newString: "" }] })).not.toThrow();
+  });
+});
+
+describe("read_embed_html schema", () => {
+  const schema = (penTools.read_embed_html as { inputSchema: z.ZodTypeAny }).inputSchema;
+
+  it("defaults to outline mode with sane context/depth", () => {
+    const parsed = schema.parse({ nodeId: "embed1" });
+    expect(parsed.mode).toBe("outline");
+    expect(parsed.contextLines).toBe(2);
+    expect(parsed.maxDepth).toBe(4);
+  });
+
+  it("requires a pattern in grep mode", () => {
+    expect(() => schema.parse({ nodeId: "embed1", mode: "grep" })).toThrow();
+    expect(() => schema.parse({ nodeId: "embed1", mode: "grep", pattern: "btn" })).not.toThrow();
   });
 });
