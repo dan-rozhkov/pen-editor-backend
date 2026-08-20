@@ -128,11 +128,17 @@ describe("runShowcaseGeneration", () => {
     expect(result.screens).toEqual([{ name: "Only", htmlContent: "<div>Only</div>" }]);
   });
 
-  it("does not offer get_screenshot or update_tasks — no browser, no chat panel", async () => {
+  it("does not offer get_screenshot, update_tasks, remove_background, or vectorize_image — no browser, no scene graph", async () => {
     // The system prompt recommends get_screenshot for verifying a finished
     // screen and mandates update_tasks for multi-step work, so advertising
     // either here would buy guaranteed-wasted steps in every autonomous run.
+    // remove_background/vectorize_image assume a scene graph node (node_id)
+    // or native vector layers to act on, and this mode only ever produces
+    // raw embed HTML — same reasoning chatTurn.ts's embed-only gate applies
+    // for prototype/slides turns.
     // analyze_image is backend-executed and stays.
+    // FAL_KEY is set so the absence below is proved by the runner's own
+    // deletion, not by chatTurn.ts's separate FAL_KEY gate.
     const offered: string[][] = [];
     let call = 0;
     const results = [textResult("done")];
@@ -145,12 +151,14 @@ describe("runShowcaseGeneration", () => {
       },
     });
 
-    await runShowcaseGeneration(makeConfig(), "мобильный банк");
+    await runShowcaseGeneration(makeConfig({ FAL_KEY: "test-fal-key" }), "мобильный банк");
 
     expect(offered.length).toBeGreaterThan(0);
     for (const names of offered) {
       expect(names).not.toContain("get_screenshot");
       expect(names).not.toContain("update_tasks");
+      expect(names).not.toContain("remove_background");
+      expect(names).not.toContain("vectorize_image");
       expect(names).toContain("analyze_image");
     }
   });

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { Config } from "../config.js";
-import { removeBackground, vectorizeImage, FalTimeoutError } from "../services/fal.js";
+import { removeBackground, vectorizeImage, FalTimeoutError, UnsafeSvgError } from "../services/fal.js";
 import type { AnalyticsClient } from "../analytics/posthog.js";
 
 const bodySchema = z.object({ image_url: z.string().url() });
@@ -143,10 +143,24 @@ export async function falRoutes(
         analytics?.capture({
           event: "image_vectorized",
           distinctId: "api",
-          properties: { ok: false, duration_ms: Date.now() - startedAt, $process_person_profile: false },
+          properties: {
+            ok: false,
+            // Distinguish "fal gave us something we refuse to use" from a
+            // real server/provider failure — this is expected to fire
+            // essentially never against real tracer output (see
+            // assertSvgIsInert), so a spike here is itself a signal.
+            ...(err instanceof UnsafeSvgError ? { error_kind: "unsafe_svg" } : {}),
+            duration_ms: Date.now() - startedAt,
+            $process_person_profile: false,
+          },
         });
         if (err instanceof FalTimeoutError) {
           return reply.status(504).send({ error: err.message });
+        }
+        if (err instanceof UnsafeSvgError) {
+          // A rejection of untrusted upstream content, not a server bug —
+          // 422 (Unprocessable Content), not 500, with the specific reason.
+          return reply.status(422).send({ error: err.message });
         }
         return reply.status(500).send({ error: (err as Error).message });
       }

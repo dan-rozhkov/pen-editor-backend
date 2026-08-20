@@ -41,6 +41,11 @@ describe("prepareChatTurn", () => {
     const { penTools } = await import("../src/ai/tools.js");
     expect(turn.tools.batch_design).not.toBe(penTools.batch_design);
     expect(turn.tools.draw_vector).toBeUndefined();
+    // Same embed-only reasoning as draw_vector: vectorize_image's default
+    // mode: "layers" places native vector paths, which this mode has no
+    // scene graph for. remove_background is asymmetric — see the dedicated
+    // "remove_background / vectorize_image gates" describe block below.
+    expect(turn.tools.vectorize_image).toBeUndefined();
   });
 
   it("does not expose draw_vector to /slides turns", async () => {
@@ -53,6 +58,7 @@ describe("prepareChatTurn", () => {
 
     expect(turn.taskPolicy).toBe("slides");
     expect(turn.tools.draw_vector).toBeUndefined();
+    expect(turn.tools.vectorize_image).toBeUndefined();
   });
 
   // Regression: prepareChatTurn used to assume some *other* code had already
@@ -93,6 +99,66 @@ describe("prepareChatTurn", () => {
     expect(turn.system.length).toBeGreaterThan(0);
     expect(turn.tools.batch_design).toBe(penTools.batch_design);
     expect(turn.tools.draw_vector).toBe(penTools.draw_vector);
+  });
+
+  describe("remove_background / vectorize_image gates", () => {
+    it("are absent without FAL_KEY, even on the native task policy", async () => {
+      const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+
+      const turn = await prepareChatTurn({
+        config: makeConfig({ FAL_KEY: undefined }),
+        messages: [userMessage("make the header bigger")],
+      });
+
+      expect(turn.taskPolicy).toBe("native");
+      expect(turn.tools.remove_background).toBeUndefined();
+      expect(turn.tools.vectorize_image).toBeUndefined();
+    });
+
+    it("are present on the native task policy when FAL_KEY is configured", async () => {
+      const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+
+      const turn = await prepareChatTurn({
+        config: makeConfig({ FAL_KEY: "test-fal-key" }),
+        messages: [userMessage("make the header bigger")],
+      });
+
+      expect(turn.taskPolicy).toBe("native");
+      expect(turn.tools.remove_background).toBeDefined();
+      expect(turn.tools.vectorize_image).toBeDefined();
+    });
+
+    it("the embed-only gate is ASYMMETRIC on a /prototype turn: vectorize_image is gone, remove_background stays — isolated from the FAL_KEY gate by configuring FAL_KEY", async () => {
+      // The gate exists to stop NATIVE SCENE NODES from appearing in
+      // embed-only mode. vectorize_image's default mode: "layers" does
+      // exactly that (like draw_vector), so it's gated out. remove_background
+      // in its image_url form never touches the scene graph — URL in, URL
+      // out, meant to land in an embed's <img src> — which is exactly the
+      // real imagery prototype/slides screens want, so it stays available.
+      const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+
+      const turn = await prepareChatTurn({
+        config: makeConfig({ FAL_KEY: "test-fal-key" }),
+        messages: [userMessage("/prototype a login screen")],
+      });
+
+      expect(turn.taskPolicy).toBe("prototype");
+      expect(turn.tools.vectorize_image).toBeUndefined();
+      expect(turn.tools.remove_background).toBeDefined();
+    });
+
+    it("the same asymmetry holds on a /slides turn", async () => {
+      const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+
+      const turn = await prepareChatTurn({
+        config: makeConfig({ FAL_KEY: "test-fal-key" }),
+        messages: [userMessage("/slides a quarterly review")],
+      });
+
+      expect(turn.taskPolicy).toBe("slides");
+      expect(turn.tools.vectorize_image).toBeUndefined();
+      expect(turn.tools.remove_background).toBeDefined();
+    });
   });
 
   describe("get_screenshot gate", () => {

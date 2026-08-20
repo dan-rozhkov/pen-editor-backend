@@ -99,14 +99,21 @@ export async function uploadObject(
   key: string,
   body: Buffer,
   contentType: string,
-  // Optional extra headers on the PUT, e.g. Content-Disposition. Callers
-  // uploading content that must never be rendered inline by a browser that
-  // opens the object URL directly (untrusted/attacker-influenced markup,
-  // e.g. fal.ai SVG output — see sanitizeSvg in services/fal.ts) should pass
-  // { contentDisposition: "attachment" } here. `<img src>` ignores
-  // Content-Disposition, so this doesn't affect the normal "use the URL as
-  // an image" path.
-  extra?: { contentDisposition?: string },
+  // Optional extras:
+  //  - contentDisposition: sent as the PUT's Content-Disposition header.
+  //    Callers uploading content that must never be rendered inline by a
+  //    browser that opens the object URL directly (untrusted/attacker-
+  //    influenced markup, e.g. fal.ai SVG output — see assertSvgIsInert in
+  //    services/fal.ts) should pass "attachment" here. `<img src>` ignores
+  //    Content-Disposition, so this doesn't affect the normal "use the URL
+  //    as an image" path. Note this only protects a *direct* fetch of the
+  //    bucket URL — /api/showcase/image-proxy re-serves the bytes under its
+  //    own headers and needs its own equivalent guard (see showcase.ts).
+  //  - abortSignal: forwarded to the SDK's own send() so a caller with a
+  //    request deadline (e.g. fal.ts's combined FAL_TIMEOUT_MS/client-
+  //    disconnect signal) can cut off a stalled upload instead of leaving it
+  //    to hang past the point where the response was already given up on.
+  extra?: { contentDisposition?: string; abortSignal?: AbortSignal },
 ): Promise<string> {
   await client.send(
     new PutObjectCommand({
@@ -130,6 +137,7 @@ export async function uploadObject(
       // space. See the showcase image-delivery spec for the reasoning.
       CacheControl: "public, max-age=31536000, immutable",
     }),
+    extra?.abortSignal ? { abortSignal: extra.abortSignal } : undefined,
   );
 
   return `${publicBase}/${key}`;
@@ -139,8 +147,9 @@ export async function uploadImage(
   target: S3Target,
   buffer: Buffer,
   mimeType: string,
+  extra?: { abortSignal?: AbortSignal },
 ): Promise<string> {
   const ext = extensionForMime(mimeType);
   const key = `pen-editor/${randomUUID()}${ext}`;
-  return uploadObject(target, key, buffer, mimeType);
+  return uploadObject(target, key, buffer, mimeType, extra);
 }

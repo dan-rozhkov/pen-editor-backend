@@ -227,6 +227,15 @@ function instrumentTools(
   // into. There is no chat panel here, so the plan has nowhere to go.
   delete instrumented.update_tasks;
 
+  // remove_background/vectorize_image assume a scene graph node (node_id) or
+  // native vector layers (vectorize_image's mode: "layers") to act on —
+  // showcase generation only ever produces raw HTML via batch_design's embed
+  // capture, there is no canvas here at all. A stub would just burn a step;
+  // chatTurn.ts's own embed-only gate deletes both for the same reason in
+  // prototype/slides mode, which is effectively what every showcase turn is.
+  delete instrumented.remove_background;
+  delete instrumented.vectorize_image;
+
   for (const name of Object.keys(instrumented)) {
     const entry = instrumented[name] as { execute?: unknown };
     if (typeof entry.execute === "function") continue; // static tool, leave as-is

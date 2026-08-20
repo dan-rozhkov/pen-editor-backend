@@ -638,6 +638,40 @@ describe("GET /api/image-proxy", () => {
       new URL(source),
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
+    // A plain raster image must NOT get the SVG-only lockdown headers below —
+    // they'd be harmless on a PNG but their absence here is what proves the
+    // svg branch further down is actually conditional on content-type.
+    expect(res.headers["content-disposition"]).toBeUndefined();
+    expect(res.headers["content-security-policy"]).toBeUndefined();
+    await instance.close();
+  });
+
+  it("locks down an SVG object with Content-Disposition: attachment and a restrictive CSP", async () => {
+    // This re-serves whatever the bucket object's content-type was (fal.ai's
+    // vectorize_image writes image/svg+xml — see services/fal.ts). The proxy
+    // re-serves those bytes under OUR origin, so the upload-side
+    // Content-Disposition set by uploadObject does NOT survive the trip —
+    // this route needs its own copy of the guard (see the comment above the
+    // svg branch in showcase.ts).
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0"/></svg>';
+    const fetchMock = vi.fn(async () =>
+      new Response(svg, { headers: { "content-type": "image/svg+xml" } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const instance = await buildApp(config, {
+      logger: false,
+      showcaseStore: fakeStore(),
+    });
+    const source = "https://s3.timeweb.cloud/bucket/pen-editor/vector.svg";
+    const res = await instance.inject({
+      method: "GET",
+      url: `/api/image-proxy?url=${encodeURIComponent(source)}`,
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-type"]).toContain("image/svg+xml");
+    expect(res.headers["content-disposition"]).toBe("attachment");
+    expect(res.headers["content-security-policy"]).toBe("default-src 'none'; sandbox");
     await instance.close();
   });
 

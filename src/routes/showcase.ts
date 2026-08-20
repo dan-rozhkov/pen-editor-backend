@@ -234,6 +234,19 @@ export async function showcaseRoutes(
     }
 
     reply.header("Cache-Control", "public, max-age=31536000, immutable");
+    // An SVG re-served here is re-served under OUR origin with whatever
+    // content-type the bucket object was uploaded with — the upload-side
+    // Content-Disposition/CSP pair (services/fal.ts's vectorizeImage,
+    // services/s3.ts's uploadObject) only protects a *direct* fetch of the
+    // bucket URL and does not survive this proxy re-serving the bytes.
+    // Re-apply the same guard here so opening this proxy URL directly can't
+    // render an SVG inline (script, if any slipped past assertSvgIsInert,
+    // would run in our own origin). `<img src>` ignores both headers, so
+    // normal use of the proxy URL for display is unaffected.
+    if (contentType.toLowerCase() === "image/svg+xml") {
+      reply.header("Content-Disposition", "attachment");
+      reply.header("Content-Security-Policy", "default-src 'none'; sandbox");
+    }
     return reply.type(contentType).send(Buffer.from(bytes));
   });
 

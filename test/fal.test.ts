@@ -10,19 +10,38 @@ vi.mock("../src/services/s3.js", async (importOriginal) => {
 });
 
 import { uploadImage, uploadObject } from "../src/services/s3.js";
-import { removeBackground, vectorizeImage, sanitizeSvg, FalTimeoutError } from "../src/services/fal.js";
+import {
+  removeBackground,
+  vectorizeImage,
+  findUnsafeSvgConstruct,
+  assertSvgIsInert,
+  FalTimeoutError,
+  UnsafeSvgError,
+} from "../src/services/fal.js";
 import { buildApp } from "../src/app.js";
 
 const FAL_CONFIG = { FAL_KEY: "test-fal-key" };
 const SOURCE_URL = "https://example.test/source.png";
 const RESULT_URL = "https://fal.media/result.png";
 const SVG_RESULT_URL = "https://fal.media/result.svg";
-const SVG_TEXT = "<svg><path d=\"M0 0\"/></svg>";
+const SVG_TEXT = '<svg><path d="M0 0"/></svg>';
+const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
 
 function okJson(body: unknown): Response {
   return new Response(JSON.stringify(body), {
     status: 200,
     headers: { "content-type": "application/json" },
+  });
+}
+
+// A ReadableStream whose `pull` throws if the reader ever tries to consume
+// it — used to prove the Content-Length pre-check short-circuits before any
+// body bytes are read, not just that the end result is rejected.
+function unreadableBody(): ReadableStream<Uint8Array> {
+  return new ReadableStream({
+    pull() {
+      throw new Error("body should never have been read");
+    },
   });
 }
 
@@ -34,15 +53,16 @@ afterEach(() => {
 });
 
 describe("removeBackground", () => {
-  it("calls the fal endpoint with the right auth header and returns the fal URL when S3 is not configured", async () => {
-    const fetchMock = vi.fn(async () => okJson({ image: { url: RESULT_URL } }));
+  it("calls the fal endpoint with the right auth header", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(okJson({ image: { url: RESULT_URL } }))
+      .mockResolvedValueOnce(new Response(PNG_BYTES, { headers: { "content-type": "image/png" } }));
     vi.stubGlobal("fetch", fetchMock);
 
     const config = makeConfig(FAL_CONFIG);
-    const result = await removeBackground(config, SOURCE_URL);
+    await removeBackground(config, SOURCE_URL);
 
-    expect(result.url).toBe(RESULT_URL);
-    expect(fetchMock).toHaveBeenCalledOnce();
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe(`https://fal.run/${config.FAL_BG_MODEL}`);
     expect((init as RequestInit).headers).toMatchObject({
@@ -52,16 +72,32 @@ describe("removeBackground", () => {
     expect(JSON.parse(String((init as RequestInit).body))).toEqual({ image_url: SOURCE_URL });
   });
 
-  it("re-uploads the result to S3 when configured", async () => {
-    vi.mocked(uploadImage).mockResolvedValue("https://cdn.example.test/pen-editor/x.png");
-    const png = new Uint8Array([1, 2, 3]);
+  it("returns a self-contained data: URL when S3 is not configured, not fal's own (short-lived, CORS-less) URL", async () => {
     vi.stubGlobal(
       "fetch",
       vi
         .fn()
         .mockResolvedValueOnce(okJson({ image: { url: RESULT_URL } }))
+        .mockResolvedValueOnce(new Response(PNG_BYTES, { headers: { "content-type": "image/png" } })),
+    );
+
+    const result = await removeBackground(makeConfig(FAL_CONFIG), SOURCE_URL);
+
+    expect(result.url).toBe(`data:image/png;base64,${PNG_BYTES.toString("base64")}`);
+    expect(result.contentType).toBe("image/png");
+  });
+
+  it("re-uploads the sniffed image to S3 when configured, ignoring an untrustworthy declared content-type", async () => {
+    vi.mocked(uploadImage).mockResolvedValue("https://cdn.example.test/pen-editor/x.png");
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(okJson({ image: { url: RESULT_URL } }))
+        // fal (or a misbehaving CDN in front of it) declares a generic type,
+        // but the bytes are a real PNG — the real format must win.
         .mockResolvedValueOnce(
-          new Response(png, { status: 200, headers: { "content-type": "image/png" } }),
+          new Response(PNG_BYTES, { headers: { "content-type": "application/octet-stream" } }),
         ),
     );
 
@@ -75,15 +111,33 @@ describe("removeBackground", () => {
     const result = await removeBackground(config, SOURCE_URL);
 
     expect(result.url).toBe("https://cdn.example.test/pen-editor/x.png");
+    expect(result.contentType).toBe("image/png");
     expect(uploadImage).toHaveBeenCalledOnce();
-    const [, buffer, mimeType] = vi.mocked(uploadImage).mock.calls[0];
+    const [, buffer, mimeType, extra] = vi.mocked(uploadImage).mock.calls[0];
     expect(Buffer.isBuffer(buffer)).toBe(true);
     expect(mimeType).toBe("image/png");
+    expect(extra?.abortSignal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("throws a clear error when the downloaded bytes aren't a recognized image format", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(okJson({ image: { url: RESULT_URL } }))
+        .mockResolvedValueOnce(
+          new Response(Buffer.from("not an image"), { headers: { "content-type": "image/png" } }),
+        ),
+    );
+
+    await expect(removeBackground(makeConfig(FAL_CONFIG), SOURCE_URL)).rejects.toThrow(
+      /recognized image format/i,
+    );
   });
 });
 
 describe("vectorizeImage", () => {
-  it("returns both the URL and the fetched SVG text", async () => {
+  it("returns the fetched SVG text completely unchanged for valid output", async () => {
     vi.stubGlobal(
       "fetch",
       vi
@@ -98,10 +152,10 @@ describe("vectorizeImage", () => {
     const result = await vectorizeImage(config, SOURCE_URL);
 
     expect(result.url).toBe(SVG_RESULT_URL);
-    expect(result.svg).toBe(SVG_TEXT);
+    expect(result.svg).toBe(SVG_TEXT); // byte-for-byte, not a rewritten copy
   });
 
-  it("re-uploads the SVG via uploadObject (not uploadImage) when S3 is configured", async () => {
+  it("re-uploads the SVG via uploadObject (not uploadImage), hardcoding image/svg+xml, with Content-Disposition: attachment and the deadline signal", async () => {
     vi.mocked(uploadObject).mockResolvedValue("https://cdn.example.test/pen-editor/x.svg");
     vi.stubGlobal(
       "fetch",
@@ -109,7 +163,9 @@ describe("vectorizeImage", () => {
         .fn()
         .mockResolvedValueOnce(okJson({ image: { url: SVG_RESULT_URL } }))
         .mockResolvedValueOnce(
-          new Response(SVG_TEXT, { status: 200, headers: { "content-type": "image/svg+xml" } }),
+          // Declared type deliberately wrong/absent — the upload must still
+          // hardcode image/svg+xml since the payload is known-SVG here.
+          new Response(SVG_TEXT, { status: 200, headers: { "content-type": "text/plain" } }),
         ),
     );
 
@@ -127,16 +183,13 @@ describe("vectorizeImage", () => {
     expect(uploadImage).not.toHaveBeenCalled();
     const [, key, buffer, contentType, extra] = vi.mocked(uploadObject).mock.calls[0];
     expect(key).toMatch(/\.svg$/);
-    expect(Buffer.isBuffer(buffer)).toBe(true);
+    expect(Buffer.from(buffer as Buffer).toString("utf8")).toBe(SVG_TEXT);
     expect(contentType).toBe("image/svg+xml");
-    // Content-Disposition: attachment is the second defense layer — it
-    // stops the bucket URL from rendering inline if opened directly, on top
-    // of sanitizeSvg. <img src> ignores it, so it doesn't affect normal use.
-    expect(extra).toEqual({ contentDisposition: "attachment" });
+    expect(extra?.contentDisposition).toBe("attachment");
+    expect(extra?.abortSignal).toBeInstanceOf(AbortSignal);
   });
 
-  it("sanitizes malicious SVG before it reaches either the route response or the S3 upload", async () => {
-    vi.mocked(uploadObject).mockResolvedValue("https://cdn.example.test/pen-editor/x.svg");
+  it("rejects a malicious SVG (UnsafeSvgError) instead of rewriting it, and never uploads it", async () => {
     const maliciousSvg =
       '<svg onload="alert(1)"><script>alert(2)</script><a href="javascript:alert(3)"><path d="M0 0"/></a></svg>';
     vi.stubGlobal(
@@ -156,24 +209,31 @@ describe("vectorizeImage", () => {
       S3_ACCESS_KEY_ID: "ak",
       S3_SECRET_ACCESS_KEY: "sk",
     });
-    const result = await vectorizeImage(config, SOURCE_URL);
 
-    // The response handed back to the caller (and thus streamed to the
-    // browser/model) is already sanitized.
-    expect(result.svg).not.toMatch(/<script/i);
-    expect(result.svg).not.toMatch(/onload/i);
-    expect(result.svg).not.toMatch(/javascript:/i);
-    expect(result.svg).toContain("<path");
-
-    // So is whatever actually got uploaded to the bucket.
-    const [, , uploadedBuffer] = vi.mocked(uploadObject).mock.calls[0];
-    const uploadedText = Buffer.from(uploadedBuffer as Buffer).toString("utf8");
-    expect(uploadedText).not.toMatch(/<script/i);
-    expect(uploadedText).not.toMatch(/onload/i);
-    expect(uploadedText).not.toMatch(/javascript:/i);
+    await expect(vectorizeImage(config, SOURCE_URL)).rejects.toThrow(UnsafeSvgError);
+    expect(uploadObject).not.toHaveBeenCalled();
   });
 
-  it("rejects an SVG result over the size limit", async () => {
+  it("rejects an SVG over the size limit BEFORE reading the body, via Content-Length", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(okJson({ image: { url: SVG_RESULT_URL } }))
+        .mockResolvedValueOnce(
+          new Response(unreadableBody(), {
+            status: 200,
+            headers: { "content-type": "image/svg+xml", "content-length": String(3 * 1024 * 1024) },
+          }),
+        ),
+    );
+
+    // If the pre-check didn't short-circuit, reading the body would throw
+    // "body should never have been read" instead of this message.
+    await expect(vectorizeImage(makeConfig(FAL_CONFIG), SOURCE_URL)).rejects.toThrow(/byte limit/i);
+  });
+
+  it("rejects an SVG that exceeds the limit while streaming, when Content-Length is absent", async () => {
     const huge = "x".repeat(2 * 1024 * 1024 + 1);
     vi.stubGlobal(
       "fetch",
@@ -189,70 +249,125 @@ describe("vectorizeImage", () => {
   });
 });
 
-describe("sanitizeSvg", () => {
-  it("removes <script> elements", () => {
-    const out = sanitizeSvg('<svg><script>alert(1)</script><path d="M0 0"/></svg>');
-    expect(out).not.toMatch(/<script/i);
-    expect(out).not.toContain("alert(1)");
-    expect(out).toContain('<path d="M0 0"/>');
-  });
-
-  it("removes self-closing <script> elements", () => {
-    const out = sanitizeSvg('<svg><script src="evil.js"/><path d="M0 0"/></svg>');
-    expect(out).not.toMatch(/<script/i);
-    expect(out).toContain('<path d="M0 0"/>');
-  });
-
-  it("removes <foreignObject> elements", () => {
-    const out = sanitizeSvg(
-      '<svg><foreignObject><body onload="alert(1)">hi</body></foreignObject><path d="M0 0"/></svg>',
+describe("findUnsafeSvgConstruct / assertSvgIsInert", () => {
+  it("rejects <script> elements", () => {
+    expect(findUnsafeSvgConstruct('<svg><script>alert(1)</script><path d="M0 0"/></svg>')).toMatch(
+      /script/i,
     );
-    expect(out).not.toMatch(/foreignObject/i);
-    expect(out).not.toContain("alert(1)");
-    expect(out).toContain('<path d="M0 0"/>');
   });
 
-  it("strips on* event-handler attributes", () => {
-    const out = sanitizeSvg('<svg onload="alert(1)"><rect onclick=\'alert(2)\' width="1"/></svg>');
-    expect(out).not.toMatch(/onload/i);
-    expect(out).not.toMatch(/onclick/i);
-    expect(out).toContain('width="1"');
-  });
-
-  it("neutralizes javascript: hrefs", () => {
-    const out = sanitizeSvg('<a href="javascript:alert(1)"><path d="M0 0"/></a>');
-    expect(out).not.toMatch(/javascript:/i);
-    expect(out).toContain('href="#"');
-  });
-
-  it("neutralizes javascript: hrefs with bypass whitespace", () => {
-    const out = sanitizeSvg('<a href="jav\tascript:alert(1)"><path d="M0 0"/></a>');
-    expect(out).not.toMatch(/javascript:/i);
-  });
-
-  it("neutralizes xlink:href javascript: URIs", () => {
-    const out = sanitizeSvg('<use xlink:href="javascript:alert(1)"/>');
-    expect(out).not.toMatch(/javascript:/i);
-  });
-
-  it("neutralizes non-image data: URIs but keeps data:image/*", () => {
-    const out = sanitizeSvg(
-      '<a href="data:text/html,<script>alert(1)</script>"></a><image href="data:image/png;base64,AAAA"/>',
+  it("rejects self-closing <script> elements", () => {
+    expect(findUnsafeSvgConstruct('<svg><script src="evil.js"/><path d="M0 0"/></svg>')).toMatch(
+      /script/i,
     );
-    expect(out).toContain('href="#"');
-    expect(out).toContain('href="data:image/png;base64,AAAA"');
   });
 
-  it("leaves valid Recraft-style vector output untouched", () => {
+  it("rejects <foreignObject> elements", () => {
+    expect(
+      findUnsafeSvgConstruct(
+        '<svg><foreignObject><body onload="alert(1)">hi</body></foreignObject><path d="M0 0"/></svg>',
+      ),
+    ).toMatch(/foreignobject/i);
+  });
+
+  it("rejects quoted on* event-handler attributes", () => {
+    expect(findUnsafeSvgConstruct('<svg onload="alert(1)"><path d="M0 0"/></svg>')).toMatch(/onload/i);
+  });
+
+  it("rejects unquoted on* event-handler attributes", () => {
+    expect(findUnsafeSvgConstruct("<svg><rect onclick=alert(1) width=\"1\"/></svg>")).toMatch(/onclick/i);
+  });
+
+  it("rejects an UNQUOTED javascript: href — the escape the old rewrite-based sanitizer missed", () => {
+    expect(findUnsafeSvgConstruct('<a href=javascript:alert(1)><path d="M0 0"/></a>')).toMatch(/href/i);
+  });
+
+  it("rejects a quoted javascript: href", () => {
+    expect(findUnsafeSvgConstruct('<a href="javascript:alert(1)"><path d="M0 0"/></a>')).toMatch(/href/i);
+  });
+
+  it("rejects a javascript: href using whitespace as a scheme-check bypass", () => {
+    expect(findUnsafeSvgConstruct('<a href="jav\tascript:alert(1)"><path d="M0 0"/></a>')).toMatch(
+      /href/i,
+    );
+  });
+
+  it("rejects xlink:href javascript: URIs", () => {
+    expect(findUnsafeSvgConstruct('<use xlink:href="javascript:alert(1)"/>')).toMatch(/href/i);
+  });
+
+  it("rejects data:image/svg+xml — the executable data: URI the old rewrite allowed through", () => {
+    expect(
+      findUnsafeSvgConstruct('<use href="data:image/svg+xml;base64,PHN2Zz48c2NyaXB0Pg=="/>'),
+    ).toMatch(/href/i);
+  });
+
+  it("allows plain raster data: URIs (data:image/png etc)", () => {
+    expect(findUnsafeSvgConstruct('<image href="data:image/png;base64,AAAA"/>')).toBeNull();
+  });
+
+  it("rejects <set> retargeting an attribute to a javascript: URI via SMIL", () => {
+    expect(
+      findUnsafeSvgConstruct('<set attributeName="href" to="javascript:alert(1)"/>'),
+    ).toMatch(/set/i);
+  });
+
+  it("rejects <animate>", () => {
+    expect(findUnsafeSvgConstruct('<animate attributeName="href" values="javascript:alert(1)"/>')).toMatch(
+      /animate/i,
+    );
+  });
+
+  it("rejects <animateTransform>", () => {
+    expect(findUnsafeSvgConstruct("<animateTransform attributeName=\"transform\"/>")).toMatch(
+      /animatetransform/i,
+    );
+  });
+
+  it("rejects a DOCTYPE declaration (XXE surface)", () => {
+    expect(
+      findUnsafeSvgConstruct(
+        '<?xml version="1.0"?><!DOCTYPE svg [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><svg/>',
+      ),
+    ).toMatch(/doctype/i);
+  });
+
+  it("does not false-positive on <script>/on*-looking text hidden in comments or CDATA", () => {
+    expect(
+      findUnsafeSvgConstruct(
+        '<svg><!-- <script>alert(1)</script> --><path d="M0 0"/></svg>',
+      ),
+    ).toBeNull();
+    expect(
+      findUnsafeSvgConstruct("<svg><![CDATA[<script>alert(1)</script>]]><path d=\"M0 0\"/></svg>"),
+    ).toBeNull();
+  });
+
+  it("REGRESSION: does not corrupt/reject plain text that merely looks like an attribute (old rewrite-based sanitizer mangled this)", () => {
+    // sanitizeSvg('<svg><text>total once = 5</text></svg>') used to return
+    // '<svg><text>total></svg>' — it matched "once = 5" as an on*-attribute
+    // outside any tag and ate the rest of the document.
+    const svg = "<svg><text>total once = 5</text></svg>";
+    expect(findUnsafeSvgConstruct(svg)).toBeNull();
+    expect(() => assertSvgIsInert(svg)).not.toThrow();
+  });
+
+  it("accepts valid Recraft-style vector output untouched", () => {
     const validSvg =
       '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">' +
       '<g fill="#ff0000"><path d="M10 10 L90 90 Z" fill-rule="evenodd"/></g>' +
       "</svg>";
-    expect(sanitizeSvg(validSvg)).toBe(validSvg);
+    expect(findUnsafeSvgConstruct(validSvg)).toBeNull();
+    expect(() => assertSvgIsInert(validSvg)).not.toThrow();
+  });
+
+  it("assertSvgIsInert throws UnsafeSvgError with a readable reason", () => {
+    expect(() => assertSvgIsInert('<svg><script>alert(1)</script></svg>')).toThrow(UnsafeSvgError);
+    expect(() => assertSvgIsInert('<svg><script>alert(1)</script></svg>')).toThrow(/script/i);
   });
 });
 
-describe("fal request errors", () => {
+describe("fal request/timeout errors", () => {
   it("includes the status code when fal returns a non-2xx response", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("bad request", { status: 422 })));
     await expect(removeBackground(makeConfig(FAL_CONFIG), SOURCE_URL)).rejects.toThrow(/422/);
@@ -263,7 +378,7 @@ describe("fal request errors", () => {
     await expect(removeBackground(makeConfig(FAL_CONFIG), SOURCE_URL)).rejects.toThrow(/no image url/i);
   });
 
-  it("throws FalTimeoutError when the request exceeds the configured timeout", async () => {
+  it("throws FalTimeoutError when the fal.run call itself exceeds the configured timeout", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(
@@ -275,6 +390,26 @@ describe("fal request errors", () => {
     );
 
     const config = makeConfig({ ...FAL_CONFIG, FAL_TIMEOUT_MS: 20 });
+    await expect(removeBackground(config, SOURCE_URL)).rejects.toThrow(FalTimeoutError);
+  });
+
+  it("throws FalTimeoutError when the RESULT DOWNLOAD (not just the fal.run call) exceeds the deadline", async () => {
+    const config = makeConfig({ ...FAL_CONFIG, FAL_TIMEOUT_MS: 20 });
+    const falCallUrl = `https://fal.run/${config.FAL_BG_MODEL}`;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string, init: RequestInit) => {
+        if (url === falCallUrl) {
+          return Promise.resolve(okJson({ image: { url: RESULT_URL } }));
+        }
+        // The download hangs — proves the same deadline signal was passed
+        // into downloadBytes, not just callFal.
+        return new Promise((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () => reject(init.signal!.reason));
+        });
+      }),
+    );
+
     await expect(removeBackground(config, SOURCE_URL)).rejects.toThrow(FalTimeoutError);
   });
 });
@@ -317,5 +452,28 @@ describe("fal routes", () => {
       payload: { image_url: "not-a-url" },
     });
     expect(res.statusCode).toBe(400);
+  });
+
+  it("POST /api/vectorize returns 422 (not 500) with a readable message when fal's SVG is unsafe", async () => {
+    const maliciousSvg = '<svg><script>alert(1)</script></svg>';
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(okJson({ image: { url: SVG_RESULT_URL } }))
+        .mockResolvedValueOnce(
+          new Response(maliciousSvg, { status: 200, headers: { "content-type": "image/svg+xml" } }),
+        ),
+    );
+
+    app = await buildApp(makeConfig(FAL_CONFIG), { logger: false });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/vectorize",
+      payload: { image_url: SOURCE_URL },
+    });
+
+    expect(res.statusCode).toBe(422);
+    expect(JSON.parse(res.body)).toMatchObject({ error: expect.stringMatching(/script/i) });
   });
 });

@@ -544,6 +544,22 @@ export async function prepareChatTurn(
   if (taskPolicy !== "native") {
     tools.batch_design = makeBatchDesignTool({ embedOnly: true });
     delete tools.draw_vector;
+    // This gate is about NOT CREATING NATIVE SCENE NODES in embed-only mode
+    // — not about which tools are "expensive" or "external". vectorize_image
+    // defaults to mode: "layers", which places native vector paths exactly
+    // like draw_vector does, so it's gated the same way.
+    //
+    // remove_background stays available here on purpose — it's an asymmetry,
+    // not an oversight. Its image_url branch never touches the scene graph:
+    // URL in, URL out, and the cut-out PNG is meant to be dropped straight
+    // into an embed's `<img src>` — exactly the "real imagery in the design"
+    // the prototype skill asks for. Gating it out would remove the one
+    // capability prototype/slides screens most want. Its node_id branch
+    // (replace a canvas node's image fill in place) simply won't find a
+    // matching node here — embed-only mode has no such nodes — and returns a
+    // clear error; one wasted step in a rare case is cheaper than losing the
+    // image_url path entirely.
+    delete tools.vectorize_image;
   }
 
   // analyze_image needs this request's real config (VISION_MODEL etc.) to
