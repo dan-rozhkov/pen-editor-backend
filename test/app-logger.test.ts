@@ -24,4 +24,22 @@ describe("maskTokenInUrl", () => {
     expect(maskTokenInUrl("/api/chat")).toBe("/api/chat");
     expect(maskTokenInUrl("/api/mcp?foo=bar")).toBe("/api/mcp?foo=bar");
   });
+
+  // Regression test for a review finding: the original regex only matched
+  // an exact lowercase `token=`, so a route carrying a differently-named
+  // secret (e.g. DELETE /api/canvas/:id?editToken=..., before that route
+  // moved editToken off the query string entirely) sailed straight through
+  // unmasked into pino logs. The serializer must independently catch any
+  // *token= query param, case-insensitively, for whatever route carries one.
+  it("masks any *token= query param, case-insensitively", () => {
+    expect(maskTokenInUrl("/api/canvas/abc?editToken=super-secret")).toBe(
+      "/api/canvas/abc?editToken=[redacted]",
+    );
+    expect(maskTokenInUrl("/api/x?accessToken=super-secret&foo=bar")).toBe(
+      "/api/x?accessToken=[redacted]&foo=bar",
+    );
+    expect(maskTokenInUrl("/api/x?EditToken=SuperSecret")).toBe(
+      "/api/x?EditToken=[redacted]",
+    );
+  });
 });

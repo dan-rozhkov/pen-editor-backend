@@ -29,6 +29,8 @@ import { memoryActivityRoutes } from "./routes/memoryActivity.js";
 import { getSharedLearnedSkillStore, type LearnedSkillStore } from "./ai/skills/learnedStore.js";
 import { getSharedUserSkillStore, type UserSkillStore } from "./ai/skills/userStore.js";
 import { userSkillRoutes } from "./routes/userSkills.js";
+import { getSharedCanvasStore, type SharedCanvasStore } from "./sharing/sharedCanvasStore.js";
+import { sharedCanvasRoutes } from "./routes/sharedCanvas.js";
 import { getSharedAuditDb } from "./ai/selfimprove/auditDb.js";
 import type { TraceQueryable } from "./tracing/traceStore.js";
 import { createAnalyticsClient, type AnalyticsClient } from "./analytics/posthog.js";
@@ -51,6 +53,9 @@ export interface BuildAppOptions {
   // as memoryStore/learnedSkillStore above — a route test injects a fake
   // store instead of exercising getSharedUserSkillStore's real Postgres pool.
   userSkillStore?: UserSkillStore | null;
+  // Test seam for the SharedCanvasStore backing /api/canvas/*, same
+  // undefined/null contract as userSkillStore above.
+  sharedCanvasStore?: SharedCanvasStore | null;
   // Test seam: inject a fake analytics client (e.g. one that records
   // captures in memory). `undefined` = build the real one from config
   // (POSTHOG_API_KEY unset → a no-op client, same shape either way — unlike
@@ -73,11 +78,14 @@ export interface BuildAppOptions {
 // The MCP WS upgrade (GET /api/mcp/ws?token=...) carries the auth token in
 // the query string. Fastify's default request logging (pino) logs req.url
 // verbatim, which would put the secret in plaintext logs. This serializer
-// masks any `token=...` query param on the logged url; only applied when we
-// build the default logger (options.logger left unset) so explicit caller
-// configs (including `logger: false` in tests) are untouched.
+// masks any `*token=...` query param on the logged url — not just an exact
+// lowercase `token=`: other routes carry differently-named secrets in their
+// query string too (e.g. an editToken), and a narrower match would leave
+// those in the clear. Matches case-insensitively and requires the param
+// name to be preceded by `?`/`&` so it only fires inside the query string,
+// never inside an unrelated path segment or value.
 export function maskTokenInUrl(url: string): string {
-  return url.replace(/token=[^&]+/, "token=[redacted]");
+  return url.replace(/([?&][A-Za-z0-9_]*token=)[^&]+/gi, "$1[redacted]");
 }
 
 function buildDefaultLogger(): FastifyServerOptions["logger"] {
@@ -216,6 +224,19 @@ export async function buildApp(
       await userSkillStore.close();
     });
   }
+  // Public canvas sharing (per-share-link, unlike per-user stores above):
+  // no feature flag gates this — a store is wired whenever
+  // TRACE_DATABASE_URL is configured, same TRACE_DATABASE_URL-only branch
+  // as userSkillStore's.
+  const sharedCanvasStore =
+    options.sharedCanvasStore !== undefined
+      ? options.sharedCanvasStore
+      : getSharedCanvasStore(config.TRACE_DATABASE_URL);
+  if (sharedCanvasStore) {
+    app.addHook("onClose", async () => {
+      await sharedCanvasStore.close();
+    });
+  }
   // Product analytics (PostHog). Always a real object — never null — since
   // "disabled" is represented by createAnalyticsClient's own no-op client
   // rather than by a null test seam, unlike the stores above.
@@ -292,6 +313,7 @@ export async function buildApp(
   );
   await memoryActivityRoutes(app, config, memoryStore);
   await userSkillRoutes(app, config, userSkillStore);
+  await sharedCanvasRoutes(app, config, sharedCanvasStore);
   await modelsRoutes(app, config);
   await uploadRoutes(app, config);
   await generateImageRoutes(app, config, analytics);
