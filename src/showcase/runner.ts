@@ -220,6 +220,13 @@ function instrumentTools(
   // and works fine here, e.g. to look at a generated image.)
   delete instrumented.get_screenshot;
 
+  // Same reasoning for update_tasks: the system prompt tells the model to
+  // declare a plan and update it before every step, and a showcase run is
+  // exactly the multi-step work that rule targets — so an "unavailable" stub
+  // would burn several of SHOWCASE_MAX_STEPS on a tool with no UI to render
+  // into. There is no chat panel here, so the plan has nowhere to go.
+  delete instrumented.update_tasks;
+
   for (const name of Object.keys(instrumented)) {
     const entry = instrumented[name] as { execute?: unknown };
     if (typeof entry.execute === "function") continue; // static tool, leave as-is

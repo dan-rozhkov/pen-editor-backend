@@ -54,6 +54,7 @@ describe("penTools registry", () => {
         "ask_user",
         "analyze_image",
         "publish_to_showcase",
+        "update_tasks",
       ].sort(),
     );
   });
@@ -99,6 +100,7 @@ describe("penTools registry", () => {
       "ask_user",
       "get_screenshot",
       "publish_to_showcase",
+      "update_tasks",
     ] as const) {
       expect(hasExecute(name), `${name} must be client-executed`).toBe(false);
     }
@@ -722,6 +724,68 @@ describe("leave_comment schema", () => {
       text: "x",
     }));
     expect(schema.safeParse({ comments: many }).success).toBe(false);
+  });
+});
+
+describe("update_tasks schema", () => {
+  const schema = schemaOf("update_tasks");
+
+  it("accepts a single task", () => {
+    expect(
+      schema.safeParse({ tasks: [{ title: "Экран «Цели»", status: "pending" }] })
+        .success,
+    ).toBe(true);
+  });
+
+  it("accepts a full plan with mixed statuses", () => {
+    const result = schema.safeParse({
+      tasks: [
+        { title: "Собрать стайл-гайд", status: "completed" },
+        { title: "Экран «Цели»", status: "in_progress" },
+        { title: "Экран «Прогресс»", status: "pending" },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects missing tasks field", () => {
+    expect(schema.safeParse({}).success).toBe(false);
+  });
+
+  it("rejects an empty tasks array", () => {
+    expect(schema.safeParse({ tasks: [] }).success).toBe(false);
+  });
+
+  it("rejects more than 20 tasks", () => {
+    const many = Array.from({ length: 21 }, (_, i) => ({
+      title: `Task ${i}`,
+      status: "pending" as const,
+    }));
+    expect(schema.safeParse({ tasks: many }).success).toBe(false);
+  });
+
+  it("accepts exactly 20 tasks", () => {
+    const twenty = Array.from({ length: 20 }, (_, i) => ({
+      title: `Task ${i}`,
+      status: "pending" as const,
+    }));
+    expect(schema.safeParse({ tasks: twenty }).success).toBe(true);
+  });
+
+  it("rejects an empty title", () => {
+    expect(
+      schema.safeParse({ tasks: [{ title: "", status: "pending" }] }).success,
+    ).toBe(false);
+  });
+
+  it("rejects a missing status", () => {
+    expect(schema.safeParse({ tasks: [{ title: "x" }] }).success).toBe(false);
+  });
+
+  it("rejects an invalid status value", () => {
+    expect(
+      schema.safeParse({ tasks: [{ title: "x", status: "done" }] }).success,
+    ).toBe(false);
   });
 });
 

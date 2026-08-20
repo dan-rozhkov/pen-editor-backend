@@ -128,10 +128,11 @@ describe("runShowcaseGeneration", () => {
     expect(result.screens).toEqual([{ name: "Only", htmlContent: "<div>Only</div>" }]);
   });
 
-  it("does not offer get_screenshot — there is no browser to take one", async () => {
+  it("does not offer get_screenshot or update_tasks — no browser, no chat panel", async () => {
     // The system prompt recommends get_screenshot for verifying a finished
-    // screen, so advertising it here would buy a guaranteed-wasted step in
-    // every autonomous run. analyze_image is backend-executed and stays.
+    // screen and mandates update_tasks for multi-step work, so advertising
+    // either here would buy guaranteed-wasted steps in every autonomous run.
+    // analyze_image is backend-executed and stays.
     const offered: string[][] = [];
     let call = 0;
     const results = [textResult("done")];
@@ -149,6 +150,7 @@ describe("runShowcaseGeneration", () => {
     expect(offered.length).toBeGreaterThan(0);
     for (const names of offered) {
       expect(names).not.toContain("get_screenshot");
+      expect(names).not.toContain("update_tasks");
       expect(names).toContain("analyze_image");
     }
   });
