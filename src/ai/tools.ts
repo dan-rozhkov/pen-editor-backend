@@ -425,7 +425,7 @@ Commands, one per line, recommended order geometry first then paint then END() l
 - FILL(color) fills the shape; works even if a subpath isn't CLOSE()d (it closes implicitly, like SVG)
 - STROKE(color, width) strokes the shape; width is clamped to (0, 100]
 - END() once, last (optional — a missing END() doesn't fail the call)
-Paint is optional: with no FILL and no STROKE, a default stroke is applied so the shape is still visible. Colors accept #RGB, #RRGGBB, #RRGGBBAA, rgb()/rgba(). Commands are case-insensitive, args may be space- or comma-separated, and stray blank lines/semicolons/markdown fences are ignored. One tool call draws one shape (possibly multi-subpath); call the tool again for another shape.`,
+Paint is optional: with no FILL and no STROKE, a default stroke is applied so the shape is still visible. Colors accept #RGB, #RRGGBB, #RRGGBBAA, rgb()/rgba(). Commands are case-insensitive, args may be space- or comma-separated, parentheses and color quotes are optional ('m 12 30' and 'fill #e0522a' work like 'M(12, 30)' and 'FILL("#e0522a")'), and stray blank lines/semicolons/markdown fences are ignored. One tool call draws one shape (possibly multi-subpath); call the tool again for another shape.`,
   inputSchema: drawVectorInputSchema,
 });
 
