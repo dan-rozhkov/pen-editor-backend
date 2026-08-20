@@ -415,17 +415,17 @@ export const drawVectorInputSchema = z.strictObject({
 });
 
 const drawVectorTool = tool({
-  description: `Draw one native vector contour progressively on the canvas. Use this instead of batch_design when the user requests a freeform native vector, icon/logo contour, or explicitly wants to watch the agent draw.
-The browser previews each complete command line while this tool input streams, then commits one PathNode after full validation.
-Commands, exactly one per line and in this order:
-- M(x, y) once, first
-- L(x, y) for a straight segment
-- C(cp1x, cp1y, cp2x, cp2y, x, y) for a cubic segment
-- CLOSE() before filling a closed contour
-- FILL("#RRGGBB" or "#RRGGBBAA") only after CLOSE()
-- STROKE("#RRGGBB" or "#RRGGBBAA", width)
-- END() once, last
-Emit geometry lines first so points and segments appear before fill. One tool call draws one contour; call the tool again for another shape.`,
+  description: `Draw one native vector shape progressively on the canvas. Use this instead of batch_design when the user requests a freeform native vector, icon/logo contour, or explicitly wants to watch the agent draw.
+The browser previews each complete command line while this tool input streams, then commits one PathNode after validation. Small mistakes don't fail the call — they come back as "warnings" in the result instead.
+Commands, one per line, recommended order geometry first then paint then END() last:
+- M(x, y) starts a new subpath. Use it more than once in a call to draw multiple subpaths in one shape (e.g. an icon with a hole) — later subpaths cut/add per the evenodd fill rule.
+- L(x, y) straight segment
+- C(cp1x, cp1y, cp2x, cp2y, x, y) cubic segment
+- CLOSE() (alias Z()) closes the current subpath; optional
+- FILL(color) fills the shape; works even if a subpath isn't CLOSE()d (it closes implicitly, like SVG)
+- STROKE(color, width) strokes the shape; width is clamped to (0, 100]
+- END() once, last (optional — a missing END() doesn't fail the call)
+Paint is optional: with no FILL and no STROKE, a default stroke is applied so the shape is still visible. Colors accept #RGB, #RRGGBB, #RRGGBBAA, rgb()/rgba(). Commands are case-insensitive, args may be space- or comma-separated, and stray blank lines/semicolons/markdown fences are ignored. One tool call draws one shape (possibly multi-subpath); call the tool again for another shape.`,
   inputSchema: drawVectorInputSchema,
 });
 
