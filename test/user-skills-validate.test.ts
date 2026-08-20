@@ -35,18 +35,14 @@ describe("validateUserSkillDescription", () => {
     expect(validateUserSkillDescription("")).toBeNull();
   });
 
-  it.each([
-    { chars: MAX_DESCRIPTION_CHARS, shouldPass: true },
-    { chars: MAX_DESCRIPTION_CHARS + 1, shouldPass: false },
-  ])("description of $chars chars: shouldPass=$shouldPass", ({ chars, shouldPass }) => {
-    const description = "x".repeat(chars);
-    const err = validateUserSkillDescription(description);
-    if (shouldPass) {
-      expect(err).toBeNull();
-    } else {
-      expect(err).not.toBeNull();
-      expect(err).toContain(String(MAX_DESCRIPTION_CHARS));
-    }
+  it("accepts a description of exactly MAX_DESCRIPTION_CHARS chars", () => {
+    expect(validateUserSkillDescription("x".repeat(MAX_DESCRIPTION_CHARS))).toBeNull();
+  });
+
+  it("rejects a description one char over the limit", () => {
+    const err = validateUserSkillDescription("x".repeat(MAX_DESCRIPTION_CHARS + 1));
+    expect(err).not.toBeNull();
+    expect(err).toContain(String(MAX_DESCRIPTION_CHARS));
   });
 
   it("rejects a multi-line description", () => {
@@ -63,18 +59,14 @@ describe("validateUserSkillBody", () => {
     expect(validateUserSkillBody("# Title\nDo the thing.")).toBeNull();
   });
 
-  it.each([
-    { chars: MAX_BODY_CHARS, shouldPass: true },
-    { chars: MAX_BODY_CHARS + 1, shouldPass: false },
-  ])("body of $chars chars: shouldPass=$shouldPass", ({ chars, shouldPass }) => {
-    const body = "a".repeat(chars);
-    const err = validateUserSkillBody(body);
-    if (shouldPass) {
-      expect(err).toBeNull();
-    } else {
-      expect(err).not.toBeNull();
-      expect(err).toContain(String(MAX_BODY_CHARS));
-    }
+  it("accepts a body of exactly MAX_BODY_CHARS chars", () => {
+    expect(validateUserSkillBody("a".repeat(MAX_BODY_CHARS))).toBeNull();
+  });
+
+  it("rejects a body one char over the limit", () => {
+    const err = validateUserSkillBody("a".repeat(MAX_BODY_CHARS + 1));
+    expect(err).not.toBeNull();
+    expect(err).toContain(String(MAX_BODY_CHARS));
   });
 });
 

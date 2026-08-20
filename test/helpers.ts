@@ -53,3 +53,17 @@ export function makeConfig(overrides: Partial<Config> = {}): Config {
     ...overrides,
   };
 }
+
+// TypeScript assertion helper for narrowing discriminated-union results
+// (e.g. zod's `safeParse`, or a function returning `{ ok: true, ... } |
+// { ok: false, ... }`) without an `if` inside the test body itself —
+// `vitest/no-conditional-in-test` flags a conditional statement in a test
+// block even when it exists only for type narrowing after an `expect(...)`
+// already asserted the branch. Call `assert(x.ok)` (or `assert(x.success)`)
+// right after asserting the discriminant to narrow the type for the rest of
+// the test.
+export function assert(condition: unknown, message = "assertion failed"): asserts condition {
+  if (!condition) {
+    throw new Error(message);
+  }
+}

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { assert } from "./helpers.js";
 import {
   nodeTypeOfCreateOp,
   isCreateOp,
@@ -85,10 +86,9 @@ describe("makeBatchDesignInputSchema({ embedOnly: true })", () => {
       operations: 'x=I(document, {type: "frame"})',
     });
     expect(result.success).toBe(false);
-    if (!result.success) {
-      const message = JSON.stringify(result.error.issues);
-      expect(message).toContain("embed-only");
-    }
+    assert(!result.success);
+    const message = JSON.stringify(result.error.issues);
+    expect(message).toContain("embed-only");
   });
 
   it("still succeeds with a multi-line htmlContent embed op", () => {
@@ -107,9 +107,8 @@ describe("makeBatchDesignInputSchema({ embedOnly: true })", () => {
     );
     const result = schema.safeParse({ operations: ops });
     expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.data.operations).toBe(ops);
-    }
+    assert(result.success);
+    expect(result.data.operations).toBe(ops);
   });
 
   it("rejects a type-less insert — the frontend defaults a missing type to a native frame", () => {
@@ -117,10 +116,9 @@ describe("makeBatchDesignInputSchema({ embedOnly: true })", () => {
       operations: 's=I(document, {name: "Home", htmlContent: "<div>x</div>"})',
     });
     expect(result.success).toBe(false);
-    if (!result.success) {
-      const message = JSON.stringify(result.error.issues);
-      expect(message).toContain("embed-only");
-    }
+    assert(!result.success);
+    const message = JSON.stringify(result.error.issues);
+    expect(message).toContain("embed-only");
   });
 
   it("rejects a type-less replace the same way", () => {
@@ -128,10 +126,9 @@ describe("makeBatchDesignInputSchema({ embedOnly: true })", () => {
       operations: 'R("p/c", {name: "x"})',
     });
     expect(result.success).toBe(false);
-    if (!result.success) {
-      const message = JSON.stringify(result.error.issues);
-      expect(message).toContain("embed-only");
-    }
+    assert(!result.success);
+    const message = JSON.stringify(result.error.issues);
+    expect(message).toContain("embed-only");
   });
 });
 
@@ -151,8 +148,7 @@ describe("makeBatchDesignInputSchema({ embedOnly: false }) (default)", () => {
     );
     const result = schema.safeParse({ operations: ops });
     expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.data.operations).toBe(ops);
-    }
+    assert(result.success);
+    expect(result.data.operations).toBe(ops);
   });
 });

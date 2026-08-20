@@ -1,0 +1,57 @@
+name: Mutation testing
+
+# Manual only — Stryker over src/ai/** + src/showcase/** takes minutes and
+# is not a merge gate. Run it from the Actions tab when you want a fresh
+# mutation score, not on every push. Runs without --incremental: this job
+# does not cache reports/stryker-incremental.json between runs, so
+# incremental mode is a local-only convenience (see stryker.config.json's
+# `incremental_comment`) — every CI run mutates the full requested scope
+# from scratch.
+#
+# timeout-minutes: the only real measurement we have is a narrow run over
+# two files (`src/ai/vision-messages.ts,src/ai/skills.ts`, ~774 lines,
+# 406 mutants) at ~7.5 minutes wall clock on a 2-core runner — see
+# stryker.config.json's `thresholds_comment`. stryker.config.json's full
+# `mutate` scope (src/ai/**, src/showcase/**, minus excludes) is ~13k lines,
+# roughly 17x that sample. Mutant count doesn't have to scale linearly with
+# line count, so this is a rough extrapolation, not a measured number —
+# 17x the 7.5-minute baseline is ~130 minutes; 180 minutes leaves real
+# headroom over that estimate without coming anywhere near the platform's
+# 360-minute default job timeout, so a genuinely stuck run still gets
+# killed instead of eating the runner for six hours.
+on:
+  workflow_dispatch:
+    inputs:
+      mutate:
+        description: >
+          Comma-separated glob(s) to pass as Stryker's --mutate override,
+          narrowing the run below stryker.config.json's full mutate scope
+          (src/ai/**, src/showcase/**, minus excludes). Leave empty to run
+          the full configured scope.
+        required: false
+        default: ""
+
+jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Run Stryker
+        run: |
+          if [ -n "${{ inputs.mutate }}" ]; then
+            npm run test:mutation -- --mutate "${{ inputs.mutate }}"
+          else
+            npm run test:mutation
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutation-report
+          path: reports/mutation/
+          retention-days: 30

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { z } from "zod";
 import { penTools } from "../src/ai/tools.js";
+import { assert } from "./helpers.js";
 
 // Contract tests: pin down the argument shape the backend declares for the
 // client-executed tools. The frontend handlers must agree with these schemas.
@@ -188,9 +189,8 @@ describe("batch_design schema", () => {
     const ops = Array.from({ length: 26 }, (_, i) => `D("node${i}")`).join("\n");
     const result = schema.safeParse({ operations: ops });
     expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.data.operations).toBe(ops);
-    }
+    assert(result.success);
+    expect(result.data.operations).toBe(ops);
   });
 
   it("accepts exactly 25 operations", () => {

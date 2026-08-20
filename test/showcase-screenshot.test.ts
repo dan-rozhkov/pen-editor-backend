@@ -1,3 +1,19 @@
+/* eslint-disable vitest/no-conditional-in-test --
+ * Every test in this file opens with `if (!browser) return` — a real,
+ * unavoidable skip: these tests need an actual Chromium binary to measure
+ * layout geometry, and CI does not install Playwright's browsers (`npx
+ * playwright install chromium` is a documented local-only step, see the
+ * comment on `browser` below). In CI the whole suite never even reaches
+ * these guards: it's skipped up front by `describe.skipIf(Boolean(process
+ * .env.CI))` below (necessary because a per-test `if (!browser) return`
+ * inside an otherwise-registered suite would leave an empty `describe`,
+ * which vitest fails outright — "No test found in suite" — instead of
+ * skipping). So the `if (!browser)` guards below are a LOCAL-ONLY
+ * fallback, for a developer running this file without Chromium installed,
+ * not what makes CI green. This is the one legitimate case the
+ * no-conditional-in-test rule can't distinguish from a masked assertion,
+ * so it's disabled for this file only, not the whole test suite.
+ */
 import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import { createServer, type Server } from "node:http";
 import { AddressInfo } from "node:net";
@@ -20,6 +36,11 @@ beforeAll(async () => {
     browser = await chromium.launch();
   } catch (err) {
     launchFailure = (err as Error).message;
+    // Surfaced for a developer running this file locally without Chromium
+    // installed — every `if (!browser)` guard below skips silently, so
+    // without this the whole suite would look like it passed for no
+    // discernible reason.
+    console.warn(`showcase-screenshot: skipping browser tests — ${launchFailure}`);
   }
 });
 
@@ -152,7 +173,13 @@ describe.skipIf(Boolean(process.env.CI)).each([
   }
 
   it("leaves a screen alone when nothing is covered by the bottom bar", async () => {
-    if (!browser) return expect(launchFailure).toBe("browser unavailable — run `npx playwright install chromium`");
+    // Matches every other guard in this file (see the header comment):
+    // local-only fallback for a developer without Chromium installed.
+    // launchFailure holds Playwright's own launch error for anyone
+    // debugging why this test is skipping — it is not asserted against
+    // (its text is Playwright's, not ours, and isn't stable/predictable
+    // enough to compare literally).
+    if (!browser) return;
 
     // Content stops well above the bar.
     const { width, height } = await shoot(

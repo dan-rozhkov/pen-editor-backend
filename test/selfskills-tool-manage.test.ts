@@ -4,7 +4,6 @@ import { getSelfSkillTools } from "../src/ai/skills/tool.js";
 import { createSkillRunContext, type SkillRunContext } from "../src/ai/skills/runContext.js";
 import type { LearnedSkill, LearnedSkillStore } from "../src/ai/skills/learnedStore.js";
 import type { TraceQueryable } from "../src/tracing/traceStore.js";
-import { makeConfig } from "./helpers.js";
 
 interface AuditCall {
   sql: string;
@@ -723,32 +722,21 @@ describe("skill_manage — failure isolation", () => {
   });
 });
 
-describe("skill_manage — SELF_SKILLS_ENABLED gating", () => {
-  beforeEach(() => {
-    runContext = createSkillRunContext();
-  });
-
-  // Task 8 (out of this scope) is what actually wires this: prepareChatTurn
-  // only calls getSelfSkillTools() at all when config.SELF_SKILLS_ENABLED is
-  // true. This test proves the *behavior* that wiring is meant to produce —
-  // with the flag off, nothing in a turn's tool set can be skill_manage or
-  // skill_view — using the exact gating expression Task 8 documents.
-  it("a flag-off config never reaches getSelfSkillTools, so those tools never exist in the assembled set", () => {
-    const config = makeConfig({ TRACE_DATABASE_URL: "postgres://x", SELF_SKILLS_ENABLED: false });
-    const { store } = memoryStore([learned]);
-    const db = recordingDb();
-
-    const selfSkillsOn = config.SELF_SKILLS_ENABLED;
-    const tools: Record<string, unknown> = {};
-    if (selfSkillsOn) {
-      Object.assign(
-        tools,
-        getSelfSkillTools({ store, runContext, db, userId: "u1", origin: "foreground", includeView: false }),
-      );
-    }
-
-    expect(tools.skill_manage).toBeUndefined();
-    expect(tools.skill_view).toBeUndefined();
-    expect(db.calls).toHaveLength(0);
-  });
-});
+// Removed: "skill_manage — SELF_SKILLS_ENABLED gating" (code review finding
+// 1). That test reimplemented the gate under test (`config.SELF_SKILLS_ENABLED
+// ? getSelfSkillTools(...) : {}`) inline and then asserted its own local
+// variable — deleting the real production gates in src/ai/chatTurn.ts
+// (~320/~455) or src/app.ts (~168) would not have failed it. The real gates
+// already have non-tautological coverage that calls the actual production
+// code and would fail if either gate were removed:
+//   - test/selfskills-chat-turn.test.ts ("omits skill_manage and learned
+//     catalog entries when the flag is off") calls the real
+//     prepareChatTurn() with SELF_SKILLS_ENABLED: false and a store/auditDb
+//     supplied anyway, asserting turn.tools.skill_manage/skill_view are
+//     undefined — this is chatTurn.ts's ~320/~455 gate.
+//   - test/app-selfskills-gate.test.ts ("does not construct
+//     learnedSkillStore/auditDb when SELF_SKILLS_ENABLED and
+//     SCENARIOS_ENABLED are both off") calls the real buildApp() and
+//     asserts getSharedLearnedSkillStore/getSharedAuditDb are never
+//     called — this is app.ts's ~168 gate.
+// No further test is added here.

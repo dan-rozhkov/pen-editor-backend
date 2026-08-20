@@ -249,6 +249,9 @@ function fakeDb(
       // The app-level LIMIT must sit inside the subselect that picks runs —
       // if it ever moved out to the screen level, pages would go back to
       // cutting an app in half and this fake must not paper over that.
+      // False positive below: `.test(sql)` is RegExp.prototype.test on a SQL
+      // string, not a vitest `test()` call — the rule matches on method name.
+      // eslint-disable-next-line vitest/no-conditional-tests
       if (!/LIMIT \$\d+\s*\n?\s*\) runs/.test(sql)) {
         throw new Error(`unrecognized query (LIMIT is not app-level): ${sql}`);
       }

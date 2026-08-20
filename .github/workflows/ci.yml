@@ -22,5 +22,22 @@ jobs:
       # Tests mock the LLM provider and MCP — no OPENROUTER_API_KEY needed.
       # test:coverage runs the full suite AND enforces the non-regression
       # coverage thresholds in vitest.config.ts (fails if coverage drops).
+      # CI retries once (vitest.config.ts `retry`, gated on VITEST_RETRY
+      # below — deliberately NOT on GitHub Actions' own CI=true env var,
+      # because mutation.yml also runs under CI=true and Stryker's vitest
+      # runner reuses this same vitest.config.ts; retrying there would let a
+      # mutant that makes a test intermittently fail get scored "survived"
+      # instead of "killed"). flakyReporter writes flaky-tests.json only
+      # when a test needed that retry.
       - run: npm run test:coverage
+        env:
+          VITEST_RETRY: "1"
+      # Surfaces tests that only passed on retry in the job summary, so
+      # flakiness is visible instead of silently masked by the retry above.
+      # `!cancelled()` (not `always()`) so this still runs when the test
+      # step fails, but not when the whole job is cancelled — `always()`
+      # would also fire on cancellation, wasting a step on a run nobody
+      # will read the summary of.
+      - run: npm run flaky:summary
+        if: ${{ !cancelled() }}
       - run: npm run build

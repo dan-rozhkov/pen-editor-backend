@@ -64,10 +64,9 @@ describe("classifySkills", () => {
     const rows = [
       row({ name: "s", created_at: daysAgo(days + 50), last_used_at: daysAgo(days) }),
     ];
-    expect(classifySkills(rows, NOW).length).toBe(shouldStale ? 1 : 0);
-    if (shouldStale) {
-      expect(classifySkills(rows, NOW)[0]).toMatchObject({ from: "active", to: "stale" });
-    }
+    const result = classifySkills(rows, NOW);
+    const expected = shouldStale ? [expect.objectContaining({ from: "active", to: "stale" })] : [];
+    expect(result).toEqual(expected);
   });
 
   it("stales an active skill unused for 30+ days", () => {
@@ -120,10 +119,9 @@ describe("classifySkills", () => {
         last_used_at: daysAgo(days),
       }),
     ];
-    expect(classifySkills(rows, NOW).length).toBe(shouldArchive ? 1 : 0);
-    if (shouldArchive) {
-      expect(classifySkills(rows, NOW)[0]).toMatchObject({ from: "stale", to: "archived" });
-    }
+    const result = classifySkills(rows, NOW);
+    const expected = shouldArchive ? [expect.objectContaining({ from: "stale", to: "archived" })] : [];
+    expect(result).toEqual(expected);
   });
 
   it("archives a stale skill unused for 90+ days", () => {

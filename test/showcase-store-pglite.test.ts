@@ -101,54 +101,54 @@ describe("showcase store against a real Postgres engine (PGlite)", () => {
   });
 
   describe("listApps: sort x category x cursor", () => {
-    const combos: Array<{
-      sort: "popular" | "latest";
-      category?: string;
-      useCursor: boolean;
-    }> = [];
+    const sortCategoryCombos: Array<{ sort: "popular" | "latest"; category?: string }> = [];
     for (const sort of ["popular", "latest"] as const) {
       for (const category of [undefined, "fitness"]) {
-        for (const useCursor of [false, true]) {
-          combos.push({ sort, category, useCursor });
-        }
+        sortCategoryCombos.push({ sort, category });
       }
     }
-    expect(combos).toHaveLength(8);
+    expect(sortCategoryCombos).toHaveLength(4);
 
-    it.each(combos)(
-      "sort=$sort category=$category cursor=$useCursor returns the right apps in the right order",
-      async ({ sort, category, useCursor }) => {
+    it.each(sortCategoryCombos)(
+      "sort=$sort category=$category, no cursor: returns everything in one page",
+      async ({ sort, category }) => {
         await seedFixture(store, harness);
         const matching = category ? FIXTURE.filter((a) => a.theme === category) : FIXTURE;
         const expected = (sort === "latest" ? latestOrder : popularOrder)(matching).map(
           (a) => a.runId,
         );
 
-        if (!useCursor) {
-          // limit past the end of the matching set so `nextCursor` is
-          // unambiguously null rather than "maybe more, maybe not".
-          const { apps, nextCursor } = await store.listApps({
-            limit: expected.length + 1,
-            sort,
-            category,
-          });
-          expect(apps.map((a) => a.runId)).toEqual(expected);
-          expect(nextCursor).toBeNull();
-          return;
-        }
+        // limit past the end of the matching set so `nextCursor` is
+        // unambiguously null rather than "maybe more, maybe not".
+        const { apps, nextCursor } = await store.listApps({
+          limit: expected.length + 1,
+          sort,
+          category,
+        });
+        expect(apps.map((a) => a.runId)).toEqual(expected);
+        expect(nextCursor).toBeNull();
+      },
+    );
 
-        // Page through 2 apps at a time and confirm the concatenation is an
-        // exact, non-duplicated prefix of the expected order — this is the
-        // combination the code review flagged as untested (category *and*
-        // cursor together), and the one that exercises the `AND theme = $n`
-        // clause sitting in the same subquery as the cursor's `HAVING`.
+    it.each(sortCategoryCombos)(
+      "sort=$sort category=$category, paged by 2: concatenates an exact, non-duplicated prefix",
+      async ({ sort, category }) => {
+        await seedFixture(store, harness);
+        const matching = category ? FIXTURE.filter((a) => a.theme === category) : FIXTURE;
+        const expected = (sort === "latest" ? latestOrder : popularOrder)(matching).map(
+          (a) => a.runId,
+        );
+        // Every fixture combo above has more than 2 matching apps (5 fitness,
+        // 7 total), so a 2-item page always has a next page — this test
+        // doesn't need to handle the <= 2 case.
+        expect(expected.length).toBeGreaterThan(2);
+
+        // This is the combination the code review flagged as untested
+        // (category *and* cursor together), and the one that exercises the
+        // `AND theme = $n` clause sitting in the same subquery as the
+        // cursor's `HAVING`.
         const page1 = await store.listApps({ limit: 2, sort, category });
         expect(page1.apps.map((a) => a.runId)).toEqual(expected.slice(0, 2));
-
-        if (expected.length <= 2) {
-          expect(page1.nextCursor).toBeNull();
-          return;
-        }
         expect(page1.nextCursor).not.toBeNull();
 
         const page2 = await store.listApps({

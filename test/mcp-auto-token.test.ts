@@ -57,6 +57,25 @@ async function waitForFileGone(path: string, timeoutMs = 2000): Promise<void> {
   }
 }
 
+// The file already exists when a stale handshake is planted before the
+// test, so a plain "does it exist" check (waitForFile) would pass
+// immediately, before the onListen hook's write has actually landed. Poll
+// until the content actually changes instead.
+async function waitForHandshakeRewrite(
+  path: string,
+  staleToken: string,
+  timeoutMs = 2000,
+): Promise<{ token: string; port: number }> {
+  const start = Date.now();
+  for (;;) {
+    const raw = await readFile(path, "utf8");
+    const parsed = JSON.parse(raw) as { token: string; port: number };
+    if (parsed.token !== staleToken) return parsed;
+    if (Date.now() - start > timeoutMs) throw new Error("handshake file was never rewritten");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 describe("MCP auto-token mode — handshake file + end-to-end auth", () => {
   let app: FastifyInstance | undefined;
   let createdHomeDir = "";
@@ -201,23 +220,7 @@ describe("MCP auto-token mode — handshake file + end-to-end auth", () => {
     });
     await app.listen({ port: 0, host: "127.0.0.1" });
 
-    // The file already existed (we planted it above), so waitForFile's
-    // plain "does it exist" check would pass immediately, before the
-    // onListen hook's write has actually landed (fire-and-forget relative
-    // to listen() resolving — see the comment on waitForFile). Poll until
-    // the content actually changes instead.
-    const start = Date.now();
-    let written: { token: string; port: number } | undefined;
-    while (Date.now() - start < 2000) {
-      const raw = await readFile(handshakePath(fakeHome), "utf8");
-      const parsed = JSON.parse(raw) as { token: string; port: number };
-      if (parsed.token !== staleToken) {
-        written = parsed;
-        break;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-    if (!written) throw new Error("handshake file was never rewritten");
+    const written = await waitForHandshakeRewrite(handshakePath(fakeHome), staleToken);
 
     expect(written.port).not.toBe(59999);
     expect(written.token).not.toBe(staleToken);

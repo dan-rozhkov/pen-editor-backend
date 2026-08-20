@@ -31,22 +31,18 @@ describe("validateSkillName", () => {
     }
   });
 
-  // Boundary table: MAX_NAME_CHARS is 64, so 64 must pass and 65 must fail —
-  // this is the exact off-by-one the spec locks, not an approximation.
-  it.each([
-    { chars: 64, shouldPass: true },
-    { chars: 65, shouldPass: false },
-  ])("name of $chars chars: shouldPass=$shouldPass", ({ chars, shouldPass }) => {
-    // Build a valid kebab-case name of exactly `chars` length so the only
-    // variable under test is length, not kebab-case shape.
-    const name = "a".repeat(chars);
-    const err = validateSkillName(name);
-    if (shouldPass) {
-      expect(err).toBeNull();
-    } else {
-      expect(err).not.toBeNull();
-      expect(err).toContain("1-64");
-    }
+  // Boundary: MAX_NAME_CHARS is 64, so 64 must pass and 65 must fail — this
+  // is the exact off-by-one the spec locks, not an approximation. Built as a
+  // valid kebab-case name of exactly that length so the only variable under
+  // test is length, not kebab-case shape.
+  it("accepts a name of exactly 64 chars", () => {
+    expect(validateSkillName("a".repeat(64))).toBeNull();
+  });
+
+  it("rejects a name of 65 chars and reports the 1-64 limit", () => {
+    const err = validateSkillName("a".repeat(65));
+    expect(err).not.toBeNull();
+    expect(err).toContain("1-64");
   });
 });
 
@@ -55,19 +51,16 @@ describe("validateDescription", () => {
   // pass (create-time enforcement is "<=", not "<"), one over must fail and
   // the error must report both the limit and the actual length so the model
   // can fix it without guessing.
-  it.each([
-    { chars: MAX_DESCRIPTION_CHARS, shouldPass: true },
-    { chars: MAX_DESCRIPTION_CHARS + 1, shouldPass: false },
-  ])("description of $chars chars: shouldPass=$shouldPass", ({ chars, shouldPass }) => {
-    const description = "x".repeat(chars);
-    const err = validateDescription(description);
-    if (shouldPass) {
-      expect(err).toBeNull();
-    } else {
-      expect(err).not.toBeNull();
-      expect(err).toContain(String(MAX_DESCRIPTION_CHARS));
-      expect(err).toContain(String(chars));
-    }
+  it("accepts a description of exactly MAX_DESCRIPTION_CHARS chars", () => {
+    expect(validateDescription("x".repeat(MAX_DESCRIPTION_CHARS))).toBeNull();
+  });
+
+  it("rejects a description one char over the limit and reports both numbers", () => {
+    const chars = MAX_DESCRIPTION_CHARS + 1;
+    const err = validateDescription("x".repeat(chars));
+    expect(err).not.toBeNull();
+    expect(err).toContain(String(MAX_DESCRIPTION_CHARS));
+    expect(err).toContain(String(chars));
   });
 
   it("rejects empty/whitespace", () => {
@@ -80,19 +73,18 @@ describe("validateBody", () => {
   // Boundary table for MAX_BODY_LINES (200), enforced both on create and on
   // the post-patch result per the locked contract — this validator is the
   // single check both call sites share, so the table is the contract test.
-  it.each([
-    { lines: MAX_BODY_LINES, shouldPass: true },
-    { lines: MAX_BODY_LINES + 1, shouldPass: false },
-  ])("body of $lines lines: shouldPass=$shouldPass", ({ lines, shouldPass }) => {
+  it("accepts a body of exactly MAX_BODY_LINES lines", () => {
+    const body = Array.from({ length: MAX_BODY_LINES }, (_, i) => `line ${i}`).join("\n");
+    expect(validateBody(body)).toBeNull();
+  });
+
+  it("rejects a body one line over the limit and reports both numbers", () => {
+    const lines = MAX_BODY_LINES + 1;
     const body = Array.from({ length: lines }, (_, i) => `line ${i}`).join("\n");
     const err = validateBody(body);
-    if (shouldPass) {
-      expect(err).toBeNull();
-    } else {
-      expect(err).not.toBeNull();
-      expect(err).toContain(String(MAX_BODY_LINES));
-      expect(err).toContain(String(lines));
-    }
+    expect(err).not.toBeNull();
+    expect(err).toContain(String(MAX_BODY_LINES));
+    expect(err).toContain(String(lines));
   });
 
   it("rejects empty/whitespace", () => {

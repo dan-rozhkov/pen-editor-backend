@@ -9,6 +9,26 @@ export default defineConfig({
     setupFiles: ["test/setup.ts"],
     // Network calls to providers are forbidden in tests; everything is mocked.
     testTimeout: 15_000,
+    // CI retries a failing test once before calling the run red, matching
+    // the compromise pen-editor's Playwright config already makes. Retries
+    // are silent by design (the point is not masking flakiness, it's not
+    // blocking merges on a one-off blip) — flakyReporter below is what makes
+    // "passed only on retry" visible instead of invisible. Local runs get no
+    // retry so a flaky test fails loudly on the machine of whoever wrote it.
+    //
+    // Gated on VITEST_RETRY (set only by ci.yml's `test` job), NOT on
+    // process.env.CI: Stryker's vitest runner reuses this exact config and
+    // never overrides `retry`, and mutation.yml also runs under CI=true
+    // (every GitHub Actions job does). A `process.env.CI` check would let
+    // Stryker silently retry a mutant that makes a test intermittently
+    // fail into a pass, scoring a real "killed" mutant as "survived".
+    // VITEST_RETRY is opt-in per job, so mutation.yml never sets it and
+    // Stryker always runs with retry: 0.
+    retry: process.env.VITEST_RETRY ? 1 : 0,
+    reporters: [
+      "default",
+      ["./scripts/flakyReporter.ts", { outputFile: "flaky-tests.json" }],
+    ],
     coverage: {
       provider: "v8",
       reporter: ["text", "html", "json-summary"],

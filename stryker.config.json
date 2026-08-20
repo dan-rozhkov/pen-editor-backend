@@ -1,0 +1,75 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "packageManager": "npm",
+  "testRunner": "vitest",
+  "vitest": {
+    "configFile": "vitest.config.ts"
+  },
+  "coverageAnalysis": "perTest",
+  "mutate": [
+    "src/ai/**/*.ts",
+    "src/showcase/**/*.ts",
+    "!src/ai/**/*.d.ts",
+    "!src/showcase/**/*.d.ts",
+    "!src/showcase/run.ts",
+    "!src/showcase/ingestRun.ts",
+    "!src/showcase/imageRun.ts",
+    "!src/showcase/themeRun.ts",
+    "!src/showcase/rescreenshotRun.ts",
+    "!src/showcase/reencodeRun.ts",
+    "!src/showcase/pinRun.ts",
+    "!src/showcase/replaceHtmlRun.ts",
+    "!src/showcase/deleteRun.ts",
+    "!src/showcase/previewRun.ts",
+    "!src/showcase/cli.ts",
+    "!src/showcase/context.ts",
+    "!src/showcase/screenshot.ts"
+  ],
+  "incremental": false,
+  "incrementalFile": "reports/stryker-incremental.json",
+  "timeoutMS": 30000,
+  "reporters": ["html", "progress", "json"],
+  "htmlReporter": {
+    "fileName": "reports/mutation/index.html"
+  },
+  "jsonReporter": {
+    "fileName": "reports/mutation/mutation.json"
+  },
+  "mutate_comment": [
+    "Mutates only src/ai/** and src/showcase/** — the same 'clean logic, fast",
+    "tests' seam docs/test-quality-recommendations.md calls out as the ideal",
+    "Stryker target, not the whole backend. Excludes the entrypoint/CLI files",
+    "already excluded from coverage in vitest.config.ts (they're env/Postgres/",
+    "S3/Chromium wiring with no pure logic of their own — see that file's",
+    "per-entry comments for why each one is excluded) and *.d.ts. src/skills/",
+    "is Markdown, not .ts, so it's out of scope by construction, not by an",
+    "explicit exclude."
+  ],
+  "incremental_comment": [
+    "Off by default (config is shared verbatim by CI's mutation.yml, which",
+    "never persists reports/stryker-incremental.json between runs — no",
+    "actions/cache step and the artifact upload only covers reports/mutation/",
+    "— so `true` here would just be dead weight in CI: every run rebuilds",
+    "from scratch anyway). Left as a local-only convenience: run",
+    "`npx stryker run --incremental` yourself to get incremental speedups",
+    "across your own local re-runs; the resulting incrementalFile stays",
+    "gitignored (see .gitignore) and is never shared with CI."
+  ],
+  "thresholds_comment": [
+    "Observed baseline (2026-08-20), narrow run: `npx stryker run --mutate",
+    "'src/ai/vision-messages.ts,src/ai/skills.ts'` -> 406 mutants, 285 killed,",
+    "35 timed out, 52 survived, 34 no-coverage -> mutation score 78.82%",
+    "((285+35)/406), runtime ~7.5 minutes wall clock for just these two",
+    "files. A full run over src/ai/** + src/showcase/** was not run to",
+    "completion in the time budget for this change, so `thresholds.break`",
+    "is intentionally omitted rather than guessed from the narrow sample —",
+    "set it once a full-scope run has been observed, safely below that",
+    "number. The 52 survivors are real leads for the next pass: see",
+    "reports/mutation/index.html (gitignored, regenerate with",
+    "`npm run test:mutation`)."
+  ],
+  "thresholds": {
+    "high": 80,
+    "low": 60
+  }
+}

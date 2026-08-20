@@ -26,3 +26,14 @@ reports/
 # `git status`.
 .handrun/
 scratchpad/
+
+# Per-run flaky-test record from scripts/flakyReporter.ts, consumed by
+# scripts/flaky-summary.mjs in CI. Only written when a test actually needed
+# a retry — a normal run leaves no file at all.
+flaky-tests.json
+
+# StrykerJS sandbox: temporary copies of the source tree it mutates and
+# test-runs against (--tempDirName default) — NOT the incremental-run
+# cache. The incremental cache is reports/stryker-incremental.json,
+# already covered by reports/ above.
+.stryker-tmp/
