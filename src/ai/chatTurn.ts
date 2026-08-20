@@ -455,10 +455,17 @@ export async function prepareChatTurn(
   const auditDb = config.SELF_SKILLS_ENABLED ? (input.auditDb ?? null) : null;
   const selfSkillsInjected = Boolean(learnedStore && auditDb);
 
-  const system = buildSystemPrompt(canvasContext, skillCatalog, {
+  // Whether a canvas context is delivered at all this turn — headless
+  // callers (showcase runner, review runs) that never pass canvasContext
+  // must render byte-identical to before this option existed, so the
+  // pointer block only appears when there is somewhere for it to point.
+  const canvasContextDelivered = Boolean(canvasContext);
+
+  const system = buildSystemPrompt(skillCatalog, {
     memoryGuidance: memoryInjected,
     memorySnapshot: memorySnapshotBlock,
     selfSkillsGuidance: selfSkillsInjected,
+    canvasContextDelivered,
   });
   const selectedModelId = modelOverride ?? config.OPENROUTER_MODEL;
   const systemPromptHash = createHash("sha256")
@@ -490,6 +497,31 @@ export async function prepareChatTurn(
     config,
     modelId: selectedModelId,
   });
+
+  // Canvas context goes on the TAIL of modelMessages, not into `system`.
+  // Why: `system` is the first block of every request, and a provider's
+  // prompt cache only stays warm while that prefix is byte-identical
+  // request to request. The frontend rebuilds canvasContext (roots,
+  // selectedIds, selectedNodes, theme, variables) on every single request,
+  // including every auto-continuation of a tool-call loop — so when it lived
+  // in `system` (see buildSystemPrompt's history), the cached prefix broke
+  // on request #1 of every conversation and nothing downstream of it ever
+  // cached either. Appending it as the LAST message instead keeps system +
+  // the full prior history stable, so only this one trailing message varies.
+  //
+  // Role is "user", not "system": a trailing system-role message is
+  // rejected by some OpenRouter-routed providers, but every provider
+  // accepts a trailing user message. The wrapper text below is there so the
+  // model doesn't mistake this for something the human actually typed.
+  // Skipped entirely when this turn has no canvas context (headless
+  // callers — the showcase runner, review runs) so that path stays
+  // byte-for-byte what it was before this change.
+  if (canvasContext) {
+    modelMessages.push({
+      role: "user",
+      content: `<canvas_context>\nAutomatic message from the Pencil editor (not from the user): the current state of the canvas.\n\n${canvasContext}\n</canvas_context>`,
+    });
+  }
 
   // Structural backstop for prototype/slides: swap in the embed-only
   // batch_design variant so a native frame/rect/text create op is rejected

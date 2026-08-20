@@ -24,7 +24,7 @@ describe("buildSystemPrompt", () => {
   });
 
   it("renders a skill catalog when skills are provided", () => {
-    const prompt = buildSystemPrompt(undefined, [
+    const prompt = buildSystemPrompt([
       { name: "prototype", description: "Build a mockup." },
       { name: "polish", description: "Final visual pass." },
     ]);
@@ -47,7 +47,7 @@ describe("buildSystemPrompt", () => {
     // because the routing rule was softer than that flow. The catalog must now
     // gate the mandatory flow on the skill-routing decision and explicitly cover
     // the empty-canvas case.
-    const prompt = buildSystemPrompt(undefined, [
+    const prompt = buildSystemPrompt([
       { name: "prototype", description: "Build a mockup." },
     ]);
     // The routing decision is framed as the FIRST action, before other tools.
@@ -60,7 +60,7 @@ describe("buildSystemPrompt", () => {
   });
 
   it("routes presentation/slide-deck create requests to the slides skill", () => {
-    const prompt = buildSystemPrompt(undefined, [
+    const prompt = buildSystemPrompt([
       { name: "prototype", description: "Build a mockup." },
       { name: "slides", description: "Build a presentation deck." },
     ]);
@@ -80,7 +80,7 @@ describe("buildSystemPrompt", () => {
   });
 
   it("marks learned skills in the catalog and leaves curated ones unmarked", () => {
-    const prompt = buildSystemPrompt(undefined, [
+    const prompt = buildSystemPrompt([
       { name: "prototype", description: "Build a clickable prototype" },
       { name: "reading-canvas-state", description: "Read the canvas before editing", learned: true },
     ]);
@@ -91,7 +91,7 @@ describe("buildSystemPrompt", () => {
   });
 
   it("explains what (learned) means when at least one learned skill is present", () => {
-    const prompt = buildSystemPrompt(undefined, [
+    const prompt = buildSystemPrompt([
       { name: "reading-canvas-state", description: "Read the canvas first", learned: true },
     ]);
     expect(prompt).toContain("(learned)");
@@ -99,30 +99,47 @@ describe("buildSystemPrompt", () => {
   });
 
   it("omits the (learned) legend when every skill is curated", () => {
-    const prompt = buildSystemPrompt(undefined, [
+    const prompt = buildSystemPrompt([
       { name: "prototype", description: "Build a clickable prototype" },
     ]);
     expect(prompt).not.toContain("(learned)");
   });
 
   it("is byte-identical with SELF_SKILLS_ENABLED off / an empty learned catalog — this prompt sits at the front of the provider's cached prefix, so a curated-only catalog must render EXACTLY as it did before Phase 2", () => {
-    const before = buildSystemPrompt(undefined, [
+    const before = buildSystemPrompt([
       { name: "prototype", description: "Build a mockup." },
       { name: "polish", description: "Final visual pass." },
     ]);
     // Same skills, but each explicitly carries `learned: false` — the shape
     // a caller gets when it always sets the field rather than omitting it.
-    const after = buildSystemPrompt(undefined, [
+    const after = buildSystemPrompt([
       { name: "prototype", description: "Build a mockup.", learned: false },
       { name: "polish", description: "Final visual pass.", learned: false },
     ]);
     expect(after).toBe(before);
   });
 
-  it("appends canvas context after the core prompt", () => {
-    const prompt = buildSystemPrompt("<canvas state here>");
+  it("renders a stable, data-free canvas-context pointer when the turn delivers one — never the canvas data itself", () => {
+    // Regression: the canvas context used to be rendered directly into
+    // `system` (`## Current Canvas Context\n\n${canvasContext}`), which broke
+    // prompt caching because canvasContext changes on every request. The
+    // actual data now travels as a trailing message in modelMessages (see
+    // chatTurn.ts); `system` may only ever carry a constant pointer to it.
+    const prompt = buildSystemPrompt([], { canvasContextDelivered: true });
     expect(prompt).toContain("## Current Canvas Context");
-    expect(prompt).toContain("<canvas state here>");
+    expect(prompt).toContain("<canvas_context>");
+    expect(prompt).toContain("not here");
+  });
+
+  it("omits the canvas-context pointer entirely when no context is delivered this turn", () => {
+    const prompt = buildSystemPrompt();
+    expect(prompt).not.toContain("## Current Canvas Context");
+  });
+
+  it("never varies with per-request canvas data — the pointer block is byte-identical regardless of what canvasContext string existed", () => {
+    const a = buildSystemPrompt([], { canvasContextDelivered: true });
+    const b = buildSystemPrompt([], { canvasContextDelivered: true });
+    expect(a).toBe(b);
   });
 });
 

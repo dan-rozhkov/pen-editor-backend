@@ -208,7 +208,7 @@ describe("POST /api/chat — streaming happy paths", () => {
     expect(body).toContain("[DONE]");
   });
 
-  it("passes canvasContext into the system prompt sent to the model", async () => {
+  it("passes canvasContext as a trailing message, not into the system prompt (prompt-cache fix)", async () => {
     const model = mockModel(textStreamChunks("ok"));
     holders.model = model;
 
@@ -220,9 +220,21 @@ describe("POST /api/chat — streaming happy paths", () => {
     ).text();
 
     expect(model.doStreamCalls).toHaveLength(1);
-    const prompt = JSON.stringify(model.doStreamCalls[0].prompt);
-    expect(prompt).toContain("CANVAS-CTX-MARKER");
-    expect(prompt).toContain("## Current Canvas Context");
+    const prompt = model.doStreamCalls[0].prompt as Array<{ role: string; content: unknown }>;
+    const promptJson = JSON.stringify(prompt);
+    // The marker made it into the request somewhere...
+    expect(promptJson).toContain("CANVAS-CTX-MARKER");
+    // ...but NOT inside the system message — only a constant pointer lives
+    // there, so the cached prefix never varies with canvas state.
+    const system = prompt.find((m) => m.role === "system");
+    expect(JSON.stringify(system)).not.toContain("CANVAS-CTX-MARKER");
+    expect(JSON.stringify(system)).toContain("## Current Canvas Context");
+    // ...the marker instead lives in the LAST message, wrapped so the model
+    // doesn't mistake it for the human's own words.
+    const last = prompt[prompt.length - 1];
+    expect(last.role).toBe("user");
+    expect(JSON.stringify(last)).toContain("<canvas_context>");
+    expect(JSON.stringify(last)).toContain("CANVAS-CTX-MARKER");
   });
 });
 

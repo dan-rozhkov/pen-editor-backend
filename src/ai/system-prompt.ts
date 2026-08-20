@@ -30,10 +30,16 @@ export interface SystemPromptMemory {
   /** Include SELF_SKILLS_GUIDANCE — only ever true when `skill_manage` is
    * actually in this turn's tool set, same rule as memoryGuidance. */
   selfSkillsGuidance?: boolean;
+  /** True when this turn actually delivers a canvas context — as a trailing
+   * `<canvas_context>` message in `modelMessages` (see chatTurn.ts), never
+   * here in the system prompt. When true, render a STABLE (data-free)
+   * pointer block telling the model where to look. Rendering the canvas
+   * data itself into `system` is exactly the prompt-cache bug this option
+   * exists to avoid — see chatTurn.ts for the full story. */
+  canvasContextDelivered?: boolean;
 }
 
 export function buildSystemPrompt(
-  canvasContext?: string,
   skills: SkillCatalogEntry[] = [],
   memory: SystemPromptMemory = {},
 ): string {
@@ -61,12 +67,33 @@ export function buildSystemPrompt(
     parts.push(`\n${memory.memorySnapshot}`);
   }
 
-  if (canvasContext) {
-    parts.push(`\n## Current Canvas Context\n\n${canvasContext}`);
+  if (memory.canvasContextDelivered) {
+    parts.push(`\n## Current Canvas Context\n\n${CANVAS_CONTEXT_POINTER}`);
   }
 
   return parts.join("\n");
 }
+
+// Stable/constant on purpose — no per-request data. The actual canvas state
+// is delivered as a trailing `<canvas_context>` message in modelMessages
+// (see prepareChatTurn in chatTurn.ts) instead of being rendered here, so
+// that a canvas mutation or selection change — which used to rewrite this
+// block on every request, including every tool-loop auto-continuation —
+// no longer touches the system prompt at all. `system` is the first block
+// of the request and everything after it only stays cached while the
+// PREFIX is byte-identical, so a varying tail here broke caching for the
+// entire conversation history that follows it. This pointer keeps the
+// heading (skills reference it, e.g. "check selectedNodes in the Canvas
+// Context") meaningful without reintroducing that variance.
+//
+// Deliberately says "the LAST such block" rather than "the most recent
+// message": the block is appended before the turn's own tool steps run, so
+// from step 2 onward the final message is a tool result, and the background
+// review run (ai/selfimprove/review.ts) reuses this same `system` with its
+// own messages appended after it. A model told to look at the final message
+// would find no canvas context there and conclude there is none.
+const CANVAS_CONTEXT_POINTER =
+  "The current state of the canvas is delivered as a `<canvas_context>` block in the conversation below, not here. Always read the canvas state from the LAST such block — it is refreshed on every request, so an earlier `<canvas_context>` block, or anything stated about the canvas earlier in the conversation, may be stale. That block is usually NOT the final message: your own tool calls and their results come after it.";
 
 function renderSkillCatalog(skills: SkillCatalogEntry[]): string {
   const lines = skills
