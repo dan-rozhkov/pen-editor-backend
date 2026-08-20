@@ -1232,32 +1232,6 @@ Returns the created/updated style ids and names (with a created|updated status) 
     }),
   }),
 
-  // ── Task planning ────────────────────────────────────────────────
-
-  update_tasks: tool({
-    description:
-      "Declare or update your plan for a multi-step task (3+ steps), shown to the user as a checklist. Call it at the START of such a task with the full plan, then again before you start each step to move it to in_progress and mark finished ones completed — call it OFTEN, right after finishing a step, not only at the end. Every call replaces the ENTIRE list — always send all tasks, not a diff. Exactly one task should be in_progress at a time (zero is fine between steps, never more than one). Write titles as short, single-line descriptions of the design outcome in the user's own language (e.g. \"Экран «Цели»\", \"Собрать стайл-гайд\"), not tool or implementation names. Skip this entirely for trivial one-shot requests — it's for genuine multi-step work only.",
-    inputSchema: z.object({
-      tasks: z
-        .array(
-          z.object({
-            title: z
-              .string()
-              .min(1)
-              .describe(
-                "Short, single-line description of the task, in the user's language, phrased around the design outcome (not a tool name).",
-              ),
-            status: z
-              .enum(["pending", "in_progress", "completed"])
-              .describe("Current status of this task."),
-          }),
-        )
-        .min(1)
-        .max(20)
-        .describe("The full task list for this turn's plan (1-20 items) — always the complete list, replacing any previous one."),
-    }),
-  }),
-
   // ── Plugins ───────────────────────────────────────────────────────
   // Client-executed like every other tool above. Schemas are deliberately
   // minimal — the full pen.* API reference, rules and examples live in the
