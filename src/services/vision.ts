@@ -33,6 +33,19 @@ function cacheKey(image: string, question: string | undefined): string {
     .digest("hex");
 }
 
+// Exported so a caller that looks at the SAME image+question more than once
+// (vision-messages.ts: a success-cache peek, then possibly a failure-cache
+// peek, then possibly a describeImage() call — all for the same slot) can
+// hash it once and reuse the key everywhere below, instead of re-running
+// sha256 over a payload that can be up to MAX_DATA_URL_BYTES (6MB) of base64
+// on every one of those lookups. Hashing here is synchronous and runs on the
+// event loop inside prepareChatTurn, before streamText() — repeating it per
+// lookup is not just wasted work, it is blocking latency added to every chat
+// turn at the request's slot cap.
+export function visionCacheKey(image: string, question?: string): string {
+  return cacheKey(image, question);
+}
+
 function cacheSet(key: string, text: string): void {
   if (cache.has(key)) cache.delete(key);
   cache.set(key, text);
@@ -42,13 +55,109 @@ function cacheSet(key: string, text: string): void {
   }
 }
 
-/** Test hook: clears the module-level description cache between tests. */
+// Map iteration order is insertion order, and eviction above drops
+// `keys().next()` — i.e. whatever was inserted longest ago. Without this,
+// a frequently re-asked-about image (e.g. a screenshot re-attached across
+// several steps of one turn, or across turns) would still get evicted on
+// its *insertion* age even though it keeps being *used*, silently losing
+// its stable description and, with it, the vision-preprocessing pass's
+// ability to keep that image's text byte-identical across requests (see
+// src/ai/vision-messages.ts). Reading through this function refreshes
+// recency by re-inserting the entry, turning the eviction policy into a
+// real LRU (least-recently-USED, not least-recently-written).
+function cacheGet(key: string): string | undefined {
+  const value = cache.get(key);
+  if (value === undefined) return undefined;
+  cache.delete(key);
+  cache.set(key, value);
+  return value;
+}
+
+// Negative cache for describeImage() failures — deliberately separate from
+// the success cache above (never merged into it: describeImage must keep
+// returning ok:false for a failed image, not start claiming success from a
+// cache hit). Without this, a permanently-failing image (bad URL, provider
+// outage, an image the vision model always times out on) never gets an
+// entry in the success cache, so every request re-runs the full
+// VISION_TIMEOUT_MS-bounded describeImage() call for it — and since
+// applyVisionPreprocessing runs inside prepareChatTurn before streamText,
+// that stalls every subsequent chat turn in the conversation by up to
+// VISION_TIMEOUT_MS (120s default). A short TTL (not a permanent cache like
+// the success one) lets a transient failure — a flaky provider blip — heal
+// itself within a few minutes instead of being pinned to "known bad"
+// forever.
+const FAILURE_CACHE_TTL_MS = 10 * 60 * 1000;
+const FAILURE_CACHE_MAX_ENTRIES = 64;
+
+interface FailureEntry {
+  text: string;
+  expiresAt: number;
+}
+
+let failureCache = new Map<string, FailureEntry>();
+
+function pruneExpiredFailures(now: number): void {
+  for (const [k, v] of failureCache) {
+    if (v.expiresAt <= now) failureCache.delete(k);
+  }
+}
+
+function failureCacheSet(key: string, text: string): void {
+  const now = Date.now();
+  pruneExpiredFailures(now);
+  failureCache.delete(key);
+  failureCache.set(key, { text, expiresAt: now + FAILURE_CACHE_TTL_MS });
+  if (failureCache.size > FAILURE_CACHE_MAX_ENTRIES) {
+    const oldestKey = failureCache.keys().next().value;
+    if (oldestKey !== undefined) failureCache.delete(oldestKey);
+  }
+}
+
+/**
+ * Read-only negative-cache lookup — never makes a network call. Mirrors
+ * peekCachedDescription() but for a failed describeImage() call: lets the
+ * vision-preprocessing pass render the exact same failure text again for a
+ * still-failing image without spending its per-turn budget or re-waiting
+ * out VISION_TIMEOUT_MS. Expired entries are pruned lazily (here and on
+ * write), so there is no background timer to worry about; they naturally
+ * fall out of `failureCache` once FAILURE_CACHE_TTL_MS has passed, letting a
+ * retry happen.
+ */
+export function peekCachedFailure(image: string, question?: string): string | undefined {
+  return peekCachedFailureByKey(cacheKey(image, question));
+}
+
+/** Same as {@link peekCachedFailure}, but for a caller that already has the key (see {@link visionCacheKey}). */
+export function peekCachedFailureByKey(key: string): string | undefined {
+  const now = Date.now();
+  pruneExpiredFailures(now);
+  return failureCache.get(key)?.text;
+}
+
+/** Test hook: clears the module-level description and failure caches between tests. */
 export function __resetVisionCache(): void {
   cache = new Map<string, string>();
+  failureCache = new Map<string, FailureEntry>();
 }
 
 export function isVisionConfigured(config: Config): boolean {
   return config.VISION_MODEL.trim().length > 0;
+}
+
+/**
+ * Read-only cache lookup — never makes a network call. Lets a caller (the
+ * vision-preprocessing pass) ask "do we already have a stable description
+ * for this image+question" without paying for or triggering a fresh
+ * describeImage() call. Like describeImage()'s own cache read, this
+ * refreshes the entry's LRU recency, since a peek is still a use.
+ */
+export function peekCachedDescription(image: string, question?: string): string | undefined {
+  return peekCachedDescriptionByKey(cacheKey(image, question));
+}
+
+/** Same as {@link peekCachedDescription}, but for a caller that already has the key (see {@link visionCacheKey}). */
+export function peekCachedDescriptionByKey(key: string): string | undefined {
+  return cacheGet(key);
 }
 
 function decodedDataUrlByteLength(dataUrl: string): number | null {
@@ -66,6 +175,15 @@ export async function describeImage(params: {
   question?: string;
   config: Config;
   signal?: AbortSignal;
+  /**
+   * Precomputed {@link visionCacheKey} for `image`+`question`, when the
+   * caller already hashed it (e.g. for a peekCachedDescription/peekCachedFailure
+   * check just before this call). Saves re-hashing a payload that can be up
+   * to MAX_DATA_URL_BYTES. Must be `visionCacheKey(image, question)` — passing
+   * a mismatched key silently corrupts the cache, so only pass it when it was
+   * derived from these exact same `image`/`question` values.
+   */
+  key?: string;
 }): Promise<{ ok: boolean; text: string }> {
   const { image, question, config, signal } = params;
 
@@ -86,8 +204,8 @@ export async function describeImage(params: {
     }
   }
 
-  const key = cacheKey(image, question);
-  const cached = cache.get(key);
+  const key = params.key ?? cacheKey(image, question);
+  const cached = cacheGet(key);
   if (cached !== undefined) {
     return { ok: true, text: cached };
   }
@@ -118,17 +236,34 @@ export async function describeImage(params: {
 
     const text = result.text.trim();
     if (!text) {
-      return { ok: false, text: "Vision model returned an empty description." };
+      const failText = "Vision model returned an empty description.";
+      failureCacheSet(key, failText);
+      return { ok: false, text: failText };
     }
 
     cacheSet(key, text);
     return { ok: true, text };
   } catch (err) {
+    // Only negatively cache failures whose retry is either expensive or
+    // pointless — NOT every thrown error. A thrown provider error (429,
+    // 5xx, connection reset, ...) usually fails fast and is often
+    // transient: negatively caching it would pin `[Image attached but
+    // could not be analyzed: ...]` into every turn of every conversation
+    // that references this image for the full FAILURE_CACHE_TTL_MS, with
+    // no way for the user to recover (the cache key is sha256(image), so
+    // re-uploading the same bytes doesn't help) — even though a retry next
+    // turn might just succeed. A timeout is different: retrying it costs
+    // another full VISION_TIMEOUT_MS (up to 120s) of blocking wait inside
+    // prepareChatTurn before streamText() even starts, so an image that
+    // reliably times out should stay "known bad" for the TTL rather than
+    // re-stalling every subsequent turn. (An empty description, handled
+    // above near `cacheSet`, is the third cached case — the model's
+    // response was deterministic-enough garbage, not a network fluke, so
+    // retrying it immediately is unlikely to help either.)
     if (timeoutSignal.aborted) {
-      return {
-        ok: false,
-        text: `Vision request timed out after ${config.VISION_TIMEOUT_MS}ms.`,
-      };
+      const failText = `Vision request timed out after ${config.VISION_TIMEOUT_MS}ms.`;
+      failureCacheSet(key, failText);
+      return { ok: false, text: failText };
     }
     const message = err instanceof Error ? err.message : String(err);
     return { ok: false, text: `Vision request failed: ${message}` };

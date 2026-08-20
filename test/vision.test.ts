@@ -8,6 +8,10 @@ import { createModel } from "../src/ai/provider.js";
 import {
   describeImage,
   isVisionConfigured,
+  peekCachedDescription,
+  peekCachedDescriptionByKey,
+  peekCachedFailure,
+  visionCacheKey,
   __resetVisionCache,
 } from "../src/services/vision.js";
 
@@ -155,5 +159,221 @@ describe("describeImage", () => {
 
     expect(result.ok).toBe(false);
     expect(result.text).toMatch(/provider exploded/i);
+  });
+});
+
+describe("peekCachedDescription", () => {
+  it("returns undefined without calling the model when nothing is cached", () => {
+    expect(peekCachedDescription("https://example.com/never-described.png")).toBeUndefined();
+    expect(createModel).not.toHaveBeenCalled();
+  });
+
+  it("returns the cached text after describeImage has described that image+question", async () => {
+    const { model } = mockModel("A green button.");
+    vi.mocked(createModel).mockReturnValue(model);
+    const config = makeConfig();
+
+    await describeImage({ image: "https://example.com/f.png", question: "q", config });
+
+    expect(peekCachedDescription("https://example.com/f.png", "q")).toBe("A green button.");
+    // A different question for the same image is a different cache entry.
+    expect(peekCachedDescription("https://example.com/f.png")).toBeUndefined();
+  });
+
+  it("never triggers a network call itself", () => {
+    peekCachedDescription("https://example.com/g.png");
+    expect(createModel).not.toHaveBeenCalled();
+  });
+});
+
+describe("negative cache for failed describeImage calls", () => {
+  it("does not re-call the model for a still-failing TIMEOUT, and negatively caches it", async () => {
+    // A real (short) VISION_TIMEOUT_MS whose doGenerate() only settles when
+    // ITS OWN abortSignal fires — this exercises describeImage's actual
+    // `AbortSignal.timeout()` path (timeoutSignal.aborted), not a
+    // provider-thrown error, so it is a real test of the "timeout IS
+    // negatively cached" half of the A/B split in describeImage's catch
+    // block. Real timers are used because AbortSignal.timeout's internal
+    // timer isn't controlled by vi.useFakeTimers().
+    const config = makeConfig({ VISION_TIMEOUT_MS: 30 });
+    const model = new MockLanguageModelV3({
+      supportedUrls: { "image/*": [/.*/] },
+      doGenerate: (options: { abortSignal?: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          options.abortSignal?.addEventListener("abort", () =>
+            reject(new Error("aborted by timeout")),
+          );
+        }),
+    });
+    vi.mocked(createModel).mockReturnValue(model);
+
+    const firstResult = await describeImage({ image: "https://example.com/flaky.png", config });
+    expect(firstResult.ok).toBe(false);
+    expect(firstResult.text).toMatch(/timed out/i);
+
+    // Second call for the same image: served from the negative cache, no
+    // second model call, identical failure text.
+    const cached = peekCachedFailure("https://example.com/flaky.png");
+    expect(cached).toBe(firstResult.text);
+  });
+
+  it("negatively caches an empty model response (deterministic-enough garbage, not a network fluke)", async () => {
+    const { model } = mockModel("   ");
+    vi.mocked(createModel).mockReturnValue(model);
+    const config = makeConfig();
+
+    const first = await describeImage({ image: "https://example.com/empty.png", config });
+    expect(first.ok).toBe(false);
+    expect(first.text).toMatch(/empty description/i);
+    // describeImage() itself never reads the negative cache (only writes
+    // it) — peekCachedFailure is the read path a caller like
+    // vision-messages.ts uses to skip a repeat describeImage() call
+    // entirely. So the entry landing here, byte-identical to the failure
+    // text, is what "negatively cached" means for this failure kind.
+    expect(peekCachedFailure("https://example.com/empty.png")).toBe(first.text);
+  });
+
+  it("expires a negatively-cached failure after FAILURE_CACHE_TTL_MS, allowing a retry", async () => {
+    vi.useFakeTimers();
+    try {
+      const { model } = mockModel("");
+      vi.mocked(createModel).mockReturnValue(model);
+      const config = makeConfig();
+
+      const first = await describeImage({ image: "https://example.com/expiring.png", config });
+      expect(first.ok).toBe(false);
+      expect(peekCachedFailure("https://example.com/expiring.png")).toBe(first.text);
+
+      // Not yet expired at 9 minutes.
+      vi.advanceTimersByTime(9 * 60 * 1000);
+      expect(peekCachedFailure("https://example.com/expiring.png")).toBe(first.text);
+
+      // Past the 10-minute TTL: the entry is gone.
+      vi.advanceTimersByTime(2 * 60 * 1000);
+      expect(peekCachedFailure("https://example.com/expiring.png")).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does NOT negatively cache an ordinary thrown provider error (429, 5xx, connection reset) — the next call gets a fresh shot", async () => {
+    let callCount = 0;
+    const model = new MockLanguageModelV3({
+      supportedUrls: { "image/*": [/.*/] },
+      doGenerate: async () => {
+        callCount++;
+        if (callCount === 1) throw new Error("provider exploded");
+        return {
+          content: [{ type: "text" as const, text: "Recovered on retry." }],
+          finishReason: { unified: "stop" as const, raw: "stop" },
+          usage: USAGE,
+          warnings: [],
+        };
+      },
+    });
+    vi.mocked(createModel).mockReturnValue(model);
+    const config = makeConfig();
+
+    const first = await describeImage({ image: "https://example.com/flaky-provider.png", config });
+    expect(first.ok).toBe(false);
+    expect(first.text).toMatch(/provider exploded/i);
+
+    // Unlike a timeout or an empty description, a plain thrown error must
+    // NOT land in the negative cache — the whole point is that a transient
+    // provider blip gets to heal itself on the very next call instead of
+    // being pinned to "known bad" for FAILURE_CACHE_TTL_MS with no recovery
+    // path (the cache key is sha256(image), so re-uploading doesn't help).
+    expect(peekCachedFailure("https://example.com/flaky-provider.png")).toBeUndefined();
+
+    // And a second describeImage() call actually re-invokes the model and
+    // can succeed, rather than replaying the first failure from cache.
+    const second = await describeImage({ image: "https://example.com/flaky-provider.png", config });
+    expect(second).toEqual({ ok: true, text: "Recovered on retry." });
+    expect(callCount).toBe(2);
+  });
+
+  it("never lets a failure leak into the success cache", async () => {
+    const model = new MockLanguageModelV3({
+      supportedUrls: { "image/*": [/.*/] },
+      doGenerate: async () => {
+        throw new Error("boom");
+      },
+    });
+    vi.mocked(createModel).mockReturnValue(model);
+    const config = makeConfig();
+
+    await describeImage({ image: "https://example.com/boom.png", config });
+
+    // describeImage must still report failure on a later call for the same
+    // image — the negative cache is a distinct read path (peekCachedFailure),
+    // never mixed into the success cache describeImage() itself consults.
+    const second = await describeImage({ image: "https://example.com/boom.png", config });
+    expect(second.ok).toBe(false);
+    expect(peekCachedDescription("https://example.com/boom.png")).toBeUndefined();
+  });
+});
+
+describe("visionCacheKey / *ByKey helpers", () => {
+  it("visionCacheKey matches what describeImage/peekCachedDescription derive internally", async () => {
+    const { model } = mockModel("A precomputed-key description.");
+    vi.mocked(createModel).mockReturnValue(model);
+    const config = makeConfig();
+
+    const key = visionCacheKey("https://example.com/keyed.png");
+    await describeImage({ image: "https://example.com/keyed.png", config, key });
+
+    expect(peekCachedDescriptionByKey(key)).toBe("A precomputed-key description.");
+    // The image-derived peek must resolve the exact same entry — a
+    // precomputed key populates the same cache slot as the image string
+    // would on its own, it's just a shortcut for looking it up again.
+    expect(peekCachedDescription("https://example.com/keyed.png")).toBe(
+      "A precomputed-key description.",
+    );
+  });
+
+  it("describeImage accepts a precomputed key and still resolves/populates the same cache entry as the image-derived key", async () => {
+    const { model, doGenerate } = mockModel("Same entry either way.");
+    vi.mocked(createModel).mockReturnValue(model);
+    const config = makeConfig();
+    const image = "https://example.com/either-way.png";
+    const key = visionCacheKey(image);
+
+    const first = await describeImage({ image, config, key });
+    expect(first).toEqual({ ok: true, text: "Same entry either way." });
+
+    // A second call using the image-derived key path (no `key` passed) must
+    // hit the very same cache entry.
+    const second = await describeImage({ image, config });
+    expect(second).toEqual(first);
+    expect(doGenerate).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("LRU eviction is by recency of USE, not of insertion", () => {
+  it("a re-read entry survives eviction that would otherwise drop it", async () => {
+    const { model, doGenerate } = mockModel("some description");
+    vi.mocked(createModel).mockReturnValue(model);
+    const config = makeConfig();
+    const CACHE_MAX_ENTRIES = 64;
+
+    // Fill the cache to exactly its cap: "old" plus (CACHE_MAX_ENTRIES - 1)
+    // fillers — no eviction has happened yet at this point.
+    await describeImage({ image: "https://example.com/old.png", config });
+    for (let i = 0; i < CACHE_MAX_ENTRIES - 1; i++) {
+      await describeImage({ image: `https://example.com/filler-${i}.png`, config });
+    }
+
+    // Touch "old" again, right before pushing the cache over its cap. If
+    // eviction went by insertion order (the old bug), "old" — inserted
+    // first — would be exactly what gets dropped next. Re-reading it here
+    // must save it, at the expense of "filler-0", which has not been
+    // touched since its own insertion.
+    expect(peekCachedDescription("https://example.com/old.png")).toBe("some description");
+    await describeImage({ image: "https://example.com/one-more.png", config });
+
+    expect(peekCachedDescription("https://example.com/old.png")).toBe("some description");
+    expect(peekCachedDescription("https://example.com/filler-0.png")).toBeUndefined();
+    // Confirm "old" really did come from the cache both times, not a fresh call.
+    expect(doGenerate).toHaveBeenCalledTimes(CACHE_MAX_ENTRIES + 1);
   });
 });
