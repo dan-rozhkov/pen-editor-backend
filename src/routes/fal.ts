@@ -5,17 +5,39 @@ import { removeBackground, vectorizeImage, FalTimeoutError, UnsafeSvgError } fro
 import type { AnalyticsClient } from "../analytics/posthog.js";
 
 const bodySchema = z.object({ image_url: z.string().url() });
+type Body = z.infer<typeof bodySchema>;
 
-export async function falRoutes(
+interface FalRouteOptions {
+  path: string;
+  // Shown as the 503 body when FAL_KEY is unset — the rest of the request
+  // handling (rate limit, body validation, abort/timeout/error mapping,
+  // analytics) is identical between routes, only this message and the event
+  // name below differ in a way worth stating per-route.
+  disabledMessage: string;
+  analyticsEvent: string;
+  // Calls the actual fal.ai service function and shapes its result into the
+  // exact JSON the route sends back (e.g. remove_background drops
+  // contentType, vectorize keeps svg) — this is the one genuinely
+  // route-specific piece of behavior.
+  run: (body: Body, signal: AbortSignal) => Promise<Record<string, unknown>>;
+}
+
+// Shared skeleton for both fal.ai-backed routes: the FAL_KEY gate, body
+// validation, client-disconnect abort wiring, timing, and the
+// aborted/FalTimeoutError/UnsafeSvgError/generic error → status code +
+// analytics mapping. /api/remove-background and /api/vectorize differ only
+// in which service function they call and how they shape its result — see
+// FalRouteOptions.run — plus /api/vectorize's extra UnsafeSvgError → 422
+// branch, which this helper supports unconditionally (it's a no-op for a
+// route whose `run` never throws that error).
+function registerFalRoute(
   app: FastifyInstance,
   config: Config,
-  // Null by default so every existing caller (tests, ad hoc scripts) is
-  // unaffected — same undefined/null-elsewhere contract chat.ts's
-  // `analytics` param follows.
-  analytics: AnalyticsClient | null = null,
+  analytics: AnalyticsClient | null,
+  options: FalRouteOptions,
 ) {
   app.post(
-    "/api/remove-background",
+    options.path,
     {
       config: {
         // Each request triggers a paid external call to fal.ai, and the
@@ -26,7 +48,7 @@ export async function falRoutes(
     },
     async (request, reply) => {
       if (!config.FAL_KEY) {
-        return reply.status(503).send({ error: "Background removal is not configured on this deployment" });
+        return reply.status(503).send({ error: options.disabledMessage });
       }
 
       const parsed = bodySchema.safeParse(request.body);
@@ -47,15 +69,15 @@ export async function falRoutes(
 
       const startedAt = Date.now();
       try {
-        const { url } = await removeBackground(config, parsed.data.image_url, abortController.signal);
+        const body = await options.run(parsed.data, abortController.signal);
         analytics?.capture({
-          event: "background_removed",
+          event: options.analyticsEvent,
           distinctId: "api",
           // No real person behind this fixed "api" distinctId — see the same
           // flag on api_request in app.ts.
           properties: { ok: true, duration_ms: Date.now() - startedAt, $process_person_profile: false },
         });
-        return reply.send({ url });
+        return reply.send(body);
       } catch (err) {
         // A user closing the tab mid-call aborts the in-flight request (see
         // the reply.raw "close" handler above), which surfaces here as the
@@ -65,7 +87,7 @@ export async function falRoutes(
         // provider error rate.
         if (abortController.signal.aborted) {
           analytics?.capture({
-            event: "background_removed",
+            event: options.analyticsEvent,
             distinctId: "api",
             properties: {
               ok: false,
@@ -79,76 +101,15 @@ export async function falRoutes(
         }
         request.log.error(err);
         analytics?.capture({
-          event: "background_removed",
-          distinctId: "api",
-          properties: { ok: false, duration_ms: Date.now() - startedAt, $process_person_profile: false },
-        });
-        if (err instanceof FalTimeoutError) {
-          return reply.status(504).send({ error: err.message });
-        }
-        return reply.status(500).send({ error: (err as Error).message });
-      }
-    },
-  );
-
-  app.post(
-    "/api/vectorize",
-    {
-      config: {
-        // Same reasoning as /api/remove-background above: paid, unauthenticated.
-        rateLimit: { max: 20, timeWindow: "1 minute" },
-      },
-    },
-    async (request, reply) => {
-      if (!config.FAL_KEY) {
-        return reply.status(503).send({ error: "Vectorization is not configured on this deployment" });
-      }
-
-      const parsed = bodySchema.safeParse(request.body);
-      if (!parsed.success) {
-        return reply.status(400).send({ error: "Missing or invalid 'image_url'" });
-      }
-
-      const abortController = new AbortController();
-      reply.raw.once("close", () => {
-        if (!reply.raw.writableEnded) {
-          abortController.abort();
-        }
-      });
-
-      const startedAt = Date.now();
-      try {
-        const { url, svg } = await vectorizeImage(config, parsed.data.image_url, abortController.signal);
-        analytics?.capture({
-          event: "image_vectorized",
-          distinctId: "api",
-          properties: { ok: true, duration_ms: Date.now() - startedAt, $process_person_profile: false },
-        });
-        return reply.send({ url, svg });
-      } catch (err) {
-        if (abortController.signal.aborted) {
-          analytics?.capture({
-            event: "image_vectorized",
-            distinctId: "api",
-            properties: {
-              ok: false,
-              error_kind: "aborted",
-              duration_ms: Date.now() - startedAt,
-              $process_person_profile: false,
-            },
-          });
-          return;
-        }
-        request.log.error(err);
-        analytics?.capture({
-          event: "image_vectorized",
+          event: options.analyticsEvent,
           distinctId: "api",
           properties: {
             ok: false,
             // Distinguish "fal gave us something we refuse to use" from a
             // real server/provider failure — this is expected to fire
             // essentially never against real tracer output (see
-            // assertSvgIsInert), so a spike here is itself a signal.
+            // assertSvgIsInert), so a spike here is itself a signal. Only
+            // ever set for /api/vectorize; harmless no-op elsewhere.
             ...(err instanceof UnsafeSvgError ? { error_kind: "unsafe_svg" } : {}),
             duration_ms: Date.now() - startedAt,
             $process_person_profile: false,
@@ -166,4 +127,33 @@ export async function falRoutes(
       }
     },
   );
+}
+
+export async function falRoutes(
+  app: FastifyInstance,
+  config: Config,
+  // Null by default so every existing caller (tests, ad hoc scripts) is
+  // unaffected — same undefined/null-elsewhere contract chat.ts's
+  // `analytics` param follows.
+  analytics: AnalyticsClient | null = null,
+) {
+  registerFalRoute(app, config, analytics, {
+    path: "/api/remove-background",
+    disabledMessage: "Background removal is not configured on this deployment",
+    analyticsEvent: "background_removed",
+    run: async (body, signal) => {
+      const { url } = await removeBackground(config, body.image_url, signal);
+      return { url };
+    },
+  });
+
+  registerFalRoute(app, config, analytics, {
+    path: "/api/vectorize",
+    disabledMessage: "Vectorization is not configured on this deployment",
+    analyticsEvent: "image_vectorized",
+    run: async (body, signal) => {
+      const { url, svg } = await vectorizeImage(config, body.image_url, signal);
+      return { url, svg };
+    },
+  });
 }

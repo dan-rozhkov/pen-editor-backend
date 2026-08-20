@@ -476,4 +476,39 @@ describe("fal routes", () => {
     expect(res.statusCode).toBe(422);
     expect(JSON.parse(res.body)).toMatchObject({ error: expect.stringMatching(/script/i) });
   });
+
+  it("POST /api/remove-background returns 504 when the fal.ai call times out", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        (_url: string, init: RequestInit) =>
+          new Promise((_resolve, reject) => {
+            init.signal?.addEventListener("abort", () => reject(init.signal!.reason));
+          }),
+      ),
+    );
+
+    app = await buildApp(makeConfig({ ...FAL_CONFIG, FAL_TIMEOUT_MS: 20 }), { logger: false });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/remove-background",
+      payload: { image_url: SOURCE_URL },
+    });
+
+    expect(res.statusCode).toBe(504);
+  });
+
+  it("POST /api/vectorize returns 500 with the provider's error message on a generic failure", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("boom", { status: 500 })));
+
+    app = await buildApp(makeConfig(FAL_CONFIG), { logger: false });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/vectorize",
+      payload: { image_url: SOURCE_URL },
+    });
+
+    expect(res.statusCode).toBe(500);
+    expect(JSON.parse(res.body)).toMatchObject({ error: expect.stringMatching(/fal request failed/i) });
+  });
 });
