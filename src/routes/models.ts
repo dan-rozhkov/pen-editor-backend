@@ -12,10 +12,19 @@ export async function modelsRoutes(app: FastifyInstance, config: Config) {
   // own metadata says supportsVision: false — because an auxiliary vision
   // model is configured to describe it as text (see src/services/vision.ts).
   const visionFallback = isVisionConfigured(config);
+  // Whether the fal.ai image-op routes/tools (remove_background,
+  // vectorize_image) are usable on this deployment — same gating channel as
+  // visionFallback, so the frontend can hide the buttons rather than let the
+  // user hit a 503.
+  const imageOps = {
+    removeBackground: Boolean(config.FAL_KEY),
+    vectorize: Boolean(config.FAL_KEY),
+  };
 
   app.get("/api/models", async () => ({
     models,
     default: defaultModel,
     visionFallback,
+    imageOps,
   }));
 }

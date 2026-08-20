@@ -567,6 +567,15 @@ export async function prepareChatTurn(
     delete tools.get_screenshot;
   }
 
+  // Structural gate: remove_background/vectorize_image are client-executed
+  // but call our backend routes, which return 503 without FAL_KEY. Rather
+  // than advertise a tool that's guaranteed to fail, drop it from the
+  // per-request set when the feature isn't configured on this deployment.
+  if (!config.FAL_KEY) {
+    delete tools.remove_background;
+    delete tools.vectorize_image;
+  }
+
   return {
     model,
     system,

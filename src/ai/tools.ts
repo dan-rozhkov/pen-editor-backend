@@ -1393,6 +1393,29 @@ Returns the created/updated style ids and names (with a created|updated status) 
     }),
   }),
 
+  remove_background: tool({
+    description:
+      "Remove the background from an image, returning a PNG with transparency. Pass node_id to replace the image fill of a node already on the canvas in place, or image_url to just get a cut-out back. Use it for product shots, logos, and subjects that need compositing onto another background — never on a background photo or a full-bleed scene that is supposed to stay whole.",
+    inputSchema: z
+      .object({
+        node_id: z.string().optional().describe("Id of a canvas node whose image fill should be replaced in place."),
+        image_url: z.string().url().optional().describe("Image URL to cut out when the source is not a node on the canvas."),
+      })
+      .refine((a) => Boolean(a.node_id || a.image_url), { message: "Provide node_id or image_url" }),
+  }),
+
+  vectorize_image: tool({
+    description:
+      "Convert a raster image to SVG and place it on the canvas as EDITABLE vector layers — real paths you can recolour and reshape — rather than a flat picture. Use it for logos, icons, and flat illustrations. Never use it on photographs: a traced photo becomes thousands of unusable paths. When the artwork already exists as canvas layers, use export_layers_svg instead — it is exact and free.",
+    inputSchema: z
+      .object({
+        node_id: z.string().optional().describe("Id of a canvas node holding the image to vectorize. The node is replaced by the resulting vector layers."),
+        image_url: z.string().url().optional().describe("Image URL to vectorize when the source is not a node on the canvas."),
+        mode: z.enum(["layers", "image"]).default("layers").describe("\"layers\" places editable paths on the canvas; \"image\" just places the resulting SVG as a picture."),
+      })
+      .refine((a) => Boolean(a.node_id || a.image_url), { message: "Provide node_id or image_url" }),
+  }),
+
   analyze_image: makeAnalyzeImageTool(),
 
   publish_to_showcase: tool({

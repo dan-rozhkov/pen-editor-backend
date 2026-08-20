@@ -176,6 +176,18 @@ const envSchema = z.object({
   // PostHog instance lives; a US-cloud deployment must set POSTHOG_HOST.
   POSTHOG_API_KEY: z.string().optional(),
   POSTHOG_HOST: z.string().default("https://eu.i.posthog.com"),
+  // --- fal.ai image ops (optional): background removal + vectorization ---
+  // Unset = the whole feature is off — GET /api/models reports it via
+  // imageOps so the frontend hides the buttons, and remove_background/
+  // vectorize_image are dropped from the per-request tool set (chatTurn.ts).
+  FAL_KEY: z.string().optional(),
+  // Model ids live in env, not code, same reasoning as OPENROUTER_IMAGE_MODEL:
+  // swapping the fal.ai model a deployment uses shouldn't need a code change.
+  FAL_BG_MODEL: z.string().default("smoretalk-ai/rembg-enhance"),
+  FAL_VECTORIZE_MODEL: z.string().default("fal-ai/recraft/vectorize"),
+  // These operations are fast (5-15s) but must not hold a client connection
+  // open forever if fal.ai hangs — same reasoning as IMAGE_GENERATION_TIMEOUT_MS.
+  FAL_TIMEOUT_MS: z.coerce.number().default(60_000),
 });
 
 export type Config = z.infer<typeof envSchema>;

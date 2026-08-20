@@ -99,6 +99,14 @@ export async function uploadObject(
   key: string,
   body: Buffer,
   contentType: string,
+  // Optional extra headers on the PUT, e.g. Content-Disposition. Callers
+  // uploading content that must never be rendered inline by a browser that
+  // opens the object URL directly (untrusted/attacker-influenced markup,
+  // e.g. fal.ai SVG output — see sanitizeSvg in services/fal.ts) should pass
+  // { contentDisposition: "attachment" } here. `<img src>` ignores
+  // Content-Disposition, so this doesn't affect the normal "use the URL as
+  // an image" path.
+  extra?: { contentDisposition?: string },
 ): Promise<string> {
   await client.send(
     new PutObjectCommand({
@@ -107,6 +115,7 @@ export async function uploadObject(
       Body: body,
       ContentType: contentType,
       ...(acl ? { ACL: acl } : {}),
+      ...(extra?.contentDisposition ? { ContentDisposition: extra.contentDisposition } : {}),
       // No key this function is ever called with today gets reused for
       // different content: showcase derivative WebPs are content-hashed
       // (publish.ts, reencode.ts, rescreenshot.ts), rescreenshot's repair

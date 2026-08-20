@@ -8,6 +8,7 @@ import { registerMultipart } from "./plugins/multipart.js";
 import { registerRateLimit } from "./plugins/rateLimit.js";
 import { chatRoutes } from "./routes/chat.js";
 import { generateImageRoutes } from "./routes/generateImage.js";
+import { falRoutes } from "./routes/fal.js";
 import { mcpRoutes } from "./mcp/routes.js";
 import {
   getHandshakePath,
@@ -294,6 +295,7 @@ export async function buildApp(
   await modelsRoutes(app, config);
   await uploadRoutes(app, config);
   await generateImageRoutes(app, config, analytics);
+  await falRoutes(app, config, analytics);
   await prototypeLinkRoutes(app, config);
   const showcaseStore = await showcaseRoutes(app, config, options.showcaseStore);
   if (showcaseStore) {

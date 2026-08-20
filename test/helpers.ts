@@ -46,6 +46,10 @@ export function makeConfig(overrides: Partial<Config> = {}): Config {
     VISION_TIMEOUT_MS: 120_000,
     POSTHOG_API_KEY: undefined,
     POSTHOG_HOST: "https://eu.i.posthog.com",
+    FAL_KEY: undefined,
+    FAL_BG_MODEL: "smoretalk-ai/rembg-enhance",
+    FAL_VECTORIZE_MODEL: "fal-ai/recraft/vectorize",
+    FAL_TIMEOUT_MS: 60_000,
     ...overrides,
   };
 }
