@@ -204,8 +204,46 @@ describe("loadSkills / getSkill", () => {
     expect(proto.content).toMatch(/stock is the fallback, not the default/i);
     expect(proto.content).toMatch(/Micro imagery stays on stock/i);
     expect(proto.content).toMatch(/\*\*Fallback, in this order:\*\*/);
+    // Reference research must happen before generation so generated imagery
+    // inherits a real visual direction instead of becoming an isolated first step.
+    const referenceStep = proto.content.indexOf(
+      "Search for visual references BEFORE generating anything",
+    );
+    const generationStep = proto.content.indexOf(
+      "Generate the imagery AFTER reference research",
+    );
+    expect(referenceStep).toBeGreaterThan(-1);
+    expect(generationStep).toBeGreaterThan(referenceStep);
+    expect(proto.content).toContain("Load the `research` skill");
     // Device chrome: no unrequested status bar / device frame.
     expect(proto.content).toContain("NO device/OS chrome");
+  });
+
+  it("searches for slide references before generating deck imagery", () => {
+    const slides = getSkill("slides")!;
+    const referenceStep = slides.content.indexOf(
+      "Search for visual references before generating images",
+    );
+    const imageRule = slides.content.indexOf(
+      "After the reference-search step",
+    );
+    expect(referenceStep).toBeGreaterThan(-1);
+    expect(imageRule).toBeGreaterThan(referenceStep);
+  });
+
+  it("searches real references before new-work can render a direction", () => {
+    const newWork = getSkill("new-work")!;
+    const referenceStep = newWork.content.indexOf(
+      "Search real references before proposing or rendering a direction",
+    );
+    const visualizeStep = newWork.content.indexOf(
+      "When image generation is available",
+    );
+    expect(referenceStep).toBeGreaterThan(-1);
+    expect(visualizeStep).toBeGreaterThan(referenceStep);
+    expect(newWork.content).toContain(
+      "Do not call image generation — including `/visualize` — until this search is complete",
+    );
   });
 
   it("keeps the prototype skill's mobile preset equal to the showcase viewport", () => {
