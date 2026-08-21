@@ -282,6 +282,44 @@ describe("loadSkills / getSkill", () => {
     expect(slides.content).toContain("box-sizing: border-box");
     expect(slides.content).toContain("FIT-TO-CANVAS CHECK");
   });
+
+  it("bans inner scrolling containers, not just the root, in the prototype skill", () => {
+    // Regression: three consecutive corrections about the same defect — the
+    // agent's fix each time was `overflow: hidden` on the root while an
+    // inner `.content` container kept `overflow-y: auto`, which still
+    // rendered a scrollbar and a right-side offset.
+    const proto = getSkill("prototype")!;
+    expect(proto.content).toContain("No element may scroll, not just the root");
+    expect(proto.content).toContain("overflow-y: auto");
+    expect(proto.content).toContain("overflow: scroll");
+  });
+
+  it("bans inner scrolling containers, not just the root, in the slides skill", () => {
+    const slides = getSkill("slides")!;
+    expect(slides.content).toContain("No element may scroll, not just the root");
+    expect(slides.content).toContain("overflow-y: auto");
+  });
+
+  it("tells the agent to diagnose contrast before cycling icon names", () => {
+    // Regression: ~10 turns spent cycling ph-* names (stopwatch -> pulse ->
+    // sliders-horizontal -> sliders -> faders -> faders-horizontal -> funnel)
+    // when the real defect was a CSS rule painting the icon near-invisible
+    // against its own background.
+    const proto = getSkill("prototype")!;
+    expect(proto.content).toContain("Never cycle through icon names hoping one renders");
+    expect(proto.content.toLowerCase()).toContain("issues");
+    expect(proto.content).toContain("font-size");
+  });
+
+  it("names the un-imported-weight cause of a blank icon in the prototype skill", () => {
+    // ph-fill/ph-bold/ph-duotone need their own stylesheet; with only the
+    // regular @import they render as blank space with a perfectly valid name,
+    // and the editor's unknown-name lint deliberately does not flag them —
+    // so the skill has to carry this cause or the agent chases contrast forever.
+    const proto = getSkill("prototype")!;
+    expect(proto.content).toContain("A weight you never imported");
+    expect(proto.content).toContain("ph-duotone");
+  });
 });
 
 describe("getSkillTools / load_skill", () => {

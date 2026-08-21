@@ -151,3 +151,25 @@ describe("editing an existing embed", () => {
     expect(prompt).toContain("Editing an existing embed");
   });
 });
+
+describe("tool failure honesty", () => {
+  it("tells the agent never to report success over a failed tool call", () => {
+    // Regression: the agent described a vector logo as created despite a
+    // tool error, and only backed down when the user pushed back.
+    const prompt = buildSystemPrompt();
+    expect(prompt).toContain("A tool result carrying an error means the work did NOT happen");
+    expect(prompt.toLowerCase()).toContain("never describe it to the user as done");
+  });
+});
+
+describe("embed fit-to-canvas: no inner scrolling", () => {
+  it("bans overflow scrolling on inner containers, not just the root", () => {
+    // Regression: the agent kept fixing scrollbar/offset bugs with
+    // `overflow: hidden` on the root while leaving `overflow-y: auto` on an
+    // inner `.content` container, which still rendered a scrollbar and a
+    // right-side offset.
+    const prompt = buildSystemPrompt();
+    expect(prompt).toContain("no inner container may scroll either");
+    expect(prompt).toContain("overflow-y: auto");
+  });
+});

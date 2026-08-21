@@ -1087,6 +1087,24 @@ describe("edit_embed_html schema", () => {
     expect(() => schema.parse({ nodeId: "e", edits: [{ oldString: "", newString: "x" }] })).toThrow();
     expect(() => schema.parse({ nodeId: "e", edits: [{ oldString: "x", newString: "" }] })).not.toThrow();
   });
+
+  it("accepts a JSON-stringified edits array and parses it the same as the array form", () => {
+    const editsArray = [{ oldString: "#111", newString: "#222" }];
+    const fromArray = schema.parse({ nodeId: "embed1", edits: editsArray });
+    const fromString = schema.parse({ nodeId: "embed1", edits: JSON.stringify(editsArray) });
+    expect(fromString).toEqual(fromArray);
+  });
+
+  it("still rejects a non-JSON string value for edits", () => {
+    expect(() => schema.parse({ nodeId: "embed1", edits: "not json" })).toThrow();
+  });
+
+  it("still rejects a JSON string that doesn't parse into a valid edits array", () => {
+    expect(() => schema.parse({ nodeId: "embed1", edits: JSON.stringify([]) })).toThrow();
+    expect(() =>
+      schema.parse({ nodeId: "embed1", edits: JSON.stringify([{ oldString: "" }]) }),
+    ).toThrow();
+  });
 });
 
 describe("read_embed_html schema", () => {

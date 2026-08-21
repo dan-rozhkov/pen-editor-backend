@@ -796,7 +796,8 @@ export const penTools = {
       "`outline` (default) returns the tag structure with attributes intact and text/deep subtrees elided — " +
       "use it to see how a screen is built. `grep` returns the lines matching a literal substring with surrounding " +
       "context — use it to get byte-exact anchors for edit_embed_html. `full` returns the entire HTML; avoid it " +
-      "unless you are genuinely rewriting the screen. Always read before editing: edit_embed_html matches text exactly.",
+      "unless you are genuinely rewriting the screen. Always read before editing: edit_embed_html matches the text you " +
+      "give it, tolerating only whitespace differences.",
     inputSchema: z
       .object({
         nodeId: z.string().describe("Id of the embed node to read."),
@@ -834,28 +835,44 @@ export const penTools = {
       "Each edit replaces an exact substring (`oldString`) with `newString`; an empty `newString` deletes the match. " +
       "ALWAYS use this — never batch_design `U(id, {htmlContent: ...})` — when changing part of a screen that already " +
       "exists: rewriting a whole screen costs thousands of tokens and silently drifts parts you were not asked to touch. " +
-      "Read the fragment with read_embed_html first; matching is exact, with no whitespace normalization. " +
+      "Read the fragment with read_embed_html first; matching is exact, falling back to a whitespace-tolerant " +
+      "match (indentation and line breaks) only when the exact one finds nothing and the tolerant one is unambiguous. " +
       "Each oldString must occur exactly once unless replaceAll is true. Edits apply in order and atomically — if any " +
-      "edit fails to match, nothing is changed.",
+      "edit fails to match, nothing is changed. The call is also refused when the edits would leave a previously " +
+      "well-formed screen with an unclosed tag, so open and close a tag in the SAME call, never across two.",
     inputSchema: z.object({
       nodeId: z.string().describe("Id of the embed node to edit."),
-      edits: z
-        .array(
-          z.object({
-            oldString: z
-              .string()
-              .min(1)
-              .describe("Exact substring to find. Must occur exactly once unless replaceAll is true."),
-            newString: z.string().describe("Replacement text. An empty string deletes the matched fragment."),
-            replaceAll: z
-              .boolean()
-              .optional()
-              .describe("Replace every occurrence instead of requiring a unique match."),
-          }),
-        )
-        .min(1)
-        .max(20)
-        .describe("Edits applied in order, each against the result of the previous one."),
+      // Models sometimes emit `edits` as a JSON-encoded string instead of an array; the frontend
+      // handler (editEmbedHtml.ts parseEdits) already tolerates that, so parse it here too rather
+      // than rejecting the call before it reaches the browser. Non-JSON strings pass through
+      // untouched so zod still reports a normal validation error.
+      edits: z.preprocess(
+        (val) => {
+          if (typeof val !== "string") return val;
+          try {
+            return JSON.parse(val);
+          } catch {
+            return val;
+          }
+        },
+        z
+          .array(
+            z.object({
+              oldString: z
+                .string()
+                .min(1)
+                .describe("Exact substring to find. Must occur exactly once unless replaceAll is true."),
+              newString: z.string().describe("Replacement text. An empty string deletes the matched fragment."),
+              replaceAll: z
+                .boolean()
+                .optional()
+                .describe("Replace every occurrence instead of requiring a unique match."),
+            }),
+          )
+          .min(1)
+          .max(20)
+          .describe("Edits applied in order, each against the result of the previous one."),
+      ),
     }),
   }),
 

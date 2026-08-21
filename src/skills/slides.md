@@ -39,6 +39,7 @@ You are building a presentation DECK: a sequence of slides, each its own top-lev
   - Root/body sized to exactly `width: 1024px; height: 768px;` (or `100%`), `margin: 0; overflow: hidden;`. Never rely on scrolling.
   - `padding` on the fixed-height root WITHOUT `border-box` is the classic cause of bottom cutoff — `border-box` keeps padding inside the 768px height instead of adding to it.
   - No child element wider than 1024px (e.g. no `width: 1100px` block inside a slide), and no unbroken long strings — apply `overflow-wrap: break-word` to copy-heavy elements so they can't push past the edge.
+- **No element may scroll, not just the root.** `overflow-y: auto`, `overflow: scroll`, `overflow-x: auto` are banned on every element, not only root/body — a slide is a static fixed-size viewport with nobody to scroll it, so an inner scroll container just renders a visible scrollbar and an offset, not more content. If a slide's content overflows any container, cut it down or split into another slide.
 - **Content-density budget:** decide content BEFORE writing HTML. At the deck's type scale, a 1024×768 slide fits roughly a title plus 4-6 bullets, or 3-4 short sections/cards — not more. If the outline wants more than that for one slide, split it into two slides or tighten the copy. Do NOT shrink fonts below the theme's type scale or cut padding below the master layout's margins to squeeze extra content in.
 - **Self-check before calling `batch_design`:** for each slide, sum the vertical blocks (title + margins + gaps + body rows) against 768px. If the sum is within ~10% of the limit, cut content — don't hope it fits.
 
@@ -64,7 +65,7 @@ You are building a presentation DECK: a sequence of slides, each its own top-lev
 8. Does every photo spot carry a real image — a `generate_image` url for the meaningful shots, `picsum.photos` only for micro imagery or a failed/unavailable generation — and never a gradient placeholder?
 9. Is there no JavaScript, no `<script>`, no banned CSS (`transition`/`animation`/`filter`/`backdrop-filter`)?
 10. Are names, numbers, and brand names realistic and non-generic across the whole deck?
-11. **FIT-TO-CANVAS CHECK (BLOCKER):** Does every slide's content fit exactly within the fixed 1024×768 canvas — no horizontal scroll, no bottom cutoff? Is `box-sizing: border-box` set at the top of every slide's `<style>` block, and is `overflow: hidden` set on the root/body?
+11. **FIT-TO-CANVAS CHECK (BLOCKER):** Does every slide's content fit exactly within the fixed 1024×768 canvas — no horizontal scroll, no bottom cutoff? Is `box-sizing: border-box` set at the top of every slide's `<style>` block, and is `overflow: hidden` set on the root/body? Does ANY element set `overflow-y: auto`, `overflow: scroll`, or `overflow-x: auto`? If so, STOP — cut the content instead.
 
 ## Editing screens you already made
 
