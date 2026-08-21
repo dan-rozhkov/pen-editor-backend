@@ -23,6 +23,12 @@ import {
   prepareChatTurn,
   sanitizeMessagesForProvider,
 } from "../ai/chatTurn.js";
+import {
+  createRetriedUIMessageStream,
+  pipeRetriedUIMessageStreamToResponse,
+  type AttemptState,
+} from "../ai/streamWithRetry.js";
+import { DEFAULT_AGENT_RETRY, type AgentRetryPolicy } from "../ai/retry.js";
 import type { MemoryStore } from "../ai/memory/store.js";
 import { runReviewSafe } from "../ai/selfimprove/review.js";
 import { isPlausibleUserId } from "../lib/userId.js";
@@ -145,7 +151,15 @@ export async function chatRoutes(
   // (a no-op one when POSTHOG_API_KEY is unset), so `null` only shows up in
   // tests that construct chatRoutes directly.
   analytics: AnalyticsClient | null = null,
+  // Test seam: overrides the transparent /api/chat retry policy (see
+  // app.ts's BuildAppOptions.chatRetryPolicy). Undefined fields fall back
+  // to DEFAULT_AGENT_RETRY.
+  retryPolicyOverride: Partial<AgentRetryPolicy> = {},
 ) {
+  const retryPolicy: AgentRetryPolicy = {
+    ...DEFAULT_AGENT_RETRY,
+    ...retryPolicyOverride,
+  };
   const allowedModels = getAllowedModels(config);
   const allowedOrigins = parseEnvList(config.CORS_ALLOWED_ORIGINS);
 
@@ -324,14 +338,29 @@ export async function chatRoutes(
       outputTokens: usage?.outputTokens ?? 0,
     });
 
-    const result = streamText({
+    // Builds one attempt's streamText(...) call. `attemptState.discarded` is
+    // flipped to true by streamWithRetry the instant it decides to retry
+    // this attempt away — onAbort/onFinish check it first so trace/analytics
+    // side effects never fire for a turn the client never fully saw. This
+    // check is load-bearing, not defensive: AI SDK v6 does call
+    // onFinish/onAbort for a discarded attempt (see ai/streamWithRetry.ts's
+    // doc comment), so without it a retried turn would write an extra
+    // `raw_traces` row and fire a false `agent_turn_completed`/`_failed`.
+    const buildAttempt = (_attempt: number, attemptState: AttemptState) =>
+      streamText({
       model,
       system,
       messages: modelMessages,
       tools,
       stopWhen: stepCountIs(maxSteps),
       abortSignal: abortController.signal,
+      // Our own retry policy (ai/retry.ts + streamWithRetry.ts) is the only
+      // source of truth for retries on this call — the AI SDK's built-in
+      // default (2 internal retries with its own backoff) would otherwise
+      // stack on top of ours, multiplying provider calls and time-to-error.
+      maxRetries: 0,
       onAbort({ steps }) {
+        if (attemptState.discarded) return;
         console.log(
           `[chat] Client disconnected; aborted stream after ${steps.length} step(s).`,
         );
@@ -350,6 +379,7 @@ export async function chatRoutes(
         });
       },
       onFinish({ usage, steps }) {
+        if (attemptState.discarded) return;
         console.log(
           `[tokens] input: ${usage.inputTokens}, output: ${usage.outputTokens}, cache read: ${usage.inputTokenDetails?.cacheReadTokens ?? "n/a"}`,
         );
@@ -446,7 +476,7 @@ export async function chatRoutes(
           });
         }
       },
-    });
+      });
 
     // Set CORS headers manually since reply.hijack() bypasses Fastify plugins.
     // Only reflect origins from the allowlist (empty allowlist = dev mode, allow any).
@@ -456,10 +486,29 @@ export async function chatRoutes(
       reply.raw.setHeader("Access-Control-Allow-Origin", origin);
     }
 
-    // Pipe the UI message stream directly to the raw Node.js response,
-    // bypassing Fastify's send() which can't handle object streams.
-    result.pipeUIMessageStreamToResponse(reply.raw, {
-      onError: (error) => {
+    // Transparently retries the whole turn (see ai/streamWithRetry.ts) as
+    // long as no content has reached the client yet. maxRetries/baseDelayMs
+    // match DEFAULT_AGENT_RETRY (2 retries, 1s base) — same policy used for
+    // the offline (showcase/vision) callers of withAgentRetry.
+    const retriedStream = createRetriedUIMessageStream(buildAttempt, {
+      maxRetries: retryPolicy.maxRetries,
+      baseDelayMs: retryPolicy.baseDelayMs,
+      maxDelayMs: retryPolicy.maxDelayMs,
+      signal: abortController.signal,
+      onError: streamErrorMessage,
+      onRetry: ({ attempt, delayMs, error }) => {
+        const errorKind = classifyErrorKind(error);
+        request.log.warn(
+          { attempt, delayMs, errorKind },
+          "[chat] retrying agent turn after a transient error",
+        );
+        analytics?.capture({
+          event: "agent_turn_retried",
+          distinctId: analyticsDistinctId,
+          properties: { model: selectedModelId, attempt, error_kind: errorKind },
+        });
+      },
+      onFinalError: (error) => {
         if (traceStore) {
           writeRawTraceSafe(
             traceStore,
@@ -478,10 +527,29 @@ export async function chatRoutes(
             error_kind: classifyErrorKind(error),
           },
         });
-
-        return streamErrorMessage(error);
+      },
+      // Client disconnected while a retry's backoff sleep was in progress —
+      // no streamText attempt is active right now to fire its own onAbort
+      // (see that handler above), so this is the only place that can record
+      // it. Same trace/analytics shape as onAbort's "client-aborted" path,
+      // just with no steps: the discarded attempt's own steps are already
+      // gone by the time we're sleeping between attempts.
+      onAbortedDuringBackoff: () => {
+        request.log.info("[chat] client disconnected during retry backoff");
+        if (traceStore) {
+          writeRawTraceSafe(traceStore, buildTraceRow([], "client-aborted"));
+        }
+        analytics?.capture({
+          event: "agent_turn_failed",
+          distinctId: analyticsDistinctId,
+          properties: { model: selectedModelId, error_kind: "aborted" },
+        });
       },
     });
+
+    // Pipe the UI message stream directly to the raw Node.js response,
+    // bypassing Fastify's send() which can't handle object streams.
+    pipeRetriedUIMessageStreamToResponse(reply.raw, retriedStream);
 
     // Tell Fastify we already handled the response.
     reply.hijack();

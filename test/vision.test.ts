@@ -160,6 +160,30 @@ describe("describeImage", () => {
     expect(result.ok).toBe(false);
     expect(result.text).toMatch(/provider exploded/i);
   });
+
+  // Finding #6: describeImage passes a stricter maxRetries: 1 (not the
+  // DEFAULT_AGENT_RETRY 2) to withAgentRetry, because applyVisionPreprocessing
+  // fans this call out up to 8x per request and blocks prepareChatTurn until
+  // it settles — see the doc comment above the withAgentRetry call.
+  it("retries a persistently-retryable provider error exactly once (maxRetries: 1), not the default 2", async () => {
+    let calls = 0;
+    const model = new MockLanguageModelV3({
+      supportedUrls: { "image/*": [/.*/] },
+      doGenerate: async () => {
+        calls++;
+        throw new Error("503 Service Unavailable");
+      },
+    });
+    vi.mocked(createModel).mockReturnValue(model);
+
+    const config = makeConfig();
+    const result = await describeImage({ image: "https://example.com/f.png", config });
+
+    expect(result.ok).toBe(false);
+    // Initial attempt + exactly 1 retry = 2 calls, not 3 (which is what
+    // DEFAULT_AGENT_RETRY's maxRetries: 2 would have produced).
+    expect(calls).toBe(2);
+  });
 });
 
 describe("peekCachedDescription", () => {

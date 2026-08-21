@@ -1,6 +1,7 @@
 import { generateText, stepCountIs, type ToolSet } from "ai";
 import type { Config } from "../config.js";
 import { prepareChatTurn } from "../ai/chatTurn.js";
+import { withAgentRetry } from "../ai/retry.js";
 import { generateImage } from "../services/imageGen.js";
 import { extractEmbedScreens } from "./extractEmbeds.js";
 import { repairGeneratedImageUrls } from "./repairImageUrls.js";
@@ -162,11 +163,19 @@ function placeholderImageUrl(prompt: string): string {
 // A failure is reported as a usable placeholder rather than an error: a broken
 // image in a showcase screen is worse than a generic one, and the run must not
 // die because one image timed out.
-function makeGenerateImageTool(config: Config, onIssuedUrl: (url: string) => void) {
-  let generated = 0;
-
+// `budget` is a single object shared (by reference) across every attempt of
+// one showcase run — see the doc comment on `imageBudget` in
+// runShowcaseGeneration for why this can no longer be a `let generated = 0`
+// local to this function. (Finding #2: it used to be exactly that, so each
+// retry attempt bought its own fresh MAX_GENERATED_IMAGES budget — up to 3x
+// the prompt's advertised per-run ceiling across 2 retries.)
+function makeGenerateImageTool(
+  config: Config,
+  budget: { generated: number },
+  onIssuedUrl: (url: string) => void,
+) {
   return async ({ prompt }: { prompt: string }) => {
-    if (generated >= MAX_GENERATED_IMAGES) {
+    if (budget.generated >= MAX_GENERATED_IMAGES) {
       console.warn(
         `[showcase] image budget spent (${MAX_GENERATED_IMAGES}) — serving a placeholder for: ${prompt.slice(0, 60)}`,
       );
@@ -178,9 +187,9 @@ function makeGenerateImageTool(config: Config, onIssuedUrl: (url: string) => voi
     }
 
     // Claim the slot synchronously, before the await: the model issues these
-    // calls in parallel, so reading `generated` back after the await reports
-    // the final count for every one of them.
-    const slot = (generated += 1);
+    // calls in parallel, so reading `budget.generated` back after the await
+    // reports the final count for every one of them.
+    const slot = (budget.generated += 1);
     try {
       const { url } = await generateImage(config, prompt);
       onIssuedUrl(url);
@@ -203,12 +212,16 @@ function instrumentTools(
   config: Config,
   tools: ToolSet,
   onScreens: (screens: ShowcaseScreenDraft[]) => Array<{ id: string; name: string }>,
+  // Shared across every attempt of one run — see runShowcaseGeneration's
+  // doc comment on why these two must be created ONCE, outside the retry
+  // closure, and threaded through here rather than allocated fresh per call
+  // — a retried attempt must not get a fresh image budget, since the
+  // prompt promises the model a hard per-run cap.
+  imageBudget: { generated: number },
+  issuedImageUrls: string[],
 ): ToolSet {
   const instrumented: ToolSet = { ...tools };
-  // Every URL generate_image handed the model this run, so an image URL the
-  // model mistyped into the HTML can be snapped back to the real one.
-  const issuedImageUrls: string[] = [];
-  const generateImageExecute = makeGenerateImageTool(config, (url) =>
+  const generateImageExecute = makeGenerateImageTool(config, imageBudget, (url) =>
     issuedImageUrls.push(url),
   );
 
@@ -287,6 +300,22 @@ function instrumentTools(
   return instrumented;
 }
 
+// Sentinel thrown (never surfaced to a caller — see runShowcaseGeneration's
+// catch around withAgentRetry) when an attempt's generateText() call
+// returned normally but harvested zero embed screens. Finding #3: this is
+// exactly the minimax-m3 failure mode the retry was originally built for —
+// the model quietly finishes the turn without ever calling batch_design —
+// but `generateText` doesn't throw for it, so `withAgentRetry`'s default
+// error-classification retry never covered it. Throwing this from inside
+// the attempt closure turns that silent failure into a normal retryable
+// error for `withAgentRetry`'s `shouldRetry` hook to recognize.
+class EmptyHarvestError extends Error {
+  constructor() {
+    super("Attempt produced zero embed screens via batch_design.");
+    this.name = "EmptyHarvestError";
+  }
+}
+
 // Runs one autonomous /prototype turn for `theme` and returns whatever embed
 // screens the agent produced (0 to MAX_SHOWCASE_SCREENS — never throws just
 // because the count is off that range; callers decide what "success" means).
@@ -307,31 +336,96 @@ export async function runShowcaseGeneration(
     modelOverride: modelId,
   });
 
-  const screens: ShowcaseScreenDraft[] = [];
+  // Spent-image-generations counter and the URLs generate_image has handed
+  // out — created ONCE for the whole run, outside the retry closure below,
+  // and threaded into instrumentTools() on every attempt. (Finding #2: these
+  // used to be allocated fresh inside instrumentTools(), which is called
+  // fresh per attempt — so each retry attempt quietly bought its own
+  // MAX_GENERATED_IMAGES budget instead of sharing the run's single hard
+  // ceiling, and the prompt's "hard 8 generations" promise to the model was
+  // not actually enforced across retries.)
+  const imageBudget = { generated: 0 };
+  const issuedImageUrls: string[] = [];
 
-  const tools = instrumentTools(config, prepared.tools, (extracted) => {
-    const created: Array<{ id: string; name: string }> = [];
-    for (const screen of extracted) {
-      if (screens.length >= MAX_SHOWCASE_SCREENS) {
-        console.warn(
-          `[showcase] dropping extra screen "${screen.name}" beyond the ${MAX_SHOWCASE_SCREENS}-screen cap`,
+  // minimax and other flaky models often abort the whole turn before ever
+  // reaching batch_design (see selfimprove/showcase notes on minimax-m3) —
+  // retry the turn itself rather than losing the whole generation run.
+  // `attemptScreens` is (re)built INSIDE this closure, one fresh array per
+  // attempt: if attempt 1 called batch_design and then failed on a later
+  // step, its partial screens must not bleed into attempt 2 — only the last
+  // attempt's screens are ever returned. `imageBudget`/`issuedImageUrls`
+  // above are the opposite: they persist across every attempt of this run,
+  // by design: the image budget is per RUN, not per attempt.
+  let screens: ShowcaseScreenDraft[];
+  try {
+    screens = await withAgentRetry(
+      async () => {
+        const attemptScreens: ShowcaseScreenDraft[] = [];
+
+        const tools = instrumentTools(
+          config,
+          prepared.tools,
+          (extracted) => {
+            const created: Array<{ id: string; name: string }> = [];
+            for (const screen of extracted) {
+              if (attemptScreens.length >= MAX_SHOWCASE_SCREENS) {
+                console.warn(
+                  `[showcase] dropping extra screen "${screen.name}" beyond the ${MAX_SHOWCASE_SCREENS}-screen cap`,
+                );
+                continue;
+              }
+              const id = `screen-${attemptScreens.length + 1}`;
+              attemptScreens.push(screen);
+              created.push({ id, name: screen.name });
+            }
+            return created;
+          },
+          imageBudget,
+          issuedImageUrls,
         );
-        continue;
-      }
-      const id = `screen-${screens.length + 1}`;
-      screens.push(screen);
-      created.push({ id, name: screen.name });
-    }
-    return created;
-  });
 
-  await generateText({
-    model: prepared.model,
-    system: prepared.system,
-    messages: prepared.modelMessages,
-    tools,
-    stopWhen: stepCountIs(SHOWCASE_MAX_STEPS),
-  });
+        await generateText({
+          model: prepared.model,
+          system: prepared.system,
+          messages: prepared.modelMessages,
+          tools,
+          stopWhen: stepCountIs(SHOWCASE_MAX_STEPS),
+          // withAgentRetry is the single retry policy here — without this, the
+          // AI SDK's own default (2 internal retries) would stack on top of it.
+          maxRetries: 0,
+        });
+
+        // Finding #3: a model that finishes cleanly without ever calling
+        // batch_design is the failure this retry exists for, but it isn't a
+        // thrown error — make it one so it's retryable like any other
+        // transient failure.
+        if (attemptScreens.length === 0) {
+          throw new EmptyHarvestError();
+        }
+
+        return attemptScreens;
+      },
+      {
+        // Retry an EmptyHarvestError like any other transient failure;
+        // defer to the default provider-error classification for
+        // everything else (undefined). See withAgentRetry's shouldRetry
+        // doc comment.
+        shouldRetry: (error) =>
+          error instanceof EmptyHarvestError ? true : undefined,
+      },
+    );
+  } catch (err) {
+    // The retry budget is exhausted and the LAST attempt still harvested
+    // nothing: today's behavior for that case is to return an empty screens
+    // array (with the warning below), not to throw — a showcase run failing
+    // outright over this is worse than the pre-existing "0 screens" outcome
+    // callers already handle. Any other error still propagates as before.
+    if (err instanceof EmptyHarvestError) {
+      screens = [];
+    } else {
+      throw err;
+    }
+  }
 
   if (screens.length === 0) {
     console.warn(`[showcase] run for theme "${theme}" produced no embed screens`);

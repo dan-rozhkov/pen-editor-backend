@@ -76,6 +76,23 @@ function mockModel(results: LanguageModelV3GenerateResult[]): MockLanguageModelV
   });
 }
 
+// Same shape as mockModel, but an entry may be an Error to throw instead of
+// a result — used to simulate a retryable mid-turn failure (e.g. one that
+// happens after batch_design already ran for that attempt).
+function mockModelWithFailure(
+  results: Array<LanguageModelV3GenerateResult | Error>,
+): MockLanguageModelV3 {
+  let call = 0;
+  return new MockLanguageModelV3({
+    doGenerate: async () => {
+      const result = results[Math.min(call, results.length - 1)];
+      call += 1;
+      if (result instanceof Error) throw result;
+      return result;
+    },
+  });
+}
+
 describe("runShowcaseGeneration", () => {
   let runShowcaseGeneration: typeof import("../src/showcase/runner.js").runShowcaseGeneration;
   let MAX_GENERATED_IMAGES: number;
@@ -112,6 +129,30 @@ describe("runShowcaseGeneration", () => {
       { name: "Home", htmlContent: "<div>Home</div>" },
       { name: "Profile", htmlContent: "<div>Profile</div>" },
     ]);
+  });
+
+  it("does not mix screens from a failed attempt into the retried attempt's result", async () => {
+    // Attempt 1: batch_design records a screen, then the next step throws a
+    // retryable error (simulating a flaky model aborting mid-turn, as
+    // minimax-m3 is known to do). Attempt 2 (fresh accumulators) records a
+    // different screen and finishes cleanly. Only attempt 2's screen should
+    // survive — attempt 1's must not leak into the final result.
+    holders.model = mockModelWithFailure([
+      toolCallResult("batch_design", {
+        operations:
+          's1=I(document, {type: "embed", name: "AttemptA", htmlContent: "<div>A</div>"})',
+      }),
+      new Error("503 Service Unavailable"),
+      toolCallResult("batch_design", {
+        operations:
+          's1=I(document, {type: "embed", name: "AttemptB", htmlContent: "<div>B</div>"})',
+      }),
+      textResult("done"),
+    ]);
+
+    const result = await runShowcaseGeneration(makeConfig(), "fitness tracker");
+
+    expect(result.screens).toEqual([{ name: "AttemptB", htmlContent: "<div>B</div>" }]);
   });
 
   it("does not hang or throw when the model calls an unavailable tool like get_screenshot-equivalent stubs", async () => {
@@ -244,6 +285,91 @@ describe("runShowcaseGeneration", () => {
     const result = await runShowcaseGeneration(makeConfig(), "трекер расходов");
 
     expect(result.screens).toEqual([]);
+  });
+
+  // -------------------------------------------------------------------------
+  // Finding #3: an attempt that finishes cleanly without ever calling
+  // batch_design (the minimax-m3 failure mode the retry exists for) must be
+  // retried like a thrown transient error, not silently accepted as "0
+  // screens" on the very first try.
+  // -------------------------------------------------------------------------
+
+  it("finding #3: retries an attempt that harvested zero screens, and returns the retried attempt's screens", async () => {
+    let calls = 0;
+    const results: LanguageModelV3GenerateResult[] = [
+      // Attempt 1: a single clean-finish step, no batch_design call at all.
+      textResult("nothing to see here"),
+      // Attempt 2: a real screen, then a clean finish.
+      toolCallResult("batch_design", {
+        operations:
+          's1=I(document, {type: "embed", name: "Recovered", htmlContent: "<div>ok</div>"})',
+      }),
+      textResult("done"),
+    ];
+    holders.model = new MockLanguageModelV3({
+      doGenerate: async () => {
+        const result = results[Math.min(calls, results.length - 1)];
+        calls++;
+        return result;
+      },
+    });
+
+    const result = await runShowcaseGeneration(makeConfig(), "fitness tracker");
+
+    expect(result.screens).toEqual([{ name: "Recovered", htmlContent: "<div>ok</div>" }]);
+    expect(calls).toBe(3);
+  });
+
+  it("finding #3: an empty harvest on every attempt still ends the run without throwing (today's behavior), after exhausting the retry budget", async () => {
+    let calls = 0;
+    holders.model = new MockLanguageModelV3({
+      doGenerate: async () => {
+        calls++;
+        return textResult("I could not complete this task.");
+      },
+    });
+
+    const result = await runShowcaseGeneration(makeConfig(), "трекер расходов");
+
+    expect(result.screens).toEqual([]);
+    // Initial attempt + 2 retries (DEFAULT_AGENT_RETRY.maxRetries) = 3 model
+    // calls, each a single clean-finish step.
+    expect(calls).toBe(3);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Finding #2: the generated-image budget must be shared across every
+  // attempt of one run, not reset per attempt.
+  // ---------------------------------------------------------------------------
+
+  it("finding #2: keeps the image budget spent across a retried attempt instead of resetting it", async () => {
+    imageGenMock.generateImage.mockResolvedValue({
+      url: "https://s3.test/generated.png",
+      mimeType: "image/png",
+    });
+
+    const attempt1ImageCalls = Array.from({ length: MAX_GENERATED_IMAGES }, (_, i) =>
+      toolCallResult("generate_image", { prompt: `image ${i}` }),
+    );
+    holders.model = mockModelWithFailure([
+      ...attempt1ImageCalls,
+      // Burns attempt 1's budget on 8 real generations, then a retryable
+      // failure forces a fresh attempt.
+      new Error("503 Service Unavailable"),
+      // Attempt 2: one more generate_image call — must be served a
+      // placeholder from the SAME (already-spent) budget, not a 9th real
+      // generation — then a real screen so the run doesn't also trip
+      // finding #3's empty-harvest retry.
+      toolCallResult("generate_image", { prompt: "one more after retry" }),
+      toolCallResult("batch_design", {
+        operations: 's1=I(document, {type: "embed", name: "Home", htmlContent: "<div>x</div>"})',
+      }),
+      textResult("done"),
+    ]);
+
+    await runShowcaseGeneration(makeConfig(), "fitness tracker");
+
+    expect(imageGenMock.generateImage.mock.calls.length).toBe(MAX_GENERATED_IMAGES);
   });
 });
 

@@ -7,6 +7,7 @@ import { registerCors } from "./plugins/cors.js";
 import { registerMultipart } from "./plugins/multipart.js";
 import { registerRateLimit } from "./plugins/rateLimit.js";
 import { chatRoutes } from "./routes/chat.js";
+import type { AgentRetryPolicy } from "./ai/retry.js";
 import { generateImageRoutes } from "./routes/generateImage.js";
 import { falRoutes } from "./routes/fal.js";
 import { mcpRoutes } from "./mcp/routes.js";
@@ -73,6 +74,11 @@ export interface BuildAppOptions {
   // layer against the same mistake — see mcp-auto-token-publish.test.ts for
   // why both are required.
   publishHandshake?: boolean;
+  // Test seam: overrides the /api/chat transparent-retry policy
+  // (DEFAULT_AGENT_RETRY otherwise — 2 retries, 1s base delay). Lets
+  // integration tests exercise the retry path without waiting out real
+  // backoff delays.
+  chatRetryPolicy?: Partial<AgentRetryPolicy>;
 }
 
 // The MCP WS upgrade (GET /api/mcp/ws?token=...) carries the auth token in
@@ -310,6 +316,7 @@ export async function buildApp(
     auditDb,
     userSkillStore,
     analytics,
+    options.chatRetryPolicy,
   );
   await memoryActivityRoutes(app, config, memoryStore);
   await userSkillRoutes(app, config, userSkillStore);

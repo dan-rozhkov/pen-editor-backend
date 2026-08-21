@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { generateText } from "ai";
 import type { Config } from "../config.js";
 import { createModel } from "../ai/provider.js";
+import { withAgentRetry } from "../ai/retry.js";
 
 const NO_QUESTION_PROMPT =
   "Describe everything visible in this image in thorough detail. Include any text, layout structure, colors, typography, spacing, imagery, UI controls and any other notable visual information.";
@@ -219,20 +220,45 @@ export async function describeImage(params: {
 
   try {
     const model = createModel(config, config.VISION_MODEL);
-    const result = await generateText({
-      model,
-      maxOutputTokens: config.VISION_MAX_TOKENS,
-      abortSignal: combinedSignal,
-      messages: [
-        {
-          role: "user",
-          content: [
-            { type: "text", text: prompt },
-            { type: "image", image },
+    // Retried BEFORE any negative-cache write below — a transient failure
+    // (429/5xx/connection reset) should not pin "known bad" for
+    // FAILURE_CACHE_TTL_MS just because the first attempt hit a blip.
+    //
+    // Finding #6: maxRetries is capped at 1 here — stricter than
+    // DEFAULT_AGENT_RETRY's 2 — because this call sits in a worse spot than
+    // /api/chat's own retry (streamWithRetry.ts): applyVisionPreprocessing
+    // fans this out to up to 8 NEW describeImage() calls per request (4 at a
+    // time, see vision-messages.ts), and every one of them blocks
+    // prepareChatTurn — and therefore the whole chat turn's first byte —
+    // until it settles. A stuck VISION_MODEL at the chat route's default of
+    // 2 retries could mean up to 8 x 3 = 24 doomed attempts and several
+    // backoff sleeps of dead time before the model even starts streaming;
+    // the thrown provider error also is NOT negatively cached (see the
+    // comment below), so this repeats on every subsequent turn until it
+    // clears. One retry (2 attempts total) still absorbs a single blip
+    // without letting the fan-out multiply it into double digits.
+    const result = await withAgentRetry(
+      () =>
+        generateText({
+          model,
+          maxOutputTokens: config.VISION_MAX_TOKENS,
+          abortSignal: combinedSignal,
+          // withAgentRetry (ai/retry.ts) is the single retry policy here —
+          // without this, the AI SDK's own default (2 internal retries)
+          // would stack on top of it, tripling provider calls per failure.
+          maxRetries: 0,
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: prompt },
+                { type: "image", image },
+              ],
+            },
           ],
-        },
-      ],
-    });
+        }),
+      { signal: combinedSignal, maxRetries: 1 },
+    );
 
     const text = result.text.trim();
     if (!text) {
