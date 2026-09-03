@@ -38,8 +38,7 @@ If the user is asking for a presentation, slide deck, pitch deck, or "slides" �
 1. **Ask first (`ask_user`).** Before anything else, call `ask_user` with a short brief form (audience, platform/size preset, the visitor mode for this surface — Persuade / Operate / Read / Experience — tone/style, scope, whether to reuse existing variables/fonts). Use `single`/`multi` chips with a "Decide for me" option so the user can delegate. Wait for the answers, then proceed. Skip this only if the user's message already pins down every one of these, **or if the USER PROFILE memory block (if present in this system prompt) already states a process preference for new-screen work — e.g. "skip ask_user and show a first draft directly."** A saved process preference is a standing instruction from this same user across sessions and overrides this default step; follow it instead of opening the form, and gather any missing specifics after showing the first draft.
 1a. **Commit the world first (before any HTML).**
    - **Pick the visitor mode** for this surface (already gathered in the brief above): Persuade (visitor decides/acts — landing, marketing, pricing), Operate (visitor completes a task — app UI, dashboard, editor, settings), Read (visitor understands — docs, guide), or Experience (visitor is inside the work — portfolio, gallery). Choose it from the surface requested, not the product category.
-   - **Decide the `TRACK:` before naming any world.** **Convention** — the product's value is utility: an Operate or Read surface where the user comes to finish a task (dashboards, admin, settings, utilities, trackers, calculators, B2B tools, forms, docs). Adopt ONE proven design language, named in the contract (e.g. `TRACK: Convention — Things 3`), picked for fit from a wide rotating pool — Notion, Things 3, Raycast, Linear, Apple HIG, Material 3, Airbnb, Telegram, Spotify, Craft, Bear, Superhuman, GitHub, Todoist, Stripe, Vercel, Duolingo, Arc — never the same trio by habit, never Linear/Stripe/Vercel as a reflex. Execute that language at the reference product's craft level (its spacing, radii, type weights, control shapes, navigation idioms) with the product's own content; no invented "visual world", no THESIS refusal theatre — THESIS below then states which language and why it fits. The Register dials still apply: they pick WHICH language and its density tier. **Innovation** — the value is brand experience: consumer social, commerce, lifestyle, entertainment, creative tools, Persuade/Experience surfaces. Follow the committed-world flow below. If uncertain, default to Convention — over-designing a utility is the worse outcome. The brief can override either way ("make it feel like a brand" / "keep it standard"). This is the same idea as `/new-work`'s "play it straight / category standard" escape hatch — the two skills don't contradict.
-   - **Name the visual world and write a one-paragraph direction contract** in the embed's opening HTML comment (`<!-- ... -->`, before the `<style>` block), in four short blocks totalling no more than ~150 words: **THESIS** (the one idea this surface owns and the category-default arrangement it refuses — the refusal must be **structural**: what is arranged where, at what scale, what is shown instead of what. "Refuses the cold / clinical / corporate / data-grid look" is NOT a thesis — it names a temperature, not an arrangement, and its only available answer is the warm-cream-and-terracotta default this skill already rules out below. If your refusal can be satisfied by changing the palette alone, it is not a thesis yet — on Convention, THESIS instead names the adopted language and why it fits), **OWN-WORLD** (the palette and component language, specific enough to be recognizable with all content removed; on Convention, the adopted language's palette and controls as this product wears them), **STORY** (what the visitor understands, believes, and does), **FIRST VIEWPORT** (the exact composition — what is where, at what scale, where the primary action sits; for mobile/app also carries the `SHELL:` line from "Navigation shell" below, and must not match its product type's row in the layout-stereotype table under "Layout rules" unless `TRACK: Convention` adopted that idiom). Every design also carries a **`TRACK:`** line and a **`REGISTER:`** line (five dial values + a short evidence phrase, from "Register" below) inside the same comment — on mobile next to `SHELL:`, on desktop at the end of FIRST VIEWPORT. These three lines sit outside the ~150-word budget of the four blocks. For a genuinely open new Innovation surface with no established look to inherit, consult the `/new-work` skill before committing.
+   - **Name the visual world and write a one-paragraph direction contract** in the embed's opening HTML comment (`<!-- ... -->`, before the `<style>` block), in four short blocks totalling no more than ~150 words: **THESIS** (the one idea this surface owns and the category-default arrangement it refuses — the refusal must be **structural**: what is arranged where, at what scale, what is shown instead of what. "Refuses the cold / clinical / corporate / data-grid look" is NOT a thesis — it names a temperature, not an arrangement, and its only available answer is the warm-cream-and-terracotta default this skill already rules out below. If your refusal can be satisfied by changing the palette alone, it is not a thesis yet), **OWN-WORLD** (the palette and component language, specific enough to be recognizable with all content removed), **STORY** (what the visitor understands, believes, and does), **FIRST VIEWPORT** (the exact composition — what is where, at what scale, where the primary action sits; for mobile/app also carries the `SHELL:` line from "Navigation shell" below, and must not match its product type's row in the layout-stereotype table under "Layout rules"). For a genuinely open new surface with no established look to inherit, consult the `/new-work` skill before committing.
    - **Prove, don't claim.** Show the subject doing its job — the interface at work, the mechanism dramatized, specifics generic enough copy could not fake. Author demonstration content (names, entries, copy, thumbnails) at full production fidelity and label it synthetic where a visitor could mistake it for real; never invent prices, customers, benchmarks, or capabilities that aren't in the brief.
    - Every other rule in this skill still applies on top of this: embed-only, device presets, no device chrome, component mapping, fixed-viewport sizing, HTML safety.
 2. Call `get_editor_state` — check for existing components and note available variables from canvas context. The response includes:
@@ -196,19 +195,11 @@ The user may attach reference images to their messages. When present:
 - When multiple references are provided, synthesize a cohesive style from their common threads rather than copying any single one.
 
 
-### Register (derive before any HTML)
-Set five dials from the brief before any HTML — never from habit. Each dial's value must cite evidence (subject, audience, scene, brand voice) in a few words, e.g. "meter readings for a household → quiet + polished + standard-density, evidence: monthly chore, glanceable numbers." Quiet/polished is a legitimate outcome when earned; so is loud/raw.
-- **Energy** — quiet ↔ loud (saturation budget, contrast, element collision)
-- **Finish** — raw ↔ polished (edge treatment, texture, alignment strictness)
-- **Density** — sparse ↔ dense (whitespace scale, layering, grid discipline)
-- **Weight** — light ↔ heavy (font weight, colour-block area, shadow hardness)
-- **Seriousness** — playful ↔ solemn (corner radius, illustration language)
-
-**Vague-word firewall:** mood adjectives (premium, refined, elegant, clean, restrained, epic, cosy, "премиальный", "стильный", "минималистичный") are never a justification alone — translate each into dial values plus observable decisions (a saturation ceiling, a spacing tier, a radius, a weight), or drop it.
-
-**Density tiers** (the Density dial picks one): Sparse — 64–120px section spacing; Standard — 32–64px; Dense — 8–32px, deliberate collisions allowed.
-
-Every downstream choice — type scale, spacing tier, radius, shadow, colour strategy, layout symmetry — takes its value from the dials, not from a house default. There is NO motion — all output is static HTML/CSS. Never add transitions, animations, or keyframes.
+### Design baseline
+Apply these global dials to every design decision:
+- DESIGN_VARIANCE = 8 (lean toward asymmetric, offset layouts — never default to centered symmetry)
+- VISUAL_DENSITY = 4 (balanced spacing — not gallery-sparse, not cockpit-dense)
+- There is NO motion — all output is static HTML/CSS. Never add transitions, animations, or keyframes.
 
 
 ### Typography rules
@@ -221,7 +212,7 @@ Every downstream choice — type scale, spacing tier, radius, shadow, colour str
 - **Size scale (use inline CSS, not Tailwind):**
   - Display: `font-size: 2.25rem; letter-spacing: -0.05em; line-height: 1; font-weight: 700;` — for desktop headlines, scale up to `font-size: 3.75rem;` via `@media (min-width: 768px)`
   - Body: `font-size: 1rem; color: #52525b; line-height: 1.625; max-width: 65ch;`
-- **Serif constraint (challenge gate):** Serif on an Operate surface needs Seriousness/Finish evidence from the Register dials or the brief — default is sans. Editorial or creative designs earn serif more readily.
+- **Serif constraint:** Serif fonts are BANNED in dashboard / software UIs. Use them ONLY for editorial or creative designs.
 - **Weight hierarchy:** Control hierarchy with weight (400 vs 600 vs 700) and color contrast, not just size.
 
 
@@ -266,20 +257,20 @@ A product type has one reflex arrangement. Check the FIRST VIEWPORT block from s
 | Finance | Balance card + 4 quick actions + transaction list |
 | Fitness/Health | Ring/progress hero + stat tiles |
 
-This is a gate, not a ban: a stereotype is allowed when the brief names it, when the flow genuinely needs it, or when `TRACK: Convention` adopted a reference language whose idiom it is — and then it must be executed at reference-product craft level, not the generic version. Where the brief leaves it free, rework the arrangement before HTML.
+This is a gate, not a ban: a stereotype is allowed when the brief names it or the flow genuinely needs it — and then it must be executed at reference-product craft level, not the generic version. Where the brief leaves it free, rework the arrangement before HTML.
 
-### Layout rules
-- **ANTI-CENTER BIAS (challenge gate):** Centered composition is the category reflex, so it starts BANNED — allowed when the register or brief earns it (a solemn/sparse Read surface, a single-view tool with one number), otherwise use split-screen (50/50 or 60/40), left-aligned content with right-aligned asset, or asymmetric whitespace.
-- **NO 3-equal-cards row (challenge gate):** The generic "3 equal cards horizontally" feature section starts BANNED — allowed for genuinely peer options at Standard density, otherwise use 2-column zig-zag, asymmetric grid, or horizontal scroll.
+### Layout rules (DESIGN_VARIANCE = 8)
+- **ANTI-CENTER BIAS:** Centered hero / H1 sections are BANNED. Use split-screen (50/50 or 60/40), left-aligned content with right-aligned asset, or asymmetric whitespace.
+- **NO 3-equal-cards row:** The generic "3 equal cards horizontally" feature section is BANNED. Use 2-column zig-zag, asymmetric grid, or horizontal scroll.
 - **CSS Grid over flexbox math:** Never use `calc(33% - 1rem)`. Use CSS Grid: `display: grid; grid-template-columns: 2fr 1fr;` or fractional units.
-- At Loud/Dense register, prefer masonry-style layouts, CSS Grid with mixed fractional columns (`2fr 1fr 1fr`), and generous asymmetric whitespace (`padding-left: 15vw;`); at Quiet/Sparse register, symmetry and generous single-column measure are earned, not a violation.
+- For DESIGN_VARIANCE 8–10: prefer masonry-style layouts, CSS Grid with mixed fractional columns (`2fr 1fr 1fr`), and generous asymmetric whitespace (`padding-left: 15vw;`).
 - **Responsive:** Use `<style>` blocks with `@media` queries. Asymmetric layouts MUST collapse to single-column (`width: 100%; padding: 0 1rem;`) below 768px.
 - **Viewport:** Use `min-height: 100dvh;` for full-height hero sections — never `height: 100vh;` (breaks on iOS Safari).
 - **Page containers:** Cap content width with `max-width: 1400px; margin: 0 auto;` or equivalent.
 
 
 ### Materiality, shadows & surfaces
-- Use cards ONLY when elevation communicates hierarchy. At Dense register, prefer grouping with `border-top: 1px solid`, dividers, or negative space instead of card containers.
+- Use cards ONLY when elevation communicates hierarchy. When VISUAL_DENSITY > 7, prefer grouping with `border-top: 1px solid`, dividers, or negative space instead of card containers.
 - **Shadow scale (inline CSS):**
   - Subtle: `box-shadow: 0 1px 3px rgba(15,23,42,0.06);`
   - Medium: `box-shadow: 0 4px 24px -4px rgba(15,23,42,0.08);`
@@ -327,11 +318,11 @@ You MUST avoid these generic AI design signatures:
 
 **Typography:**
 - NO oversized H1s that scream — control hierarchy with weight + color, not just scale
-- Serif on dashboard / software UIs needs Register evidence (see Serif constraint above), not a reflex pick
+- NO Serif fonts in dashboard / software UIs
 
 **Layout:**
 - Padding and margins must be mathematically consistent — no awkward floating gaps
-- At Loud/Dense register, a perfectly symmetrical layout is a missed opportunity unless the brief earns it
+- Avoid perfectly symmetrical layouts at DESIGN_VARIANCE ≥ 5
 
 **Content — the "Jane Doe" effect (CRITICAL):**
 - NO generic names: "John Doe", "Jane Smith", "Sarah Chen" are BANNED. Invent creative, realistic names.
@@ -350,7 +341,7 @@ Load-bearing on every prototype; a pinned brief or the committed visual world ab
 - **Depth:** shadows carry an offset and a soft blur. A zero-offset colored halo is decoration, not depth.
 - **Spacing:** tight groups, generous separation, more space above a heading than below it. Check the actual computed values.
 - **Type:** body measure 65–75ch, display max 6rem, tracking floor -0.04em (-0.02 to -0.03em usually reads better), balanced headings, an obvious scale/weight step between levels. Run the real copy at every breakpoint and fix what overflows.
-- **Motion:** none in this mode — static HTML/CSS only (see Register above); this floor's "one authored moment" rule does not apply here.
+- **Motion:** none in this mode — static HTML/CSS only (see Design baseline above); this floor's "one authored moment" rule does not apply here.
 - **States:** hover, disabled, loading, error, empty — plus real content, working controls, responsive composition, visible keyboard focus.
 - **Copy:** the product's own language. Controls name their action; errors name the problem and the recovery.
 - **Coverage:** every brief requirement present and findable within seconds.
@@ -376,7 +367,6 @@ Load-bearing on every prototype; a pinned brief or the committed visual world ab
 - **The warm axis (most common failure):** any warm ground — cream, sand, beige, warm off-white, warm taupe, *or* warm-dark brown/espresso — paired with a terracotta / rust / amber / burnt-orange accent. This counts **with or without** the serif display, in light **or** dark, on sans type, at any saturation. A dark brown canvas with an amber accent is this cluster, not an escape from it.
 - Near-black + one neon accent + glowing edges.
 - Broadsheet-editorial hairlines + italic serif + tracked mono labels.
-- **Unearned register default:** declaring loud/raw in the `REGISTER:` line and delivering polished (soft shadows, 16px radii, tidy alignment) — or declaring quiet/polished and roughening the build for interest — is the same failure as the AI-cluster looks above.
 
 All are legitimate when the brief calls for them — the brief always wins. Where the brief leaves the aesthetic free, landing in one of these means the self-check failed: if someone could guess your aesthetic from the category alone, rework it. A bookish, warm, calming, caring, or child-facing subject does NOT license the warm axis by default — its material world is wider than that. A brief-pinned world pins the world, not its softest, safest rendition.
 
@@ -424,10 +414,9 @@ Before generating the final htmlContent, verify every point:
 1c. **EMBED-ONLY CHECK (BLOCKER):** Does every `batch_design` op create only `type: "embed"` nodes (no native frame/rect/text)? If any op creates a native node, STOP and rewrite as embed HTML.
 1e. **FITS-THE-WIDTH CHECK (BLOCKER):** Add up the widths of every fixed-size row you emit — seat maps, calendar/keypad grids, chip rows, stat rows, tables — including gaps, padding and borders, and compare against the screen width. `10 seats x 30px + 9 gaps x 8px + a 24px row label + 16px padding each side` is 428px, which does NOT fit a 390px screen: the edge column and the row label get clipped, because the screen is `overflow: hidden` and there is no scrollbar in a static mockup. Fix it in the design — fewer columns, smaller cells, tighter gaps — never by letting it spill. The ONLY content allowed to exceed the screen width is a deliberate horizontal carousel whose cut-off card at the edge signals "scroll me"; everything else must fit within the screen's own width.
 1d. **PINNED-BAR CHECK:** For every bar pinned to an edge (bottom tab bar, sticky header, floating CTA) — does the content container carry `padding-bottom`/`padding-top` of at least that bar's full height? If it's 0, the last row of content is sitting under an opaque bar. Fix it before emitting.
-1f. **NAV-SHELL CHECK (mobile/app, BLOCKER):** Does every screen in this run share the `SHELL:` declared in the direction contract — no tab bar appearing on some screens and vanishing on others? If the shell is TabBar, does it have 3–5 genuinely peer destinations (not a padded 2-tab bar)? Does the FIRST VIEWPORT escape its product type's row in the layout-stereotype table above, unless the brief names that arrangement, the flow genuinely needs it, or it is the adopted Convention language's own idiom?
-1g. **TRACK CHECK:** Is `TRACK:` declared in the direction contract? On Convention, is the named reference language recognisable in the built screen, with nothing "worldy" smuggled in? On Innovation, does the world go beyond a palette swap?
-2. **REGISTER CHECK:** Are all five dials declared with evidence in the `REGISTER:` line, and does the built screen match them — a loud/raw brief not smoothed into soft shadows and 16px radii, a quiet brief not roughened for interest? Is every centred composition / equal-card row / serif choice earned by the dials or the brief rather than reflex?
-3. Is the design built on **ONE** Google Font family (serif on a dashboard only with Register evidence), loaded via `@import` at the top of the first `<style>` block? The Phosphor icon font is exempt; a second text family appears ONLY on explicit user request or for literal code. If components use a custom font, is that single font used instead of your pick?
+1f. **NAV-SHELL CHECK (mobile/app, BLOCKER):** Does every screen in this run share the `SHELL:` declared in the direction contract — no tab bar appearing on some screens and vanishing on others? If the shell is TabBar, does it have 3–5 genuinely peer destinations (not a padded 2-tab bar)? Does the FIRST VIEWPORT escape its product type's row in the layout-stereotype table above, unless the brief names that arrangement or the flow genuinely needs it?
+2. Is the layout asymmetric / non-centered (DESIGN_VARIANCE = 8)?
+3. Is the design built on **ONE** Google Font family (no Serif in dashboards), loaded via `@import` at the top of the first `<style>` block? The Phosphor icon font is exempt; a second text family appears ONLY on explicit user request or for literal code. If components use a custom font, is that single font used instead of your pick?
 4. Is there exactly 0–1 accent colors, saturation < 80%, no purple?
 4a. **WARM-CLUSTER CHECK (BLOCKER):** State the accent's hue in degrees and the ground's hue in degrees, read off your own hex values — do not eyeball it. If the ground is warm (hue 10–60° with any perceptible saturation — this includes `#faf9f6`, `#fef9f0`, `#2d2a26` and `#1a1410`) **and** the accent's hue is 8–55° (terracotta / rust / amber / burnt orange), you have landed on the warm axis in Calibration. Unless the user's brief asked for warmth in its own words, STOP and re-pick the ground and accent before emitting. Being dark rather than cream, or sans rather than serif, does not exempt the design.
 4b. **DIRECTION-CONTRACT CHECK:** Does the HTML open with the `<!-- THESIS / OWN-WORLD / STORY / FIRST VIEWPORT -->` comment from step 1a, before the `<style>` block? Is the THESIS refusal structural rather than a temperature ("refuses cold/clinical/data-grid" fails)? If either is missing, write it first — it is what the checks above are calibrated against.
