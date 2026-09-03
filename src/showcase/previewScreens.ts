@@ -1,4 +1,3 @@
-import { auditScreenHtml } from "./htmlAudit.js";
 import { normalizeShowcaseHtml } from "./normalizeHtml.js";
 import {
   DEAD_SPACE_LIMIT_CSS_PX,
@@ -71,8 +70,6 @@ export async function renderAndDiagnose(
     } else if (dead.cssPx > DEAD_SPACE_LIMIT_CSS_PX) {
       notes.push(`${dead.cssPx}px of dead space at the bottom`);
     }
-
-    for (const finding of auditScreenHtml(source.html)) notes.push(finding);
 
     reports.push({ label: source.label, pngPath: source.pngPath, width, height, notes });
   }
