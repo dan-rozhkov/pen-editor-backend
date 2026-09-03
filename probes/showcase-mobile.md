@@ -120,3 +120,15 @@ expectation: no hardcoded clock + signal/battery glyph row, no wifi + battery cl
 source: `src/showcase/htmlAudit.ts` (re-drawn-chrome triggers) and `src/skills/prototype.md` ("NO device/OS chrome")
 judge: mechanical
 status: unknown
+
+### P-018 register declared with evidence and honoured
+expectation: a `REGISTER:` line is present in the direction contract with all five dials (Energy/Finish/Density/Weight/Seriousness) and a short evidence phrase; the built screens match the declared values rather than defaulting to a house look
+source: `src/skills/prototype.md` ("Register"), ported from OJO Design Skills' Style Register Derivation
+judge: by eye
+status: unknown
+
+### P-019 track declared and fitting
+expectation: a `TRACK:` line is present in the direction contract; utility themes (dashboards, admin, settings, utilities, trackers, calculators, B2B tools, forms, docs) land on Convention with a named reference language recognisable in the screens; brand-experience themes (social, commerce, lifestyle, entertainment, creative tools) land on Innovation
+source: `src/skills/prototype.md` ("Decide the TRACK"), ported from OJO Design Skills' Step 0 Product Type Assessment
+judge: by eye
+status: unknown
