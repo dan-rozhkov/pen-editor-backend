@@ -101,6 +101,40 @@ describe("renderAndDiagnose", () => {
     ]);
   });
 
+  it("flags an AI-tell finding from the original, un-normalized HTML", async () => {
+    const d = deps(await pngWithContent(780, 1688));
+    const [report] = await renderAndDiagnose(
+      d,
+      [
+        {
+          label: "01",
+          html: "<html><body><p>Lorem ipsum dolor sit amet</p></body></html>",
+          pngPath: "/tmp/01.png",
+        },
+      ],
+      "mobile",
+    );
+
+    expect(report.notes).toContain("lorem ipsum placeholder copy");
+  });
+
+  it("adds no audit notes for a clean screen", async () => {
+    const d = deps(await pngWithContent(780, 1688));
+    const [report] = await renderAndDiagnose(
+      d,
+      [
+        {
+          label: "01",
+          html: "<html><body><p>Welcome back, Alex</p></body></html>",
+          pngPath: "/tmp/01.png",
+        },
+      ],
+      "mobile",
+    );
+
+    expect(report.notes).toEqual([]);
+  });
+
   it("judges desktop screens against the desktop box", async () => {
     const d = deps(await pngWithContent(2880, 2048));
     const [report] = await renderAndDiagnose(
