@@ -54,7 +54,7 @@ describe("getAllowedModels", () => {
       "minimax/minimax-m3",
       "xiaomi/mimo-v2.5-pro",
       "xiaomi/mimo-v2.5",
-      "deepseek/deepseek-v4-flash",
+      "deepseek/deepseek-v4-flash-vision-exp",
       "deepseek/deepseek-v4-pro",
       "tencent/hy3",
       "nvidia/nemotron-3-ultra-550b-a55b",
@@ -78,7 +78,9 @@ describe("getAllowedModels", () => {
 
   it("includes extra models from OPENROUTER_ALLOWED_MODELS", () => {
     const allowed = getAllowedModels(
-      makeConfig({ OPENROUTER_ALLOWED_MODELS: "custom/model-a, custom/model-b" }),
+      makeConfig({
+        OPENROUTER_ALLOWED_MODELS: "custom/model-a, custom/model-b",
+      }),
     );
     expect(allowed).toContain("custom/model-a");
     expect(allowed).toContain("custom/model-b");
@@ -103,7 +105,9 @@ describe("getAllowedModels", () => {
 
 describe("getDefaultModel", () => {
   it("returns OPENROUTER_MODEL", () => {
-    expect(getDefaultModel(makeConfig({ OPENROUTER_MODEL: "x/y" }))).toBe("x/y");
+    expect(getDefaultModel(makeConfig({ OPENROUTER_MODEL: "x/y" }))).toBe(
+      "x/y",
+    );
   });
 });
 

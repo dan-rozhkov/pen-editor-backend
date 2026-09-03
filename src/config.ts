@@ -135,8 +135,16 @@ const envSchema = z.object({
   // require a code change and a deploy. `.min(1)` because 0 would make
   // `>= interval` true on every single request and fire a full background
   // generateText per round-trip.
-  MEMORY_REVIEW_INTERVAL: z.coerce.number().int().min(1).default(DEFAULT_MEMORY_REVIEW_INTERVAL),
-  SKILL_REVIEW_INTERVAL: z.coerce.number().int().min(1).default(DEFAULT_SKILL_REVIEW_INTERVAL),
+  MEMORY_REVIEW_INTERVAL: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .default(DEFAULT_MEMORY_REVIEW_INTERVAL),
+  SKILL_REVIEW_INTERVAL: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .default(DEFAULT_SKILL_REVIEW_INTERVAL),
   // Kill switch for the L2 scenario layer (agent_scenarios + the review's
   // third due-source). Unlike MEMORY_ENABLED/SELF_SKILLS_ENABLED this
   // defaults ON: the layer is inert without traces and an `npm run analyze`
@@ -245,11 +253,12 @@ export const DEFAULT_MODELS: ModelOption[] = [
     supportsVision: false,
   },
   { id: "xiaomi/mimo-v2.5", label: "MiMo V2.5", supportsVision: true },
-  // DeepSeek V4 (text-only — image parts are stripped before sending).
+  // DeepSeek V4: the flash line is the experimental vision build; pro is
+  // text-only (its image parts are stripped before sending).
   {
-    id: "deepseek/deepseek-v4-flash",
+    id: "deepseek/deepseek-v4-flash-vision-exp",
     label: "DeepSeek V4 Flash",
-    supportsVision: false,
+    supportsVision: true,
   },
   {
     id: "deepseek/deepseek-v4-pro",
