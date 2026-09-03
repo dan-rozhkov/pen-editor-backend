@@ -297,6 +297,11 @@ export const DEFAULT_MODELS: ModelOption[] = [
     label: "Gemini 3.7 Flash",
     supportsVision: true,
   },
+  {
+    id: "meta/muse-spark-1.3-contributor",
+    label: "Muse Spark 1.3",
+    supportsVision: true,
+  },
 ];
 
 // Full model list for a config: the built-in models, plus any extra models an
