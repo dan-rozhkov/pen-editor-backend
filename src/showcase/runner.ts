@@ -17,15 +17,14 @@ export const MAX_SHOWCASE_SCREENS = 5;
 //
 // History: moonshotai/kimi-k2.5 between 2026-07-28 and 2026-07-29, then
 // deepseek/deepseek-v4-pro, then its dated 0813 snapshot on 2026-08-15,
-// and google/gemini-3.7-flash the same day.
-// google/gemini-3.8-flash since 2026-09-03 (same price, newer snapshot). Both deepseek stints were
+// and google/gemini-3.7-flash the same day. Both deepseek stints were
 // motivated against: the model clusters on warm-cream/terracotta palettes
 // and skips prototype.md's THESIS/OWN-WORLD direction contract. Override
 // per run with `--model=`.
 //
 // This is the showcase default only. `/api/chat` reads OPENROUTER_MODEL
 // and is untouched by anything here.
-export const SHOWCASE_MODEL_ID = "google/gemini-3.8-flash";
+export const SHOWCASE_MODEL_ID = "google/gemini-3.7-flash";
 
 // Generous but bounded step budget: ask_user -> get_editor_state ->
 // get_guidelines -> batch_design (+ a retry or two) comfortably fits.
