@@ -102,3 +102,21 @@ expectation: content above the pinned bottom bar neither overflows behind it nor
 source: incident 2026-07-31 — the 844 box fails three quiet ways at once; split from P-005
 judge: by eye
 status: unknown
+
+### P-015 the run commits to one navigation shell
+expectation: every screen shares the `SHELL:` declared in the direction contract (TabBar / Stack / Hub / Single-view / Feed); a TabBar carries 3–5 genuinely peer destinations, and a single-task app (calculator, timer, one form) has no tab bar at all
+source: `src/skills/prototype.md` ("Navigation shell"), ported from OJO Design Skills' navigation-shell selection
+judge: by eye
+status: unknown
+
+### P-016 no unfilled placeholder copy
+expectation: no lorem, John Doe / Acme / example.com, literal "Title"/"Card" labels, a timestamp or round metric repeated 3+ times, or a generic CTA (Submit / Continue / Learn More) reused on one screen
+source: `src/showcase/htmlAudit.ts` (honest-copy triggers ported from OJO Design Skills' anti-patterns)
+judge: mechanical
+status: unknown
+
+### P-017 no device chrome drawn into the screen
+expectation: no hardcoded clock + signal/battery glyph row, no wifi + battery cluster, no pill home indicator, no phone bezel around the 390x844 box
+source: `src/showcase/htmlAudit.ts` (re-drawn-chrome triggers) and `src/skills/prototype.md` ("NO device/OS chrome")
+judge: mechanical
+status: unknown

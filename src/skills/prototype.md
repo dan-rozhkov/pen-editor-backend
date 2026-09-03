@@ -16,6 +16,15 @@ You are in PROTOTYPE mode. Your default goal is to quickly insert exactly one to
 ### Multiple screens requested (still this skill)
 If the user asks for MULTIPLE distinct screens, views, or pages in one request (e.g. "a login screen and a dashboard", "onboarding flow with 3 steps", "show the empty state and the filled state") — do NOT cram them into one embed. Insert ONE embed per screen instead, each screen at its natural size (per the device presets below), laid out left-to-right on the canvas with a consistent horizontal gap between them (e.g. each screen's `x` = previous screen's `x` + its `width` + a gap of ~120px, same `y`). Give each embed a descriptive `name` identifying which screen it is. Everything else in this skill (component reuse, taste rules, HTML safety) applies identically to every screen's embed.
 
+### Navigation shell (mobile/app — decide before HTML)
+For a mobile/app multi-screen flow, pick ONE shell for the whole run and state it as a one-line `SHELL: <name>` entry in the direction contract (step 1a) before writing any screen's HTML:
+- **TabBar** — 3–5 genuinely peer destinations the user switches between all day. Earned by 3–5 peers; a 2-tab bar or a "Home / Settings / Profile"-padded bar is a failure. Never invent a destination to fill a tab.
+- **Stack** — one entry screen that drills into detail (list → item → action). Back affordance in the header, no bottom bar.
+- **Hub** — a launcher of tiles/sections leading to separate tools.
+- **Single-view** — one focused working surface plus sheets/steps (calculators, timers, converters, a single form). No tab bar; the primary action sits in the thumb zone.
+- **Feed** — full-screen gesture cards.
+Match the shell to the product's real flow, not its category. Every screen in the run shares the declared shell — a tab bar cannot appear on some screens and vanish on others. When the shell is Stack or Single-view, the space a tab bar would take goes to content or a pinned primary action (see the pinned-bar padding rule under "Fit to canvas").
+
 ### Presentation / slide deck requests (different skill)
 If the user is asking for a presentation, slide deck, pitch deck, or "slides" — this is NOT a prototype request. Load the `slides` skill instead (call `load_skill` with name `slides`), which defines the deck-specific rules: fixed 1024×768 slide size, shared theme/master enforced across slides, and the filmstrip layout formula.
 
@@ -29,7 +38,7 @@ If the user is asking for a presentation, slide deck, pitch deck, or "slides" �
 1. **Ask first (`ask_user`).** Before anything else, call `ask_user` with a short brief form (audience, platform/size preset, the visitor mode for this surface — Persuade / Operate / Read / Experience — tone/style, scope, whether to reuse existing variables/fonts). Use `single`/`multi` chips with a "Decide for me" option so the user can delegate. Wait for the answers, then proceed. Skip this only if the user's message already pins down every one of these, **or if the USER PROFILE memory block (if present in this system prompt) already states a process preference for new-screen work — e.g. "skip ask_user and show a first draft directly."** A saved process preference is a standing instruction from this same user across sessions and overrides this default step; follow it instead of opening the form, and gather any missing specifics after showing the first draft.
 1a. **Commit the world first (before any HTML).**
    - **Pick the visitor mode** for this surface (already gathered in the brief above): Persuade (visitor decides/acts — landing, marketing, pricing), Operate (visitor completes a task — app UI, dashboard, editor, settings), Read (visitor understands — docs, guide), or Experience (visitor is inside the work — portfolio, gallery). Choose it from the surface requested, not the product category.
-   - **Name the visual world and write a one-paragraph direction contract** in the embed's opening HTML comment (`<!-- ... -->`, before the `<style>` block), in four short blocks totalling no more than ~150 words: **THESIS** (the one idea this surface owns and the category-default arrangement it refuses — the refusal must be **structural**: what is arranged where, at what scale, what is shown instead of what. "Refuses the cold / clinical / corporate / data-grid look" is NOT a thesis — it names a temperature, not an arrangement, and its only available answer is the warm-cream-and-terracotta default this skill already rules out below. If your refusal can be satisfied by changing the palette alone, it is not a thesis yet), **OWN-WORLD** (the palette and component language, specific enough to be recognizable with all content removed), **STORY** (what the visitor understands, believes, and does), **FIRST VIEWPORT** (the exact composition — what is where, at what scale, where the primary action sits). For a genuinely open new surface with no established look to inherit, consult the `/new-work` skill before committing.
+   - **Name the visual world and write a one-paragraph direction contract** in the embed's opening HTML comment (`<!-- ... -->`, before the `<style>` block), in four short blocks totalling no more than ~150 words: **THESIS** (the one idea this surface owns and the category-default arrangement it refuses — the refusal must be **structural**: what is arranged where, at what scale, what is shown instead of what. "Refuses the cold / clinical / corporate / data-grid look" is NOT a thesis — it names a temperature, not an arrangement, and its only available answer is the warm-cream-and-terracotta default this skill already rules out below. If your refusal can be satisfied by changing the palette alone, it is not a thesis yet), **OWN-WORLD** (the palette and component language, specific enough to be recognizable with all content removed), **STORY** (what the visitor understands, believes, and does), **FIRST VIEWPORT** (the exact composition — what is where, at what scale, where the primary action sits; for mobile/app also carries the `SHELL:` line from "Navigation shell" below, and must not match its product type's row in the layout-stereotype table under "Layout rules"). For a genuinely open new surface with no established look to inherit, consult the `/new-work` skill before committing.
    - **Prove, don't claim.** Show the subject doing its job — the interface at work, the mechanism dramatized, specifics generic enough copy could not fake. Author demonstration content (names, entries, copy, thumbnails) at full production fidelity and label it synthetic where a visitor could mistake it for real; never invent prices, customers, benchmarks, or capabilities that aren't in the brief.
    - Every other rule in this skill still applies on top of this: embed-only, device presets, no device chrome, component mapping, fixed-viewport sizing, HTML safety.
 2. Call `get_editor_state` — check for existing components and note available variables from canvas context. The response includes:
@@ -235,6 +244,21 @@ Apply these global dials to every design decision:
 - **Variable priority:** If design variables exist in canvas context, ALWAYS use them as CSS custom properties (`var(--name, fallback)`) instead of hardcoding hex values.
 
 
+### Layout-stereotype table (challenge gate, checked at the direction stage)
+A product type has one reflex arrangement. Check the FIRST VIEWPORT block from step 1a against its type's row BEFORE writing HTML — matching it means the direction hasn't earned its existence yet:
+
+| Product type | Reflex arrangement |
+|---|---|
+| Dashboard | Sidebar + top nav + card grid |
+| E-commerce | Hero banner + product grid |
+| Social | Bottom tab bar + feed + FAB |
+| Landing | Hero → features → testimonials → CTA |
+| Chat | Contacts list + messages |
+| Finance | Balance card + 4 quick actions + transaction list |
+| Fitness/Health | Ring/progress hero + stat tiles |
+
+This is a gate, not a ban: a stereotype is allowed when the brief names it or the flow genuinely needs it — and then it must be executed at reference-product craft level, not the generic version. Where the brief leaves it free, rework the arrangement before HTML.
+
 ### Layout rules (DESIGN_VARIANCE = 8)
 - **ANTI-CENTER BIAS:** Centered hero / H1 sections are BANNED. Use split-screen (50/50 or 60/40), left-aligned content with right-aligned asset, or asymmetric whitespace.
 - **NO 3-equal-cards row:** The generic "3 equal cards horizontally" feature section is BANNED. Use 2-column zig-zag, asymmetric grid, or horizontal scroll.
@@ -390,6 +414,7 @@ Before generating the final htmlContent, verify every point:
 1c. **EMBED-ONLY CHECK (BLOCKER):** Does every `batch_design` op create only `type: "embed"` nodes (no native frame/rect/text)? If any op creates a native node, STOP and rewrite as embed HTML.
 1e. **FITS-THE-WIDTH CHECK (BLOCKER):** Add up the widths of every fixed-size row you emit — seat maps, calendar/keypad grids, chip rows, stat rows, tables — including gaps, padding and borders, and compare against the screen width. `10 seats x 30px + 9 gaps x 8px + a 24px row label + 16px padding each side` is 428px, which does NOT fit a 390px screen: the edge column and the row label get clipped, because the screen is `overflow: hidden` and there is no scrollbar in a static mockup. Fix it in the design — fewer columns, smaller cells, tighter gaps — never by letting it spill. The ONLY content allowed to exceed the screen width is a deliberate horizontal carousel whose cut-off card at the edge signals "scroll me"; everything else must fit within the screen's own width.
 1d. **PINNED-BAR CHECK:** For every bar pinned to an edge (bottom tab bar, sticky header, floating CTA) — does the content container carry `padding-bottom`/`padding-top` of at least that bar's full height? If it's 0, the last row of content is sitting under an opaque bar. Fix it before emitting.
+1f. **NAV-SHELL CHECK (mobile/app, BLOCKER):** Does every screen in this run share the `SHELL:` declared in the direction contract — no tab bar appearing on some screens and vanishing on others? If the shell is TabBar, does it have 3–5 genuinely peer destinations (not a padded 2-tab bar)? Does the FIRST VIEWPORT escape its product type's row in the layout-stereotype table above, unless the brief names that arrangement or the flow genuinely needs it?
 2. Is the layout asymmetric / non-centered (DESIGN_VARIANCE = 8)?
 3. Is the design built on **ONE** Google Font family (no Serif in dashboards), loaded via `@import` at the top of the first `<style>` block? The Phosphor icon font is exempt; a second text family appears ONLY on explicit user request or for literal code. If components use a custom font, is that single font used instead of your pick?
 4. Is there exactly 0–1 accent colors, saturation < 80%, no purple?
