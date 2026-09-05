@@ -57,6 +57,8 @@ describe("penTools registry", () => {
         "ask_user",
         "analyze_image",
         "publish_to_showcase",
+        "read_design_repo",
+        "read_repo_files",
       ].sort(),
     );
   });
@@ -104,6 +106,8 @@ describe("penTools registry", () => {
       "ask_user",
       "get_screenshot",
       "publish_to_showcase",
+      "read_design_repo",
+      "read_repo_files",
     ] as const) {
       expect(hasExecute(name), `${name} must be client-executed`).toBe(false);
     }

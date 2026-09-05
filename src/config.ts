@@ -57,6 +57,29 @@ const envSchema = z.object({
       return s === "true" || s === "1";
     }),
   REFERO_API_KEY: z.string().optional(),
+  // GitHub REST access for read_design_repo/read_repo_files (src/services/
+  // github.ts). Unset = unauthenticated requests only — public repos work,
+  // capped at GitHub's ~60 req/hour/IP. Set a personal access token (no
+  // special scopes needed for public repos; `repo` scope to also read
+  // private repos the token owner can see) to raise that to 5000 req/hour.
+  GITHUB_TOKEN: z.string().optional(),
+  // SECURITY: by default this feature only ever reads PUBLIC repos, even
+  // when GITHUB_TOKEN is set — every token-bearing request is preceded by
+  // an unauthenticated visibility probe (ensurePublicRepoAccess in
+  // src/services/github.ts). Without that gate, an unauthenticated route
+  // backed by a token would let anyone on the internet read the token
+  // owner's private repos through us. Set this to "true" ONLY for a
+  // trusted, single-operator deployment that deliberately wants the agent
+  // to read the token owner's own private repos. Same "true"/"1"-only
+  // parsing as ENABLE_AGENT_LOGGING: z.coerce.boolean() would treat
+  // "false" as true.
+  GITHUB_ALLOW_PRIVATE_REPOS: z
+    .string()
+    .optional()
+    .transform((v) => {
+      const s = v?.toLowerCase();
+      return s === "true" || s === "1";
+    }),
   // Internet search (optional) — enables the web_search/fetch_url tools (Tavily).
   // Free tier: 1,000 credits/month (basic search = 1 credit).
   TAVILY_API_KEY: z.string().optional(),

@@ -17,6 +17,8 @@ export function makeConfig(overrides: Partial<Config> = {}): Config {
     CORS_ALLOWED_ORIGINS: undefined,
     ENABLE_AGENT_LOGGING: false,
     REFERO_API_KEY: undefined,
+    GITHUB_TOKEN: undefined,
+    GITHUB_ALLOW_PRIVATE_REPOS: false,
     S3_ENDPOINT: undefined,
     S3_BUCKET: undefined,
     S3_ACCESS_KEY_ID: undefined,

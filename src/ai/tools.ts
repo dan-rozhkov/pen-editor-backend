@@ -1409,6 +1409,45 @@ Returns the created/updated style ids and names (with a created|updated status) 
 
   analyze_image: makeAnalyzeImageTool(),
 
+  read_design_repo: tool({
+    description:
+      "Build a design brief from a real GitHub repository: detected framework/styling system/component libraries, design tokens (colors, font stacks, spacing, radii, shadows — extracted from the repo's Tailwind config and/or CSS custom properties, never invented; a var()/hsl(var())/rgb(var()) reference is resolved against the repo's own custom properties where possible, and a bare HSL/RGB channel triplet like shadcn/ui's `--background: 0 0% 100%` is wrapped into a real CSS color), a component inventory (`{ name, path }`, sorted so components/ui-style primitives come first — `name` is derived from the filename, not read from the file, so it's a label, not a claim about what the file exports), and a short list of key files. This is the entry point for building a design from a real product's codebase — call it FIRST, before read_repo_files, so you know which components exist and which token values are real. Only PUBLIC repositories are readable by default, regardless of any server-side GitHub token — a private repo returns the same not-found error as one that doesn't exist. Client-executed: proxies to POST /api/repo/brief. " +
+      "Critical constraint: the canvas has NO React/Vue/Svelte/etc. runtime — output always lands as a plain HTML/CSS `embed` node, and embeds run no JavaScript, so Tailwind's CDN/runtime script does not work and any `class=\"px-4 bg-blue-500\"`-style utility class in the source is inert on canvas. Do not copy the repo's className strings into the embed and expect them to render — convert each utility class into real CSS using the *values* from this brief's `tokens` (e.g. Tailwind's `bg-blue-500` becomes `background: <the actual hex from tokens.colors>`, not a class name). Prefer the brief's exact values (hex colors, font stacks, radii, spacing) over eyeballing them from a screenshot or memory. If `tokens` comes back empty or missing a value you need, say so and ask the user rather than inventing a plausible-looking one.",
+    inputSchema: z.object({
+      repo: z
+        .string()
+        .min(1)
+        .describe(
+          'Repository reference: "owner/name", a full https://github.com/owner/name URL, or a URL with "/tree/<ref>" (optionally followed by a subpath).',
+        ),
+      ref: z
+        .string()
+        .optional()
+        .describe("Branch, tag, or commit sha to read. Defaults to the repo's default branch, or the ref embedded in a /tree/<ref> URL."),
+    }),
+  }),
+
+  read_repo_files: tool({
+    description:
+      "Read the full source of up to 20 specific files from a GitHub repository (component source, a config file, anything named in `keyFiles` or `components[].path` from read_design_repo). Call read_design_repo first to know which paths are worth reading — this tool does not search or list files, only fetches exact paths you already know. Only PUBLIC repositories are readable by default, same as read_design_repo. Client-executed: proxies to POST /api/repo/files. Each file is capped at 64KB (cut files come back with `truncated: true` and a trailing `/* ... truncated ... */` marker); paths that don't exist at the given ref come back in `missing`, not as an error; a path that exists but wasn't read in time (the whole call has a shared deadline and byte budget) comes back in `notRead`, distinct from `missing` — treat it as \"try again / ask for fewer paths\", not \"doesn't exist\". " +
+      "Read the actual component source before reproducing it — its JSX/template structure (element nesting, conditional states, variant props) is what you translate into HTML structure; its styling (Tailwind classes, styled-components, CSS modules) is what you translate into real CSS using read_design_repo's token values, never by leaving Tailwind classes in the embed's HTML (they do nothing there — no JS runtime).",
+    inputSchema: z.object({
+      repo: z
+        .string()
+        .min(1)
+        .describe('Repository reference, same format as read_design_repo\'s `repo` argument.'),
+      ref: z
+        .string()
+        .optional()
+        .describe("Branch, tag, or commit sha. Defaults to the repo's default branch."),
+      paths: z
+        .array(z.string().min(1))
+        .min(1)
+        .max(20)
+        .describe("Repo-relative file paths to read, e.g. from read_design_repo's `components[].path` or `keyFiles`."),
+    }),
+  }),
+
   publish_to_showcase: tool({
     description:
       "Publish canvas screens the user made to the PUBLIC showcase gallery at `/` as one app (at most 5 screens). Client-executed: POSTs the named screens' HTML plus a rasterized PNG (the editor's own export path, 2x scale) to the backend, which normalizes/screenshots-in-place/uploads/stores them exactly like an autonomous showcase run. Each screen must be exactly the target platform's viewport size (mobile 390x844, desktop 1440x1024) or the call is rejected — resize or rebuild the screen first, this tool never resizes for you. Publishing is public and irreversible from here (there is no unpublish tool). Never call this unless the user explicitly asked to publish/showcase these screens — on a vague request, confirm which screens and under what app name first.",
