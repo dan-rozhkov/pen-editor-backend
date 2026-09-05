@@ -4,6 +4,7 @@ import type { LanguageModel } from "ai";
 import { loadConfig } from "../config.js";
 import { createModel } from "../ai/provider.js";
 import { createPgPool } from "../tracing/traceStore.js";
+import { pruneRawTraces } from "../tracing/pruneTraces.js";
 import { migrate } from "./migrate.js";
 import { assembleSession, renderSessionText, type RawTraceDbRow } from "./assemble.js";
 import { summarizeWithPiiGuard } from "./summarize.js";
@@ -455,12 +456,10 @@ async function main(): Promise<void> {
       console.log(`[analyze] report written to ${reportPath} (${clusters.length} clusters)`);
     }
 
-    // 3. TTL cleanup of raw traces.
-    const del = await pool.query(
-      `DELETE FROM raw_traces WHERE created_at < now() - make_interval(days => $1::int)`,
-      [config.TRACE_RAW_TTL_DAYS],
-    );
-    console.log(`[analyze] deleted ${del.rowCount ?? 0} expired raw trace row(s)`);
+    // 3. TTL cleanup of raw traces. Shared with the server's own daily prune
+    // (src/tracing/pruneTraces.ts) so the retention rule has one definition.
+    const deleted = await pruneRawTraces(pool, config.TRACE_RAW_TTL_DAYS);
+    console.log(`[analyze] deleted ${deleted} expired raw trace row(s)`);
   } finally {
     await pool.end();
   }

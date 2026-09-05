@@ -16,6 +16,7 @@
     "showcase:reencode": "tsx --env-file=.env src/showcase/reencodeRun.ts",
     "showcase:pin": "tsx --env-file=.env src/showcase/pinRun.ts",
     "showcase:delete": "tsx --env-file=.env src/showcase/deleteRun.ts",
+    "traces:prune": "tsx --env-file=.env src/tracing/pruneRun.ts",
     "memory:curate": "tsx --env-file=.env src/ai/memory/curatorRun.ts",
     "skills:curate": "tsx --env-file=.env src/ai/selfimprove/curateRun.ts",
     "build": "tsc && rm -rf dist/skills && cp -R src/skills dist/skills && rm -rf dist/analysis/migrations && cp -R src/analysis/migrations dist/analysis/migrations",

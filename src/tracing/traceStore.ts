@@ -74,6 +74,36 @@ export function createPgPool(
   return pool;
 }
 
+// Screenshots and image attachments reach the trace as `data:...;base64,...`
+// strings inside the message history, and `buildTraceRow` stores the WHOLE
+// incoming history on every turn — so one screenshot is re-stored once per
+// tool-loop continuation. Measured on the Neon database in 2026-09: 94% of
+// all `raw_traces` bytes (208 MB of 222 MB across the largest rows) were
+// base64 payloads, and the table alone was 477 MB of a 512 MB quota. The
+// analysis pipeline only ever reads text, tool calls and the prompt hash —
+// it never looks at the pixels — so the bytes are pure cost. Redaction
+// happens on the serialized JSON rather than by walking the object: the
+// payload shape is `unknown[]` by design (whatever the client sent), so
+// there is no reliable set of fields to target, and a single regex pass over
+// the string catches an image wherever it is nested.
+//
+// Small data URLs (inline icons, 1x1 spacers) are left alone: they cost
+// nothing and keeping them keeps trace rendering honest.
+const MIN_REDACTED_BASE64_CHARS = 512;
+const BASE64_DATA_URL_RE = new RegExp(
+  `data:([\\w.+-]+/[\\w.+-]+)?((?:;[\\w.+-]+=[\\w.+-]+)*);base64,([A-Za-z0-9+/]{${MIN_REDACTED_BASE64_CHARS},}={0,2})`,
+  "g",
+);
+
+/** Replaces every large base64 data URL in a JSON string with a size marker. */
+export function redactBase64DataUrls(json: string): string {
+  return json.replace(
+    BASE64_DATA_URL_RE,
+    (_match, mime: string | undefined, params: string, data: string) =>
+      `data:${mime ?? ""}${params};base64,[redacted ${data.length} chars]`,
+  );
+}
+
 export function createTraceStore(
   config: Config,
   pool?: TraceQueryable,
@@ -93,7 +123,7 @@ export function createTraceStore(
           row.userId ?? null,
           row.model,
           row.agentMode,
-          JSON.stringify(row.payload),
+          redactBase64DataUrls(JSON.stringify(row.payload)),
           row.streamError,
           row.inputTokens,
           row.outputTokens,

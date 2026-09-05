@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   buildPgPoolOptions,
   createTraceStore,
+  redactBase64DataUrls,
   writeRawTraceSafe,
   type RawTraceRow,
   type TraceQueryable,
@@ -30,6 +31,39 @@ describe("buildPgPoolOptions", () => {
     const options = buildPgPoolOptions("postgres://example", { max: 10 });
     expect(options.max).toBe(10);
     expect(options.connectionTimeoutMillis).toBeUndefined();
+  });
+});
+
+
+// 94% of every byte in raw_traces turned out to be base64 screenshots stored
+// once per tool-loop continuation (see traceStore.ts). The analysis pipeline
+// never reads the pixels, so they are dropped on the way in.
+describe("redactBase64DataUrls", () => {
+  const big = "A".repeat(2000);
+
+  it("replaces a large base64 data URL with a size marker", () => {
+    const out = redactBase64DataUrls(`{"image":"data:image/png;base64,${big}"}`);
+    expect(out).toBe(`{"image":"data:image/png;base64,[redacted 2000 chars]"}`);
+    expect(JSON.parse(out).image).toContain("[redacted 2000 chars]");
+  });
+
+  it("redacts every image in the string, not just the first", () => {
+    const out = redactBase64DataUrls(
+      `data:image/png;base64,${big} and data:image/jpeg;base64,${big}`,
+    );
+    expect(out).not.toContain(big);
+    expect(out).toContain("data:image/png;base64,[redacted");
+    expect(out).toContain("data:image/jpeg;base64,[redacted");
+  });
+
+  it("keeps small data URLs — inline icons cost nothing and stay readable", () => {
+    const small = `{"icon":"data:image/gif;base64,R0lGODlhAQABAAAAACw="}`;
+    expect(redactBase64DataUrls(small)).toBe(small);
+  });
+
+  it("leaves ordinary text untouched", () => {
+    const text = `{"text":"here is a very long sentence ${"word ".repeat(300)}"}`;
+    expect(redactBase64DataUrls(text)).toBe(text);
   });
 });
 
@@ -72,6 +106,38 @@ describe("createTraceStore", () => {
     expect(pool.calls[0].params?.[0]).toBe("tab-1-1");
     expect(pool.calls[0].params?.[1]).toBeNull(); // no userId on this fixture row
     expect(JSON.parse(pool.calls[0].params?.[4] as string)).toEqual(row.payload);
+  });
+
+  it("strips base64 image payloads out of the stored history", async () => {
+    const pool = fakePool();
+    const store = createTraceStore(
+      makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
+      pool,
+    );
+    const base64 = "A".repeat(4000);
+    await store!.writeRawTrace({
+      ...row,
+      payload: {
+        ...row.payload,
+        messages: [
+          { role: "user", parts: [{ type: "text", text: "look" }] },
+          {
+            role: "assistant",
+            parts: [
+              {
+                type: "tool-get_screenshot",
+                output: `data:image/png;base64,${base64}`,
+              },
+            ],
+          },
+        ],
+      },
+    });
+    const stored = pool.calls[0].params?.[4] as string;
+    expect(stored).not.toContain(base64);
+    expect(stored).toContain("[redacted 4000 chars]");
+    // Everything that is not an image survives verbatim.
+    expect(JSON.parse(stored).messages[0].parts[0].text).toBe("look");
   });
 });
 

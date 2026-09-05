@@ -33,7 +33,18 @@ in later requests' histories), strips PII (regex + prompt rules + output validat
 summarizes each session with `ANALYSIS_MODEL` via `generateObject`, LLM-clusters all
 summaries, writes `reports/YYYY-MM-DD.md` (gitignored) and stores everything in
 `session_summaries`/`analysis_runs`/`clusters`. Only `raw_traces` ever holds
-unsanitized content. Spec: `docs/superpowers/specs/2026-07-15-trace-analysis-design.md`.
+unsanitized content — minus images: `writeRawTrace` runs `redactBase64DataUrls`
+over the serialized payload, replacing every large `data:...;base64,...` string
+with a size marker. Screenshots reached the trace once per tool-loop
+continuation (the whole history is stored on every turn) and were **94% of all
+`raw_traces` bytes**; nothing downstream reads pixels.
+The TTL is enforced by `startTracePruneSchedule` (`src/tracing/pruneTraces.ts`),
+which the server runs at startup and once a day — `npm run analyze` calls the
+same `pruneRawTraces`, and used to be the *only* enforcement, which meant none
+at all since that job is not scheduled anywhere (found 2026-09 with the Neon
+database at 489 MB of a 512 MB quota, 25 days deep). `npm run traces:prune`
+deletes and `VACUUM`s on demand; a plain `DELETE` does not hand the space back.
+Spec: `docs/superpowers/specs/2026-07-15-trace-analysis-design.md`.
 `npm run analyze` (tsx over `src/`) is the dev/source path; after `npm run build`,
 production installs without `tsx` as a dependency should use `npm run analyze:dist`
 (`node dist/analysis/run.js`) instead — migrations resolve correctly either way
