@@ -348,3 +348,40 @@ describe("getSkillTools / load_skill", () => {
     expect(out.error).toContain("prototype");
   });
 });
+
+// Regression coverage for the code-review findings on design-from-repo.md:
+// (1) the skill used to claim a local brief is "already sitting in
+// canvasContext" and told the agent to skip read_design_repo when one is
+// attached — the only producer of a brief is read_design_repo itself, so
+// following that instruction meant designing with zero real tokens/
+// components. (2) it also told the agent to read `repo.source`, but the
+// field is a top-level `source` on DesignBrief, a sibling of `repo`.
+describe("design-from-repo skill content", () => {
+  it("never tells the agent a local brief already sits in canvasContext, or to skip read_design_repo", async () => {
+    await loadSkills();
+    const skill = getSkill("design-from-repo")!;
+    expect(skill).toBeDefined();
+    expect(skill.content).not.toMatch(/already sitting in `?canvasContext`?/i);
+    expect(skill.content).not.toMatch(/skip (straight to step 3|read_design_repo)/i);
+  });
+
+  it("always instructs calling read_design_repo first, even when a local repo is attached", async () => {
+    await loadSkills();
+    const skill = getSkill("design-from-repo")!;
+    expect(skill.content).toMatch(/must always do this first/i);
+  });
+
+  it("references DesignBrief's real field name `source`, never the non-existent `repo.source`", async () => {
+    await loadSkills();
+    const skill = getSkill("design-from-repo")!;
+    expect(skill.content).not.toContain("`repo.source`");
+    expect(skill.content).not.toContain("repo.source");
+  });
+
+  it("mentions the localRepo canvasContext marker as a name/count only, not a brief", async () => {
+    await loadSkills();
+    const skill = getSkill("design-from-repo")!;
+    expect(skill.content).toMatch(/localRepo/);
+    expect(skill.content).toMatch(/no\s+brief is ever placed/i);
+  });
+});

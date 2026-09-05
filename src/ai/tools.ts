@@ -1411,31 +1411,36 @@ Returns the created/updated style ids and names (with a created|updated status) 
 
   read_design_repo: tool({
     description:
-      "Build a design brief from a real GitHub repository: detected framework/styling system/component libraries, design tokens (colors, font stacks, spacing, radii, shadows — extracted from the repo's Tailwind config and/or CSS custom properties, never invented; a var()/hsl(var())/rgb(var()) reference is resolved against the repo's own custom properties where possible, and a bare HSL/RGB channel triplet like shadcn/ui's `--background: 0 0% 100%` is wrapped into a real CSS color), a component inventory (`{ name, path }`, sorted so components/ui-style primitives come first — `name` is derived from the filename, not read from the file, so it's a label, not a claim about what the file exports), and a short list of key files. This is the entry point for building a design from a real product's codebase — call it FIRST, before read_repo_files, so you know which components exist and which token values are real. Only PUBLIC repositories are readable by default, regardless of any server-side GitHub token — a private repo returns the same not-found error as one that doesn't exist. Client-executed: proxies to POST /api/repo/brief. " +
+      "Build a design brief from a real repository: detected framework/styling system/component libraries, design tokens (colors, font stacks, spacing, radii, shadows — extracted from the repo's Tailwind config and/or CSS custom properties, never invented; a var()/hsl(var())/rgb(var()) reference is resolved against the repo's own custom properties where possible, and a bare HSL/RGB channel triplet like shadcn/ui's `--background: 0 0% 100%` is wrapped into a real CSS color), a component inventory (`{ name, path }`, sorted so components/ui-style primitives come first — `name` is derived from the filename, not read from the file, so it's a label, not a claim about what the file exports), and a short list of key files. This is the entry point for building a design from a real product's codebase — call it FIRST, always, before read_repo_files, so you know which components exist and which token values are real. This holds even when a local repo is attached (see attach_local_repo): call this tool exactly as you would for GitHub — the handler recognizes the attachment and answers from it instead of making a network call, so this is still the one call that produces tokens and a component inventory; there is no other way to get them. " +
+      "`repo` is required when reading a public GitHub repository (only public repos are readable by default, regardless of any server-side GitHub token — a private repo returns the same not-found error as one that doesn't exist) and is ignored when a local repository is attached — pass any placeholder value in that case, or omit it. `canvasContext` may carry a short `localRepo` marker (a name and file count) telling you a local repo is attached, but that marker is never a substitute for calling this tool — it names the attachment, it does not contain tokens or components. Client-executed: proxies to POST /api/repo/brief-local when a local repo is attached, POST /api/repo/brief otherwise. A brief's top-level `source` field is `\"github\"` or `\"local\"` accordingly — once you have a brief, treat both the same way, the analysis is identical either way. " +
       "Critical constraint: the canvas has NO React/Vue/Svelte/etc. runtime — output always lands as a plain HTML/CSS `embed` node, and embeds run no JavaScript, so Tailwind's CDN/runtime script does not work and any `class=\"px-4 bg-blue-500\"`-style utility class in the source is inert on canvas. Do not copy the repo's className strings into the embed and expect them to render — convert each utility class into real CSS using the *values* from this brief's `tokens` (e.g. Tailwind's `bg-blue-500` becomes `background: <the actual hex from tokens.colors>`, not a class name). Prefer the brief's exact values (hex colors, font stacks, radii, spacing) over eyeballing them from a screenshot or memory. If `tokens` comes back empty or missing a value you need, say so and ask the user rather than inventing a plausible-looking one.",
     inputSchema: z.object({
       repo: z
         .string()
         .min(1)
+        .optional()
         .describe(
-          'Repository reference: "owner/name", a full https://github.com/owner/name URL, or a URL with "/tree/<ref>" (optionally followed by a subpath).',
+          'Repository reference: "owner/name", a full https://github.com/owner/name URL, or a URL with "/tree/<ref>" (optionally followed by a subpath). Required when reading a GitHub repository; ignored when a local repository is attached.',
         ),
       ref: z
         .string()
         .optional()
-        .describe("Branch, tag, or commit sha to read. Defaults to the repo's default branch, or the ref embedded in a /tree/<ref> URL."),
+        .describe("Branch, tag, or commit sha to read. Defaults to the repo's default branch, or the ref embedded in a /tree/<ref> URL. Ignored when a local repository is attached."),
     }),
   }),
 
   read_repo_files: tool({
     description:
-      "Read the full source of up to 20 specific files from a GitHub repository (component source, a config file, anything named in `keyFiles` or `components[].path` from read_design_repo). Call read_design_repo first to know which paths are worth reading — this tool does not search or list files, only fetches exact paths you already know. Only PUBLIC repositories are readable by default, same as read_design_repo. Client-executed: proxies to POST /api/repo/files. Each file is capped at 64KB (cut files come back with `truncated: true` and a trailing `/* ... truncated ... */` marker); paths that don't exist at the given ref come back in `missing`, not as an error; a path that exists but wasn't read in time (the whole call has a shared deadline and byte budget) comes back in `notRead`, distinct from `missing` — treat it as \"try again / ask for fewer paths\", not \"doesn't exist\". " +
+      "Read the full source of up to 20 specific files from a repository (component source, a config file, anything named in `keyFiles` or `components[].path` from read_design_repo). Call read_design_repo first to know which paths are worth reading — this tool does not search or list files, only fetches exact paths you already know. Only PUBLIC GitHub repositories are readable by default, same as read_design_repo. When a local repository is attached, this serves from the browser's attachment instead — no network call, and only files the local agent actually pushed are available. Client-executed: proxies to POST /api/repo/files for GitHub, or reads from the local attachment directly. Each file is capped at 64KB (cut files come back with `truncated: true` and a trailing `/* ... truncated ... */` marker); paths that don't exist come back in `missing`, not as an error; a path that exists but wasn't read in time (the whole call has a shared deadline and byte budget) comes back in `notRead`, distinct from `missing` — treat it as \"try again / ask for fewer paths\", not \"doesn't exist\". " +
       "Read the actual component source before reproducing it — its JSX/template structure (element nesting, conditional states, variant props) is what you translate into HTML structure; its styling (Tailwind classes, styled-components, CSS modules) is what you translate into real CSS using read_design_repo's token values, never by leaving Tailwind classes in the embed's HTML (they do nothing there — no JS runtime).",
     inputSchema: z.object({
       repo: z
         .string()
         .min(1)
-        .describe('Repository reference, same format as read_design_repo\'s `repo` argument.'),
+        .optional()
+        .describe(
+          'Repository reference, same format as read_design_repo\'s `repo` argument. Required when reading a GitHub repository; ignored when a local repository is attached.',
+        ),
       ref: z
         .string()
         .optional()
@@ -1445,6 +1450,51 @@ Returns the created/updated style ids and names (with a created|updated status) 
         .min(1)
         .max(20)
         .describe("Repo-relative file paths to read, e.g. from read_design_repo's `components[].path` or `keyFiles`."),
+    }),
+  }),
+
+  // NOT offered in a normal chat turn — prepareChatTurn (src/ai/chatTurn.ts)
+  // unconditionally deletes this tool before every request, the same
+  // structural gate get_screenshot/analyze_image use. The design agent runs
+  // in a browser with no filesystem, so it could never usefully call this;
+  // it exists in penTools solely so pen-editor's cross-repo tool-name
+  // contract (toolContract.test.ts) has a backend schema to check the
+  // frontend WebMCP handler against. The actual caller is a LOCAL agent
+  // (e.g. Claude Code) driving the editor tab over WebMCP directly — it
+  // reads this description to know the chunking protocol, then pushes a
+  // repo's tree/files into the browser, which stores them and asks this
+  // backend's POST /api/repo/brief-local to analyze them with the exact
+  // same analyzer read_design_repo uses for GitHub (source: "local" in the
+  // resulting brief).
+  attach_local_repo: tool({
+    description:
+      "Attach a LOCAL repository (one only a local agent driving this editor tab can see — never call this from inside a normal design chat turn, it is not offered there) so the design agent can build a brief from it exactly like read_design_repo does for a public GitHub repo, without pushing the repo to GitHub first. Called over WebMCP by the local agent, not by the design agent's own tool loop. " +
+      "Chunking protocol: send `name` plus the full `tree` (every file/dir path in the repo, or the ones worth knowing about) on the first call, with `mode: \"replace\"` (default) or omitted, and no `files` yet. Then send file contents in one or more follow-up calls with `mode: \"append\"` (omit `name`/`tree` on those — append only adds files) — each call's `files` must stay under the PER-CALL caps below; split a larger set across more append calls rather than one big one. A repo's key files (package.json, tailwind config, global CSS, tsconfig) are usually enough for a useful brief — you do not need to send every file's content, only what the analyzer can read: package.json, tailwind.config.*, a global stylesheet, tsconfig.json, plus any component source you want the agent to reproduce faithfully. `detach: true` clears whatever was attached (tree and files) and ignores every other field — send it when the user closes the local repo or switches to a different one. " +
+      "Caps are enforced in TWO tiers by the browser store that actually holds the attachment (pen-editor's repoContextStore), and both reject with a clear reason rather than silently truncating: PER-CALL — at most 500 files and 2MB of file content in a single call (attach or append); ATTACHMENT-WIDE — at most 20000 tree entries, 2000 files, and 8MB of total file content accumulated across every call since the last `replace`/`detach`. Hitting either tier means the same fix: send fewer/smaller files in that call, or split the remainder into more `mode: \"append\"` calls. POST /api/repo/brief-local (the analyzer) separately enforces the same attachment-wide numbers as its own request-body caps. A tree entry or file path with a leading \"/\" or a \"..\" segment is rejected. Once attached, the analysis itself (design tokens, component inventory, framework/styling detection) is identical to read_design_repo/read_repo_files — see design-from-repo.md for how the design agent is expected to use the resulting brief.",
+    inputSchema: z.object({
+      name: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          "The repository's name as it should appear in the brief (e.g. the directory name) — a local brief has no GitHub owner/URL. Required on the first (replace) call; omit on an append call or when detach is true.",
+        ),
+      tree: z
+        .array(z.string())
+        .optional()
+        .describe("Repo-relative file paths (no leading \"/\", no \"..\" segments) — every path the analyzer should know exists. Required on the first call unless detach is true."),
+      files: z
+        .array(z.object({ path: z.string(), content: z.string() }))
+        .optional()
+        .describe("File contents to make available to the analyzer, keyed by the same repo-relative paths used in tree. Only the files the analyzer can actually read matter: package.json, tailwind.config.*, a global CSS file, tsconfig.json, and any component source worth reproducing faithfully."),
+      mode: z
+        .enum(["replace", "append"])
+        .optional()
+        .describe("\"replace\" (default) replaces whatever tree/files were previously attached; \"append\" adds to them — use append when sending file contents across multiple calls after the tree is already attached."),
+      detach: z
+        .boolean()
+        .optional()
+        .describe("When true, clears the attached local repository entirely and ignores every other field."),
     }),
   }),
 

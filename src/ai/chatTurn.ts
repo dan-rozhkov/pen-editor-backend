@@ -615,6 +615,15 @@ export async function prepareChatTurn(
     delete tools.get_screenshot;
   }
 
+  // Structural gate, unconditional (unlike the ones above): attach_local_repo
+  // is client-executed but exists purely for a LOCAL agent driving the
+  // editor tab over WebMCP to call directly — the design agent itself runs
+  // in a browser with no filesystem, so offering it here could only waste a
+  // tool-call step. It stays in penTools (with no execute) solely to satisfy
+  // pen-editor's cross-repo tool-name contract; every real chat turn drops
+  // it before the request goes out.
+  delete tools.attach_local_repo;
+
   // Structural gate: remove_background/vectorize_image are client-executed
   // but call our backend routes, which return 503 without FAL_KEY. Rather
   // than advertise a tool that's guaranteed to fail, drop it from the

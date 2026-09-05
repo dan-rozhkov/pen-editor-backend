@@ -49,6 +49,12 @@ export interface DesignBrief {
     ref: string;
     htmlUrl: string;
   };
+  // "github" — read live from a public GitHub repo via the REST API.
+  // "local" — pushed from a local repo the caller has on disk (WebMCP
+  // `attach_local_repo`); `repo.owner`/`repo.htmlUrl` are empty strings and
+  // `repo.ref` is the literal string "local" in that case (see
+  // buildDesignBriefFromSource's `repoInfo` contract).
+  source: "github" | "local";
   framework: string[];
   styling: string[];
   componentLibraries: string[];
@@ -797,6 +803,153 @@ function findGlobalCssPath(tree: RepoTreeEntry[]): string | undefined {
 // Orchestration
 // ---------------------------------------------------------------------------
 
+export interface DesignBriefRepoInfo {
+  owner: string;
+  name: string;
+  ref: string;
+  htmlUrl: string;
+}
+
+/**
+ * The source-agnostic core of buildDesignBrief: everything downstream of
+ * "I have a file tree and a way to read a file by path" — package.json/
+ * framework/styling/component-library detection, token extraction, and the
+ * component inventory. Neither GitHub nor any other transport is referenced
+ * here; `readFile` is the only IO. `buildDesignBrief` below is now a thin
+ * GitHub-specific wrapper (resolve ref/tree via the GitHub REST client, then
+ * call this); `/api/repo/brief-local` is the other caller, serving `readFile`
+ * out of an in-memory map of caller-supplied files instead of the network.
+ *
+ * `initialNotes` lets a caller seed notes that only make sense in their own
+ * transport (e.g. "GitHub truncated the file tree") — they are merged with
+ * this function's own notes and deduped together, exactly as buildDesignBrief
+ * always deduped a single notes array.
+ */
+export async function buildDesignBriefFromSource(
+  repoInfo: DesignBriefRepoInfo,
+  tree: RepoTreeEntry[],
+  readFile: (path: string) => Promise<string | null>,
+  options?: { source?: "github" | "local"; initialNotes?: string[] },
+): Promise<DesignBrief> {
+  const notes: string[] = [...(options?.initialNotes ?? [])];
+
+  const packageJsonPaths = tree.filter(
+    (e) => e.type === "blob" && /(^|\/)package\.json$/.test(e.path) && !e.path.includes("node_modules/"),
+  );
+  if (packageJsonPaths.length > 1) {
+    notes.push(
+      `This looks like a monorepo (${packageJsonPaths.length} package.json files found) — this brief was built from the root package.json only.`,
+    );
+  }
+
+  const keyFiles: string[] = [];
+  let deps = new Set<string>();
+  if (packageJsonPaths.some((e) => e.path === "package.json")) {
+    keyFiles.push("package.json");
+    const raw = await readFile("package.json");
+    if (raw) {
+      try {
+        deps = allDeps(JSON.parse(raw) as PackageJsonShape);
+      } catch {
+        notes.push("package.json could not be parsed as JSON.");
+      }
+    } else {
+      notes.push("package.json is listed but its content could not be read — this brief was built without its dependencies.");
+    }
+  } else {
+    notes.push("No root package.json found.");
+  }
+
+  const framework = detectFramework(deps);
+  const styling = detectStyling(deps, tree);
+  const componentLibraries = detectComponentLibraries(deps, tree);
+
+  let tokens = emptyTokens();
+
+  // Read the global stylesheet FIRST (before the Tailwind config) so its raw
+  // `--name -> value` map is available to resolve a Tailwind config value
+  // like `primary: "hsl(var(--primary))"` against — the shadcn/ui shape.
+  // Merge order into `tokens` is unaffected: Tailwind is still merged first,
+  // CSS second, so CSS still wins a key collision exactly as before.
+  const globalCssPath = findGlobalCssPath(tree);
+  let rawCssVars: Record<string, string> = {};
+  let cssTokens: DesignTokens | null = null;
+  if (globalCssPath) {
+    keyFiles.push(globalCssPath);
+    const raw = await readFile(globalCssPath);
+    if (raw) {
+      rawCssVars = extractRawCssCustomProperties(raw);
+      cssTokens = extractCssCustomPropertyTokens(raw);
+    } else {
+      notes.push(`${globalCssPath} is listed but its content could not be read — this brief could not extract CSS custom property tokens from it.`);
+    }
+  }
+
+  const tailwindConfigPath = findTailwindConfigPath(tree);
+  if (tailwindConfigPath) {
+    keyFiles.push(tailwindConfigPath);
+    const raw = await readFile(tailwindConfigPath);
+    if (raw) {
+      const extracted = extractTailwindConfigTokens(raw);
+      const { tokens: tailwindTokens, notes: refNotes } = resolveTailwindTokenReferences(extracted, rawCssVars);
+      notes.push(...refNotes);
+      if (!tokensAreEmpty(tailwindTokens)) {
+        tailwindTokens.source = [tailwindConfigPath];
+        tokens = mergeTokens(tokens, tailwindTokens);
+      }
+    } else {
+      notes.push(`${tailwindConfigPath} is listed but its content could not be read — this brief could not extract Tailwind theme tokens from it.`);
+    }
+  }
+
+  if (cssTokens && !tokensAreEmpty(cssTokens)) {
+    cssTokens.source = [globalCssPath as string];
+    tokens = mergeTokens(tokens, cssTokens);
+  }
+
+  if (tokensAreEmpty(tokens)) {
+    notes.push(
+      "No design tokens found (no Tailwind config theme/extend block and no :root/@theme CSS custom properties) — ask the user for exact values rather than guessing.",
+    );
+  }
+  // Surface any unresolved var()/hsl(var())/rgb(var()) reference at the
+  // brief's top level too, not just inside tokens.notes — this is exactly
+  // the kind of caveat the design-from-repo skill tells the agent to read
+  // and escalate on rather than silently guess past.
+  notes.push(...tokens.notes);
+
+  const tsconfigPathsPath = tree.find(
+    (e) => e.type === "blob" && e.path === "tsconfig.json",
+  )?.path;
+  if (tsconfigPathsPath) keyFiles.push(tsconfigPathsPath);
+
+  const components = buildComponentInventory(tree);
+  if (components.length === 0) {
+    notes.push(
+      "No components found under conventional directories (src/components, components, app/components, src/ui — each also searched one workspace deep, e.g. apps/<name>/components).",
+    );
+  } else if (components.length === MAX_COMPONENTS) {
+    notes.push(`Component inventory capped at ${MAX_COMPONENTS} entries — there may be more.`);
+  }
+
+  return {
+    repo: repoInfo,
+    source: options?.source ?? "github",
+    framework,
+    styling,
+    componentLibraries,
+    tokens,
+    components,
+    keyFiles,
+    // One unresolved token reference is one fact, however many times it was
+    // hit. A Tailwind config that uses `var(--font-sans)` across several
+    // categories produced the identical sentence four times over, and a
+    // repeated note reads to the model as repeated emphasis on the one thing
+    // it cannot act on.
+    notes: [...new Set(notes)],
+  };
+}
+
 export async function buildDesignBrief(
   repo: RepoRef,
   config: Config,
@@ -825,119 +978,17 @@ export async function buildDesignBrief(
     tree = await getRepoTree(repo.owner, repo.name, ref, config, cache);
   }
 
-  const notes: string[] = [];
+  const initialNotes: string[] = [];
   if (tree.truncated) {
-    notes.push(
+    initialNotes.push(
       "GitHub truncated the file tree for this repo (it is very large) — some files or components may be missing from this brief.",
     );
   }
 
-  const packageJsonPaths = tree.entries.filter(
-    (e) => e.type === "blob" && /(^|\/)package\.json$/.test(e.path) && !e.path.includes("node_modules/"),
+  return buildDesignBriefFromSource(
+    { owner: repo.owner, name: repo.name, ref, htmlUrl: meta.htmlUrl },
+    tree.entries,
+    (path) => getFile(repo.owner, repo.name, ref, path, config, cache),
+    { source: "github", initialNotes },
   );
-  if (packageJsonPaths.length > 1) {
-    notes.push(
-      `This looks like a monorepo (${packageJsonPaths.length} package.json files found) — this brief was built from the root package.json only.`,
-    );
-  }
-
-  const keyFiles: string[] = [];
-  let deps = new Set<string>();
-  if (packageJsonPaths.some((e) => e.path === "package.json")) {
-    keyFiles.push("package.json");
-    const raw = await getFile(repo.owner, repo.name, ref, "package.json", config, cache);
-    if (raw) {
-      try {
-        deps = allDeps(JSON.parse(raw) as PackageJsonShape);
-      } catch {
-        notes.push("package.json could not be parsed as JSON.");
-      }
-    }
-  } else {
-    notes.push("No root package.json found.");
-  }
-
-  const framework = detectFramework(deps);
-  const styling = detectStyling(deps, tree.entries);
-  const componentLibraries = detectComponentLibraries(deps, tree.entries);
-
-  let tokens = emptyTokens();
-
-  // Read the global stylesheet FIRST (before the Tailwind config) so its raw
-  // `--name -> value` map is available to resolve a Tailwind config value
-  // like `primary: "hsl(var(--primary))"` against — the shadcn/ui shape.
-  // Merge order into `tokens` is unaffected: Tailwind is still merged first,
-  // CSS second, so CSS still wins a key collision exactly as before.
-  const globalCssPath = findGlobalCssPath(tree.entries);
-  let rawCssVars: Record<string, string> = {};
-  let cssTokens: DesignTokens | null = null;
-  if (globalCssPath) {
-    keyFiles.push(globalCssPath);
-    const raw = await getFile(repo.owner, repo.name, ref, globalCssPath, config, cache);
-    if (raw) {
-      rawCssVars = extractRawCssCustomProperties(raw);
-      cssTokens = extractCssCustomPropertyTokens(raw);
-    }
-  }
-
-  const tailwindConfigPath = findTailwindConfigPath(tree.entries);
-  if (tailwindConfigPath) {
-    keyFiles.push(tailwindConfigPath);
-    const raw = await getFile(repo.owner, repo.name, ref, tailwindConfigPath, config, cache);
-    if (raw) {
-      const extracted = extractTailwindConfigTokens(raw);
-      const { tokens: tailwindTokens, notes: refNotes } = resolveTailwindTokenReferences(extracted, rawCssVars);
-      notes.push(...refNotes);
-      if (!tokensAreEmpty(tailwindTokens)) {
-        tailwindTokens.source = [tailwindConfigPath];
-        tokens = mergeTokens(tokens, tailwindTokens);
-      }
-    }
-  }
-
-  if (cssTokens && !tokensAreEmpty(cssTokens)) {
-    cssTokens.source = [globalCssPath as string];
-    tokens = mergeTokens(tokens, cssTokens);
-  }
-
-  if (tokensAreEmpty(tokens)) {
-    notes.push(
-      "No design tokens found (no Tailwind config theme/extend block and no :root/@theme CSS custom properties) — ask the user for exact values rather than guessing.",
-    );
-  }
-  // Surface any unresolved var()/hsl(var())/rgb(var()) reference at the
-  // brief's top level too, not just inside tokens.notes — this is exactly
-  // the kind of caveat the design-from-repo skill tells the agent to read
-  // and escalate on rather than silently guess past.
-  notes.push(...tokens.notes);
-
-  const tsconfigPathsPath = tree.entries.find(
-    (e) => e.type === "blob" && e.path === "tsconfig.json",
-  )?.path;
-  if (tsconfigPathsPath) keyFiles.push(tsconfigPathsPath);
-
-  const components = buildComponentInventory(tree.entries);
-  if (components.length === 0) {
-    notes.push(
-      "No components found under conventional directories (src/components, components, app/components, src/ui — each also searched one workspace deep, e.g. apps/<name>/components).",
-    );
-  } else if (components.length === MAX_COMPONENTS) {
-    notes.push(`Component inventory capped at ${MAX_COMPONENTS} entries — there may be more.`);
-  }
-
-  return {
-    repo: { owner: repo.owner, name: repo.name, ref, htmlUrl: meta.htmlUrl },
-    framework,
-    styling,
-    componentLibraries,
-    tokens,
-    components,
-    keyFiles,
-    // One unresolved token reference is one fact, however many times it was
-    // hit. A Tailwind config that uses `var(--font-sans)` across several
-    // categories produced the identical sentence four times over, and a
-    // repeated note reads to the model as repeated emphasis on the one thing
-    // it cannot act on.
-    notes: [...new Set(notes)],
-  };
 }

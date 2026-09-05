@@ -202,6 +202,25 @@ describe("prepareChatTurn", () => {
     });
   });
 
+  describe("attach_local_repo gate", () => {
+    // attach_local_repo is client-executed and declared in penTools solely
+    // to satisfy pen-editor's cross-repo tool-name contract — the design
+    // agent runs in a browser with no filesystem, so it must never actually
+    // be offered a normal chat turn's tools. Only a local agent driving the
+    // editor tab over WebMCP calls it directly.
+    it("is never offered in a normal turn's tool set", async () => {
+      const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+      const { penTools } = await import("../src/ai/tools.js");
+
+      expect(penTools.attach_local_repo).toBeDefined();
+
+      const messages = [userMessage("build a design from this repo")];
+      const turn = await prepareChatTurn({ config: makeConfig(), messages });
+
+      expect(turn.tools.attach_local_repo).toBeUndefined();
+    });
+  });
+
   describe("analyze_image gate", () => {
     it("is absent with no VISION_MODEL — it would have nothing to call", async () => {
       const { prepareChatTurn } = await import("../src/ai/chatTurn.js");

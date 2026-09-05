@@ -59,6 +59,7 @@ describe("penTools registry", () => {
         "publish_to_showcase",
         "read_design_repo",
         "read_repo_files",
+        "attach_local_repo",
       ].sort(),
     );
   });
@@ -108,6 +109,7 @@ describe("penTools registry", () => {
       "publish_to_showcase",
       "read_design_repo",
       "read_repo_files",
+      "attach_local_repo",
     ] as const) {
       expect(hasExecute(name), `${name} must be client-executed`).toBe(false);
     }
@@ -1124,5 +1126,41 @@ describe("read_embed_html schema", () => {
   it("requires a pattern in grep mode", () => {
     expect(() => schema.parse({ nodeId: "embed1", mode: "grep" })).toThrow();
     expect(() => schema.parse({ nodeId: "embed1", mode: "grep", pattern: "btn" })).not.toThrow();
+  });
+});
+
+// Regression coverage for the local-repo review findings: `repo` is
+// meaningless (and the frontend ignores it) once a local repo is attached,
+// so the schema must not force a caller to supply one; `name` on
+// attach_local_repo is likewise absent on an append call and on detach.
+describe("read_design_repo / read_repo_files schema: repo is optional", () => {
+  it("read_design_repo accepts a call with no repo argument at all", () => {
+    const schema = schemaOf("read_design_repo");
+    expect(() => schema.parse({})).not.toThrow();
+  });
+
+  it("read_repo_files accepts a call with no repo argument, only paths", () => {
+    const schema = schemaOf("read_repo_files");
+    expect(() => schema.parse({ paths: ["src/App.tsx"] })).not.toThrow();
+  });
+});
+
+describe("attach_local_repo schema: name is optional", () => {
+  const schema = schemaOf("attach_local_repo");
+
+  it("accepts an append call with no name (only files)", () => {
+    expect(() =>
+      schema.parse({ mode: "append", files: [{ path: "package.json", content: "{}" }] }),
+    ).not.toThrow();
+  });
+
+  it("accepts a detach call with no name", () => {
+    expect(() => schema.parse({ detach: true })).not.toThrow();
+  });
+
+  it("still accepts the full first-call shape with name+tree", () => {
+    expect(() =>
+      schema.parse({ name: "my-repo", tree: ["package.json"], mode: "replace" }),
+    ).not.toThrow();
   });
 });

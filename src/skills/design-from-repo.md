@@ -35,15 +35,40 @@ framework the repo uses, the output is always plain, static HTML + inline/`<styl
 in `tokens`, say so explicitly and either ask the user for it or pick the closest documented value and
 label it as an approximation — do not silently make one up and present it as exact.
 
+### Two ways a brief can arrive — you always call `read_design_repo` either way
+
+Most of the time the user gives you a public GitHub repo reference directly. But a repo can also already
+be **attached locally**: a local agent (e.g. Claude Code) driving this same editor tab over WebMCP pushed
+a repository it has on disk into the browser (the `attach_local_repo` tool, which you cannot call
+yourself — it is not offered in a normal chat turn). `canvasContext` may carry a short `localRepo` marker
+in that case — just a name and a file count, naming the attachment so you know one exists — but **no
+brief is ever placed in `canvasContext`, in either case.** The only thing that produces a brief is calling
+`read_design_repo` yourself, and you must always do this first, exactly as with GitHub — do not skip it
+just because a local repo is attached. The handler recognizes the attachment and answers from it instead
+of making a network call; you don't pass anything different, and you get the same shaped result back.
+Skipping this call is the exact failure this skill exists to prevent: without it you have no real tokens
+and no component inventory, and you will end up designing by inventing values.
+
+Once you have a brief, look at its top-level `source` field: `"github"` means it came from a public
+GitHub repo (real `owner`/`htmlUrl`, a real `ref`); `"local"` means it came from an attached local repo
+(`owner`/`htmlUrl` are empty strings and `ref` is the literal `"local"`). Everything from step 3 onward
+applies identically regardless of `source` — the analysis (tokens, component inventory,
+framework/styling detection) is the same function either way, just fed from a different place. A local
+brief may have thinner `keyFiles` content than a GitHub one (the local agent only sends file contents it
+has ready — see `notes` for anything that couldn't be read) — treat a missing value the same way you
+would for GitHub: ask rather than invent.
+
 ### Flow
 
 1. **Parse the repo reference** the user gave. Accepted shapes: `owner/name`, a full
    `https://github.com/owner/name` URL, or a URL with `/tree/<ref>` (optionally followed by a subpath).
-   If nothing looks like a repo reference in the conversation, ask for one rather than guessing.
+   If nothing looks like a repo reference in the conversation, ask for one rather than guessing — unless
+   a local repo is attached (see above, the `localRepo` marker in `canvasContext`), in which case any
+   placeholder repo argument is fine, since `read_design_repo` ignores it and answers from the attachment.
 
-2. **Call `read_design_repo`** with that reference first, always before reading any file. Only public
-   repositories are readable — a private repo (or one that doesn't exist) comes back as the same
-   not-found error either way. It returns:
+2. **Call `read_design_repo`** first, always before reading any file, whether the repo is GitHub or a
+   local attachment. Only public GitHub repositories are readable — a private repo (or one that doesn't
+   exist) comes back as the same not-found error either way. It returns:
    - `framework` / `styling` / `componentLibraries` — what the repo is actually built with.
    - `tokens` — colors, fontFamily, spacing, borderRadius, boxShadow, each as `{ dottedKey: value }`,
      plus `tokens.source` naming where they came from (a Tailwind config, `:root`/`@theme` CSS, or both).

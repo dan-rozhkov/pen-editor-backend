@@ -13,7 +13,8 @@ import {
   resolveRepoTree,
   type RepoAccessCache,
 } from "../services/github.js";
-import { buildDesignBrief } from "../services/repoDesignSystem.js";
+import { buildDesignBrief, buildDesignBriefFromSource, type DesignBrief } from "../services/repoDesignSystem.js";
+import type { RepoTreeEntry } from "../services/github.js";
 import { fetchFilesWithBudget } from "../services/repoFiles.js";
 
 // Backs the client-executed read_design_repo/read_repo_files chat tools
@@ -37,13 +38,46 @@ const briefBodySchema = z.object({
   ref: z.string().min(1).optional(),
 });
 
-// No leading "/", no ".." segment anywhere, no empty path.
-const safeRelativePath = z
+// No leading "/", no ".." segment anywhere, no empty path. Exported so
+// POST /api/repo/brief-local (below) can apply the same guard to both a
+// local tree's paths and its supplied files' paths.
+export const safeRelativePath = z
   .string()
   .min(1)
   .refine((p) => !p.startsWith("/") && !/(^|\/)\.\.($|\/)/.test(p), {
     message: "path must be a relative path with no \"..\" segments",
   });
+
+// POST /api/repo/brief-local caps — backs the client-executed
+// attach_local_repo tool (src/ai/tools.ts): a local agent driving the
+// editor over WebMCP pushes a repo's tree + a handful of files, and this
+// route runs it through the SAME analyzer buildDesignBrief uses for GitHub
+// (buildDesignBriefFromSource) so a local brief and a GitHub brief can never
+// disagree about what a "design brief" is. Every cap below is a 400 naming
+// what was over the limit — never a silent truncation, since a silently
+// truncated tree/file set would make the resulting brief quietly wrong
+// rather than visibly rejected.
+const MAX_LOCAL_TREE_ENTRIES = 20_000;
+const MAX_LOCAL_FILES = 2_000;
+const MAX_LOCAL_CONTENT_BYTES = 8 * 1024 * 1024;
+
+const briefLocalBodySchema = z
+  .object({
+    name: z.string().min(1),
+    tree: z
+      .array(safeRelativePath)
+      .max(MAX_LOCAL_TREE_ENTRIES, `tree must contain at most ${MAX_LOCAL_TREE_ENTRIES} entries`),
+    files: z
+      .array(z.object({ path: safeRelativePath, content: z.string() }))
+      .max(MAX_LOCAL_FILES, `files must contain at most ${MAX_LOCAL_FILES} entries`),
+  })
+  .refine(
+    (body) => {
+      const totalBytes = body.files.reduce((sum, f) => sum + Buffer.byteLength(f.content, "utf-8"), 0);
+      return totalBytes <= MAX_LOCAL_CONTENT_BYTES;
+    },
+    { message: `files total content must be at most ${MAX_LOCAL_CONTENT_BYTES} bytes (8 MB)`, path: ["files"] },
+  );
 
 const filesBodySchema = z.object({
   repo: z.string().min(1),
@@ -184,6 +218,50 @@ export async function repoRoutes(app: FastifyInstance, config: Config): Promise<
         missing: outcome.missing,
         notRead: outcome.notRead,
       });
+    },
+  );
+
+  app.post(
+    "/api/repo/brief-local",
+    {
+      // The app-wide 10 MB bodyLimit (src/app.ts) is sized for base64
+      // images, not this route: the schema's own 8 MB file-content ceiling,
+      // plus JSON-string escaping and up to 20000 tree-path entries, can
+      // exceed 10 MB before briefLocalBodySchema ever runs — which would
+      // surface as Fastify's generic FST_ERR_CTP_BODY_TOO_LARGE 413 instead
+      // of the 400 that names which cap was hit. Same override pattern as
+      // sharedCanvas.ts/showcasePublish.ts for their own large bodies.
+      bodyLimit: 16 * 1024 * 1024,
+      config: {
+        // No network call at all in this route (everything is supplied in
+        // the body), but a generous local cap still keeps one WebMCP-driven
+        // agent from hammering the analyzer in a tight loop.
+        rateLimit: { max: 20, timeWindow: "1 minute" },
+      },
+    },
+    async (request, reply) => {
+      const parsed = briefLocalBodySchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.status(400).send({ error: parsed.error.issues[0]?.message ?? "invalid body" });
+      }
+
+      const { name, tree, files } = parsed.data;
+      const treeEntries: RepoTreeEntry[] = tree.map((path) => ({ path, type: "blob" }));
+      const fileMap = new Map(files.map((f) => [f.path, f.content]));
+      const readFile = async (path: string): Promise<string | null> => fileMap.get(path) ?? null;
+
+      try {
+        const brief: DesignBrief = await buildDesignBriefFromSource(
+          { owner: "", name, ref: "local", htmlUrl: "" },
+          treeEntries,
+          readFile,
+          { source: "local" },
+        );
+        return reply.send(brief);
+      } catch (err) {
+        app.log.error({ err }, "repo brief-local failed");
+        return reply.status(500).send({ error: "Internal error while building a local design brief." });
+      }
     },
   );
 }
