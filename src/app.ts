@@ -121,13 +121,36 @@ export async function buildApp(
     // @fastify/rate-limit's default keyGenerator keys on (src/plugins/
     // rateLimit.ts) — collapsing all traffic into one shared bucket instead
     // of isolating abusive clients per-IP.
-    // `1`, not `true`: Render is a single reverse-proxy hop. `true` trusts
-    // the entire X-Forwarded-For chain, so a client sending its own fake
-    // XFF header would have that value trusted as request.ip — letting it
-    // mint a fresh identity on every request and bypass the limiter
-    // entirely. `1` trusts exactly one hop back (Render's), which is the
-    // only proxy-appended entry a client cannot forge.
-    trustProxy: 1,
+    // Not `true`: that trusts the entire X-Forwarded-For chain, so a client
+    // sending its own fake XFF header would have that value trusted as
+    // request.ip — letting it mint a fresh identity on every request and
+    // bypass the limiter entirely.
+    // This used to be `1` (trust exactly one hop back, Render's). Fastify
+    // 5.12.1 removed the numeric hop-count form: `number` is gone from
+    // FastifyServerOptions["trustProxy"], and — the part that matters more
+    // than the type error — getTrustProxyFn (fastify/lib/request.js) now
+    // returns a function that always reports `false` for a number, i.e.
+    // "trust nothing". Hop-count-only trust cannot validate the immediate
+    // peer, so a client reaching the server directly could spoof
+    // X-Forwarded-* by supplying enough hops; upstream chose to fail closed
+    // rather than keep that. Leaving `1` in place would therefore have
+    // silently collapsed every request back onto the proxy's own address —
+    // exactly the shared rate-limit bucket the comment above warns about,
+    // with no error to notice it by.
+    // The replacement validates the peer instead of counting hops: trust
+    // X-Forwarded-For only when the socket peer is a loopback/link-local/
+    // private address, which is what Render's edge connects from (its
+    // load balancer sits on the internal 10/8 network). A caller that
+    // reaches this process directly from a public address is not trusted,
+    // so its XFF header is ignored and request.ip stays its real socket
+    // address. These are @fastify/proxy-addr's named ranges — `uniquelocal`
+    // is 10/8 + 172.16/12 + 192.168/16 + fc00::/7.
+    // Difference from the old `1` worth knowing: this trusts a *run* of
+    // consecutive private hops rather than exactly one. On Render the next
+    // entry after the edge is the client's public address, so the walk stops
+    // after one hop anyway — it only differs for a client whose own address
+    // is private, which cannot happen for internet traffic.
+    trustProxy: "loopback, linklocal, uniquelocal",
   });
 
   await registerCors(app, config);
