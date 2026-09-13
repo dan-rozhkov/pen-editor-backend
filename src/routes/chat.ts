@@ -8,12 +8,7 @@ import {
 } from "ai";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import {
-  getAllowedModels,
-  isOriginAllowed,
-  parseEnvList,
-  type Config,
-} from "../config.js";
+import { isOriginAllowed, parseEnvList, type Config } from "../config.js";
 import { AGENT_MODES } from "../ai/system-prompt.js";
 import { logSession, type LogStep } from "../logging.js";
 import { randomUUID } from "node:crypto";
@@ -114,6 +109,12 @@ const chatBodySchema = z.object({
   id: z.string().max(200).optional(),
   messages: z.array(z.record(z.unknown())).min(1, "messages must not be empty"),
   canvasContext: z.string().optional(),
+  // Accepted and ignored. The design agent runs on exactly one model
+  // (config.OPENROUTER_MODEL) and the picker is gone, but clients cached
+  // before that change still send a model id from their old localStorage
+  // selection; rejecting those would 400 every one of their turns until they
+  // reload. Dropping the field here is what "reset every user's model" means
+  // server-side — no request can pin a different model.
   model: z.string().optional(),
   agentMode: z.enum(AGENT_MODES).optional(),
   // Client-generated stable anonymous id (localStorage `pen.userId`). Absent
@@ -160,7 +161,6 @@ export async function chatRoutes(
     ...DEFAULT_AGENT_RETRY,
     ...retryPolicyOverride,
   };
-  const allowedModels = getAllowedModels(config);
   const allowedOrigins = parseEnvList(config.CORS_ALLOWED_ORIGINS);
 
   app.post(
@@ -208,7 +208,6 @@ export async function chatRoutes(
       id: chatSessionId,
       messages,
       canvasContext,
-      model: modelOverride,
       agentMode = "edits",
       userId: rawUserId,
     } = parsed.data;
@@ -227,17 +226,6 @@ export async function chatRoutes(
     // model/image checks below) so every rejection path below — not just a
     // successful turn — can tag its agent_turn_failed event with it.
     const analyticsDistinctId = userId ?? traceSessionId ?? "anonymous";
-
-    if (modelOverride && !allowedModels.includes(modelOverride)) {
-      analytics?.capture({
-        event: "agent_turn_failed",
-        distinctId: analyticsDistinctId,
-        properties: { error_kind: "model_not_allowed" },
-      });
-      return reply.status(400).send({
-        error: `Model "${modelOverride}" is not allowed. Allowed models: ${allowedModels.join(", ")}`,
-      });
-    }
 
     const maxImagesInOneMessage = messages.reduce((max, msg) => {
       const parts = msg.parts;
@@ -270,7 +258,6 @@ export async function chatRoutes(
         config,
         messages,
         canvasContext,
-        modelOverride,
         userId,
         memoryStore,
         learnedSkillStore,
@@ -469,7 +456,6 @@ export async function chatRoutes(
             modelMessages,
             assistantText: steps.map((s) => s.text).join("\n").trim(),
             stepCount: steps.length,
-            modelOverride,
             turnComplete,
             learnedSkillStore,
             auditDb,

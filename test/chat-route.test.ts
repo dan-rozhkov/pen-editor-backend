@@ -253,20 +253,14 @@ describe("POST /api/chat — validation errors", () => {
     expect(body.error).toBe("Invalid request body");
   });
 
-  it("returns 400 for a model outside the allowlist", async () => {
+  // The picker is gone and there is only one model, but a client cached
+  // before that change still posts its old stored selection. The field must
+  // be ignored, not rejected — a 400 here would break every turn such a
+  // client makes until it reloads.
+  it("ignores a stale model id from an older client instead of rejecting it", async () => {
     const res = await postChat(server.url, {
       messages: [userMessage("hi")],
       model: "evil/not-allowed-model",
-    });
-    expect(res.status).toBe(400);
-    const body = (await res.json()) as { error: string };
-    expect(body.error).toContain('Model "evil/not-allowed-model" is not allowed');
-  });
-
-  it("accepts an allowlisted model override", async () => {
-    const res = await postChat(server.url, {
-      messages: [userMessage("hi")],
-      model: "moonshotai/kimi-k2.5",
     });
     expect(res.status).toBe(200);
     await res.text();

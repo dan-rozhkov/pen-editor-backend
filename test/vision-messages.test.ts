@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ModelMessage } from "ai";
-import { makeConfig } from "./helpers.js";
+import { makeConfig as baseConfig } from "./helpers.js";
+import type { Config } from "../src/config.js";
 
 vi.mock("../src/services/vision.js", () => ({
   describeImage: vi.fn(),
@@ -28,11 +29,21 @@ import {
   MAX_RENDERED_DESCRIPTIONS,
 } from "../src/ai/vision-messages.js";
 
-// makeConfig()'s default OPENROUTER_MODEL (deepseek/deepseek-v4-pro) is
-// vision-less per DEFAULT_MODELS in src/config.ts — used throughout as the
-// "blind model" fixture. gemini-2.5-flash is vision-capable.
-const BLIND_MODEL = "deepseek/deepseek-v4-pro";
+// The shipped model (DEFAULT_MODELS in src/config.ts) reads images natively,
+// so the "blind model" fixture is the other supported shape: an operator who
+// pointed OPENROUTER_MODEL at a text-only model and said so via
+// OPENROUTER_MODEL_SUPPORTS_VISION=false. SEEING_MODEL is any other id —
+// unlisted ids are assumed vision-capable, matching getModels' convention.
+const BLIND_MODEL = "vendor/text-only-model";
 const SEEING_MODEL = "google/gemini-2.5-flash";
+
+function makeConfig(overrides: Partial<Config> = {}): Config {
+  return baseConfig({
+    OPENROUTER_MODEL: BLIND_MODEL,
+    OPENROUTER_MODEL_SUPPORTS_VISION: false,
+    ...overrides,
+  });
+}
 
 afterEach(() => {
   vi.mocked(describeImage).mockReset();

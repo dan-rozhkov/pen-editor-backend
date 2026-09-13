@@ -308,32 +308,6 @@ describe("api_request analytics hook", () => {
 // ---------------------------------------------------------------------------
 
 describe("early-rejection analytics", () => {
-  it("captures agent_turn_failed with error_kind: model_not_allowed for a disallowed model", async () => {
-    const analytics = recordingAnalyticsClient();
-    const { app, url } = await startServer(analytics);
-
-    const res = await fetch(`${url}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        id: "tab-early-reject-1",
-        model: "not-a-real-model",
-        messages: [userMessage("hi")],
-      }),
-    });
-    expect(res.status).toBe(400);
-
-    expect(analytics.events).toContainEqual(
-      expect.objectContaining({
-        event: "agent_turn_failed",
-        distinctId: "tab-early-reject-1",
-        properties: expect.objectContaining({ error_kind: "model_not_allowed" }),
-      }),
-    );
-
-    await app.close();
-  });
-
   it("captures agent_turn_failed with error_kind: invalid_request for a malformed body", async () => {
     const analytics = recordingAnalyticsClient();
     const { app, url } = await startServer(analytics);

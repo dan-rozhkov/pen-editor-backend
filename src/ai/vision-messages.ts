@@ -101,7 +101,8 @@ const DESCRIBE_CONCURRENCY = 4;
 // reuses the same DEFAULT_MODELS/getModels metadata that already powers
 // GET /api/models and the allowlist check, so this can never disagree with
 // what the model dropdown shows. A model with no built-in metadata (an
-// operator-added extra via OPENROUTER_ALLOWED_MODELS) is assumed
+// model an operator pointed OPENROUTER_MODEL at, or a showcase CLI
+// --model override) is assumed
 // vision-capable, matching getModels' own convention.
 export function modelSupportsVision(config: Config, modelId: string): boolean {
   const model = getModels(config).find((m) => m.id === modelId);

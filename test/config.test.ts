@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_MODELS,
   DEFAULT_SCENARIO_CONFIRM_THRESHOLD,
-  getAllowedModels,
   getDefaultModel,
   isOriginAllowed,
   parseEnvList,
@@ -45,61 +44,18 @@ describe("isOriginAllowed", () => {
   });
 });
 
-describe("getAllowedModels", () => {
-  it("uses the curated design-agent model list", () => {
-    expect(DEFAULT_MODELS.map((model) => model.id)).toEqual([
-      "google/gemini-2.5-flash",
-      "z-ai/glm-5.2",
-      "moonshotai/kimi-k2.5",
-      "minimax/minimax-m3",
-      "xiaomi/mimo-v2.5-pro",
-      "xiaomi/mimo-v2.5",
-      "deepseek/deepseek-v4-flash-vision-exp",
-      "deepseek/deepseek-v4-pro",
-      "tencent/hy3",
-      "nvidia/nemotron-3-ultra-550b-a55b",
-      "stepfun/step-3.7-flash",
-      "x-ai/grok-build-0.1",
-      "thinkingmachines/inkling",
-      "kwaipilot/kat-coder-pro-v2.5",
-      "x-ai/grok-4.20",
-      "google/gemini-3.5-flash-lite",
-      "google/gemini-3.7-flash",
-      "meta/muse-spark-1.3-contributor",
+describe("DEFAULT_MODELS", () => {
+  // The design agent runs on exactly one model; the picker is gone, so this
+  // list is the model, not a menu. Pinned so a stray addition can't quietly
+  // put a second model back in front of users.
+  it("holds the single design-agent model", () => {
+    expect(DEFAULT_MODELS).toEqual([
+      {
+        id: "deepseek/deepseek-v4.1-flash",
+        label: "DeepSeek V4.1 Flash",
+        supportsVision: true,
+      },
     ]);
-  });
-
-  it("includes the built-in default models", () => {
-    const allowed = getAllowedModels(makeConfig());
-    for (const model of DEFAULT_MODELS) {
-      expect(allowed).toContain(model.id);
-    }
-  });
-
-  it("includes extra models from OPENROUTER_ALLOWED_MODELS", () => {
-    const allowed = getAllowedModels(
-      makeConfig({
-        OPENROUTER_ALLOWED_MODELS: "custom/model-a, custom/model-b",
-      }),
-    );
-    expect(allowed).toContain("custom/model-a");
-    expect(allowed).toContain("custom/model-b");
-  });
-
-  it("always includes the active OPENROUTER_MODEL", () => {
-    const allowed = getAllowedModels(
-      makeConfig({ OPENROUTER_MODEL: "vendor/special-model" }),
-    );
-    expect(allowed).toContain("vendor/special-model");
-  });
-
-  it("does not duplicate models that are already built in", () => {
-    const config = makeConfig({
-      OPENROUTER_MODEL: DEFAULT_MODELS[0].id,
-      OPENROUTER_ALLOWED_MODELS: DEFAULT_MODELS[0].id,
-    });
-    const allowed = getAllowedModels(config);
-    expect(allowed.filter((id) => id === DEFAULT_MODELS[0].id)).toHaveLength(1);
   });
 });
 

@@ -162,12 +162,17 @@ describe("prepareChatTurn", () => {
   });
 
   describe("get_screenshot gate", () => {
-    // makeConfig()'s default OPENROUTER_MODEL (deepseek/deepseek-v4-pro) is
-    // vision-less per DEFAULT_MODELS in src/config.ts.
+    // The shipped model reads images natively, so the vision-less cases below
+    // use the other supported shape: an operator-pointed text-only model
+    // declared with OPENROUTER_MODEL_SUPPORTS_VISION=false.
     it("is absent when the model is vision-less and no VISION_MODEL is configured", async () => {
       const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
 
-      const config = makeConfig({ VISION_MODEL: "" });
+      const config = makeConfig({
+        VISION_MODEL: "",
+        OPENROUTER_MODEL: "vendor/text-only-model",
+        OPENROUTER_MODEL_SUPPORTS_VISION: false,
+      });
       const messages = [userMessage("make the header bigger")];
 
       const turn = await prepareChatTurn({ config, messages });
@@ -178,7 +183,11 @@ describe("prepareChatTurn", () => {
     it("is present when a VISION_MODEL is configured, even for a vision-less main model", async () => {
       const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
 
-      const config = makeConfig({ VISION_MODEL: "google/gemini-2.5-flash" });
+      const config = makeConfig({
+        VISION_MODEL: "google/gemini-2.5-flash",
+        OPENROUTER_MODEL: "vendor/text-only-model",
+        OPENROUTER_MODEL_SUPPORTS_VISION: false,
+      });
       const messages = [userMessage("make the header bigger")];
 
       const turn = await prepareChatTurn({ config, messages });
