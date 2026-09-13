@@ -708,6 +708,172 @@ export function makeAnalyzeImageTool(config?: Config) {
   });
 }
 
+// ── Comments (raw shapes, exported so the MCP server can register these as
+// bridged tools without re-declaring the schema — see BRIDGED_TOOL_NAMES in
+// src/mcp/server.ts) ──────────────────────────────────────────────────────
+
+export const readCommentsInputShape = {
+  includeResolved: z
+    .boolean()
+    .optional()
+    .describe("Whether to include resolved threads. Default false (only unresolved threads are returned)."),
+  threadId: z
+    .string()
+    .optional()
+    .describe("If given, return only this thread instead of the full list."),
+};
+
+export const replyCommentInputShape = {
+  threadId: z.string().describe("The id of the thread to reply to."),
+  text: z.string().min(1).describe("The reply message body (non-empty)."),
+};
+
+export const resolveCommentInputShape = {
+  threadId: z.string().describe("The id of the thread to resolve."),
+};
+
+export const leaveCommentInputShape = {
+  comments: z
+    .array(
+      z
+        .object({
+          nodeId: z
+            .string()
+            .optional()
+            .describe(
+              "Id of the node to anchor this comment to (pin defaults to the node's center). Omit if using x/y instead.",
+            ),
+          x: z
+            .number()
+            .optional()
+            .describe("World-space canvas x coordinate for the pin. Required together with y when nodeId is omitted."),
+          y: z
+            .number()
+            .optional()
+            .describe("World-space canvas y coordinate for the pin. Required together with x when nodeId is omitted."),
+          text: z
+            .string()
+            .min(1)
+            .describe("The comment body (non-empty). Be specific and actionable."),
+        })
+        .refine((item) => item.nodeId !== undefined || (item.x !== undefined && item.y !== undefined), {
+          message: "Each comment needs either nodeId, or both x and y.",
+        }),
+    )
+    .min(1)
+    .max(50)
+    .describe("Batch of comments to leave in this single call (1-50). Each item needs nodeId, or both x and y."),
+};
+
+// ── Layers / embed HTML / canvas layout (raw shapes, exported so the MCP
+// server can register these as bridged tools without re-declaring the
+// schema — see BRIDGED_TOOL_NAMES in src/mcp/toolNames.ts) ───────────────
+
+export const renameLayersInputShape = {
+  renames: z
+    .array(
+      z.object({
+        id: z.string().describe("The node id to rename."),
+        name: z
+          .string()
+          .min(1)
+          .describe("The new layer name (non-empty)."),
+      }),
+    )
+    .min(1)
+    .describe("One {id, name} entry per layer to rename."),
+};
+
+export const readEmbedHtmlInputShape = {
+  nodeId: z.string().describe("Id of the embed node to read."),
+  mode: z
+    .enum(["outline", "grep", "full"])
+    .default("outline")
+    .describe("outline = elided structure, grep = matches for `pattern`, full = entire HTML."),
+  pattern: z
+    .string()
+    .optional()
+    .describe("Literal substring to search for (not a regex). Required when mode is 'grep'."),
+  contextLines: z
+    .number()
+    .int()
+    .min(0)
+    .max(20)
+    .default(2)
+    .describe("Lines of context around each grep match."),
+  maxDepth: z
+    .number()
+    .int()
+    .min(1)
+    .max(12)
+    .default(4)
+    .describe("Nesting depth kept in outline mode; deeper subtrees are summarized."),
+};
+
+export const editEmbedHtmlInputShape = {
+  nodeId: z.string().describe("Id of the embed node to edit."),
+  // Models sometimes emit `edits` as a JSON-encoded string instead of an array; the frontend
+  // handler (editEmbedHtml.ts parseEdits) already tolerates that, so parse it here too rather
+  // than rejecting the call before it reaches the browser. Non-JSON strings pass through
+  // untouched so zod still reports a normal validation error.
+  edits: z.preprocess(
+    (val) => {
+      if (typeof val !== "string") return val;
+      try {
+        return JSON.parse(val);
+      } catch {
+        return val;
+      }
+    },
+    z
+      .array(
+        z.object({
+          oldString: z
+            .string()
+            .min(1)
+            .describe("Exact substring to find. Must occur exactly once unless replaceAll is true."),
+          newString: z.string().describe("Replacement text. An empty string deletes the matched fragment."),
+          replaceAll: z
+            .boolean()
+            .optional()
+            .describe("Replace every occurrence instead of requiring a unique match."),
+        }),
+      )
+      .min(1)
+      .max(20)
+      .describe("Edits applied in order, each against the result of the previous one."),
+  ),
+};
+
+// Shared between penTools.read_embed_html (below) and the MCP server
+// (src/mcp/server.ts), which registers the raw readEmbedHtmlInputShape for
+// its declared inputSchema (the SDK needs a plain shape there) but must
+// still enforce this refinement itself before forwarding to the browser —
+// see the comment on that registration for why a lost .refine() there was a
+// real defect, not just style.
+export const readEmbedHtmlInputSchema = z
+  .object(readEmbedHtmlInputShape)
+  .refine((a) => a.mode !== "grep" || (a.pattern ?? "").length > 0, {
+    message: "pattern is required when mode is 'grep'",
+  });
+
+export const findEmptySpaceOnCanvasInputShape = {
+  direction: z
+    .enum(["top", "right", "bottom", "left"])
+    .describe("Direction to search for empty space."),
+  width: z.number().describe("Required width of empty space."),
+  height: z.number().describe("Required height of empty space."),
+  padding: z
+    .number()
+    .describe("Minimum distance from other elements."),
+  nodeId: z
+    .string()
+    .optional()
+    .describe(
+      "Reference node to search around. Omit to search around entire canvas content.",
+    ),
+};
+
 export const penTools = {
   // ── Reading & Navigation ──────────────────────────────────────────
 
@@ -774,20 +940,7 @@ export const penTools = {
   rename_layers: tool({
     description:
       "Rename one or more layers (nodes) to logical, human-readable names in a single undoable step. Provide the node id and the new name for each layer. Read each layer's type, text content, and hierarchy first (via get_editor_state / batch_get) so the names reflect each layer's role (e.g. a text node reading \"Sign in\" → \"Sign in button\"; a frame of inputs → \"Login form\"). Leave already-meaningful names alone.",
-    inputSchema: z.object({
-      renames: z
-        .array(
-          z.object({
-            id: z.string().describe("The node id to rename."),
-            name: z
-              .string()
-              .min(1)
-              .describe("The new layer name (non-empty)."),
-          }),
-        )
-        .min(1)
-        .describe("One {id, name} entry per layer to rename."),
-    }),
+    inputSchema: z.object(renameLayersInputShape),
   }),
 
   read_embed_html: tool({
@@ -798,35 +951,7 @@ export const penTools = {
       "context — use it to get byte-exact anchors for edit_embed_html. `full` returns the entire HTML; avoid it " +
       "unless you are genuinely rewriting the screen. Always read before editing: edit_embed_html matches the text you " +
       "give it, tolerating only whitespace differences.",
-    inputSchema: z
-      .object({
-        nodeId: z.string().describe("Id of the embed node to read."),
-        mode: z
-          .enum(["outline", "grep", "full"])
-          .default("outline")
-          .describe("outline = elided structure, grep = matches for `pattern`, full = entire HTML."),
-        pattern: z
-          .string()
-          .optional()
-          .describe("Literal substring to search for (not a regex). Required when mode is 'grep'."),
-        contextLines: z
-          .number()
-          .int()
-          .min(0)
-          .max(20)
-          .default(2)
-          .describe("Lines of context around each grep match."),
-        maxDepth: z
-          .number()
-          .int()
-          .min(1)
-          .max(12)
-          .default(4)
-          .describe("Nesting depth kept in outline mode; deeper subtrees are summarized."),
-      })
-      .refine((a) => a.mode !== "grep" || (a.pattern ?? "").length > 0, {
-        message: "pattern is required when mode is 'grep'",
-      }),
+    inputSchema: readEmbedHtmlInputSchema,
   }),
 
   edit_embed_html: tool({
@@ -840,40 +965,7 @@ export const penTools = {
       "Each oldString must occur exactly once unless replaceAll is true. Edits apply in order and atomically — if any " +
       "edit fails to match, nothing is changed. The call is also refused when the edits would leave a previously " +
       "well-formed screen with an unclosed tag, so open and close a tag in the SAME call, never across two.",
-    inputSchema: z.object({
-      nodeId: z.string().describe("Id of the embed node to edit."),
-      // Models sometimes emit `edits` as a JSON-encoded string instead of an array; the frontend
-      // handler (editEmbedHtml.ts parseEdits) already tolerates that, so parse it here too rather
-      // than rejecting the call before it reaches the browser. Non-JSON strings pass through
-      // untouched so zod still reports a normal validation error.
-      edits: z.preprocess(
-        (val) => {
-          if (typeof val !== "string") return val;
-          try {
-            return JSON.parse(val);
-          } catch {
-            return val;
-          }
-        },
-        z
-          .array(
-            z.object({
-              oldString: z
-                .string()
-                .min(1)
-                .describe("Exact substring to find. Must occur exactly once unless replaceAll is true."),
-              newString: z.string().describe("Replacement text. An empty string deletes the matched fragment."),
-              replaceAll: z
-                .boolean()
-                .optional()
-                .describe("Replace every occurrence instead of requiring a unique match."),
-            }),
-          )
-          .min(1)
-          .max(20)
-          .describe("Edits applied in order, each against the result of the previous one."),
-      ),
-    }),
+    inputSchema: z.object(editEmbedHtmlInputShape),
   }),
 
   boolean_operation: tool({
@@ -1099,22 +1191,7 @@ Returns the created/updated style ids and names (with a created|updated status) 
   find_empty_space_on_canvas: tool({
     description:
       "Find available empty space on the canvas in a given direction with the specified dimensions. Use before inserting new top-level frames to avoid overlapping.",
-    inputSchema: z.object({
-      direction: z
-        .enum(["top", "right", "bottom", "left"])
-        .describe("Direction to search for empty space."),
-      width: z.number().describe("Required width of empty space."),
-      height: z.number().describe("Required height of empty space."),
-      padding: z
-        .number()
-        .describe("Minimum distance from other elements."),
-      nodeId: z
-        .string()
-        .optional()
-        .describe(
-          "Reference node to search around. Omit to search around entire canvas content.",
-        ),
-    }),
+    inputSchema: z.object(findEmptySpaceOnCanvasInputShape),
   }),
 
   search_all_unique_properties: tool({
@@ -1183,70 +1260,25 @@ Returns the created/updated style ids and names (with a created|updated status) 
   read_comments: tool({
     description:
       "Read canvas comment threads so you can act on them. Each thread carries a stable order number, its resolved state, and (when the thread is anchored to a node rather than a bare canvas point) the anchored nodeId and that node's name — a pin gives an exact node anchor that plain chat messages don't have, so use the nodeId to target your fix precisely. Returns each thread's messages (author 'me' or 'agent', plus text). Pass threadId to fetch a single thread, or omit it to list all threads.",
-    inputSchema: z.object({
-      includeResolved: z
-        .boolean()
-        .optional()
-        .describe("Whether to include resolved threads. Default false (only unresolved threads are returned)."),
-      threadId: z
-        .string()
-        .optional()
-        .describe("If given, return only this thread instead of the full list."),
-    }),
+    inputSchema: z.object(readCommentsInputShape),
   }),
 
   reply_comment: tool({
     description:
       "Append a reply to an existing comment thread, authored by you (the agent). Use this to report back after acting on a comment, or to ask a clarifying question on the thread.",
-    inputSchema: z.object({
-      threadId: z.string().describe("The id of the thread to reply to."),
-      text: z.string().min(1).describe("The reply message body (non-empty)."),
-    }),
+    inputSchema: z.object(replyCommentInputShape),
   }),
 
   resolve_comment: tool({
     description:
       "Mark a comment thread as resolved. Use after you've addressed what the thread asked for.",
-    inputSchema: z.object({
-      threadId: z.string().describe("The id of the thread to resolve."),
-    }),
+    inputSchema: z.object(resolveCommentInputShape),
   }),
 
   leave_comment: tool({
     description:
       "Drop one or more comment pins authored by you (the agent), each starting a new thread. Pass every comment you want to leave as a single batch in one call — this is the intended way to do design-review-style feedback (5-15 findings in one turn) without spending a tool call per pin. For each item: give nodeId to anchor the pin precisely to that node (the pin defaults to the node's center) — prefer this whenever a comment is about a specific layer, since it's what lets a later fix (yours or the user's) find the exact element. If there's no single node to anchor to, give x/y instead as a world-space canvas point. Every item needs nodeId OR both x and y; an item with neither is rejected. Returns the created thread numbers so you can cite them precisely in your reply (e.g. \"left 4 notes: #7-#10\").",
-    inputSchema: z.object({
-      comments: z
-        .array(
-          z
-            .object({
-              nodeId: z
-                .string()
-                .optional()
-                .describe(
-                  "Id of the node to anchor this comment to (pin defaults to the node's center). Omit if using x/y instead.",
-                ),
-              x: z
-                .number()
-                .optional()
-                .describe("World-space canvas x coordinate for the pin. Required together with y when nodeId is omitted."),
-              y: z
-                .number()
-                .optional()
-                .describe("World-space canvas y coordinate for the pin. Required together with x when nodeId is omitted."),
-              text: z
-                .string()
-                .min(1)
-                .describe("The comment body (non-empty). Be specific and actionable."),
-            })
-            .refine((item) => item.nodeId !== undefined || (item.x !== undefined && item.y !== undefined), {
-              message: "Each comment needs either nodeId, or both x and y.",
-            }),
-        )
-        .min(1)
-        .max(50)
-        .describe("Batch of comments to leave in this single call (1-50). Each item needs nodeId, or both x and y."),
-    }),
+    inputSchema: z.object(leaveCommentInputShape),
   }),
 
   // ── Plugins ───────────────────────────────────────────────────────

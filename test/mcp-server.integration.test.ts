@@ -91,9 +91,19 @@ describe("MCP server integration", () => {
         "get_screenshot",
         "batch_design",
         "set_variables",
+        "read_comments",
+        "reply_comment",
+        "resolve_comment",
+        "leave_comment",
+        "read_embed_html",
+        "edit_embed_html",
+        "rename_layers",
+        "find_empty_space_on_canvas",
         "get_guidelines",
         "get_style_guide_tags",
         "get_style_guide",
+        "list_skills",
+        "load_skill",
       ].sort(),
     );
 
@@ -160,6 +170,50 @@ describe("MCP server integration", () => {
     expect(JSON.stringify(result.content)).not.toContain("Too many operations");
 
     await client.close();
+  });
+
+  // Defect 2 regression: penTools.read_embed_html's zod schema refines that
+  // `pattern` is required when `mode: "grep"`, but registerTool's declared
+  // inputSchema is the raw shape (registerTool can't take a refined
+  // ZodEffects) — so before the handler re-validated, an invalid grep call
+  // sailed straight past registration and reached the bridge (occupying a
+  // queue slot and the 30s timeout) before ever being rejected. This asserts
+  // it is now rejected LOCALLY, with no editor tab connected at all — if it
+  // reached the bridge instead, it would fail with "No Pen Editor tab is
+  // connected", not this message.
+  it("rejects an invalid read_embed_html grep call before it reaches the bridge", async () => {
+    const client = await connectMcpClient(server.url, TEST_TOKEN);
+
+    const result = await client.callTool({
+      name: "read_embed_html",
+      arguments: { nodeId: "n1", mode: "grep" },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toContain("pattern is required when mode is 'grep'");
+    expect(JSON.stringify(result.content)).not.toContain("No Pen Editor tab is connected");
+
+    await client.close();
+  });
+
+  it("still forwards a valid read_embed_html grep call to the bridge", async () => {
+    const editor = await connectFakeEditor(server.url, TEST_TOKEN, {
+      read_embed_html: JSON.stringify({ matches: [] }),
+    });
+    await waitForSessionCount(1);
+
+    const client = await connectMcpClient(server.url, TEST_TOKEN);
+    const result = await client.callTool({
+      name: "read_embed_html",
+      arguments: { nodeId: "n1", mode: "grep", pattern: "hello" },
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(JSON.stringify(result.content)).toContain("matches");
+
+    await client.close();
+    editor.close();
+    await waitForSessionCount(0);
   });
 });
 

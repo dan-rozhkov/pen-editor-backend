@@ -545,10 +545,52 @@ unit test of `prepareChatTurn` could not have caught it.
 ## MCP server (`src/mcp/`)
 
 `/api/mcp` (streamable HTTP, `@modelcontextprotocol/sdk`) and `/api/mcp/ws`
-(WebSocket, `@fastify/websocket`) expose a curated 10-tool MCP surface —
-7 tools bridged live to a connected `pen-editor` browser tab
-(`src/mcp/bridge.ts`, most-recently-active session wins, 30s timeout) plus
-3 static tools executed directly on the server. Gated by `MCP_AUTH_TOKEN`.
+(WebSocket, `@fastify/websocket`) expose a curated 20-tool MCP surface —
+15 tools bridged live to a connected `pen-editor` browser tab
+(`src/mcp/bridge.ts`, most-recently-active session wins, 30s timeout —
+`BRIDGED_TOOL_NAMES` now includes the 4 comment tools plus `read_embed_html`,
+`edit_embed_html`, `rename_layers`, and `find_empty_space_on_canvas`
+alongside the original 7), 3 static tools executed directly on the server
+(`STATIC_TOOL_NAMES`), and 2 skill tools (`SKILL_TOOL_NAMES`:
+`list_skills`/`load_skill`) also executed
+on the server but deliberately kept out of `STATIC_TOOL_NAMES` — that list is
+contractually exactly the `penTools` entries with a server `execute`, and
+skill tools aren't `penTools` entries at all (they wrap `src/ai/skills.ts`,
+the same curated catalog `/api/chat` uses via `getSkillTools`). Only the
+curated (`src/skills/*.md`) catalog is exposed this way — learned
+(`agent_skills`) and per-user (`user_skills`) skills both need a `userId`/DB
+identity an MCP session (authenticated by one shared bearer token) doesn't
+have. Gated by `MCP_AUTH_TOKEN`.
+
+The curated catalog itself is authored for the full chat agent (every
+`penTools` schema plus `/api/chat`'s mode/policy routing), which is wider
+than this 20-tool surface — so `list_skills`/`load_skill` don't hand out a
+skill's instructions as if that gap didn't exist. `src/mcp/skillSurface.ts`
+scans a skill's body for backtick-quoted or call-style (`tool_name(`)
+mentions of any tool name and flags the ones not on this MCP surface. The
+candidate set isn't just `penTools`/`SKILL_TOOL_NAMES` — it also lists a
+handful of tools this repo never declares a schema for at all
+(`EXTERNAL_SKILL_TOOL_NAMES`: Refero's MCP tools as `research.md` spells them
+— `search_screens`, `search_flows`, `get_screen`, `get_flow`,
+`get_design_guidance` — plus their `refero_`-prefixed wire names from
+`src/ai/mcp.ts`, and the built-in `web_search`/`fetch_url`). Without that
+list, a skill built entirely on tools outside `penTools` (research.md calls
+only Refero tools) would score zero mentions and look fully usable here,
+which is the opposite of true. `list_skills` adds an `unavailableTools` array
+per catalog entry (omitted when empty) plus a general notice in the
+response, and `load_skill` prepends an explicit warning naming them.
+`prototype`/`slides`/`research` get a warning even when clean of
+unavailable-tool mentions (research isn't, in practice — but the warning
+doesn't depend on that), because each assumes something structural that
+doesn't exist on this MCP path: `prototype`/`slides` assume
+`resolveTaskPolicy` (`src/ai/taskPolicy.ts`) and embed-only mode routing,
+while `research` assumes `/api/chat`'s research mode itself, which 503s
+without a connected MCP server. That's a hardcoded, commented list
+(`POLICY_DEPENDENT_SKILL_NAMES`), not something inferred from tool mentions,
+and `list_skills` also surfaces it directly as `policyDependent: true` on
+the catalog entry — not only inside `load_skill`'s prose — so a caller
+scanning the catalog without loading every skill can still see which ones
+are gated.
 See `docs/superpowers/specs/2026-07-23-mcp-server-design.md` for the full
 design.
 
