@@ -25,7 +25,8 @@ npm run dev            # tsx watch on http://localhost:3001
 | Var | Required | Purpose |
 |-----|----------|---------|
 | `OPENROUTER_API_KEY` | yes | LLM access via OpenRouter |
-| `OPENROUTER_MODEL` | no | default chat model (`deepseek/deepseek-v4-pro`) |
+| `OPENROUTER_MODEL` | no | default chat model (`deepseek/deepseek-v4.1-flash`) |
+| `OPENROUTER_REASONING_EFFORT` | no | `xhigh\|high\|medium\|low\|minimal\|none`, default `none`; applies to the main chat model only. For the current default model, only `none` actually suppresses reasoning — `effort` gradations and `reasoning.max_tokens` are both ignored by it |
 | `CORS_ALLOWED_ORIGINS` | no | comma-separated origin allowlist |
 | `REFERO_API_KEY` | no | enables research mode (Refero MCP) |
 | `TAVILY_API_KEY` | no | enables internet search (`web_search` / `fetch_url`) |

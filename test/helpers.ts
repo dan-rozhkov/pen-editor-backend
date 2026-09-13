@@ -2,6 +2,7 @@ import {
   DEFAULT_MEMORY_REVIEW_INTERVAL,
   DEFAULT_SCENARIO_CONFIRM_THRESHOLD,
   DEFAULT_SKILL_REVIEW_INTERVAL,
+  envSchema,
   type Config,
 } from "../src/config.js";
 
@@ -12,6 +13,10 @@ export function makeConfig(overrides: Partial<Config> = {}): Config {
     HOST: "127.0.0.1",
     OPENROUTER_API_KEY: "test-api-key",
     OPENROUTER_MODEL: "deepseek/deepseek-v4.1-flash",
+    // Real shipped default, not a second hardcoded copy — keeps the rest of
+    // the suite exercising the same value as prod. Tests that need a
+    // different effort override it point by point via `overrides`.
+    OPENROUTER_REASONING_EFFORT: envSchema.shape.OPENROUTER_REASONING_EFFORT.parse(undefined),
     OPENROUTER_MODEL_SUPPORTS_VISION: true,
     OPENROUTER_IMAGE_MODEL: "google/gemini-3.1-flash-lite-image",
     CORS_ALLOWED_ORIGINS: undefined,

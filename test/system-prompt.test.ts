@@ -136,6 +136,25 @@ describe("buildSystemPrompt", () => {
     expect(prompt).not.toContain("## Current Canvas Context");
   });
 
+  it("forbids drafting or rehearsing markup in reasoning — markup exists only inside the tool call", () => {
+    // Regression: the agent was writing HTML for a screen out in its
+    // reasoning block, then repeating the same markup in the batch_design /
+    // edit_embed_html call — doubling generation and latency.
+    const prompt = buildSystemPrompt();
+    expect(prompt).toContain("Never draft, rehearse, or repeat markup in your reasoning");
+  });
+
+  it("keeps the reasoning-discipline rule in CORE_PROMPT — present regardless of skills/memory options", () => {
+    const bare = buildSystemPrompt();
+    const withSkillsAndMemory = buildSystemPrompt(
+      [{ name: "prototype", description: "Build a mockup." }],
+      { memoryGuidance: true, selfSkillsGuidance: true, canvasContextDelivered: true },
+    );
+    const needle = "Never draft, rehearse, or repeat markup in your reasoning";
+    expect(bare).toContain(needle);
+    expect(withSkillsAndMemory).toContain(needle);
+  });
+
   it("never varies with per-request canvas data — the pointer block is byte-identical regardless of what canvasContext string existed", () => {
     const a = buildSystemPrompt([], { canvasContextDelivered: true });
     const b = buildSystemPrompt([], { canvasContextDelivered: true });

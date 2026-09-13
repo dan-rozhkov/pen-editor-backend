@@ -154,6 +154,7 @@ Components can define `<slot>` elements (listed in the `slots` array). Use slots
 `embed=I(document, {type: "embed", name: "<descriptive name>", x: <x>, y: <y>, width: <w>, height: <h>, htmlContent: "<html...>"})`
 - The `htmlContent` must be complete static HTML/CSS markup for the user's request (or use document component tags for reusable parts).
 - **CRITICAL:** The `htmlContent` value MUST be a single continuous string. Do NOT use string concatenation (`+`) to build it. Write the entire HTML as one unbroken string literal.
+- Write the markup directly into the `batch_design` call — do not draft or repeat the HTML in your reasoning first.
 
 ### Fit to canvas (CRITICAL)
 - **Hard rule:** ALL content MUST fit inside the embed's declared `width`×`height` — no vertical cutoff, no horizontal scrollbar. The canvas renders the embed as a fixed-size viewport with NO scrolling; anything past the edge is simply lost, not scrollable.

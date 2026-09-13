@@ -31,11 +31,39 @@ export const DEFAULT_SKILL_REVIEW_INTERVAL = 15;
  */
 export const DEFAULT_SCENARIO_CONFIRM_THRESHOLD = 3;
 
-const envSchema = z.object({
+// Exported so tests can pull the real shipped default for a given var (e.g.
+// OPENROUTER_MODEL) without hardcoding it a second time — see
+// test/provider-reasoning.test.ts.
+export const envSchema = z.object({
   PORT: z.coerce.number().default(3001),
   HOST: z.string().default("0.0.0.0"),
   OPENROUTER_API_KEY: z.string().min(1, "OPENROUTER_API_KEY is required"),
   OPENROUTER_MODEL: z.string().default("deepseek/deepseek-v4.1-flash"),
+  // How hard the model "thinks" before answering, for the subset of models
+  // whose family is in src/ai/provider.ts's REASONING_MODEL_PREFIXES.
+  // Measured live against the current default model, deepseek/deepseek-v4.1-
+  // flash (real OpenRouter calls, 2026-09): "minimal" and "high" produced
+  // IDENTICAL results, both pinned at the reasoning-token budget ceiling
+  // (1200/1200 and 1500/1500 tokens, ~4200 chars of reasoning either way) —
+  // deepseek ignores `effort` gradations entirely. `reasoning.max_tokens:
+  // 200` was ALSO ignored (came back at 1501 tokens), so it's not a usable
+  // lever either. The only value that actually suppressed reasoning was
+  // "none" (reasoning_tokens: 0), and a tool-calling turn still worked
+  // correctly under it (batch_design still got called, args carried the
+  // HTML as expected). Hence the default here is "none", not "minimal".
+  // An operator who points OPENROUTER_MODEL at a family where gradations DO
+  // work (e.g. anthropic/*, unverified here but plausible from OpenRouter's
+  // docs) can raise this back to "minimal"/"low" without a code change.
+  //
+  // Scope: this only reaches the main chat model (src/ai/provider.ts's
+  // createModel(config) with no modelOverride, i.e. the /api/chat route).
+  // Helper-role calls that pass a modelOverride (ANALYSIS_MODEL, VISION_MODEL,
+  // selfimprove review, user skills, prototype-link) keep the pre-existing
+  // "minimal" effort regardless of this var — this was measured for the chat
+  // agent, not for analysis-style tasks that want the model to actually think.
+  OPENROUTER_REASONING_EFFORT: z
+    .enum(["xhigh", "high", "medium", "low", "minimal", "none"])
+    .default("none"),
   // An OPENROUTER_MODEL with no entry in DEFAULT_MODELS is assumed
   // vision-capable (getModels' convention below). Set this to "false" when an
   // operator points OPENROUTER_MODEL at a text-only model: otherwise every

@@ -1,0 +1,119 @@
+import { describe, expect, it } from "vitest";
+import { createModel, supportsReasoningControl } from "../src/ai/provider.js";
+import { envSchema } from "../src/config.js";
+import { makeConfig } from "./helpers.js";
+
+// The real regression this file guards against: OPENROUTER_MODEL's shipped
+// default drifting to a family outside REASONING_MODEL_PREFIXES, which
+// silently disables all reasoning control for it (see provider.ts's comment
+// for how that happened with deepseek/*). Read the default programmatically
+// — a hardcoded "deepseek/..." string here would defeat the point, since it
+// would keep passing even after exactly the drift this test exists to catch.
+function defaultOpenRouterModel(): string {
+  const parsed = envSchema.shape.OPENROUTER_MODEL.parse(undefined);
+  return parsed;
+}
+
+// Same idea for the effort value itself: read the schema's real default
+// rather than hardcoding "none", so a silent revert to the old (measured
+// broken, for deepseek) "minimal" default fails this test instead of
+// sailing through unnoticed.
+function defaultReasoningEffort(): string {
+  return envSchema.shape.OPENROUTER_REASONING_EFFORT.parse(undefined);
+}
+
+describe("supportsReasoningControl", () => {
+  it("covers the shipped OPENROUTER_MODEL default", () => {
+    expect(supportsReasoningControl(defaultOpenRouterModel())).toBe(true);
+  });
+
+  // Fixed, representative ids rather than iterating REASONING_MODEL_PREFIXES
+  // itself — that would make this test tautological (supportsReasoningControl
+  // is `some(startsWith)` over that same array, so it could never fail here,
+  // not even if the list were emptied out). These ids pin actual behavior.
+  it("returns true for representative allowlisted model ids", () => {
+    for (const modelId of [
+      "anthropic/claude-opus-5",
+      "x-ai/grok-4",
+      "deepseek/deepseek-v4.1-flash",
+      "qwen/qwen3-max",
+      "moonshotai/kimi-k2",
+      "minimax/minimax-m3",
+      "z-ai/glm-4.6",
+      "nvidia/nemotron-4",
+      "xiaomi/mimo-7b",
+    ]) {
+      expect(supportsReasoningControl(modelId)).toBe(true);
+    }
+  });
+
+  it("returns false for a model family outside the allowlist", () => {
+    expect(supportsReasoningControl("openai/gpt-4o-mini")).toBe(false);
+  });
+});
+
+describe("OPENROUTER_REASONING_EFFORT default", () => {
+  // Live-measured (real OpenRouter calls against deepseek/deepseek-v4.1-
+  // flash, 2026-09): "minimal" and "high" produced identical, budget-capped
+  // reasoning — deepseek ignores effort gradations — and only "none"
+  // actually suppressed reasoning. This is the gate against silently
+  // reverting to the old, measured-ineffective "minimal" default.
+  it("is 'none'", () => {
+    expect(defaultReasoningEffort()).toBe("none");
+  });
+});
+
+describe("createModel reasoning effort", () => {
+  it("passes the configured effort through to the OpenRouter model settings", () => {
+    const config = makeConfig({
+      OPENROUTER_MODEL: "deepseek/deepseek-v4.1-flash",
+      OPENROUTER_REASONING_EFFORT: "high",
+    });
+    const model = createModel(config) as unknown as {
+      settings: { reasoning?: { effort?: string } };
+    };
+    expect(model.settings.reasoning).toEqual({ effort: "high" });
+  });
+
+  it("defaults to 'none' when the config value is left at its schema default", () => {
+    const config = makeConfig({
+      OPENROUTER_MODEL: "deepseek/deepseek-v4.1-flash",
+      OPENROUTER_REASONING_EFFORT: defaultReasoningEffort() as "none",
+    });
+    const model = createModel(config) as unknown as {
+      settings: { reasoning?: { effort?: string } };
+    };
+    expect(model.settings.reasoning).toEqual({ effort: "none" });
+  });
+
+  it("omits reasoning settings for a model family outside the allowlist", () => {
+    const config = makeConfig({ OPENROUTER_MODEL: "openai/gpt-4o-mini" });
+    const model = createModel(config) as unknown as {
+      settings: { reasoning?: { effort?: string } };
+    };
+    expect(model.settings.reasoning).toBeUndefined();
+  });
+
+  // The operator-tunable OPENROUTER_REASONING_EFFORT (default "none") is
+  // scoped to the main chat model only — createModel(config) with no
+  // modelOverride. A call with modelOverride is a helper role (analysis,
+  // vision, selfimprove review, user skills, prototype-link) that was never
+  // part of the "none" measurement and should keep the pre-existing
+  // "minimal" effort regardless of what the chat knob is set to.
+  it("scopes OPENROUTER_REASONING_EFFORT to the chat model, not modelOverride calls", () => {
+    const config = makeConfig({
+      OPENROUTER_MODEL: "deepseek/deepseek-v4.1-flash",
+      OPENROUTER_REASONING_EFFORT: "high",
+    });
+
+    const chatModel = createModel(config) as unknown as {
+      settings: { reasoning?: { effort?: string } };
+    };
+    expect(chatModel.settings.reasoning).toEqual({ effort: "high" });
+
+    const overriddenModel = createModel(config, "deepseek/deepseek-v4.1-flash") as unknown as {
+      settings: { reasoning?: { effort?: string } };
+    };
+    expect(overriddenModel.settings.reasoning).toEqual({ effort: "minimal" });
+  });
+});
