@@ -31,16 +31,16 @@ import {
 
 // The shipped model (DEFAULT_MODELS in src/config.ts) reads images natively,
 // so the "blind model" fixture is the other supported shape: an operator who
-// pointed OPENROUTER_MODEL at a text-only model and said so via
-// OPENROUTER_MODEL_SUPPORTS_VISION=false. SEEING_MODEL is any other id —
+// pointed CHAT_MODEL at a text-only model and said so via
+// CHAT_MODEL_SUPPORTS_VISION=false. SEEING_MODEL is any other id —
 // unlisted ids are assumed vision-capable, matching getModels' convention.
 const BLIND_MODEL = "vendor/text-only-model";
 const SEEING_MODEL = "google/gemini-2.5-flash";
 
 function makeConfig(overrides: Partial<Config> = {}): Config {
   return baseConfig({
-    OPENROUTER_MODEL: BLIND_MODEL,
-    OPENROUTER_MODEL_SUPPORTS_VISION: false,
+    CHAT_MODEL: BLIND_MODEL,
+    CHAT_MODEL_SUPPORTS_VISION: false,
     ...overrides,
   });
 }
@@ -579,5 +579,177 @@ describe("applyVisionPreprocessing", () => {
     expect(text).toBe(
       "[Image attached but could not be analyzed: Vision request timed out after 120000ms.]",
     );
+  });
+});
+
+// Fix 1, 2026-09 DeepSeek-direct review: applyVisionPreprocessing's decision
+// is two-dimensional — "can the model see" and, independently, "can THIS
+// PROVIDER carry an image found inside a tool-result part" — because
+// @ai-sdk/deepseek has no code path that promotes a get_screenshot result's
+// image-data part to a real image the way OpenRouter's integration does; it
+// JSON.stringifies the whole thing into tool-message text instead. A
+// vision-capable model must not have its get_screenshot results flooded
+// into the model as base64 "text" just because the underlying model can
+// technically read pictures.
+describe("applyVisionPreprocessing (provider tool-result-image dimension)", () => {
+  // Vision-capable, unlisted model id so DEFAULT_MODELS/CHAT_MODEL_SUPPORTS_VISION
+  // plumbing doesn't interfere — modelSupportsVision() assumes vision-capable
+  // for any id it doesn't recognize.
+  const VISION_MODEL_ID = "vendor/vision-model";
+
+  function deepseekConfig(overrides: Partial<Config> = {}): Config {
+    return baseConfig({
+      CHAT_MODEL: `deepseek:${VISION_MODEL_ID}`,
+      CHAT_MODEL_SUPPORTS_VISION: undefined,
+      ...overrides,
+    });
+  }
+
+  it("converts ONLY the tool-result image, leaving a user-attached image native, for a vision-capable model on DeepSeek-direct", async () => {
+    vi.mocked(describeImage).mockResolvedValue({
+      ok: true,
+      text: "A settings screen with three toggles.",
+    });
+    const config = deepseekConfig();
+    const messages: ModelMessage[] = [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "look at this" },
+          { type: "image", image: "https://example.com/a.png", mediaType: "image/png" },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "call-1",
+            toolName: "get_screenshot",
+            output: {
+              type: "content",
+              value: [{ type: "image-data", data: "AAAA", mediaType: "image/png" }],
+            },
+          },
+        ],
+      },
+    ];
+
+    const result = await applyVisionPreprocessing(messages, {
+      config,
+      modelId: VISION_MODEL_ID,
+      chatModelRef: config.CHAT_MODEL,
+    });
+
+    // The user-attached image survives untouched — DeepSeek reads it natively.
+    expect(result[0]).toEqual(messages[0]);
+
+    // The tool-result image is gone, replaced by a text description.
+    const toolPart = (result[1] as { content: { output: { type: string; value: string } }[] })
+      .content[0];
+    expect(toolPart.output).toEqual({
+      type: "text",
+      value: expect.stringContaining("A settings screen with three toggles."),
+    });
+    expect(describeImage).toHaveBeenCalledOnce();
+    expect(JSON.stringify(result)).not.toContain("image-data");
+  });
+
+  it("never leaks the raw image as text when no VISION_MODEL is configured to describe a DeepSeek tool-result image", async () => {
+    // describeImage() itself (src/services/vision.ts, not mocked here beyond
+    // this call's return value) resolves this exact case immediately, with
+    // no network call — this test only asserts applyVisionPreprocessing
+    // routes a DeepSeek tool-result slot into that path instead of leaving
+    // the image-data JSON as tool-message text.
+    vi.mocked(describeImage).mockResolvedValue({
+      ok: false,
+      text: "Vision is not configured on this server (VISION_MODEL is empty).",
+    });
+    const config = deepseekConfig({ VISION_MODEL: "" });
+    const messages: ModelMessage[] = [
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "call-1",
+            toolName: "get_screenshot",
+            output: {
+              type: "content",
+              value: [{ type: "image-data", data: "AAAA", mediaType: "image/png" }],
+            },
+          },
+        ],
+      },
+    ];
+
+    const result = await applyVisionPreprocessing(messages, {
+      config,
+      modelId: VISION_MODEL_ID,
+      chatModelRef: config.CHAT_MODEL,
+    });
+
+    const toolPart = (result[0] as { content: { output: { type: string; value: string } }[] })
+      .content[0];
+    expect(toolPart.output.type).toBe("text");
+    expect(toolPart.output.value).toContain("Vision is not configured");
+    expect(toolPart.output.value).not.toContain("AAAA");
+    expect(JSON.stringify(result)).not.toContain("image-data");
+  });
+
+  it("returns messages unchanged for a vision-capable model on OpenRouter (fully native)", async () => {
+    const config = baseConfig({
+      CHAT_MODEL: `openrouter:${VISION_MODEL_ID}`,
+      CHAT_MODEL_SUPPORTS_VISION: undefined,
+    });
+    const messages: ModelMessage[] = [
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "call-1",
+            toolName: "get_screenshot",
+            output: {
+              type: "content",
+              value: [{ type: "image-data", data: "AAAA", mediaType: "image/png" }],
+            },
+          },
+        ],
+      },
+    ];
+
+    const result = await applyVisionPreprocessing(messages, {
+      config,
+      modelId: VISION_MODEL_ID,
+      chatModelRef: config.CHAT_MODEL,
+    });
+
+    expect(result).toEqual(messages);
+    expect(describeImage).not.toHaveBeenCalled();
+  });
+
+  it("still converts EVERY image slot for a vision-less model, regardless of provider", async () => {
+    vi.mocked(describeImage).mockResolvedValue({ ok: true, text: "A blue login screen." });
+    const config = baseConfig({
+      CHAT_MODEL: "deepseek:some-text-only-model",
+      CHAT_MODEL_SUPPORTS_VISION: false,
+    });
+    const messages: ModelMessage[] = [
+      {
+        role: "user",
+        content: [{ type: "image", image: "https://example.com/a.png", mediaType: "image/png" }],
+      },
+    ];
+
+    const result = await applyVisionPreprocessing(messages, {
+      config,
+      modelId: "some-text-only-model",
+      chatModelRef: config.CHAT_MODEL,
+    });
+
+    const content = (result[0] as { content: unknown[] }).content;
+    expect(content[0]).toMatchObject({ type: "text" });
+    expect((content[0] as { text: string }).text).toContain("A blue login screen.");
   });
 });

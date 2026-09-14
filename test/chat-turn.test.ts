@@ -7,6 +7,20 @@ vi.mock("../src/ai/mcp.js", () => ({
   closeAllMCPClients: vi.fn(async () => {}),
 }));
 
+// Mocked so describeImage() never makes a live network call to VISION_MODEL
+// — used directly by the "get_screenshot vision preprocessing" describe
+// block below, and indirectly by the pre-existing analyze_image gate tests
+// (analyze_image's execute() calls describeImage() too). Default resolved
+// value keeps those pre-existing tests passing without caring about vision
+// content; the get_screenshot describe block overrides it per-test.
+vi.mock("../src/services/vision.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/services/vision.js")>();
+  return {
+    ...actual,
+    describeImage: vi.fn().mockResolvedValue({ ok: true, text: "stub description" }),
+  };
+});
+
 // prepareChatTurn calls createModel(config, modelOverride), which needs a
 // real OpenRouter provider construction only — createModel itself doesn't
 // make network calls, it just builds a LanguageModel descriptor, so no mock
@@ -164,14 +178,14 @@ describe("prepareChatTurn", () => {
   describe("get_screenshot gate", () => {
     // The shipped model reads images natively, so the vision-less cases below
     // use the other supported shape: an operator-pointed text-only model
-    // declared with OPENROUTER_MODEL_SUPPORTS_VISION=false.
+    // declared with CHAT_MODEL_SUPPORTS_VISION=false.
     it("is absent when the model is vision-less and no VISION_MODEL is configured", async () => {
       const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
 
       const config = makeConfig({
         VISION_MODEL: "",
-        OPENROUTER_MODEL: "vendor/text-only-model",
-        OPENROUTER_MODEL_SUPPORTS_VISION: false,
+        CHAT_MODEL: "vendor/text-only-model",
+        CHAT_MODEL_SUPPORTS_VISION: false,
       });
       const messages = [userMessage("make the header bigger")];
 
@@ -185,8 +199,8 @@ describe("prepareChatTurn", () => {
 
       const config = makeConfig({
         VISION_MODEL: "google/gemini-2.5-flash",
-        OPENROUTER_MODEL: "vendor/text-only-model",
-        OPENROUTER_MODEL_SUPPORTS_VISION: false,
+        CHAT_MODEL: "vendor/text-only-model",
+        CHAT_MODEL_SUPPORTS_VISION: false,
       });
       const messages = [userMessage("make the header bigger")];
 
@@ -259,6 +273,69 @@ describe("prepareChatTurn", () => {
         }
       ).execute({ imageUrl: "https://example.com/a.png" });
       expect(result).not.toContain("was not given a server config");
+    });
+  });
+
+  // Fix 1 / Fix 7, 2026-09 DeepSeek-direct review: this is THE end-to-end
+  // regression test for the defect that shipped because the whole test suite
+  // ran on a bare OpenRouter CHAT_MODEL (see test/helpers.ts's Fix 7 comment)
+  // instead of the real shipped default. `makeConfig()` with no override now
+  // uses the real default (`deepseek:deepseek-flash`) — this test asserts
+  // the actual request body prepareChatTurn builds (`turn.modelMessages`,
+  // exactly what gets handed to streamText/doStream) never lets a
+  // get_screenshot result's base64 image data survive as literal tool-
+  // message text, which is exactly what @ai-sdk/deepseek would otherwise
+  // JSON.stringify verbatim into the request DeepSeek receives.
+  //
+  // This test MUST fail without Fix 1 — verified by temporarily reverting
+  // vision-messages.ts's two-dimensional check back to
+  // `if (modelSupportsVision(config, modelId)) return messages;`, which
+  // leaves the tool-result image untouched (the default model IS
+  // vision-capable) and the base64 payload right there in modelMessages.
+  describe("get_screenshot vision preprocessing at the shipped default (tool-result images on DeepSeek-direct)", () => {
+    const DATA_URL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg";
+
+    function screenshotHistory(): Record<string, unknown>[] {
+      return [
+        userMessage("check the header"),
+        {
+          id: "a1",
+          role: "assistant",
+          parts: [
+            {
+              type: "tool-get_screenshot",
+              toolCallId: "call-1",
+              state: "output-available",
+              input: { nodeId: "header-1" },
+              output: JSON.stringify({ imageData: DATA_URL }),
+            },
+          ],
+        },
+      ];
+    }
+
+    it("never lets the get_screenshot base64 payload survive as tool-message text, at the real shipped CHAT_MODEL default", async () => {
+      const { describeImage } = await import("../src/services/vision.js");
+      vi.mocked(describeImage).mockResolvedValue({
+        ok: true,
+        text: "A header with a logo and three nav links.",
+      });
+      const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+
+      // makeConfig() with NO CHAT_MODEL override — the real shipped default.
+      const config = makeConfig();
+      expect(config.CHAT_MODEL).toBe("deepseek:deepseek-flash");
+
+      const turn = await prepareChatTurn({ config, messages: screenshotHistory() });
+
+      const bodyText = JSON.stringify(turn.modelMessages);
+      // The whole point: the base64 payload must not appear anywhere in the
+      // request body, in any shape (raw text, JSON-stringified content part).
+      expect(bodyText).not.toContain("iVBORw0KGgoAAAANSUhEUg");
+      // And the tool-result slot must have gotten the vision-preprocessing
+      // treatment (a text description), not merely stayed present in some
+      // OTHER unexpected but still-safe shape.
+      expect(bodyText).toContain("A header with a logo and three nav links.");
     });
   });
 });

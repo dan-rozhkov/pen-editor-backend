@@ -3,28 +3,33 @@ import { createModel, supportsReasoningControl } from "../src/ai/provider.js";
 import { envSchema } from "../src/config.js";
 import { makeConfig } from "./helpers.js";
 
-// The real regression this file guards against: OPENROUTER_MODEL's shipped
-// default drifting to a family outside REASONING_MODEL_PREFIXES, which
-// silently disables all reasoning control for it (see provider.ts's comment
-// for how that happened with deepseek/*). Read the default programmatically
-// — a hardcoded "deepseek/..." string here would defeat the point, since it
-// would keep passing even after exactly the drift this test exists to catch.
-function defaultOpenRouterModel(): string {
-  const parsed = envSchema.shape.OPENROUTER_MODEL.parse(undefined);
-  return parsed;
-}
+// This file only exercises the OpenRouter branch of createModel — bare,
+// unprefixed model ids (the legacy path, see provider.ts's parseModelRef).
+// The DeepSeek-direct branch — and the real shipped CHAT_MODEL default,
+// which now lives there — has its own dedicated coverage in
+// test/provider-routing.test.ts, including the "thinking must never be left
+// unset" invariant this file used to guard for the OpenRouter path alone.
+
+// The real regression this file guards against, for the OpenRouter branch:
+// a bare model id drifting to a family outside REASONING_MODEL_PREFIXES,
+// which silently disables all reasoning control for it (see provider.ts's
+// comment for how that happened with deepseek/*, OpenRouter's naming for
+// DeepSeek models). A fixed representative id, not CHAT_MODEL's own schema
+// default — that default now points at the DeepSeek-direct branch, which
+// this suite deliberately does not cover.
+const OPENROUTER_STYLE_DEEPSEEK_ID = "deepseek/deepseek-v4.1-flash";
 
 // Same idea for the effort value itself: read the schema's real default
 // rather than hardcoding "none", so a silent revert to the old (measured
 // broken, for deepseek) "minimal" default fails this test instead of
 // sailing through unnoticed.
 function defaultReasoningEffort(): string {
-  return envSchema.shape.OPENROUTER_REASONING_EFFORT.parse(undefined);
+  return envSchema.shape.CHAT_REASONING_EFFORT.parse(undefined);
 }
 
 describe("supportsReasoningControl", () => {
-  it("covers the shipped OPENROUTER_MODEL default", () => {
-    expect(supportsReasoningControl(defaultOpenRouterModel())).toBe(true);
+  it("covers OpenRouter's deepseek/* naming", () => {
+    expect(supportsReasoningControl(OPENROUTER_STYLE_DEEPSEEK_ID)).toBe(true);
   });
 
   // Fixed, representative ids rather than iterating REASONING_MODEL_PREFIXES
@@ -52,22 +57,22 @@ describe("supportsReasoningControl", () => {
   });
 });
 
-describe("OPENROUTER_REASONING_EFFORT default", () => {
+describe("CHAT_REASONING_EFFORT default", () => {
   // Live-measured (real OpenRouter calls against deepseek/deepseek-v4.1-
   // flash, 2026-09): "minimal" and "high" produced identical, budget-capped
-  // reasoning — deepseek ignores effort gradations — and only "none"
-  // actually suppressed reasoning. This is the gate against silently
-  // reverting to the old, measured-ineffective "minimal" default.
+  // reasoning — deepseek ignores effort gradations over OpenRouter — and
+  // only "none" actually suppressed reasoning. This is the gate against
+  // silently reverting to the old, measured-ineffective "minimal" default.
   it("is 'none'", () => {
     expect(defaultReasoningEffort()).toBe("none");
   });
 });
 
-describe("createModel reasoning effort", () => {
+describe("createModel reasoning effort (OpenRouter branch)", () => {
   it("passes the configured effort through to the OpenRouter model settings", () => {
     const config = makeConfig({
-      OPENROUTER_MODEL: "deepseek/deepseek-v4.1-flash",
-      OPENROUTER_REASONING_EFFORT: "high",
+      CHAT_MODEL: OPENROUTER_STYLE_DEEPSEEK_ID,
+      CHAT_REASONING_EFFORT: "high",
     });
     const model = createModel(config) as unknown as {
       settings: { reasoning?: { effort?: string } };
@@ -77,8 +82,8 @@ describe("createModel reasoning effort", () => {
 
   it("defaults to 'none' when the config value is left at its schema default", () => {
     const config = makeConfig({
-      OPENROUTER_MODEL: "deepseek/deepseek-v4.1-flash",
-      OPENROUTER_REASONING_EFFORT: defaultReasoningEffort() as "none",
+      CHAT_MODEL: OPENROUTER_STYLE_DEEPSEEK_ID,
+      CHAT_REASONING_EFFORT: defaultReasoningEffort() as "none",
     });
     const model = createModel(config) as unknown as {
       settings: { reasoning?: { effort?: string } };
@@ -87,23 +92,23 @@ describe("createModel reasoning effort", () => {
   });
 
   it("omits reasoning settings for a model family outside the allowlist", () => {
-    const config = makeConfig({ OPENROUTER_MODEL: "openai/gpt-4o-mini" });
+    const config = makeConfig({ CHAT_MODEL: "openai/gpt-4o-mini" });
     const model = createModel(config) as unknown as {
       settings: { reasoning?: { effort?: string } };
     };
     expect(model.settings.reasoning).toBeUndefined();
   });
 
-  // The operator-tunable OPENROUTER_REASONING_EFFORT (default "none") is
+  // The operator-tunable CHAT_REASONING_EFFORT (default "none") is
   // scoped to the main chat model only — createModel(config) with no
   // modelOverride. A call with modelOverride is a helper role (analysis,
   // vision, selfimprove review, user skills, prototype-link) that was never
   // part of the "none" measurement and should keep the pre-existing
   // "minimal" effort regardless of what the chat knob is set to.
-  it("scopes OPENROUTER_REASONING_EFFORT to the chat model, not modelOverride calls", () => {
+  it("scopes CHAT_REASONING_EFFORT to the chat model, not modelOverride calls", () => {
     const config = makeConfig({
-      OPENROUTER_MODEL: "deepseek/deepseek-v4.1-flash",
-      OPENROUTER_REASONING_EFFORT: "high",
+      CHAT_MODEL: OPENROUTER_STYLE_DEEPSEEK_ID,
+      CHAT_REASONING_EFFORT: "high",
     });
 
     const chatModel = createModel(config) as unknown as {
@@ -111,7 +116,7 @@ describe("createModel reasoning effort", () => {
     };
     expect(chatModel.settings.reasoning).toEqual({ effort: "high" });
 
-    const overriddenModel = createModel(config, "deepseek/deepseek-v4.1-flash") as unknown as {
+    const overriddenModel = createModel(config, OPENROUTER_STYLE_DEEPSEEK_ID) as unknown as {
       settings: { reasoning?: { effort?: string } };
     };
     expect(overriddenModel.settings.reasoning).toEqual({ effort: "minimal" });

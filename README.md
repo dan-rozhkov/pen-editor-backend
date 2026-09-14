@@ -16,7 +16,7 @@ execute on the backend. See `CLAUDE.md` for the full picture.
 
 ```bash
 npm install
-cp .env.example .env   # fill in OPENROUTER_API_KEY (required)
+cp .env.example .env   # fill in DEEPSEEK_API_KEY and OPENROUTER_API_KEY (both required)
 npm run dev            # tsx watch on http://localhost:3001
 ```
 
@@ -24,9 +24,11 @@ npm run dev            # tsx watch on http://localhost:3001
 
 | Var | Required | Purpose |
 |-----|----------|---------|
-| `OPENROUTER_API_KEY` | yes | LLM access via OpenRouter |
-| `OPENROUTER_MODEL` | no | default chat model (`deepseek/deepseek-v4.1-flash`) |
-| `OPENROUTER_REASONING_EFFORT` | no | `xhigh\|high\|medium\|low\|minimal\|none`, default `none`; applies to the main chat model only. For the current default model, only `none` actually suppresses reasoning — `effort` gradations and `reasoning.max_tokens` are both ignored by it |
+| `DEEPSEEK_API_KEY` | yes | chat agent LLM access, direct DeepSeek API (not OpenRouter) |
+| `OPENROUTER_API_KEY` | yes | vision, analysis, image generation and the showcase's default model — not the chat model |
+| `CHAT_MODEL` | no | default chat model, provider-prefixed (`deepseek:deepseek-flash`); prefix picks DeepSeek-direct vs. OpenRouter, a bare id with no recognized prefix is treated as OpenRouter. No legacy alias: an old `OPENROUTER_MODEL` env value does NOT carry over — `loadConfig()` exits loudly if `OPENROUTER_MODEL` is set without `CHAT_MODEL` |
+| `CHAT_REASONING_EFFORT` | no | `xhigh\|high\|medium\|low\|minimal\|none`, default `none`; applies to the main chat model only. DeepSeek only accepts `low\|high\|max`, so the scale is compressed: `none`→disabled, `minimal`/`low`→`low`, `medium`/`high`→`high`, `xhigh`→`max`. For an OpenRouter `CHAT_MODEL`, only `none` was measured to actually suppress reasoning on `deepseek/*` — `effort` gradations and `reasoning.max_tokens` are both ignored by it |
+| `STRUCTURED_MODEL` | no | model for the two `generateObject()` calls needing a real `json_schema` response format (user-skills generate, prototype-link); default `openrouter:deepseek/deepseek-v4.1-flash`, always OpenRouter regardless of `CHAT_MODEL` — `@ai-sdk/deepseek` has no structured-output support |
 | `CORS_ALLOWED_ORIGINS` | no | comma-separated origin allowlist |
 | `REFERO_API_KEY` | no | enables research mode (Refero MCP) |
 | `TAVILY_API_KEY` | no | enables internet search (`web_search` / `fetch_url`) |

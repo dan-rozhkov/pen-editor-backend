@@ -1,7 +1,7 @@
 import { generateText, stepCountIs, tool, type ModelMessage, type ToolSet } from "ai";
 import type { Config } from "../../config.js";
 import { logSession } from "../../logging.js";
-import { createModel } from "../provider.js";
+import { bareModelId, createModel } from "../provider.js";
 import type { MemoryStore } from "../memory/store.js";
 import { createMemoryToolContext, getMemoryTools, memoryInputSchema } from "../memory/tool.js";
 import { renderMemorySnapshot } from "../memory/render.js";
@@ -494,7 +494,7 @@ export async function maybeRunReview(
       await logSession({
         sessionId: `memory-review-${Date.now()}`,
         timestamp: new Date().toISOString(),
-        model: input.modelOverride ?? config.OPENROUTER_MODEL,
+        model: bareModelId(input.modelOverride ?? config.CHAT_MODEL),
         systemPrompt: input.system,
         messages: messages as unknown[],
         steps: result.steps.map((step, i) => ({

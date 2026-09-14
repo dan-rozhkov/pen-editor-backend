@@ -23,15 +23,22 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+// Every test below sets both API keys unless it's specifically exercising
+// the missing-key failure path — DEEPSEEK_API_KEY is required
+// unconditionally (see config.ts), not only when CHAT_MODEL happens to
+// point at DeepSeek.
+const BASE_ENV = { OPENROUTER_API_KEY: "key-123", DEEPSEEK_API_KEY: "ds-key-123" };
+
 describe("loadConfig", () => {
   it("parses a minimal valid env and applies defaults", () => {
-    process.env = { OPENROUTER_API_KEY: "key-123" } as NodeJS.ProcessEnv;
+    process.env = { ...BASE_ENV } as NodeJS.ProcessEnv;
     const config = loadConfig();
 
     expect(config.OPENROUTER_API_KEY).toBe("key-123");
+    expect(config.DEEPSEEK_API_KEY).toBe("ds-key-123");
     expect(config.PORT).toBe(3001);
     expect(config.HOST).toBe("0.0.0.0");
-    expect(config.OPENROUTER_MODEL).toBe("deepseek/deepseek-v4.1-flash");
+    expect(config.CHAT_MODEL).toBe("deepseek:deepseek-flash");
     expect(config.S3_REGION).toBe("ru-1");
     expect(config.ENABLE_AGENT_LOGGING).toBe(false);
   });
@@ -39,12 +46,12 @@ describe("loadConfig", () => {
   // The right threshold is a property of how a deployment is actually used,
   // so it must be tunable on production traffic without a code change.
   it("takes the review intervals from the env, defaulting to the shipped values", () => {
-    process.env = { OPENROUTER_API_KEY: "key" } as NodeJS.ProcessEnv;
+    process.env = { ...BASE_ENV } as NodeJS.ProcessEnv;
     expect(loadConfig().MEMORY_REVIEW_INTERVAL).toBe(DEFAULT_MEMORY_REVIEW_INTERVAL);
     expect(loadConfig().SKILL_REVIEW_INTERVAL).toBe(DEFAULT_SKILL_REVIEW_INTERVAL);
 
     process.env = {
-      OPENROUTER_API_KEY: "key",
+      ...BASE_ENV,
       MEMORY_REVIEW_INTERVAL: "2",
       SKILL_REVIEW_INTERVAL: "25",
     } as NodeJS.ProcessEnv;
@@ -58,7 +65,7 @@ describe("loadConfig", () => {
   // than discover it as a bill.
   it("refuses an interval below 1", () => {
     process.env = {
-      OPENROUTER_API_KEY: "key",
+      ...BASE_ENV,
       MEMORY_REVIEW_INTERVAL: "0",
     } as NodeJS.ProcessEnv;
     expect(() => loadConfig()).toThrow("process.exit(1)");
@@ -66,7 +73,7 @@ describe("loadConfig", () => {
 
   it("coerces PORT to a number and ENABLE_AGENT_LOGGING to a boolean", () => {
     process.env = {
-      OPENROUTER_API_KEY: "key",
+      ...BASE_ENV,
       PORT: "8080",
       ENABLE_AGENT_LOGGING: "1",
     } as NodeJS.ProcessEnv;
@@ -89,7 +96,7 @@ describe("loadConfig", () => {
     ];
     for (const [value, expected] of cases) {
       process.env = {
-        OPENROUTER_API_KEY: "key",
+        ...BASE_ENV,
         ENABLE_AGENT_LOGGING: value,
       } as NodeJS.ProcessEnv;
       expect(loadConfig().ENABLE_AGENT_LOGGING, `value=${JSON.stringify(value)}`).toBe(
@@ -99,25 +106,39 @@ describe("loadConfig", () => {
   });
 
   it("defaults ENABLE_AGENT_LOGGING to false when unset", () => {
-    process.env = { OPENROUTER_API_KEY: "key" } as NodeJS.ProcessEnv;
+    process.env = { ...BASE_ENV } as NodeJS.ProcessEnv;
     expect(loadConfig().ENABLE_AGENT_LOGGING).toBe(false);
   });
 
   it("exits when OPENROUTER_API_KEY is missing", () => {
-    process.env = {} as NodeJS.ProcessEnv;
+    process.env = { DEEPSEEK_API_KEY: "ds-key" } as NodeJS.ProcessEnv;
     expect(() => loadConfig()).toThrow(/process\.exit\(1\)/);
     expect(process.exit).toHaveBeenCalledWith(1);
     expect(console.error).toHaveBeenCalled();
   });
 
   it("exits when OPENROUTER_API_KEY is empty", () => {
-    process.env = { OPENROUTER_API_KEY: "" } as NodeJS.ProcessEnv;
+    process.env = { OPENROUTER_API_KEY: "", DEEPSEEK_API_KEY: "ds-key" } as NodeJS.ProcessEnv;
+    expect(() => loadConfig()).toThrow(/process\.exit\(1\)/);
+  });
+
+  // DEEPSEEK_API_KEY is required unconditionally — the shipped CHAT_MODEL
+  // default lives on the DeepSeek-direct branch, so a deployment missing
+  // this key must fail at startup, not at the first chat request.
+  it("exits when DEEPSEEK_API_KEY is missing", () => {
+    process.env = { OPENROUTER_API_KEY: "key" } as NodeJS.ProcessEnv;
+    expect(() => loadConfig()).toThrow(/process\.exit\(1\)/);
+    expect(process.exit).toHaveBeenCalledWith(1);
+  });
+
+  it("exits when DEEPSEEK_API_KEY is empty", () => {
+    process.env = { OPENROUTER_API_KEY: "key", DEEPSEEK_API_KEY: "" } as NodeJS.ProcessEnv;
     expect(() => loadConfig()).toThrow(/process\.exit\(1\)/);
   });
 
   it("exits when S3_ENDPOINT is not a valid URL", () => {
     process.env = {
-      OPENROUTER_API_KEY: "key",
+      ...BASE_ENV,
       S3_ENDPOINT: "not-a-url",
     } as NodeJS.ProcessEnv;
     expect(() => loadConfig()).toThrow(/process\.exit\(1\)/);
@@ -125,22 +146,22 @@ describe("loadConfig", () => {
 
   it("accepts a valid S3_ENDPOINT URL", () => {
     process.env = {
-      OPENROUTER_API_KEY: "key",
+      ...BASE_ENV,
       S3_ENDPOINT: "https://s3.example.test",
     } as NodeJS.ProcessEnv;
     expect(loadConfig().S3_ENDPOINT).toBe("https://s3.example.test");
   });
 
   it("defaults trace/analysis vars and accepts overrides", () => {
-    process.env = { OPENROUTER_API_KEY: "key" } as NodeJS.ProcessEnv;
+    process.env = { ...BASE_ENV } as NodeJS.ProcessEnv;
     const config = loadConfig();
     expect(config.TRACE_DATABASE_URL).toBeUndefined();
     expect(config.TRACE_RAW_TTL_DAYS).toBe(14);
-    expect(config.ANALYSIS_MODEL).toBe("google/gemini-2.5-flash");
+    expect(config.ANALYSIS_MODEL).toBe("openrouter:google/gemini-2.5-flash");
     expect(config.EMBEDDINGS_MODEL).toBe("text-embedding-004");
 
     process.env = {
-      OPENROUTER_API_KEY: "key",
+      ...BASE_ENV,
       TRACE_RAW_TTL_DAYS: "7",
       TRACE_DATABASE_URL: "postgres://u:p@h:5432/db?sslmode=no-verify",
     } as NodeJS.ProcessEnv;
@@ -150,7 +171,7 @@ describe("loadConfig", () => {
   });
 
   it("defaults MEMORY_ENABLED to false and honors only true/1", () => {
-    process.env = { OPENROUTER_API_KEY: "key" } as NodeJS.ProcessEnv;
+    process.env = { ...BASE_ENV } as NodeJS.ProcessEnv;
     expect(loadConfig().MEMORY_ENABLED).toBe(false);
 
     for (const [value, expected] of [
@@ -162,7 +183,7 @@ describe("loadConfig", () => {
       ["", false],
     ] as [string, boolean][]) {
       process.env = {
-        OPENROUTER_API_KEY: "key",
+        ...BASE_ENV,
         MEMORY_ENABLED: value,
       } as NodeJS.ProcessEnv;
       expect(loadConfig().MEMORY_ENABLED).toBe(expected);
@@ -170,7 +191,7 @@ describe("loadConfig", () => {
   });
 
   it("defaults SELF_SKILLS_ENABLED to false and honors only true/1", () => {
-    process.env = { OPENROUTER_API_KEY: "key" } as NodeJS.ProcessEnv;
+    process.env = { ...BASE_ENV } as NodeJS.ProcessEnv;
     expect(loadConfig().SELF_SKILLS_ENABLED).toBe(false);
 
     for (const [value, expected] of [
@@ -182,7 +203,7 @@ describe("loadConfig", () => {
       ["", false],
     ] as [string, boolean][]) {
       process.env = {
-        OPENROUTER_API_KEY: "key",
+        ...BASE_ENV,
         SELF_SKILLS_ENABLED: value,
       } as NodeJS.ProcessEnv;
       expect(loadConfig().SELF_SKILLS_ENABLED).toBe(expected);
@@ -192,7 +213,7 @@ describe("loadConfig", () => {
   // Opposite default from MEMORY_ENABLED/SELF_SKILLS_ENABLED on purpose: the
   // L2 layer is inert without traces and an analysis run, so it defaults on.
   it("defaults SCENARIOS_ENABLED to true and only 'false' turns it off", () => {
-    process.env = { OPENROUTER_API_KEY: "key" } as NodeJS.ProcessEnv;
+    process.env = { ...BASE_ENV } as NodeJS.ProcessEnv;
     expect(loadConfig().SCENARIOS_ENABLED).toBe(true);
 
     for (const [value, expected] of [
@@ -202,7 +223,7 @@ describe("loadConfig", () => {
       ["false", false],
     ] as [string, boolean][]) {
       process.env = {
-        OPENROUTER_API_KEY: "key",
+        ...BASE_ENV,
         SCENARIOS_ENABLED: value,
       } as NodeJS.ProcessEnv;
       expect(loadConfig().SCENARIOS_ENABLED, `value=${JSON.stringify(value)}`).toBe(
@@ -212,13 +233,13 @@ describe("loadConfig", () => {
   });
 
   it("defaults the scenario confirmation threshold to 3 and accepts an override", () => {
-    process.env = { OPENROUTER_API_KEY: "key" } as NodeJS.ProcessEnv;
+    process.env = { ...BASE_ENV } as NodeJS.ProcessEnv;
     expect(loadConfig().SCENARIO_CONFIRM_THRESHOLD).toBe(
       DEFAULT_SCENARIO_CONFIRM_THRESHOLD,
     );
 
     process.env = {
-      OPENROUTER_API_KEY: "key",
+      ...BASE_ENV,
       SCENARIO_CONFIRM_THRESHOLD: "5",
     } as NodeJS.ProcessEnv;
     expect(loadConfig().SCENARIO_CONFIRM_THRESHOLD).toBe(5);
@@ -229,8 +250,77 @@ describe("loadConfig", () => {
   // the L2 layer is repetition across MORE than one session.
   it("refuses a scenario confirmation threshold below 2", () => {
     process.env = {
-      OPENROUTER_API_KEY: "key",
+      ...BASE_ENV,
       SCENARIO_CONFIRM_THRESHOLD: "1",
+    } as NodeJS.ProcessEnv;
+    expect(() => loadConfig()).toThrow("process.exit(1)");
+  });
+});
+
+// TEMPORARY MIGRATION BRIDGE tests: OPENROUTER_REASONING_EFFORT /
+// OPENROUTER_MODEL_SUPPORTS_VISION are the pre-rename names. loadConfig()
+// must still honor them when the new name is absent, so an already-deployed
+// Render environment doesn't fail validation the moment this ships.
+//
+// OPENROUTER_MODEL -> CHAT_MODEL is NOT bridged this way — see
+// "loadConfig CHAT_MODEL legacy-name rejection" below and
+// rejectStaleOpenrouterModel's comment in src/config.ts for why.
+describe("loadConfig legacy env aliases", () => {
+  it("falls back to OPENROUTER_REASONING_EFFORT when CHAT_REASONING_EFFORT is unset", () => {
+    process.env = {
+      ...BASE_ENV,
+      OPENROUTER_REASONING_EFFORT: "high",
+    } as NodeJS.ProcessEnv;
+    expect(loadConfig().CHAT_REASONING_EFFORT).toBe("high");
+  });
+
+  it("falls back to OPENROUTER_MODEL_SUPPORTS_VISION when CHAT_MODEL_SUPPORTS_VISION is unset", () => {
+    process.env = {
+      ...BASE_ENV,
+      OPENROUTER_MODEL_SUPPORTS_VISION: "false",
+    } as NodeJS.ProcessEnv;
+    expect(loadConfig().CHAT_MODEL_SUPPORTS_VISION).toBe(false);
+  });
+});
+
+// Fix 3, 2026-09 DeepSeek-direct review: OPENROUTER_MODEL used to alias to
+// CHAT_MODEL the same way the two vars above do. That silently kept an
+// already-deployed Render environment's chat agent on OpenRouter (a bare
+// value parses as a legacy OpenRouter id) with no error at all, despite
+// DEEPSEEK_API_KEY being required — the exact "quiet wrong provider"
+// outcome the rename was supposed to prevent. loadConfig() now refuses to
+// start instead.
+describe("loadConfig CHAT_MODEL legacy-name rejection", () => {
+  it("exits loudly when OPENROUTER_MODEL is set but CHAT_MODEL is not", () => {
+    process.env = {
+      ...BASE_ENV,
+      OPENROUTER_MODEL: "vendor/legacy-model",
+    } as NodeJS.ProcessEnv;
+    expect(() => loadConfig()).toThrow("process.exit(1)");
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining("OPENROUTER_MODEL"),
+    );
+  });
+
+  it("does not fail when CHAT_MODEL is explicitly set alongside a stale OPENROUTER_MODEL", () => {
+    process.env = {
+      ...BASE_ENV,
+      CHAT_MODEL: "deepseek:deepseek-flash",
+      OPENROUTER_MODEL: "vendor/legacy-model",
+    } as NodeJS.ProcessEnv;
+    expect(loadConfig().CHAT_MODEL).toBe("deepseek:deepseek-flash");
+  });
+
+  it("does not fail when OPENROUTER_MODEL is unset", () => {
+    process.env = { ...BASE_ENV } as NodeJS.ProcessEnv;
+    expect(loadConfig().CHAT_MODEL).toBe("deepseek:deepseek-flash");
+  });
+
+  it("still fails when CHAT_MODEL is set to an empty string alongside OPENROUTER_MODEL", () => {
+    process.env = {
+      ...BASE_ENV,
+      CHAT_MODEL: "",
+      OPENROUTER_MODEL: "vendor/legacy-model",
     } as NodeJS.ProcessEnv;
     expect(() => loadConfig()).toThrow("process.exit(1)");
   });

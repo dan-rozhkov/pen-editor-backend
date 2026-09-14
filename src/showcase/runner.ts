@@ -1,6 +1,7 @@
 import { generateText, stepCountIs, type ToolSet } from "ai";
 import type { Config } from "../config.js";
 import { prepareChatTurn } from "../ai/chatTurn.js";
+import { bareModelId } from "../ai/provider.js";
 import { withAgentRetry } from "../ai/retry.js";
 import { generateImage } from "../services/imageGen.js";
 import { extractEmbedScreens } from "./extractEmbeds.js";
@@ -22,9 +23,11 @@ export const MAX_SHOWCASE_SCREENS = 5;
 // and skips prototype.md's THESIS/OWN-WORLD direction contract. Override
 // per run with `--model=`.
 //
-// This is the showcase default only. `/api/chat` reads OPENROUTER_MODEL
-// and is untouched by anything here.
-export const SHOWCASE_MODEL_ID = "google/gemini-3.7-flash";
+// This is the showcase default only. `/api/chat` reads CHAT_MODEL
+// and is untouched by anything here. Explicit "openrouter:" prefix so
+// createModel routes it there regardless of what CHAT_MODEL's own default
+// is set to — see src/ai/provider.ts's parseModelRef.
+export const SHOWCASE_MODEL_ID = "openrouter:google/gemini-3.7-flash";
 
 // Generous but bounded step budget: ask_user -> get_editor_state ->
 // get_guidelines -> batch_design (+ a retry or two) comfortably fits.
@@ -438,7 +441,11 @@ export async function runShowcaseGeneration(
   return {
     theme,
     prompt,
-    model: prepared.selectedModelId,
+    // Bare id — no provider prefix — since this is written straight into
+    // showcase_screens.model, which the gallery filters/groups by (see
+    // src/ai/provider.ts's central invariant: a provider prefix must never
+    // leak into a persisted or client-facing value).
+    model: bareModelId(prepared.selectedModelId),
     screens,
   };
 }

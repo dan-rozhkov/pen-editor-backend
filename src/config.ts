@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { bareModelId } from "./ai/provider.js";
 
 /**
  * Completed user turns between background memory reviews.
@@ -32,28 +33,44 @@ export const DEFAULT_SKILL_REVIEW_INTERVAL = 15;
 export const DEFAULT_SCENARIO_CONFIRM_THRESHOLD = 3;
 
 // Exported so tests can pull the real shipped default for a given var (e.g.
-// OPENROUTER_MODEL) without hardcoding it a second time — see
-// test/provider-reasoning.test.ts.
+// CHAT_MODEL) without hardcoding it a second time — see
+// test/provider-routing.test.ts and test/provider-reasoning.test.ts.
 export const envSchema = z.object({
   PORT: z.coerce.number().default(3001),
   HOST: z.string().default("0.0.0.0"),
+  // Still required: VISION_MODEL/ANALYSIS_MODEL, image generation
+  // (src/services/imageGen.ts) and the showcase default all route through
+  // OpenRouter regardless of which provider CHAT_MODEL points at.
   OPENROUTER_API_KEY: z.string().min(1, "OPENROUTER_API_KEY is required"),
-  OPENROUTER_MODEL: z.string().default("deepseek/deepseek-v4.1-flash"),
-  // How hard the model "thinks" before answering, for the subset of models
-  // whose family is in src/ai/provider.ts's REASONING_MODEL_PREFIXES.
-  // Measured live against the current default model, deepseek/deepseek-v4.1-
-  // flash (real OpenRouter calls, 2026-09): "minimal" and "high" produced
+  // DeepSeek-direct API key for the "deepseek:" branch of
+  // src/ai/provider.ts's createModel — required unconditionally (not only
+  // when CHAT_MODEL happens to point at DeepSeek) because CHAT_MODEL's own
+  // default lives on that branch.
+  DEEPSEEK_API_KEY: z.string().min(1, "DEEPSEEK_API_KEY is required"),
+  // A bare id is a legacy OpenRouter id (see src/ai/provider.ts's
+  // parseModelRef); "deepseek:"/"openrouter:" prefixes pick the provider
+  // explicitly. Renamed from OPENROUTER_MODEL now that this identifies the
+  // chat model in general, not an OpenRouter-specific setting — see the
+  // loadConfig() legacy fallback below for the migration bridge.
+  CHAT_MODEL: z.string().default("deepseek:deepseek-flash"),
+  // How hard the model "thinks" before answering. On the OpenRouter branch
+  // this only takes effect for the subset of models whose family is in
+  // src/ai/provider.ts's REASONING_MODEL_PREFIXES; on the DeepSeek-direct
+  // branch it always applies (see provider.ts's mapReasoningEffort).
+  // Measured live against deepseek/deepseek-v4.1-flash over OpenRouter
+  // (real OpenRouter calls, 2026-09): "minimal" and "high" produced
   // IDENTICAL results, both pinned at the reasoning-token budget ceiling
   // (1200/1200 and 1500/1500 tokens, ~4200 chars of reasoning either way) —
-  // deepseek ignores `effort` gradations entirely. `reasoning.max_tokens:
-  // 200` was ALSO ignored (came back at 1501 tokens), so it's not a usable
-  // lever either. The only value that actually suppressed reasoning was
-  // "none" (reasoning_tokens: 0), and a tool-calling turn still worked
-  // correctly under it (batch_design still got called, args carried the
-  // HTML as expected). Hence the default here is "none", not "minimal".
-  // An operator who points OPENROUTER_MODEL at a family where gradations DO
-  // work (e.g. anthropic/*, unverified here but plausible from OpenRouter's
-  // docs) can raise this back to "minimal"/"low" without a code change.
+  // deepseek ignores `effort` gradations entirely over OpenRouter.
+  // `reasoning.max_tokens: 200` was ALSO ignored (came back at 1501 tokens),
+  // so it's not a usable lever either. The only value that actually
+  // suppressed reasoning was "none" (reasoning_tokens: 0), and a
+  // tool-calling turn still worked correctly under it (batch_design still
+  // got called, args carried the HTML as expected). Hence the default here
+  // is "none", not "minimal". An operator who points CHAT_MODEL at a family
+  // where gradations DO work (e.g. anthropic/* over OpenRouter, unverified
+  // here but plausible from OpenRouter's docs) can raise this back to
+  // "minimal"/"low" without a code change.
   //
   // Scope: this only reaches the main chat model (src/ai/provider.ts's
   // createModel(config) with no modelOverride, i.e. the /api/chat route).
@@ -61,20 +78,32 @@ export const envSchema = z.object({
   // selfimprove review, user skills, prototype-link) keep the pre-existing
   // "minimal" effort regardless of this var — this was measured for the chat
   // agent, not for analysis-style tasks that want the model to actually think.
-  OPENROUTER_REASONING_EFFORT: z
+  CHAT_REASONING_EFFORT: z
     .enum(["xhigh", "high", "medium", "low", "minimal", "none"])
     .default("none"),
-  // An OPENROUTER_MODEL with no entry in DEFAULT_MODELS is assumed
+  // A CHAT_MODEL with no entry in DEFAULT_MODELS is assumed
   // vision-capable (getModels' convention below). Set this to "false" when an
-  // operator points OPENROUTER_MODEL at a text-only model: otherwise every
+  // operator points CHAT_MODEL at a text-only model: otherwise every
   // image part is handed straight to a model that cannot read it, which is
   // the one invariant src/ai/vision-messages.ts exists to hold. Only
   // "false"/"0" (case-insensitive) turn it off; absent = assume vision.
-  OPENROUTER_MODEL_SUPPORTS_VISION: z
+  //
+  // Tri-state on purpose: `undefined` (the var was never set) is distinct
+  // from an explicit `true`/`false`, because getModels() below needs to know
+  // WHICH it got. Before this fix, the transform collapsed "unset" straight
+  // to `true`, so an operator setting this for the DEFAULT (built-in)
+  // CHAT_MODEL had no effect at all — getModels() only ever consulted this
+  // value for an id that ISN'T already in DEFAULT_MODELS, and the default id
+  // always is. Every other reader keeps seeing a plain boolean: getModels()
+  // resolves the `undefined` case itself (falls back to the built-in
+  // metadata, or `true` for a totally unlisted id) before this ever reaches
+  // ModelOption.supportsVision.
+  CHAT_MODEL_SUPPORTS_VISION: z
     .string()
     .optional()
     .transform((v) => {
-      const s = v?.toLowerCase();
+      if (v === undefined) return undefined;
+      const s = v.toLowerCase();
       return !(s === "false" || s === "0");
     }),
   OPENROUTER_IMAGE_MODEL: z
@@ -149,12 +178,29 @@ export const envSchema = z.object({
   // the client connection/request context open forever (see withTimeout in
   // src/ai/mcp.ts for the analogous MCP-side guard).
   IMAGE_GENERATION_TIMEOUT_MS: z.coerce.number().default(90_000),
+  // Model used by generateObject() call sites that need a real json_schema
+  // response format (src/routes/userSkills.ts, src/ai/prototype-link.ts).
+  // Exists because @ai-sdk/deepseek's createDeepSeek (node_modules/@ai-sdk/
+  // deepseek/dist/index.js) never sets `supportsStructuredOutputs`, so it
+  // always reads as false (see the model's own doGenerate, which gates
+  // response_format on `this.config.supportsStructuredOutputs === true`) —
+  // response_format degrades to `{type:"json_object"}` and the schema is
+  // pushed into a system message instead, which is far more likely to drift
+  // out of shape and throw generateObject's NoObjectGeneratedError.
+  // OpenRouter's provider DOES send a real `json_schema` response_format
+  // (@openrouter/ai-sdk-provider dist/index.js:3573), which is exactly what
+  // both call sites relied on before CHAT_MODEL moved to DeepSeek-direct —
+  // so this pins them to the same OpenRouter model the chat agent used to
+  // run on, via `createModel(config, config.STRUCTURED_MODEL)`, rather than
+  // silently degrading two working features as a side effect of the chat
+  // provider migration.
+  STRUCTURED_MODEL: z.string().default("openrouter:deepseek/deepseek-v4.1-flash"),
   // --- Trace analysis (all optional; chat server works without them) ---
   // Postgres for raw traces + analysis artifacts (Aiven: append ?sslmode=no-verify —
   // TLS-encrypted, skips CA verification of Aiven's project CA).
   TRACE_DATABASE_URL: z.string().optional(),
   TRACE_RAW_TTL_DAYS: z.coerce.number().default(14),
-  ANALYSIS_MODEL: z.string().default("google/gemini-2.5-flash"),
+  ANALYSIS_MODEL: z.string().default("openrouter:google/gemini-2.5-flash"),
   EMBEDDINGS_API_KEY: z.string().optional(),
   EMBEDDINGS_MODEL: z.string().default("text-embedding-004"),
   // --- MCP server (optional) ---
@@ -231,7 +277,7 @@ export const envSchema = z.object({
   // Empty/whitespace = vision is off (src/services/vision.ts's
   // isVisionConfigured). Used both for analyze_image and for describing
   // images/screenshots to a text-only main model.
-  VISION_MODEL: z.string().default("google/gemini-2.5-flash"),
+  VISION_MODEL: z.string().default("openrouter:google/gemini-2.5-flash"),
   VISION_MAX_TOKENS: z.coerce.number().default(1200),
   VISION_TIMEOUT_MS: z.coerce.number().default(120_000),
   // --- Product analytics (PostHog, optional) ---
@@ -261,8 +307,63 @@ export const envSchema = z.object({
 
 export type Config = z.infer<typeof envSchema>;
 
+// TEMPORARY MIGRATION BRIDGE: OPENROUTER_REASONING_EFFORT /
+// OPENROUTER_MODEL_SUPPORTS_VISION were renamed to CHAT_REASONING_EFFORT /
+// CHAT_MODEL_SUPPORTS_VISION (these vars have long meant "the chat model",
+// not something OpenRouter-specific). Without this, a deployment (Render)
+// still carrying the old names would fail validation the moment this code
+// ships, before anyone updates its env vars. For each pair, the old name is
+// used ONLY when the new name is absent/empty and the old name is actually
+// set. Remove this once every deployment's env has been updated to the new
+// names.
+//
+// OPENROUTER_MODEL -> CHAT_MODEL is deliberately NOT in this list — see
+// rejectStaleOpenrouterModel below for why silently bridging it would be
+// actively harmful now that CHAT_MODEL can point at a different PROVIDER,
+// not just a different model on the same one.
+const LEGACY_ENV_ALIASES: Array<[newName: string, oldName: string]> = [
+  ["CHAT_REASONING_EFFORT", "OPENROUTER_REASONING_EFFORT"],
+  ["CHAT_MODEL_SUPPORTS_VISION", "OPENROUTER_MODEL_SUPPORTS_VISION"],
+];
+
+// OPENROUTER_MODEL -> CHAT_MODEL used to be bridged the same way as the two
+// aliases above. That bridge is gone on purpose: every deployment already
+// carrying OPENROUTER_MODEL (e.g. Render, set to
+// "deepseek/deepseek-v4.1-flash") would otherwise have that value silently
+// adopted as CHAT_MODEL, which parseModelRef (src/ai/provider.ts) reads as a
+// legacy BARE OPENROUTER id — so the chat agent would keep running on
+// OpenRouter, DEEPSEEK_API_KEY notwithstanding, with no error, no warning,
+// and GET /api/models reporting two models where the API contract promises
+// exactly one (DEFAULT_MODELS' single entry plus this stale extra). The
+// "bridge for a seamless deploy" justification the other two aliases still
+// have does not apply here: DEEPSEEK_API_KEY is REQUIRED unconditionally
+// (see this schema's own DEEPSEEK_API_KEY comment), so an operator deploying
+// this code is already forced to touch env vars — there is no seamless path
+// to protect. A loud failure is strictly better than a quiet wrong provider.
+function rejectStaleOpenrouterModel(env: Record<string, string | undefined>): void {
+  if (env.OPENROUTER_MODEL && !env.CHAT_MODEL) {
+    console.error(
+      "OPENROUTER_MODEL is set but CHAT_MODEL is not. OPENROUTER_MODEL was " +
+        "renamed to CHAT_MODEL and no longer aliases automatically — a bare " +
+        "value now means \"legacy OpenRouter id\", so silently reusing it " +
+        "would keep the chat agent on OpenRouter instead of moving it to " +
+        "DeepSeek-direct. Set CHAT_MODEL=deepseek:deepseek-flash (or an " +
+        "explicit \"openrouter:<id>\" to stay on OpenRouter) and remove " +
+        "OPENROUTER_MODEL.",
+    );
+    process.exit(1);
+  }
+}
+
 export function loadConfig(): Config {
-  const result = envSchema.safeParse(process.env);
+  const env: Record<string, string | undefined> = { ...process.env };
+  rejectStaleOpenrouterModel(env);
+  for (const [newName, oldName] of LEGACY_ENV_ALIASES) {
+    if (!env[newName] && env[oldName]) {
+      env[newName] = env[oldName];
+    }
+  }
+  const result = envSchema.safeParse(env);
   if (!result.success) {
     console.error("Invalid environment variables:", result.error.format());
     process.exit(1);
@@ -297,39 +398,61 @@ export interface ModelOption {
 
 // The chat model list with UI metadata. The design agent runs on exactly one
 // model — there is no per-request model choice and no user-facing picker — so
-// this holds a single entry whose id must match the OPENROUTER_MODEL default
-// above. It powers GET /api/models (the frontend reads `supportsVision` from
-// it to decide whether images may be attached) and the vision metadata lookup
-// in src/ai/vision-messages.ts. An operator who points OPENROUTER_MODEL at a
-// different id still works: getModels() appends it below.
+// this holds a single entry whose id must match CHAT_MODEL's default above,
+// stripped of its provider prefix (see the central invariant in
+// src/ai/provider.ts: bareModelId — GET /api/models, raw_traces, and the
+// showcase gallery's `model` column must only ever see the bare id, never
+// "deepseek:"/"openrouter:"). It powers GET /api/models (the frontend reads
+// `supportsVision` from it to decide whether images may be attached) and the
+// vision metadata lookup in src/ai/vision-messages.ts. An operator who points
+// CHAT_MODEL at a different id still works: getModels() appends it below.
 export const DEFAULT_MODELS: ModelOption[] = [
   {
-    id: "deepseek/deepseek-v4.1-flash",
-    label: "DeepSeek V4.1 Flash",
+    id: "deepseek-flash",
+    label: "DeepSeek Flash",
     supportsVision: true,
   },
 ];
 
 // Full model list for a config: the built-in model, plus the active
-// OPENROUTER_MODEL when an operator has pointed it somewhere else (and any
-// model a showcase/CLI run overrides to, which is looked up here for its
-// vision metadata). A model without built-in metadata is labelled by id and
-// assumed vision-capable unless OPENROUTER_MODEL_SUPPORTS_VISION says
-// otherwise.
+// CHAT_MODEL (bare, provider prefix stripped) when an operator has pointed
+// it somewhere else (and any model a showcase/CLI run overrides to, which is
+// looked up here for its vision metadata). A model without built-in metadata
+// is labelled by id and assumed vision-capable unless
+// CHAT_MODEL_SUPPORTS_VISION says otherwise.
+//
+// CHAT_MODEL_SUPPORTS_VISION is applied whenever it is EXPLICITLY set
+// (!== undefined) — including when CHAT_MODEL matches a built-in
+// DEFAULT_MODELS entry, which it does for the shipped default. Before this
+// fix the flag only ever reached a freshly-synthesized entry (the `else`
+// branch below), so an operator setting CHAT_MODEL_SUPPORTS_VISION=false for
+// the default model had zero effect: the built-in `supportsVision: true`
+// always won. `undefined` (never set) still defers to the built-in metadata
+// unchanged, or `true` for a totally unlisted id — same as before.
 export function getModels(config: Config): ModelOption[] {
   const byId = new Map<string, ModelOption>();
   for (const model of DEFAULT_MODELS) byId.set(model.id, model);
-  if (!byId.has(config.OPENROUTER_MODEL)) {
-    byId.set(config.OPENROUTER_MODEL, {
-      id: config.OPENROUTER_MODEL,
-      label: config.OPENROUTER_MODEL,
-      supportsVision: config.OPENROUTER_MODEL_SUPPORTS_VISION,
+  const chatModelId = bareModelId(config.CHAT_MODEL);
+  const builtin = byId.get(chatModelId);
+  if (builtin) {
+    if (config.CHAT_MODEL_SUPPORTS_VISION !== undefined) {
+      byId.set(chatModelId, {
+        ...builtin,
+        supportsVision: config.CHAT_MODEL_SUPPORTS_VISION,
+      });
+    }
+  } else {
+    byId.set(chatModelId, {
+      id: chatModelId,
+      label: chatModelId,
+      supportsVision: config.CHAT_MODEL_SUPPORTS_VISION ?? true,
     });
   }
   return [...byId.values()];
 }
 
-// The model selected by default when a client sends no override.
+// The model selected by default when a client sends no override. Bare
+// (provider prefix stripped) — see the central invariant above.
 export function getDefaultModel(config: Config): string {
-  return config.OPENROUTER_MODEL;
+  return bareModelId(config.CHAT_MODEL);
 }

@@ -4,6 +4,7 @@ import type { LanguageModelV3GenerateResult } from "@ai-sdk/provider";
 import { loadSkills } from "../src/ai/skills.js";
 import { makeConfig } from "./helpers.js";
 import { pickTheme } from "../src/showcase/themes.js";
+import { bareModelId } from "../src/ai/provider.js";
 
 // ---------------------------------------------------------------------------
 // Mocks: same seam as test/chat-route.test.ts — the provider and MCP layer
@@ -16,9 +17,13 @@ const holders = vi.hoisted(() => ({
   model: undefined as unknown,
 }));
 
-vi.mock("../src/ai/provider.js", () => ({
-  createModel: vi.fn(() => holders.model),
-}));
+vi.mock("../src/ai/provider.js", async (importOriginal) => {
+  // Only createModel is faked — bareModelId (and anything else the module
+  // exports) must stay the REAL implementation, since src/showcase/runner.ts
+  // calls bareModelId on the model id it returns as ShowcaseRunResult.model.
+  const actual = await importOriginal<typeof import("../src/ai/provider.js")>();
+  return { ...actual, createModel: vi.fn(() => holders.model) };
+});
 
 const imageGenMock = vi.hoisted(() => ({ generateImage: vi.fn() }));
 vi.mock("../src/services/imageGen.js", () => imageGenMock);
@@ -124,7 +129,9 @@ describe("runShowcaseGeneration", () => {
     const result = await runShowcaseGeneration(makeConfig(), "fitness tracker");
 
     expect(result.theme).toBe("fitness tracker");
-    expect(result.model).toBe(SHOWCASE_MODEL_ID);
+    // Bare — no provider prefix — since this is what gets written into
+    // showcase_screens.model (see src/ai/provider.ts's central invariant).
+    expect(result.model).toBe(bareModelId(SHOWCASE_MODEL_ID));
     expect(result.screens).toEqual([
       { name: "Home", htmlContent: "<div>Home</div>" },
       { name: "Profile", htmlContent: "<div>Profile</div>" },

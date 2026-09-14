@@ -18,9 +18,13 @@ import { loadSkills } from "../src/ai/skills.js";
 import { makeConfig } from "./helpers.js";
 import type { UserSkill, UserSkillStore } from "../src/ai/skills/userStore.js";
 
-vi.mock("../src/ai/provider.js", () => ({
-  createModel: vi.fn(() => holders.model),
-}));
+vi.mock("../src/ai/provider.js", async (importOriginal) => {
+  // Only createModel is faked — bareModelId (and anything else the module
+  // exports) must stay the REAL implementation, since src/ai/chatTurn.ts
+  // calls bareModelId on every prepareChatTurn() run.
+  const actual = await importOriginal<typeof import("../src/ai/provider.js")>();
+  return { ...actual, createModel: vi.fn(() => holders.model) };
+});
 
 vi.mock("../src/ai/mcp.js", () => ({
   getMCPTools: vi.fn(async () => ({})),

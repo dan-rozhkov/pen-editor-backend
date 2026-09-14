@@ -27,9 +27,13 @@ const createModel = vi.fn(() =>
   }),
 );
 
-vi.mock("../src/ai/provider.js", () => ({
-  createModel: (...args: unknown[]) => createModel(...args),
-}));
+vi.mock("../src/ai/provider.js", async (importOriginal) => {
+  // Only createModel is faked — bareModelId must stay the REAL
+  // implementation, since GET /api/models (registered by the same buildApp)
+  // calls it via getModels().
+  const actual = await importOriginal<typeof import("../src/ai/provider.js")>();
+  return { ...actual, createModel: (...args: unknown[]) => createModel(...args) };
+});
 
 function modelReturning(links: unknown[]): MockLanguageModelV3 {
   return new MockLanguageModelV3({

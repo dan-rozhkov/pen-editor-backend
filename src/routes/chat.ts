@@ -110,7 +110,7 @@ const chatBodySchema = z.object({
   messages: z.array(z.record(z.unknown())).min(1, "messages must not be empty"),
   canvasContext: z.string().optional(),
   // Accepted and ignored. The design agent runs on exactly one model
-  // (config.OPENROUTER_MODEL) and the picker is gone, but clients cached
+  // (config.CHAT_MODEL) and the picker is gone, but clients cached
   // before that change still send a model id from their old localStorage
   // selection; rejecting those would 400 every one of their turns until they
   // reload. Dropping the field here is what "reset every user's model" means

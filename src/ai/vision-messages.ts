@@ -15,6 +15,7 @@ import {
   visionCacheKey,
 } from "../services/vision.js";
 import { parseScreenshotDataUrl } from "./screenshotOutput.js";
+import { parseModelRef, providerHandlesToolResultImages } from "./provider.js";
 
 // Budget for ONE turn — but of NEW vision calls, not of images total. The
 // route caps images per *message* (MAX_IMAGE_PARTS, src/routes/chat.ts), but
@@ -101,7 +102,7 @@ const DESCRIBE_CONCURRENCY = 4;
 // reuses the same DEFAULT_MODELS/getModels metadata that already powers
 // GET /api/models and the allowlist check, so this can never disagree with
 // what the model dropdown shows. A model with no built-in metadata (an
-// model an operator pointed OPENROUTER_MODEL at, or a showcase CLI
+// model an operator pointed CHAT_MODEL at, or a showcase CLI
 // --model override) is assumed
 // vision-capable, matching getModels' own convention.
 export function modelSupportsVision(config: Config, modelId: string): boolean {
@@ -303,17 +304,50 @@ async function describeUnitImage(
 /**
  * Our analog of Hermes's per-message image handling in
  * `decide_image_input_mode`, run once right before `streamText()` sees the
- * messages. A vision-capable model gets the array back untouched (native
- * path, no allocation) — otherwise every image, wherever it appears (a user
- * attachment or a `get_screenshot` tool result), is replaced by a text
- * description before this function returns.
+ * messages. The decision is now TWO-DIMENSIONAL, not "native or text":
+ *
+ *   1. Can the selected MODEL read an image at all? ({@link modelSupportsVision})
+ *   2. Can the selected PROVIDER'S AI SDK integration carry an image found
+ *      inside a TOOL-RESULT part through to that model, as opposed to
+ *      flattening it into a giant base64 JSON string inside a plain text
+ *      tool message? ({@link providerHandlesToolResultImages})
+ *
+ * These are independent: DeepSeek's own API reads images in USER messages
+ * fine (dimension 1 = vision-capable) but its AI SDK integration has no
+ * code path that promotes a tool-result's image-data part into a real image
+ * — it always JSON.stringifies it as tool-message text (dimension 2 =
+ * false). OpenRouter is native on both dimensions. A vision-less model is
+ * native on neither, regardless of provider.
+ *
+ * The four cells:
+ *   - vision=true,  tool-result-images=true  -> return `messages` untouched
+ *     (native path, no allocation; e.g. OpenRouter + a vision model).
+ *   - vision=true,  tool-result-images=false -> only TOOL-RESULT image slots
+ *     (get_screenshot) are replaced by a text description; USER-attached
+ *     images stay native, since the model can read those directly (e.g.
+ *     DeepSeek-direct with a vision-capable model).
+ *   - vision=false, tool-result-images=*     -> every image slot, wherever
+ *     it appears, is replaced by a text description (pre-existing
+ *     behavior — the provider dimension is moot when the model can't see
+ *     anything anyway).
+ *
+ * A tool-result image that must be converted but has no VISION_MODEL
+ * configured to describe it still never survives as an image part or a
+ * raw base64 JSON blob: describeImage() itself returns a short, clear
+ * failure text ("Vision is not configured on this server...") the instant
+ * `isVisionConfigured` is false, which formatFailure() below renders in
+ * place of the image — same code path as any other failed description, no
+ * special-casing needed.
  *
  * INVARIANT: no ImagePart/image-bearing FilePart may survive into the
- * returned array for a vision-less model. That gap is a real bug class in
- * Hermes (a raw `image_url` reaching a text-only model and erroring the
- * provider call), and this is the one place it is closed. Note the invariant
- * holds even when the per-turn budget is exceeded or a description fails —
- * both replace the image with text rather than leaving it in place.
+ * returned array for a slot this function decided to convert (per the
+ * matrix above). That gap is a real bug class in Hermes (a raw `image_url`
+ * reaching a text-only model and erroring the provider call) — and, newly,
+ * the DeepSeek tool-result case (a raw base64 JSON blob flooding a
+ * tool message) — and this is the one place both are closed. Note the
+ * invariant holds even when the per-turn budget is exceeded or a
+ * description fails — both replace the image with text rather than leaving
+ * it in place.
  *
  * BUDGET SEMANTICS: four separate phases apply, in this order.
  *
@@ -379,12 +413,38 @@ async function describeUnitImage(
  */
 export async function applyVisionPreprocessing(
   messages: ModelMessage[],
-  opts: { config: Config; modelId: string },
+  opts: {
+    config: Config;
+    modelId: string;
+    /**
+     * The full, provider-prefixed model reference actually selected for
+     * this turn (`modelOverride ?? config.CHAT_MODEL` at the call site) —
+     * used ONLY to determine {@link providerHandlesToolResultImages}, since
+     * `modelId` itself is already bare (prefix stripped, see the central
+     * invariant in src/ai/provider.ts). Optional and defaults to
+     * `config.CHAT_MODEL` so existing callers/tests that never pass a
+     * modelOverride don't need to change.
+     */
+    chatModelRef?: string;
+  },
 ): Promise<ModelMessage[]> {
   const { config, modelId } = opts;
-  if (modelSupportsVision(config, modelId)) return messages;
+  const vision = modelSupportsVision(config, modelId);
+  const toolResultImagesNative = providerHandlesToolResultImages(
+    parseModelRef(opts.chatModelRef ?? config.CHAT_MODEL).provider,
+  );
 
-  const slots = collectImageSlots(messages); // chronological: index N is older than index N+1
+  // Fully native on both dimensions: nothing to rewrite.
+  if (vision && toolResultImagesNative) return messages;
+
+  // vision=true here means we only need to rewrite TOOL-RESULT image slots
+  // (get_screenshot) — user-attached images are left native since the model
+  // itself can read them. vision=false means every image slot, as before.
+  const scope: "all" | "tool-result-only" = vision ? "tool-result-only" : "all";
+
+  const collected = collectImageSlots(messages); // chronological: index N is older than index N+1
+  const slots =
+    scope === "all" ? collected : collected.filter((slot) => slot.kind === "tool-result");
   if (slots.length === 0) return messages;
 
   const texts = new Map<string, string>();

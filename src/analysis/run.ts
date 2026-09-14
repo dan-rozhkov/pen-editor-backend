@@ -2,7 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { LanguageModel } from "ai";
 import { loadConfig } from "../config.js";
-import { createModel } from "../ai/provider.js";
+import { bareModelId, createModel } from "../ai/provider.js";
 import { createPgPool } from "../tracing/traceStore.js";
 import { pruneRawTraces } from "../tracing/pruneTraces.js";
 import { migrate } from "./migrate.js";
@@ -248,7 +248,7 @@ async function main(): Promise<void> {
              (session_id, errors, corrections, memory_requests, agent_claims, model)
            VALUES ($1,$2::jsonb,$3::jsonb,$4::jsonb,$5::jsonb,$6)
            ON CONFLICT (session_id) DO NOTHING`,
-          insightInsertValues(session_id, insights, config.ANALYSIS_MODEL),
+          insightInsertValues(session_id, insights, bareModelId(config.ANALYSIS_MODEL)),
         );
         console.log(
           `[analyze] insights for ${session_id}: ${insights.corrections.length} correction(s), ${insights.memory_requests.length} memory request(s)`,
@@ -426,7 +426,7 @@ async function main(): Promise<void> {
         const runRes = await client.query<{ id: number }>(
           `INSERT INTO analysis_runs (window_days, summary_count, model, report_md)
            VALUES ($1,$2,$3,$4) RETURNING id`,
-          [windowDays, summaries.length, config.ANALYSIS_MODEL, reportMd],
+          [windowDays, summaries.length, bareModelId(config.ANALYSIS_MODEL), reportMd],
         );
         const runId = runRes.rows[0].id;
         for (const c of clusters) {

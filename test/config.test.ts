@@ -47,12 +47,14 @@ describe("isOriginAllowed", () => {
 describe("DEFAULT_MODELS", () => {
   // The design agent runs on exactly one model; the picker is gone, so this
   // list is the model, not a menu. Pinned so a stray addition can't quietly
-  // put a second model back in front of users.
+  // put a second model back in front of users. The id here is BARE — no
+  // "deepseek:" provider prefix — since this is exactly what GET /api/models
+  // hands to the client (see src/ai/provider.ts's central invariant).
   it("holds the single design-agent model", () => {
     expect(DEFAULT_MODELS).toEqual([
       {
-        id: "deepseek/deepseek-v4.1-flash",
-        label: "DeepSeek V4.1 Flash",
+        id: "deepseek-flash",
+        label: "DeepSeek Flash",
         supportsVision: true,
       },
     ]);
@@ -60,10 +62,17 @@ describe("DEFAULT_MODELS", () => {
 });
 
 describe("getDefaultModel", () => {
-  it("returns OPENROUTER_MODEL", () => {
-    expect(getDefaultModel(makeConfig({ OPENROUTER_MODEL: "x/y" }))).toBe(
-      "x/y",
+  it("returns the bare CHAT_MODEL id", () => {
+    expect(getDefaultModel(makeConfig({ CHAT_MODEL: "x/y" }))).toBe("x/y");
+  });
+
+  it("strips a provider prefix off CHAT_MODEL", () => {
+    expect(getDefaultModel(makeConfig({ CHAT_MODEL: "deepseek:deepseek-flash" }))).toBe(
+      "deepseek-flash",
     );
+    expect(
+      getDefaultModel(makeConfig({ CHAT_MODEL: "openrouter:google/gemini-2.5-flash" })),
+    ).toBe("google/gemini-2.5-flash");
   });
 });
 

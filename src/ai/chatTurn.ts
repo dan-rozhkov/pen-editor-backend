@@ -8,7 +8,7 @@ import {
 } from "ai";
 import { randomUUID, createHash } from "node:crypto";
 import type { Config } from "../config.js";
-import { createModel } from "./provider.js";
+import { bareModelId, createModel } from "./provider.js";
 import { penTools, makeBatchDesignTool, makeAnalyzeImageTool } from "./tools.js";
 import { buildSystemPrompt } from "./system-prompt.js";
 import { resolveTaskPolicy, type TaskPolicy } from "./taskPolicy.js";
@@ -467,7 +467,10 @@ export async function prepareChatTurn(
     selfSkillsGuidance: selfSkillsInjected,
     canvasContextDelivered,
   });
-  const selectedModelId = modelOverride ?? config.OPENROUTER_MODEL;
+  // Bare — no provider prefix — since this id is what gets exposed via
+  // traces/logs and compared against getModels()' bare ids (vision gating
+  // below, GET /api/models). See src/ai/provider.ts's central invariant.
+  const selectedModelId = bareModelId(modelOverride ?? config.CHAT_MODEL);
   const systemPromptHash = createHash("sha256")
     .update(system)
     .digest("hex")
@@ -488,14 +491,20 @@ export async function prepareChatTurn(
   );
 
   // Our analog of Hermes's decide_image_input_mode, run once right before
-  // streamText sees the messages: a vision-capable model gets these back
-  // unchanged, a vision-less one gets every image (user attachment or
-  // get_screenshot result) replaced with a text description. Shared by
-  // /api/chat and the showcase runner via this same function, so neither
-  // can send a raw image part to a text-only model.
+  // streamText sees the messages. Two-dimensional (see vision-messages.ts's
+  // doc comment): a vision-capable model on a provider that can carry
+  // tool-result images (OpenRouter) gets these back unchanged; a
+  // vision-capable model on a provider that can't (DeepSeek-direct) only
+  // has its get_screenshot results converted to text, leaving user
+  // attachments native; a vision-less model gets every image, wherever it
+  // appears, replaced with a text description. Shared by /api/chat and the
+  // showcase runner via this same function, so neither can send a raw
+  // image part to a text-only model, or a raw base64 blob into a
+  // tool-result a provider can't carry.
   const modelMessages = await applyVisionPreprocessing(convertedMessages, {
     config,
     modelId: selectedModelId,
+    chatModelRef: modelOverride ?? config.CHAT_MODEL,
   });
 
   // Canvas context goes on the TAIL of modelMessages, not into `system`.

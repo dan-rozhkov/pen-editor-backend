@@ -44,9 +44,14 @@ vi.mock("../src/ai/mcp.js", () => ({
 // same "holders" indirection as memory-chat-route.test.ts / chat-route.test.ts,
 // required because vi.mock factories are hoisted above normal declarations.
 const holders = vi.hoisted(() => ({ model: undefined as unknown }));
-vi.mock("../src/ai/provider.js", () => ({
-  createModel: vi.fn(() => holders.model),
-}));
+vi.mock("../src/ai/provider.js", async (importOriginal) => {
+  // Only createModel is faked — bareModelId (and anything else the module
+  // exports) must stay the REAL implementation, since src/ai/chatTurn.ts
+  // calls bareModelId on every prepareChatTurn() run (this file drives
+  // /api/chat over real HTTP).
+  const actual = await importOriginal<typeof import("../src/ai/provider.js")>();
+  return { ...actual, createModel: vi.fn(() => holders.model) };
+});
 
 const USAGE = {
   inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },

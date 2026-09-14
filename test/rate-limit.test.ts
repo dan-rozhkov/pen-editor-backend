@@ -12,11 +12,18 @@ vi.mock("../src/services/imageGen.js", async (importOriginal) => {
   return { ...actual, generateImage: vi.fn(async () => ({ url: "data:image/png;base64,AAAA", mimeType: "image/png" as const })) };
 });
 
-vi.mock("../src/ai/provider.js", () => ({
-  createModel: vi.fn(() => {
-    throw new Error("not used — prototype-link route tests mock generatePrototypeLinks instead");
-  }),
-}));
+vi.mock("../src/ai/provider.js", async (importOriginal) => {
+  // Only createModel is faked — bareModelId must stay the REAL
+  // implementation, since GET /api/models (registered by the same buildApp)
+  // calls it via getModels().
+  const actual = await importOriginal<typeof import("../src/ai/provider.js")>();
+  return {
+    ...actual,
+    createModel: vi.fn(() => {
+      throw new Error("not used — prototype-link route tests mock generatePrototypeLinks instead");
+    }),
+  };
+});
 
 vi.mock("../src/ai/prototype-link.js", () => ({
   generatePrototypeLinks: vi.fn(async () => ({ links: [] })),

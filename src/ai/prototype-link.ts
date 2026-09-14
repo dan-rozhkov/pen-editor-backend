@@ -103,7 +103,13 @@ export async function generatePrototypeLinks(
   );
 
   const { object } = await generateObject({
-    model: createModel(config),
+    // STRUCTURED_MODEL, not createModel(config)'s plain CHAT_MODEL default:
+    // this call relies on a real json_schema response_format, which
+    // @ai-sdk/deepseek never provides (see STRUCTURED_MODEL's doc comment in
+    // src/config.ts) — pin it to the OpenRouter model this already worked
+    // on rather than let it silently degrade into NoObjectGeneratedError
+    // territory as a side effect of the chat provider migration.
+    model: createModel(config, config.STRUCTURED_MODEL),
     schema: prototypeLinkResultSchema,
     prompt: buildPrompt(screens),
   });

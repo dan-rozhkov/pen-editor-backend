@@ -6,6 +6,75 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While on `0.x`, minor bumps may include breaking changes.
 
+## [Unreleased]
+
+### Changed
+- **The chat agent moved off OpenRouter onto DeepSeek's own API.** Default
+  `CHAT_MODEL` is now `deepseek:deepseek-flash`, served through
+  `@ai-sdk/deepseek` rather than `@openrouter/ai-sdk-provider`. Everything
+  else that calls a model — `ANALYSIS_MODEL`, `VISION_MODEL`, image
+  generation, the showcase default, selfimprove review — stays on
+  OpenRouter; only the main chat turn moved. A new `DEEPSEEK_API_KEY` is
+  required for it; `OPENROUTER_API_KEY` stays required too, now for vision/
+  analysis/images/showcase rather than chat.
+- **`createModel` picks a provider from an explicit prefix on the model id**
+  (`deepseek:`/`openrouter:`), checked against a two-name allowlist rather
+  than a blind `split(":")` — OpenRouter ids already contain colons
+  (`openai/gpt-4o:extended`), so a naive split would misroute them. An id
+  with no recognized prefix is still treated as a bare OpenRouter id, so
+  already-deployed env values and `showcase:generate --model=` don't break.
+  Outward-facing surfaces (`GET /api/models`, `raw_traces`, the showcase
+  `model` column) always see the bare id with the prefix stripped — the
+  prefix exists only for env values and inside `createModel`.
+- **`OPENROUTER_MODEL_SUPPORTS_VISION` → `CHAT_MODEL_SUPPORTS_VISION`,
+  `OPENROUTER_REASONING_EFFORT` → `CHAT_REASONING_EFFORT`.** The old names
+  still read as a fallback so Render doesn't go down between this deploy
+  and the env update — drop them once production is confirmed on the new
+  names. **`OPENROUTER_MODEL` → `CHAT_MODEL` gets NO such fallback**: a bare
+  value now means "legacy OpenRouter id" (see `parseModelRef`), so silently
+  reusing an old `OPENROUTER_MODEL` would keep the chat agent on OpenRouter
+  with no error — `DEEPSEEK_API_KEY` is required unconditionally anyway, so
+  there's no seamless-deploy case to protect here. `loadConfig()` now exits
+  at startup with an explicit message if `OPENROUTER_MODEL` is set and
+  `CHAT_MODEL` is not.
+- **DeepSeek's model always gets an explicit `thinking` providerOptions
+  value.** `@ai-sdk/deepseek` defaults `thinking` to `enabled` when the
+  field is omitted, so leaving `providerOptions` empty on a DeepSeek model
+  would have silently reintroduced always-on reasoning before every
+  reply — a quiet revert of `9719e79` and the latency measurements behind
+  its `none` default, not a cosmetic gap. Because DeepSeek's own
+  `reasoningEffort` only accepts `low|high|max`, `CHAT_REASONING_EFFORT`'s
+  six-way scale is compressed down to it: `none` → `thinking.disabled`,
+  `minimal`/`low` → `low`, `medium`/`high` → `high`, `xhigh` → `max`.
+- **`get_screenshot` results no longer reach DeepSeek as raw base64 text.**
+  `@ai-sdk/deepseek`'s tool-result handling has no branch that promotes an
+  image-data part to a real image (unlike OpenRouter's integration) — it
+  `JSON.stringify`s the whole thing into the tool message instead.
+  `applyVisionPreprocessing` (`src/ai/vision-messages.ts`) now decides
+  image handling on two independent axes — can the model see at all, and
+  can the provider carry a TOOL-RESULT image — via the new
+  `providerHandlesToolResultImages` export in `src/ai/provider.ts`. A
+  vision-capable model on a provider that can't carry tool-result images
+  (DeepSeek-direct) gets its `get_screenshot` results converted to a text
+  description while user-attached images stay native; with no
+  `VISION_MODEL` configured, the slot falls back to a short static failure
+  string rather than leaking the image data as text.
+- **New `STRUCTURED_MODEL` env var** (default
+  `openrouter:deepseek/deepseek-v4.1-flash`) for the two `generateObject()`
+  call sites (`POST /api/user-skills/generate`, `src/ai/prototype-link.ts`)
+  that need a real `json_schema` response format — `@ai-sdk/deepseek` never
+  sets `supportsStructuredOutputs`, so pointing either at a DeepSeek-direct
+  model would silently degrade `response_format` to `{type:"json_object"}`
+  and risk `NoObjectGeneratedError`. Both call sites now pass
+  `createModel(config, config.STRUCTURED_MODEL)` instead of relying on
+  `CHAT_MODEL`.
+- **`CHAT_MODEL_SUPPORTS_VISION` now actually affects the default model.**
+  The flag used to be applied only when `CHAT_MODEL`'s bare id had no entry
+  in `DEFAULT_MODELS` — which the shipped default always does — so setting
+  it for the default model silently did nothing. It's now tri-state
+  internally (unset vs. explicitly true/false) and an explicit value always
+  overrides the built-in metadata, including for the default model.
+
 ## [0.39.0] - 2026-08-20
 
 A week of unreleased work: the self-improvement loop actually firing, users

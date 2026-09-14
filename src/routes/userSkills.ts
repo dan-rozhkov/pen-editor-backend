@@ -356,7 +356,13 @@ export async function userSkillRoutes(
     // required and shape-checked, per this route family's blanket rule.
     try {
       const { object } = await generateObject({
-        model: createModel(config),
+        // STRUCTURED_MODEL, not createModel(config)'s plain CHAT_MODEL
+        // default: this call relies on a real json_schema response_format,
+        // which @ai-sdk/deepseek never provides (see STRUCTURED_MODEL's doc
+        // comment in src/config.ts) — pin it to the OpenRouter model this
+        // already worked on rather than let it silently degrade as a side
+        // effect of the chat provider migration.
+        model: createModel(config, config.STRUCTURED_MODEL),
         schema: generateResultSchema,
         system: GENERATE_SYSTEM_PROMPT,
         prompt: parsed.data.prompt,

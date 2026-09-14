@@ -30,19 +30,26 @@ function textStreamChunks(text: string): LanguageModelV3StreamPart[] {
   ];
 }
 
-vi.mock("../src/ai/provider.js", () => ({
-  createModel: vi.fn(
-    () =>
-      new MockLanguageModelV3({
-        doStream: async () => ({
-          stream: simulateReadableStream({
-            chunks: textStreamChunks("hi"),
-            chunkDelayInMs: null,
+vi.mock("../src/ai/provider.js", async (importOriginal) => {
+  // Only createModel is faked — bareModelId must stay the REAL
+  // implementation, since src/ai/chatTurn.ts calls it on every
+  // prepareChatTurn() run.
+  const actual = await importOriginal<typeof import("../src/ai/provider.js")>();
+  return {
+    ...actual,
+    createModel: vi.fn(
+      () =>
+        new MockLanguageModelV3({
+          doStream: async () => ({
+            stream: simulateReadableStream({
+              chunks: textStreamChunks("hi"),
+              chunkDelayInMs: null,
+            }),
           }),
         }),
-      }),
-  ),
-}));
+    ),
+  };
+});
 
 vi.mock("../src/ai/mcp.js", () => ({
   getMCPTools: vi.fn(async () => ({})),
