@@ -15,7 +15,7 @@ import {
   visionCacheKey,
 } from "../services/vision.js";
 import { parseScreenshotDataUrl } from "./screenshotOutput.js";
-import { parseModelRef, providerHandlesToolResultImages } from "./provider.js";
+import { parseModelRef, providerHandlesToolResultImages } from "./modelRef.js";
 
 // Budget for ONE turn — but of NEW vision calls, not of images total. The
 // route caps images per *message* (MAX_IMAGE_PARTS, src/routes/chat.ts), but

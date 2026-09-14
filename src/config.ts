@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { bareModelId } from "./ai/provider.js";
+import { bareModelId } from "./ai/modelRef.js";
 
 /**
  * Completed user turns between background memory reviews.
