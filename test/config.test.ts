@@ -45,16 +45,24 @@ describe("isOriginAllowed", () => {
 });
 
 describe("DEFAULT_MODELS", () => {
-  // The design agent runs on exactly one model; the picker is gone, so this
-  // list is the model, not a menu. Pinned so a stray addition can't quietly
-  // put a second model back in front of users. The id here is BARE — no
-  // "deepseek:" provider prefix — since this is exactly what GET /api/models
-  // hands to the client (see src/ai/provider.ts's central invariant).
-  it("holds the single design-agent model", () => {
+  // The models a user can pick in the composer. Pinned because this list is
+  // a cross-repo contract in both directions: pen-editor's
+  // src/lib/__tests__/modelContract.test.ts reads it out of this checkout,
+  // and POST /api/chat's allowlist is derived from it. Every id is BARE —
+  // no "openrouter:" prefix — since this is exactly what GET /api/models
+  // hands to the client (see the central invariant in src/ai/modelRef.ts).
+  it("holds the selectable design-agent models", () => {
     expect(DEFAULT_MODELS).toEqual([
       {
-        id: "deepseek-flash",
-        label: "DeepSeek Flash",
+        id: "meta/muse-spark-1.3-contributor",
+        label: "Muse Spark 1.3",
+        supportsVision: true,
+      },
+      { id: "qwen/qwen3.8-flash", label: "Qwen3.8 Flash", supportsVision: true },
+      { id: "z-ai/glm-5.3-flash", label: "GLM 5.3 Flash", supportsVision: true },
+      {
+        id: "deepseek/deepseek-v4.1-flash",
+        label: "DeepSeek V4.1 Flash",
         supportsVision: true,
       },
     ]);
@@ -67,9 +75,6 @@ describe("getDefaultModel", () => {
   });
 
   it("strips a provider prefix off CHAT_MODEL", () => {
-    expect(getDefaultModel(makeConfig({ CHAT_MODEL: "deepseek:deepseek-flash" }))).toBe(
-      "deepseek-flash",
-    );
     expect(
       getDefaultModel(makeConfig({ CHAT_MODEL: "openrouter:google/gemini-2.5-flash" })),
     ).toBe("google/gemini-2.5-flash");

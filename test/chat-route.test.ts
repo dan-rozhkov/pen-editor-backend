@@ -5,6 +5,7 @@ import type { LanguageModelV3StreamPart } from "@ai-sdk/provider";
 import { buildApp } from "../src/app.js";
 import { loadSkills, getSkill } from "../src/ai/skills.js";
 import { makeConfig } from "./helpers.js";
+import { DEFAULT_MODELS } from "../src/config.js";
 
 // ---------------------------------------------------------------------------
 // Mocks: the provider returns a MockLanguageModelV3 (ai/test) and MCP tools
@@ -257,17 +258,43 @@ describe("POST /api/chat — validation errors", () => {
     expect(body.error).toBe("Invalid request body");
   });
 
-  // The picker is gone and there is only one model, but a client cached
-  // before that change still posts its old stored selection. The field must
-  // be ignored, not rejected — a 400 here would break every turn such a
-  // client makes until it reloads.
-  it("ignores a stale model id from an older client instead of rejecting it", async () => {
+  // The composer's picker: an id GET /api/models offers must actually reach
+  // the provider as this turn's model, flagged as the chat agent so it keeps
+  // CHAT_REASONING_EFFORT rather than a helper role's "minimal".
+  it("runs a picked model from the allowed list", async () => {
+    const { createModel } = await import("../src/ai/provider.js");
+    vi.mocked(createModel).mockClear();
+    const picked = DEFAULT_MODELS[1].id;
+
+    const res = await postChat(server.url, {
+      messages: [userMessage("hi")],
+      model: picked,
+    });
+    expect(res.status).toBe(200);
+    await res.text();
+
+    expect(vi.mocked(createModel).mock.calls[0]?.slice(1)).toEqual([
+      picked,
+      { chatAgent: true },
+    ]);
+  });
+
+  // A client cached before a list change still posts its old stored
+  // selection. An unknown id must fall back to CHAT_MODEL, not 400 — a
+  // rejection here would break every turn such a client makes until it
+  // reloads.
+  it("ignores an unknown model id instead of rejecting it", async () => {
+    const { createModel } = await import("../src/ai/provider.js");
+    vi.mocked(createModel).mockClear();
+
     const res = await postChat(server.url, {
       messages: [userMessage("hi")],
       model: "evil/not-allowed-model",
     });
     expect(res.status).toBe(200);
     await res.text();
+
+    expect(vi.mocked(createModel).mock.calls[0]?.[1]).toBeUndefined();
   });
 
   it("returns 400 when a single message contains more than 4 file/image parts", async () => {

@@ -276,23 +276,14 @@ describe("prepareChatTurn", () => {
     });
   });
 
-  // Fix 1 / Fix 7, 2026-09 DeepSeek-direct review: this is THE end-to-end
-  // regression test for the defect that shipped because the whole test suite
-  // ran on a bare OpenRouter CHAT_MODEL (see test/helpers.ts's Fix 7 comment)
-  // instead of the real shipped default. `makeConfig()` with no override now
-  // uses the real default (`deepseek:deepseek-flash`) — this test asserts
-  // the actual request body prepareChatTurn builds (`turn.modelMessages`,
-  // exactly what gets handed to streamText/doStream) never lets a
-  // get_screenshot result's base64 image data survive as literal tool-
-  // message text, which is exactly what @ai-sdk/deepseek would otherwise
-  // JSON.stringify verbatim into the request DeepSeek receives.
-  //
-  // This test MUST fail without Fix 1 — verified by temporarily reverting
-  // vision-messages.ts's two-dimensional check back to
-  // `if (modelSupportsVision(config, modelId)) return messages;`, which
-  // leaves the tool-result image untouched (the default model IS
-  // vision-capable) and the base64 payload right there in modelMessages.
-  describe("get_screenshot vision preprocessing at the shipped default (tool-result images on DeepSeek-direct)", () => {
+  // The invariant src/ai/vision-messages.ts exists to hold, end to end
+  // through prepareChatTurn: a get_screenshot result's image must reach the
+  // model in a shape the model can actually use — a real image part when it
+  // can see, a text description when it cannot — and NEVER as a base64 blob
+  // sitting in tool-message text. The latter is not hypothetical: it is what
+  // @ai-sdk/deepseek did to every screenshot while that provider was wired
+  // up, with no error anywhere.
+  describe("get_screenshot vision preprocessing", () => {
     const DATA_URL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg";
 
     function screenshotHistory(): Record<string, unknown>[] {
@@ -314,7 +305,24 @@ describe("prepareChatTurn", () => {
       ];
     }
 
-    it("never lets the get_screenshot base64 payload survive as tool-message text, at the real shipped CHAT_MODEL default", async () => {
+    it("leaves the screenshot native at the shipped default, which reads images", async () => {
+      const { describeImage } = await import("../src/services/vision.js");
+      // Other tests in this file share the module-level mock.
+      vi.mocked(describeImage).mockClear();
+      const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+
+      // makeConfig() with NO CHAT_MODEL override — the real shipped default.
+      const config = makeConfig();
+      const turn = await prepareChatTurn({ config, messages: screenshotHistory() });
+
+      const bodyText = JSON.stringify(turn.modelMessages);
+      // Present as image data the provider will map to a real image part,
+      // not converted and not described.
+      expect(bodyText).toContain("iVBORw0KGgoAAAANSUhEUg");
+      expect(describeImage).not.toHaveBeenCalled();
+    });
+
+    it("describes the screenshot instead when the chat model cannot read images", async () => {
       const { describeImage } = await import("../src/services/vision.js");
       vi.mocked(describeImage).mockResolvedValue({
         ok: true,
@@ -322,19 +330,16 @@ describe("prepareChatTurn", () => {
       });
       const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
 
-      // makeConfig() with NO CHAT_MODEL override — the real shipped default.
-      const config = makeConfig();
-      expect(config.CHAT_MODEL).toBe("deepseek:deepseek-flash");
-
+      const config = makeConfig({
+        CHAT_MODEL: "vendor/text-only-model",
+        CHAT_MODEL_SUPPORTS_VISION: false,
+      });
       const turn = await prepareChatTurn({ config, messages: screenshotHistory() });
 
       const bodyText = JSON.stringify(turn.modelMessages);
-      // The whole point: the base64 payload must not appear anywhere in the
-      // request body, in any shape (raw text, JSON-stringified content part).
+      // The base64 payload must not appear anywhere in the request body, in
+      // any shape (raw text, JSON-stringified content part).
       expect(bodyText).not.toContain("iVBORw0KGgoAAAANSUhEUg");
-      // And the tool-result slot must have gotten the vision-preprocessing
-      // treatment (a text description), not merely stayed present in some
-      // OTHER unexpected but still-safe shape.
       expect(bodyText).toContain("A header with a logo and three nav links.");
     });
   });

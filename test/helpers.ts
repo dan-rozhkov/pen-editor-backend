@@ -12,17 +12,8 @@ export function makeConfig(overrides: Partial<Config> = {}): Config {
     PORT: 0,
     HOST: "127.0.0.1",
     OPENROUTER_API_KEY: "test-api-key",
-    DEEPSEEK_API_KEY: "test-deepseek-key",
-    // The REAL shipped default, not a bare legacy OpenRouter id — Fix 7
-    // (2026-09 DeepSeek-direct review): the whole suite used to run against
-    // a bare `deepseek/deepseek-v4.1-flash` id (the OpenRouter branch),
-    // which meant nothing exercised the DeepSeek-direct branch a real
-    // deployment actually runs on and let two real defects (tool-result
-    // images serialized as base64 text, generateObject losing json_schema)
-    // ship unnoticed. Tests that specifically need the OpenRouter branch —
-    // most of this suite's pre-existing mocked provider/route tests — pass
-    // `CHAT_MODEL: "deepseek/deepseek-v4.1-flash"` (or another OpenRouter id)
-    // explicitly via `overrides`.
+    // The REAL shipped default, never a second hardcoded copy of it, so the
+    // suite exercises the same value prod runs on.
     CHAT_MODEL: envSchema.shape.CHAT_MODEL.parse(undefined),
     // Real shipped default, not a second hardcoded copy — keeps the rest of
     // the suite exercising the same value as prod. Tests that need a

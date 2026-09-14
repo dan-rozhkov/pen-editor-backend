@@ -8,7 +8,12 @@ import {
 } from "ai";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { isOriginAllowed, parseEnvList, type Config } from "../config.js";
+import {
+  getAllowedModels,
+  isOriginAllowed,
+  parseEnvList,
+  type Config,
+} from "../config.js";
 import { AGENT_MODES } from "../ai/system-prompt.js";
 import { logSession, type LogStep } from "../logging.js";
 import { randomUUID } from "node:crypto";
@@ -109,12 +114,12 @@ const chatBodySchema = z.object({
   id: z.string().max(200).optional(),
   messages: z.array(z.record(z.unknown())).min(1, "messages must not be empty"),
   canvasContext: z.string().optional(),
-  // Accepted and ignored. The design agent runs on exactly one model
-  // (config.CHAT_MODEL) and the picker is gone, but clients cached
-  // before that change still send a model id from their old localStorage
-  // selection; rejecting those would 400 every one of their turns until they
-  // reload. Dropping the field here is what "reset every user's model" means
-  // server-side — no request can pin a different model.
+  // The model the user picked in the composer. Must be one of
+  // getAllowedModels(config) (exactly what GET /api/models reports) — an id
+  // outside that list is IGNORED, not a 400: a client cached before a list
+  // change still posts its old stored selection, and erroring would break
+  // every one of its turns until it reloads, whereas running the default
+  // model costs that turn nothing. Absent = config.CHAT_MODEL.
   model: z.string().optional(),
   agentMode: z.enum(AGENT_MODES).optional(),
   // Client-generated stable anonymous id (localStorage `pen.userId`). Absent
@@ -161,6 +166,7 @@ export async function chatRoutes(
     ...DEFAULT_AGENT_RETRY,
     ...retryPolicyOverride,
   };
+  const allowedModels = getAllowedModels(config);
   const allowedOrigins = parseEnvList(config.CORS_ALLOWED_ORIGINS);
 
   app.post(
@@ -208,9 +214,17 @@ export async function chatRoutes(
       id: chatSessionId,
       messages,
       canvasContext,
+      model: requestedModel,
       agentMode = "edits",
       userId: rawUserId,
     } = parsed.data;
+
+    // See chatBodySchema.model: an unknown id runs the default rather than
+    // failing the turn.
+    const modelOverride =
+      requestedModel && allowedModels.includes(requestedModel)
+        ? requestedModel
+        : undefined;
 
     // A shape-invalid userId (e.g. an older client, or a malformed value)
     // is treated as absent rather than rejected — see the field's doc
@@ -258,6 +272,7 @@ export async function chatRoutes(
         config,
         messages,
         canvasContext,
+        modelOverride,
         userId,
         memoryStore,
         learnedSkillStore,
@@ -456,6 +471,7 @@ export async function chatRoutes(
             modelMessages,
             assistantText: steps.map((s) => s.text).join("\n").trim(),
             stepCount: steps.length,
+            modelOverride,
             turnComplete,
             learnedSkillStore,
             auditDb,

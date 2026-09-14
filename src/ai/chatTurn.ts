@@ -309,7 +309,7 @@ export async function prepareChatTurn(
     messages.splice(messages.length - 1, 0, skillMsg);
   }
 
-  const model = createModel(config, modelOverride);
+  const model = createModel(config, modelOverride, { chatAgent: true });
 
   // Self-authored skills (phase 2). Everything here is additive and
   // best-effort: the flag gates it (ignoring even an explicitly-passed

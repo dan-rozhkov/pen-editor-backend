@@ -23,11 +23,10 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-// Every test below sets both API keys unless it's specifically exercising
-// the missing-key failure path — DEEPSEEK_API_KEY is required
-// unconditionally (see config.ts), not only when CHAT_MODEL happens to
-// point at DeepSeek.
-const BASE_ENV = { OPENROUTER_API_KEY: "key-123", DEEPSEEK_API_KEY: "ds-key-123" };
+// Every test below sets the API key unless it's specifically exercising the
+// missing-key failure path. OpenRouter is the only provider, so there is
+// exactly one required key.
+const BASE_ENV = { OPENROUTER_API_KEY: "key-123" };
 
 describe("loadConfig", () => {
   it("parses a minimal valid env and applies defaults", () => {
@@ -35,10 +34,9 @@ describe("loadConfig", () => {
     const config = loadConfig();
 
     expect(config.OPENROUTER_API_KEY).toBe("key-123");
-    expect(config.DEEPSEEK_API_KEY).toBe("ds-key-123");
     expect(config.PORT).toBe(3001);
     expect(config.HOST).toBe("0.0.0.0");
-    expect(config.CHAT_MODEL).toBe("deepseek:deepseek-flash");
+    expect(config.CHAT_MODEL).toBe("deepseek/deepseek-v4.1-flash");
     expect(config.S3_REGION).toBe("ru-1");
     expect(config.ENABLE_AGENT_LOGGING).toBe(false);
   });
@@ -111,28 +109,14 @@ describe("loadConfig", () => {
   });
 
   it("exits when OPENROUTER_API_KEY is missing", () => {
-    process.env = { DEEPSEEK_API_KEY: "ds-key" } as NodeJS.ProcessEnv;
+    process.env = {} as NodeJS.ProcessEnv;
     expect(() => loadConfig()).toThrow(/process\.exit\(1\)/);
     expect(process.exit).toHaveBeenCalledWith(1);
     expect(console.error).toHaveBeenCalled();
   });
 
   it("exits when OPENROUTER_API_KEY is empty", () => {
-    process.env = { OPENROUTER_API_KEY: "", DEEPSEEK_API_KEY: "ds-key" } as NodeJS.ProcessEnv;
-    expect(() => loadConfig()).toThrow(/process\.exit\(1\)/);
-  });
-
-  // DEEPSEEK_API_KEY is required unconditionally — the shipped CHAT_MODEL
-  // default lives on the DeepSeek-direct branch, so a deployment missing
-  // this key must fail at startup, not at the first chat request.
-  it("exits when DEEPSEEK_API_KEY is missing", () => {
-    process.env = { OPENROUTER_API_KEY: "key" } as NodeJS.ProcessEnv;
-    expect(() => loadConfig()).toThrow(/process\.exit\(1\)/);
-    expect(process.exit).toHaveBeenCalledWith(1);
-  });
-
-  it("exits when DEEPSEEK_API_KEY is empty", () => {
-    process.env = { OPENROUTER_API_KEY: "key", DEEPSEEK_API_KEY: "" } as NodeJS.ProcessEnv;
+    process.env = { OPENROUTER_API_KEY: "" } as NodeJS.ProcessEnv;
     expect(() => loadConfig()).toThrow(/process\.exit\(1\)/);
   });
 
@@ -283,44 +267,63 @@ describe("loadConfig legacy env aliases", () => {
   });
 });
 
-// Fix 3, 2026-09 DeepSeek-direct review: OPENROUTER_MODEL used to alias to
-// CHAT_MODEL the same way the two vars above do. That silently kept an
-// already-deployed Render environment's chat agent on OpenRouter (a bare
-// value parses as a legacy OpenRouter id) with no error at all, despite
-// DEEPSEEK_API_KEY being required — the exact "quiet wrong provider"
-// outcome the rename was supposed to prevent. loadConfig() now refuses to
-// start instead.
-describe("loadConfig CHAT_MODEL legacy-name rejection", () => {
-  it("exits loudly when OPENROUTER_MODEL is set but CHAT_MODEL is not", () => {
+// OPENROUTER_MODEL aliases to CHAT_MODEL again. The alias was removed (and
+// made a boot failure) while a DeepSeek-direct provider existed, because a
+// bare legacy value silently meant "stay on OpenRouter" — i.e. the wrong
+// PROVIDER with no error. With OpenRouter the only provider, the old name
+// can mean exactly what it says.
+describe("loadConfig OPENROUTER_MODEL legacy alias", () => {
+  it("adopts OPENROUTER_MODEL when CHAT_MODEL is unset", () => {
     process.env = {
       ...BASE_ENV,
       OPENROUTER_MODEL: "vendor/legacy-model",
     } as NodeJS.ProcessEnv;
-    expect(() => loadConfig()).toThrow("process.exit(1)");
-    expect(console.error).toHaveBeenCalledWith(
-      expect.stringContaining("OPENROUTER_MODEL"),
-    );
+    expect(loadConfig().CHAT_MODEL).toBe("vendor/legacy-model");
   });
 
-  it("does not fail when CHAT_MODEL is explicitly set alongside a stale OPENROUTER_MODEL", () => {
+  it("prefers an explicit CHAT_MODEL over a stale OPENROUTER_MODEL", () => {
     process.env = {
       ...BASE_ENV,
-      CHAT_MODEL: "deepseek:deepseek-flash",
+      CHAT_MODEL: "qwen/qwen3.8-flash",
       OPENROUTER_MODEL: "vendor/legacy-model",
     } as NodeJS.ProcessEnv;
-    expect(loadConfig().CHAT_MODEL).toBe("deepseek:deepseek-flash");
+    expect(loadConfig().CHAT_MODEL).toBe("qwen/qwen3.8-flash");
   });
 
-  it("does not fail when OPENROUTER_MODEL is unset", () => {
+  it("falls back to the shipped default when neither name is set", () => {
     process.env = { ...BASE_ENV } as NodeJS.ProcessEnv;
-    expect(loadConfig().CHAT_MODEL).toBe("deepseek:deepseek-flash");
+    expect(loadConfig().CHAT_MODEL).toBe("deepseek/deepseek-v4.1-flash");
   });
+});
 
-  it("still fails when CHAT_MODEL is set to an empty string alongside OPENROUTER_MODEL", () => {
+// A "deepseek:" reference selected a DeepSeek-direct provider that no longer
+// exists. Read as a bare id it would be sent to OpenRouter as the literal
+// model name "deepseek:deepseek-flash" and 404 every single turn — a runtime
+// failure for a config mistake, so loadConfig refuses to start instead.
+describe("loadConfig deepseek: model rejection", () => {
+  it.each(["CHAT_MODEL", "STRUCTURED_MODEL", "ANALYSIS_MODEL", "VISION_MODEL"])(
+    "exits loudly when %s carries a deepseek: prefix",
+    (name) => {
+      process.env = { ...BASE_ENV, [name]: "deepseek:deepseek-flash" } as NodeJS.ProcessEnv;
+      expect(() => loadConfig()).toThrow("process.exit(1)");
+      expect(console.error).toHaveBeenCalledWith(expect.stringContaining(name));
+    },
+  );
+
+  it("accepts the OpenRouter spelling of a DeepSeek model", () => {
     process.env = {
       ...BASE_ENV,
-      CHAT_MODEL: "",
-      OPENROUTER_MODEL: "vendor/legacy-model",
+      CHAT_MODEL: "deepseek/deepseek-v4.1-flash",
+    } as NodeJS.ProcessEnv;
+    expect(loadConfig().CHAT_MODEL).toBe("deepseek/deepseek-v4.1-flash");
+  });
+
+  // The alias runs first, so a legacy OPENROUTER_MODEL carrying the dead
+  // prefix is caught too rather than sailing in under the old name.
+  it("catches a deepseek: prefix arriving through the OPENROUTER_MODEL alias", () => {
+    process.env = {
+      ...BASE_ENV,
+      OPENROUTER_MODEL: "deepseek:deepseek-flash",
     } as NodeJS.ProcessEnv;
     expect(() => loadConfig()).toThrow("process.exit(1)");
   });

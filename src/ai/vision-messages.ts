@@ -312,12 +312,14 @@ async function describeUnitImage(
  *      flattening it into a giant base64 JSON string inside a plain text
  *      tool message? ({@link providerHandlesToolResultImages})
  *
- * These are independent: DeepSeek's own API reads images in USER messages
- * fine (dimension 1 = vision-capable) but its AI SDK integration has no
- * code path that promotes a tool-result's image-data part into a real image
- * — it always JSON.stringifies it as tool-message text (dimension 2 =
- * false). OpenRouter is native on both dimensions. A vision-less model is
- * native on neither, regardless of provider.
+ * These are independent, and were both live for a while: @ai-sdk/deepseek
+ * read images in USER messages fine (dimension 1 = vision-capable) but had
+ * no code path that promotes a tool-result's image-data part into a real
+ * image — it always JSON.stringified it as tool-message text (dimension 2 =
+ * false). That provider is gone and OpenRouter, the only one left, is native
+ * on both dimensions — so dimension 2 is currently always true. The
+ * distinction is kept because a vision-less model is native on neither, and
+ * because a provider that stringifies tool-result images does so silently.
  *
  * The four cells:
  *   - vision=true,  tool-result-images=true  -> return `messages` untouched
@@ -342,9 +344,9 @@ async function describeUnitImage(
  * INVARIANT: no ImagePart/image-bearing FilePart may survive into the
  * returned array for a slot this function decided to convert (per the
  * matrix above). That gap is a real bug class in Hermes (a raw `image_url`
- * reaching a text-only model and erroring the provider call) — and, newly,
- * the DeepSeek tool-result case (a raw base64 JSON blob flooding a
- * tool message) — and this is the one place both are closed. Note the
+ * reaching a text-only model and erroring the provider call) — as is the
+ * tool-result case (a raw base64 JSON blob flooding a tool message) — and
+ * this is the one place both are closed. Note the
  * invariant holds even when the per-turn budget is exceeded or a
  * description fails — both replace the image with text rather than leaving
  * it in place.

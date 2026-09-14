@@ -29,7 +29,6 @@
     "test:mutation": "stryker run"
   },
   "dependencies": {
-    "@ai-sdk/deepseek": "^2.0.64",
     "@ai-sdk/mcp": "^1.0.23",
     "@aws-sdk/client-s3": "^3.1018.0",
     "@fastify/cors": "^11.0.0",

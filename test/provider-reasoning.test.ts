@@ -3,20 +3,12 @@ import { createModel, supportsReasoningControl } from "../src/ai/provider.js";
 import { envSchema } from "../src/config.js";
 import { makeConfig } from "./helpers.js";
 
-// This file only exercises the OpenRouter branch of createModel — bare,
-// unprefixed model ids (the legacy path, see provider.ts's parseModelRef).
-// The DeepSeek-direct branch — and the real shipped CHAT_MODEL default,
-// which now lives there — has its own dedicated coverage in
-// test/provider-routing.test.ts, including the "thinking must never be left
-// unset" invariant this file used to guard for the OpenRouter path alone.
-
-// The real regression this file guards against, for the OpenRouter branch:
-// a bare model id drifting to a family outside REASONING_MODEL_PREFIXES,
-// which silently disables all reasoning control for it (see provider.ts's
-// comment for how that happened with deepseek/*, OpenRouter's naming for
-// DeepSeek models). A fixed representative id, not CHAT_MODEL's own schema
-// default — that default now points at the DeepSeek-direct branch, which
-// this suite deliberately does not cover.
+// The real regression this file guards against: a model id drifting to a
+// family outside REASONING_MODEL_PREFIXES, which silently disables all
+// reasoning control for it (see provider.ts's comment for how that happened
+// with deepseek/*). A fixed representative id here; every SELECTABLE model
+// (DEFAULT_MODELS) and the shipped CHAT_MODEL default are gated separately
+// in test/provider-routing.test.ts.
 const OPENROUTER_STYLE_DEEPSEEK_ID = "deepseek/deepseek-v4.1-flash";
 
 // Same idea for the effort value itself: read the schema's real default
@@ -68,7 +60,7 @@ describe("CHAT_REASONING_EFFORT default", () => {
   });
 });
 
-describe("createModel reasoning effort (OpenRouter branch)", () => {
+describe("createModel reasoning effort", () => {
   it("passes the configured effort through to the OpenRouter model settings", () => {
     const config = makeConfig({
       CHAT_MODEL: OPENROUTER_STYLE_DEEPSEEK_ID,
@@ -120,5 +112,21 @@ describe("createModel reasoning effort (OpenRouter branch)", () => {
       settings: { reasoning?: { effort?: string } };
     };
     expect(overriddenModel.settings.reasoning).toEqual({ effort: "minimal" });
+  });
+  // The one exception to the rule above: the chat agent itself, on a turn
+  // where the model was chosen per request (the composer's picker, or
+  // `showcase:generate --model=`). That reaches createModel as an override
+  // too, but it IS the chat model — without `chatAgent`, restoring the
+  // picker would silently move every user who picks a model off the
+  // operator's measured "none" onto "minimal".
+  it("applies CHAT_REASONING_EFFORT to a per-request chat model", () => {
+    const config = makeConfig({
+      CHAT_MODEL: OPENROUTER_STYLE_DEEPSEEK_ID,
+      CHAT_REASONING_EFFORT: "none",
+    });
+    const picked = createModel(config, "qwen/qwen3.8-flash", {
+      chatAgent: true,
+    }) as unknown as { settings: { reasoning?: { effort?: string } } };
+    expect(picked.settings.reasoning).toEqual({ effort: "none" });
   });
 });

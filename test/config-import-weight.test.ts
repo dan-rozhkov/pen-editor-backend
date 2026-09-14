@@ -4,13 +4,12 @@ import { describe, expect, it } from "vitest";
 
 // pen-editor's src/lib/__tests__/modelContract.test.ts imports THIS repo's
 // src/config.ts directly out of the sibling checkout, to pin its
-// FALLBACK_MODEL against our DEFAULT_MODELS. That only works while config.ts
+// fallback model list against our DEFAULT_MODELS. That only works while config.ts
 // stays resolvable from a checkout that installs none of our dependencies —
 // so config.ts must not (even transitively) pull in the provider SDKs.
 //
 // This guard exists because the backend's own CI structurally cannot catch
-// the regression: `ai`, `@ai-sdk/deepseek` and `@openrouter/ai-sdk-provider`
-// are installed here, so importing them from config.ts is green locally and
+// the regression: `ai` and `@openrouter/ai-sdk-provider` are installed here, so importing them from config.ts is green locally and
 // red only in the other repository. It has already happened once, when
 // bareModelId lived in src/ai/provider.ts.
 const read = (relative: string): string =>

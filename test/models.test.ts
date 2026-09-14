@@ -40,13 +40,12 @@ describe("getModels", () => {
     expect(models.find((m) => m.id === id)).toEqual(DEFAULT_MODELS[0]);
   });
 
-  // The real shipped default carries a "deepseek:" provider prefix
-  // (envSchema's CHAT_MODEL default) — getModels/getDefaultModel must strip
-  // it via bareModelId before comparing against DEFAULT_MODELS' bare id, or
-  // this would silently duplicate the built-in entry ("deepseek:deepseek-flash"
-  // !== "deepseek-flash") and leak the prefix into GET /api/models.
-  it("does not duplicate the built-in model for the real prefixed shipped default", () => {
-    const shippedDefault = envSchema.shape.CHAT_MODEL.parse(undefined);
+  // An operator's CHAT_MODEL may carry an "openrouter:" prefix —
+  // getModels/getDefaultModel must strip it via bareModelId before comparing
+  // against DEFAULT_MODELS' bare ids, or a prefixed value duplicates the
+  // built-in entry and leaks the prefix into GET /api/models.
+  it("does not duplicate the built-in model for a prefixed CHAT_MODEL", () => {
+    const shippedDefault = `openrouter:${envSchema.shape.CHAT_MODEL.parse(undefined)}`;
     const models = getModels(makeConfig({ CHAT_MODEL: shippedDefault }));
     expect(models).toEqual(DEFAULT_MODELS);
   });
@@ -67,7 +66,10 @@ describe("getModels", () => {
       const models = getModels(
         makeConfig({ CHAT_MODEL: DEFAULT_MODELS[0].id, CHAT_MODEL_SUPPORTS_VISION: false }),
       );
-      expect(models).toEqual<ModelOption[]>([{ ...DEFAULT_MODELS[0], supportsVision: false }]);
+      expect(models).toEqual<ModelOption[]>([
+        { ...DEFAULT_MODELS[0], supportsVision: false },
+        ...DEFAULT_MODELS.slice(1),
+      ]);
     });
 
     it("overrides the built-in entry to true when the operator explicitly re-affirms it", () => {

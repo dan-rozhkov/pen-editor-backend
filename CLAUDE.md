@@ -25,76 +25,74 @@ CI (`.github/workflows/ci.yml`) runs lint + test + build on every push to `main`
 
 ## Chat model provider (`src/ai/provider.ts`)
 
-`createModel(config, modelOverride?)` is a two-provider switch: the chat
-agent (`CHAT_MODEL`, no override) runs on DeepSeek's own API
-(`@ai-sdk/deepseek`); every helper-role call (`ANALYSIS_MODEL`,
-`VISION_MODEL`, selfimprove review, user skills, prototype-link, the
-showcase default) stays on OpenRouter. Provider is picked by an explicit
-`"<provider>:"` prefix matched against a two-name allowlist (`deepseek`,
-`openrouter`) — never a blind `split(":")`, since OpenRouter ids themselves
-contain colons (`openai/gpt-4o:extended`). An id with no recognized prefix
-is treated as a bare OpenRouter id (legacy path, so pre-migration env values
-and `showcase:generate --model=` keep working unchanged).
+**OpenRouter is the only provider.** A DeepSeek-direct branch
+(`@ai-sdk/deepseek`, its own key) existed for one day and was removed: it
+never passed a live smoke, and it cost three silent divergences from the
+OpenRouter path (always-on `thinking`, tool-result images flattened to
+base64 text, no structured outputs). `DEEPSEEK_API_KEY` is gone;
+`OPENROUTER_API_KEY` is the one required key.
 
-Two invariants:
+`createModel(config, modelOverride?, {chatAgent?})` resolves a model
+reference through `parseModelRef` (`src/ai/modelRef.ts`): an
+`"openrouter:"` prefix is stripped, anything else is a bare OpenRouter id.
+The prefix is matched against a one-name allowlist — never a blind
+`split(":")`, since OpenRouter ids themselves contain colons
+(`openai/gpt-4o:extended`). A `"deepseek:"`-prefixed value in any model env
+var is a **loud boot failure** (`rejectDeepSeekModelRef` in `src/config.ts`),
+not a bare id silently sent upstream as a 404ing model name.
+
+Three invariants:
 - **The provider prefix never leaves `createModel`.** `GET /api/models`,
   `raw_traces`, and the showcase's `model` column all store/report the bare
-  id with the prefix stripped — a caller outside this file should never see
-  `deepseek:` or `openrouter:`.
-- **`@ai-sdk/deepseek` defaults `thinking` to `enabled`.** `createModel`
-  therefore always sends an explicit `thinking` providerOptions value for a
-  DeepSeek model — an empty `providerOptions` silently brings back always-on
-  reasoning before every reply, i.e. a quiet revert of commit `9719e79` and
-  the measurements behind its `none` default. DeepSeek's `reasoningEffort`
-  only accepts `low|high|max`, so `CHAT_REASONING_EFFORT`'s six-way scale is
-  compressed: `none`→`thinking.disabled`, `minimal`/`low`→`low`,
-  `medium`/`high`→`high`, `xhigh`→`max`.
+  id (`bareModelId`).
+- **`CHAT_REASONING_EFFORT` follows the chat agent, not the absence of an
+  override.** A model the *user* picked in the composer arrives as a
+  `modelOverride` just like `ANALYSIS_MODEL` does, so the chat route and the
+  showcase runner pass `{chatAgent: true}` to keep the operator's measured
+  `"none"`; helper roles (analysis, vision, selfimprove review, user skills,
+  prototype-link) stay on `"minimal"`.
+- **`REASONING_MODEL_PREFIXES` is an allowlist and drifts silently.** An id
+  outside it gets no reasoning cap at all — how the agent once ended up
+  thinking before every reply. Every `DEFAULT_MODELS` id and the shipped
+  `CHAT_MODEL` default are gated against it by
+  `test/provider-routing.test.ts`.
 
-Tests: `test/provider-routing.test.ts` (prefix routing/`parseModelRef`, the
-DeepSeek reasoning-options mapping including the "default CHAT_MODEL
-reasoning coverage gate" that reads the real schema default and asserts it
-stays covered — by `REASONING_MODEL_PREFIXES` on the OpenRouter branch, by
-an explicit `thinking` value on the DeepSeek branch), `test/provider-
-reasoning.test.ts` (the OpenRouter branch specifically, against fixed
-representative ids — `REASONING_MODEL_PREFIXES` coverage and the effort
-scale, deliberately NOT the live default now that it points at
-DeepSeek-direct) and `test/models.test.ts` (`GET /api/models` reports bare
-ids).
+**The user picks the model.** `DEFAULT_MODELS` (`src/config.ts`) is the
+selectable list — four vision-capable OpenRouter models, `supportsVision`
+read off `openrouter.ai/api/v1/models`' `architecture.input_modalities`.
+`GET /api/models` serves it plus `default` (`CHAT_MODEL`), `POST /api/chat`
+accepts any id in `getAllowedModels(config)`, and an id **outside** that
+list is IGNORED rather than 400'd — a client cached before a list change
+still posts its old stored selection, and erroring would break every one of
+its turns until it reloads. The list is a cross-repo contract:
+pen-editor's `src/lib/__tests__/modelContract.test.ts` reads it out of this
+checkout, so **land a list change here first**, same rule as the tool
+contract.
 
-**`CHAT_MODEL` has no legacy alias.** `OPENROUTER_REASONING_EFFORT` and
-`OPENROUTER_MODEL_SUPPORTS_VISION` still bridge silently to their renamed
-`CHAT_*` counterparts, but `OPENROUTER_MODEL` does not bridge to `CHAT_MODEL`
-— `loadConfig()` exits loudly at startup if `OPENROUTER_MODEL` is set and
-`CHAT_MODEL` is not, rather than silently reusing the old value (which
-`parseModelRef` would read as a legacy bare OpenRouter id, keeping the chat
-agent on OpenRouter with no error). `DEEPSEEK_API_KEY` is required
-unconditionally, so an operator deploying this code already has to touch
-env vars — there's no "seamless deploy" case left to protect for this one.
-Test: `test/load-config.test.ts`.
+**`OPENROUTER_MODEL` aliases to `CHAT_MODEL` again** (alongside
+`OPENROUTER_REASONING_EFFORT` → `CHAT_REASONING_EFFORT` and
+`OPENROUTER_MODEL_SUPPORTS_VISION` → `CHAT_MODEL_SUPPORTS_VISION`). The
+alias was briefly a boot failure because a bare legacy value meant "stay on
+OpenRouter" — i.e. the wrong *provider* with no error. With one provider it
+just means what it says. Test: `test/load-config.test.ts`.
 
 **`STRUCTURED_MODEL`** (default `openrouter:deepseek/deepseek-v4.1-flash`)
-is a separate model used only by the two `generateObject()` call sites that
-need a real `json_schema` response format (`POST /api/user-skills/generate`,
-`src/ai/prototype-link.ts`) — `@ai-sdk/deepseek` never sets
-`supportsStructuredOutputs`, so pointing either at a DeepSeek-direct model
-would silently degrade `response_format` to `{type:"json_object"}` and risk
-`NoObjectGeneratedError`. It stays on OpenRouter regardless of `CHAT_MODEL`.
+stays pinned separately for the two `generateObject()` call sites that need
+a real `json_schema` response format (`POST /api/user-skills/generate`,
+`src/ai/prototype-link.ts`), so a chat model without structured-output
+support — an operator's, or a user's pick — can't silently degrade them into
+`NoObjectGeneratedError` territory.
 
-**Tool-result images and DeepSeek.** `get_screenshot`'s result reaches the
-model as a `ToolResultPart` with `output.type === "content"`. OpenRouter's
-integration promotes an `image-data` part inside that to a real
-`image_url` chat content part; `@ai-sdk/deepseek` has no such branch and
-`JSON.stringify`s the whole thing into tool-message text instead — which
-would otherwise flood the model with megabytes of base64 as "text" it
-can't use. `src/ai/vision-messages.ts`'s `applyVisionPreprocessing` treats
-this as a second, independent dimension from "can the model see at all":
-a vision-capable model on a provider that can't carry tool-result images
-(`providerHandlesToolResultImages` in `src/ai/provider.ts`) still gets
-its `get_screenshot` results converted to a text description — but its
-user-attached images are left native, since DeepSeek reads those directly.
-With no `VISION_MODEL` configured to produce that description, the slot
-still never leaks raw image data: `describeImage()` returns a short,
-static "Vision is not configured" failure text instead.
+**Tool-result images.** `get_screenshot`'s result reaches the model as a
+`ToolResultPart` with `output.type === "content"`; OpenRouter's integration
+promotes an `image-data` part inside that to a real `image_url` content
+part. `src/ai/vision-messages.ts`'s `applyVisionPreprocessing` still treats
+this as a second, independent dimension from "can the model see at all"
+(`providerHandlesToolResultImages`), because `@ai-sdk/deepseek`
+`JSON.stringify`d the whole thing into tool-message text instead — megabytes
+of base64 as "text", with no error anywhere. That dimension is therefore
+always true today, and the false branch is covered by
+`test/vision-messages-provider-dimension.test.ts`, which mocks the axis.
 
 ## Trace analysis (`src/analysis/`, `src/tracing/`)
 
