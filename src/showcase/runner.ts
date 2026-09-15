@@ -131,8 +131,6 @@ const EMPTY_DOCUMENT_STATE = JSON.stringify({
   roots: [],
   selectedIds: [],
   selectedNodes: [],
-  reusableComponents: [],
-  documentComponents: [],
   viewport: { scale: 1, x: 0, y: 0 },
 });
 

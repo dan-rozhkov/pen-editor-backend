@@ -37,7 +37,7 @@ Every interactive component has: default, hover, focus, active, disabled, loadin
 
 - Skeleton states for loading, not spinners in the middle of content.
 - Empty states that teach the interface, not "nothing here."
-- Consistent affordances across the surface. Same button shape. Same form-control vocabulary. Same icon style. When document components exist (`documentComponents` from `get_editor_state`), reuse their `c-*` tags for every matching element instead of inventing a parallel one.
+- Consistent affordances across the surface. Same button shape. Same form-control vocabulary. Same icon style. Reuse the same markup/CSS pattern for a given element type across screens instead of inventing a parallel one.
 - Overlays escape their container. An absolutely positioned dropdown inside an `overflow: hidden` or `overflow: auto` ancestor gets clipped; reach for `<dialog>`, the popover API, `position: fixed`, or a portal-equivalent structure.
 
 ## Motion

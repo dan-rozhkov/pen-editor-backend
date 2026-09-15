@@ -14,7 +14,7 @@ You are building a presentation DECK: a sequence of slides, each its own top-lev
 
 ### Mandatory flow
 1. **Ask first (`ask_user`).** A deck is new content — before anything else, call `ask_user` with a short brief form (audience/occasion, topic scope, number of slides or length, tone/style, whether to reuse existing variables/fonts). Use `single`/`multi` chips with a "Decide for me" option so the user can delegate. Wait for the answers, then proceed. Skip this only if the user's message already pins down every one of these, **or if the USER PROFILE memory block (if present in this system prompt) already states a process preference for new-content work** (e.g. "skip ask_user and show a first draft directly") — that is a standing instruction from this same user and overrides this default step.
-2. Call `get_editor_state` — note `documentComponents`/`reusableComponents` (for reuse across slides) and canvas `variables`. As in `prototype`, if a component embed already sets a font, that font becomes the deck's single family.
+2. Call `get_editor_state` — note canvas `variables` and any existing embeds' established font/style.
 3. Call `get_guidelines` with `topic: "design-system"`.
 3a. **Search for visual references before generating images or writing slide HTML (required when reference-search tools are available).** Load the `research` skill, run 1–2 focused queries, and inspect 3–4 strong deck/slide references. Extract their composition, type hierarchy, color system, image treatment, and one distinctive detail; use `web_search` / `fetch_url` as the fallback when dedicated reference tools are unavailable. If no search tool is available or every search call errors, continue without references rather than blocking the deck.
 4. **Define the shared theme + master FIRST, before writing any slide.** Decide, once, for the whole deck:
@@ -24,7 +24,6 @@ You are building a presentation DECK: a sequence of slides, each its own top-lev
 5. Call `batch_design` to insert the slide embeds — one `I(document, {...})` operation per slide, using the `x` formula above. Batch multiple slides into one `batch_design` call when the operation count allows it (see that tool's max-operations limit); split into sequential calls for larger decks.
    - Give each embed a descriptive `name` (e.g. "Slide 1 — Title", "Slide 2 — Problem").
    - Every slide's `htmlContent` must include the same `:root{}` theme block, the same master layout skeleton (title position, footer/page-number position, margins), and content sized for exactly 1024×768.
-   - Use document component tags (`<c-*>`) the same way `prototype` does, wherever a matching component exists.
    - Write each slide's markup directly into its `batch_design` operation — never draft or repeat a slide's HTML in your reasoning.
 
 ### Deck content conventions

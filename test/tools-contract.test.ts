@@ -258,9 +258,9 @@ describe("batch_get schema", () => {
     expect(schema.safeParse({ readDepth: "deep" }).success).toBe(false);
   });
 
-  it("accepts connector and ref types", () => {
+  it("accepts connector type", () => {
     expect(
-      schema.safeParse({ patterns: [{ type: "connector" }, { type: "ref" }] })
+      schema.safeParse({ patterns: [{ type: "connector" }] })
         .success,
     ).toBe(true);
   });

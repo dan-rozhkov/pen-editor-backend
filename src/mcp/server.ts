@@ -94,7 +94,7 @@ export function buildMcpServer(): McpServer {
     "get_editor_state",
     {
       description:
-        "Get the current editor state: active .pen file, user selection, top-level nodes, and available components. Call this first — Figma's metadata-first pattern.",
+        "Get the current editor state: active .pen file, user selection, top-level nodes. Call this first — Figma's metadata-first pattern.",
       inputSchema: getEditorStateInputShape,
     },
     (args) => callBridged("get_editor_state", args),
@@ -167,7 +167,7 @@ export function buildMcpServer(): McpServer {
   server.registerTool(
     "batch_design",
     {
-      description: `${BATCH_DESIGN_DESCRIPTION}\n\nCall get_guidelines(topic: "design-system") first for auto-layout and component-usage rules.`,
+      description: `${BATCH_DESIGN_DESCRIPTION}\n\nCall get_guidelines(topic: "design-system") first for auto-layout rules.`,
       inputSchema: batchDesignInputShape,
     },
     async (rawArgs) => {

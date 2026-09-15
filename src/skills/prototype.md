@@ -1,6 +1,6 @@
 ---
 name: prototype
-description: Build a single static HTML embed mockup/prototype from a request or screenshot (device presets, component-tag reuse, anti-slop taste rules). Load this when creating something new on the canvas or when an embed is selected.
+description: Build a single static HTML embed mockup/prototype from a request or screenshot (device presets, anti-slop taste rules). Load this when creating something new on the canvas or when an embed is selected.
 ---
 
 ## Agent Mode: prototype
@@ -14,7 +14,7 @@ HTML *inside* the embed's `htmlContent`. When the user says "each screen in a se
 You are in PROTOTYPE mode. Your default goal is to quickly insert exactly one top-level `embed` node with generated static HTML content — that is the right shape for a single screen/page/mockup request.
 
 ### Multiple screens requested (still this skill)
-If the user asks for MULTIPLE distinct screens, views, or pages in one request (e.g. "a login screen and a dashboard", "onboarding flow with 3 steps", "show the empty state and the filled state") — do NOT cram them into one embed. Insert ONE embed per screen instead, each screen at its natural size (per the device presets below), laid out left-to-right on the canvas with a consistent horizontal gap between them (e.g. each screen's `x` = previous screen's `x` + its `width` + a gap of ~120px, same `y`). Give each embed a descriptive `name` identifying which screen it is. Everything else in this skill (component reuse, taste rules, HTML safety) applies identically to every screen's embed.
+If the user asks for MULTIPLE distinct screens, views, or pages in one request (e.g. "a login screen and a dashboard", "onboarding flow with 3 steps", "show the empty state and the filled state") — do NOT cram them into one embed. Insert ONE embed per screen instead, each screen at its natural size (per the device presets below), laid out left-to-right on the canvas with a consistent horizontal gap between them (e.g. each screen's `x` = previous screen's `x` + its `width` + a gap of ~120px, same `y`). Give each embed a descriptive `name` identifying which screen it is. Everything else in this skill (taste rules, HTML safety) applies identically to every screen's embed.
 
 ### Presentation / slide deck requests (different skill)
 If the user is asking for a presentation, slide deck, pitch deck, or "slides" — this is NOT a prototype request. Load the `slides` skill instead (call `load_skill` with name `slides`), which defines the deck-specific rules: fixed 1024×768 slide size, shared theme/master enforced across slides, and the filmstrip layout formula.
@@ -29,118 +29,17 @@ If the user is asking for a presentation, slide deck, pitch deck, or "slides" �
 1. **Ask first (`ask_user`).** Before anything else, call `ask_user` with a short brief form (audience, platform/size preset, the visitor mode for this surface — Persuade / Operate / Read / Experience — tone/style, scope, whether to reuse existing variables/fonts). Use `single`/`multi` chips with a "Decide for me" option so the user can delegate. Wait for the answers, then proceed. Skip this only if the user's message already pins down every one of these, **or if the USER PROFILE memory block (if present in this system prompt) already states a process preference for new-screen work — e.g. "skip ask_user and show a first draft directly."** A saved process preference is a standing instruction from this same user across sessions and overrides this default step; follow it instead of opening the form, and gather any missing specifics after showing the first draft.
 1a. **Commit the world first (before any HTML).**
    - **Pick the visitor mode** for this surface (already gathered in the brief above): Persuade (visitor decides/acts — landing, marketing, pricing), Operate (visitor completes a task — app UI, dashboard, editor, settings), Read (visitor understands — docs, guide), or Experience (visitor is inside the work — portfolio, gallery). Choose it from the surface requested, not the product category.
-   - **Name the visual world and write a one-paragraph direction contract** in the embed's opening HTML comment (`<!-- ... -->`, before the `<style>` block), in four short blocks totalling no more than ~150 words: **THESIS** (the one idea this surface owns and the category-default arrangement it refuses — the refusal must be **structural**: what is arranged where, at what scale, what is shown instead of what. "Refuses the cold / clinical / corporate / data-grid look" is NOT a thesis — it names a temperature, not an arrangement, and its only available answer is the warm-cream-and-terracotta default this skill already rules out below. If your refusal can be satisfied by changing the palette alone, it is not a thesis yet), **OWN-WORLD** (the palette and component language, specific enough to be recognizable with all content removed), **STORY** (what the visitor understands, believes, and does), **FIRST VIEWPORT** (the exact composition — what is where, at what scale, where the primary action sits). For a genuinely open new surface with no established look to inherit, consult the `/new-work` skill before committing.
+   - **Name the visual world and write a one-paragraph direction contract** in the embed's opening HTML comment (`<!-- ... -->`, before the `<style>` block), in four short blocks totalling no more than ~150 words: **THESIS** (the one idea this surface owns and the category-default arrangement it refuses — the refusal must be **structural**: what is arranged where, at what scale, what is shown instead of what. "Refuses the cold / clinical / corporate / data-grid look" is NOT a thesis — it names a temperature, not an arrangement, and its only available answer is the warm-cream-and-terracotta default this skill already rules out below. If your refusal can be satisfied by changing the palette alone, it is not a thesis yet), **OWN-WORLD** (the palette and visual vocabulary, specific enough to be recognizable with all content removed), **STORY** (what the visitor understands, believes, and does), **FIRST VIEWPORT** (the exact composition — what is where, at what scale, where the primary action sits). For a genuinely open new surface with no established look to inherit, consult the `/new-work` skill before committing.
    - **Prove, don't claim.** Show the subject doing its job — the interface at work, the mechanism dramatized, specifics generic enough copy could not fake. Author demonstration content (names, entries, copy, thumbnails) at full production fidelity and label it synthetic where a visitor could mistake it for real; never invent prices, customers, benchmarks, or capabilities that aren't in the brief.
-   - Every other rule in this skill still applies on top of this: embed-only, device presets, no device chrome, component mapping, fixed-viewport sizing, HTML safety.
-2. Call `get_editor_state` — check for existing components and note available variables from canvas context. The response includes:
-   - `reusableComponents` — full HTML of each component (for reference/inspection)
-   - `documentComponents` — compact list with `tag`, `name`, `width`, `height` for each component
-   Remember: components are native `reusable` frames on the canvas, not embed nodes — `reusableComponents`/`documentComponents` just expose their content as HTML so you can reuse it inside the single embed you're generating in this mode. Also note any fonts used in component HTML (look for `font-family` declarations and font `@import` rules) — you will adopt the component's PRIMARY font as the single family for the entire design.
-2b. **Component mapping (CRITICAL):** Before writing ANY HTML, list which `documentComponents` map to elements in your design. For example:
-   - Buttons -> `<c-button-solid>`, `<c-button-outline>`, `<c-button-ghost>`
-   - Text inputs, read-only fields -> `<c-input-with-label>`, `<c-input-default>`
-   - Selects / dropdowns -> `<c-select-with-label>`, `<c-select-default>`
-   - Textareas -> `<c-textarea-with-label>`
-   - Cards -> `<c-card-basic>`, `<c-card-simple>`
-   - Switches -> `<c-switch-active>`, `<c-switch-inactive>`
-   - etc.
-   You MUST use component tags for every UI element that has a matching component.
-   Writing raw HTML that duplicates a component's structure is FORBIDDEN.
+   - Every other rule in this skill still applies on top of this: embed-only, device presets, no device chrome, fixed-viewport sizing, HTML safety.
+2. Call `get_editor_state` — check current canvas context and note available variables. Consistency across screens comes from repeating the same markup/CSS patterns you already established for this design, not from any reuse mechanism.
 3. **Use variables from Canvas Context** — if `variables` are present in canvas context, define them as CSS custom properties in a `<style>:root{...}</style>` block at the top of your `htmlContent`, and reference them via `var(--name)` in styles. Never hardcode colors that have a matching variable.
 4. Call `get_guidelines` with `topic: "design-system"`
 4b. **Search for visual references BEFORE generating anything (required when reference-search tools are available).** Load the `research` skill and use its bounded search flow: run 1–2 focused queries, inspect 3–4 strong screens, and extract the useful structure, composition, typography, color, image treatment, and one distinctive detail from each. Search for the actual surface or interaction, not just the product category or vague mood words. If the dedicated reference tools are unavailable, use `web_search` / `fetch_url` for the same purpose. This is a visual-research step even when all product content is fictional — do not skip it merely because the prototype needs no real-world facts. If no search tool is available or every search call errors, continue without references rather than blocking the task.
 4c. **Generate the imagery AFTER reference research and BEFORE writing HTML (`generate_image`).** List every meaningful image the design needs — hero, cover, product shot, content-card media, gallery tile, background photo, illustration — then call `generate_image` for each with a detailed prompt grounded in the chosen direction and the reference findings (subject, framing, lighting, palette, image treatment, in THIS design's visual world). Issue the calls together so they run in parallel, and drop the returned `url` straight into `<img src="...">` / `background-image: url(...)`. Budget ~8 generations per prototype, most prominent shots first; micro imagery and any failed generation fall back to picsum — see "Images" under Forbidden AI patterns for the exact rule. Skip this step only if the design genuinely has no photographic content.
 5. Call `batch_design` to insert one top-level embed node into `document`
    - Tool args must be `{"operations":"embed=I(document, {...})"}`
-   - **If `documentComponents` is non-empty**, you MUST compose your HTML using document component tags for every matching UI element. Do NOT write raw HTML for buttons, inputs, cards, badges, alerts, or any element that has a corresponding component. Only write raw HTML for layout containers and elements with no matching component.
-   - If no document components exist, compose plain HTML as before.
-
-### Document component tags
-When `get_editor_state` returns `documentComponents`, each entry has a `tag` field (e.g. `"c-user-card"`) and a `slots` array listing available slot names (e.g. `["default", "title", "price"]`). Use these tags in your `htmlContent`:
-- Self-closing: `<c-user-card />` — all slots keep their default content
-- The tag is replaced with the component's full HTML during storage.
-- You can mix component tags with regular HTML.
-- **Do NOT invent `c-*` tags** — only use tags that appear in `documentComponents`.
-- **Do NOT assume any built-in component library exists** — only document components from the current file are available.
-- To inspect a component's actual HTML structure, use `batch_get` with `preferSourceTemplate: true` or check `reusableComponents` in `get_editor_state`.
-
-### Component-first rule (CRITICAL)
-When `documentComponents` is non-empty, you MUST follow this hierarchy:
-1. **Use a component tag** if ANY available component matches the UI element (button, input, badge, card, alert, switch, avatar, stat, tag, etc.)
-2. **Customize via slots** to change text, labels, or content sections
-3. **Use `style` attribute** on the tag for layout adjustments (width, margin, flex, etc.)
-4. **Write raw HTML ONLY** for elements that have NO matching component (layout containers, custom sections, page structure)
-
-**Common trap — form fields:** Any element that displays or collects data in a form — text inputs, selects/dropdowns, textareas, read-only display values, search fields — MUST use a matching `<c-input-*>` or `<c-select-*>` component if one exists. Do NOT build form fields from raw `<div>`, `<input>`, `<select>`, or `<textarea>` tags with inline styles.
-
-FORBIDDEN: Writing raw `<button>`, `<input>`, `<textarea>`, `<select>`, or card/alert/field markup when a matching `<c-*>` component exists. This wastes tokens and breaks design system consistency.
-
-### Component usage examples
-
-**BAD — raw HTML duplicating components (FORBIDDEN when components exist):**
-```html
-<!-- BAD: raw button -->
-<button style='height:40px;padding:0 16px;background:#3182CE;color:white;
-  border:none;border-radius:6px;font-size:14px;font-weight:600'>Save</button>
-<!-- BAD: raw input field built from divs -->
-<div style='display:flex;flex-direction:column;gap:4px'>
-  <label style='font-size:13px;font-weight:600'>Email</label>
-  <input style='height:40px;padding:0 12px;border:1px solid #E2E8F0;border-radius:6px'>
-</div>
-<!-- BAD: raw read-only field / fake input from div -->
-<div style='height:44px;padding:0 14px;border:1px solid #E2E8F0;border-radius:8px;
-  display:flex;align-items:center;font-size:14px'>Margaux Delacroix</div>
-<!-- BAD: raw select/dropdown from div + chevron SVG -->
-<div style='height:44px;padding:0 14px;border:1px solid #E2E8F0;border-radius:8px;
-  display:flex;align-items:center;justify-content:space-between'>
-  <span>English (US)</span>
-  <svg width='16' height='16' viewBox='0 0 24 24'><polyline points='6 9 12 15 18 9'/></svg>
-</div>
-<!-- BAD: raw textarea -->
-<textarea style='width:100%;min-height:100px;padding:12px;border:1px solid #E2E8F0;
-  border-radius:8px'>Some text</textarea>
-```
-
-**GOOD — using component tags with slots:**
-```html
-<c-button-solid style="flex:1">Save Changes</c-button-solid>
-<!-- Input with label -->
-<c-input-with-label><label slot="label">Email</label></c-input-with-label>
-<!-- Read-only / display value — still use the input component -->
-<c-input-with-label><label slot="label">Full Name</label><div slot="input">Margaux Delacroix</div></c-input-with-label>
-<!-- Select/dropdown — use select component -->
-<c-select-with-label><label slot="label">Language</label><div slot="value">English (US)</div></c-select-with-label>
-<!-- Textarea — use textarea component -->
-<c-textarea-with-label><label slot="label">Bio</label></c-textarea-with-label>
-<!-- Card with slots -->
-<c-card-basic>
-  <h3 slot="title">Settings</h3>
-  <div slot="body">Content here</div>
-</c-card-basic>
-<c-alert-info>
-  <div slot="title">Note</div>
-  <div slot="description">Your changes were saved.</div>
-</c-alert-info>
-```
-
-### Slots — customizing component instances
-Components can define `<slot>` elements (listed in the `slots` array). Use slots to pass custom content into component instances:
-
-| Pattern | Behavior |
-|---------|----------|
-| `<c-button />` | All slots keep defaults |
-| `<c-button>Add to Cart</c-button>` | Inner text replaces the **default** slot |
-| `<c-card><div slot="title">iPhone 15</div><div slot="price">$999</div></c-card>` | Named slots replaced, others keep defaults |
-| `<c-card hide="price,rating">` | Named slots "price" and "rating" removed entirely |
-| `<div slot="price"></div>` | Empty element hides the slot content |
-| `<c-button style="width:200px">Buy</c-button>` | `style` merged into expanded root element + default slot replaced |
-
-**Rules:**
-- Only use slot names listed in the component's `slots` array.
-- Top-level elements with `slot="name"` inside a paired tag go to that named slot; everything else goes to the default slot.
-- If a component has no slots (`slots: []`), use it self-closing or empty — inner content is ignored.
-- The `hide` attribute accepts a comma-separated list of slot names to remove entirely.
-- A `style` attribute on the custom tag is merged into the root element of the expanded component (useful for layout: width, margin, etc.).
+   - Compose plain, self-contained HTML/CSS.
 
 ### Recommended (not required)
 - Variables are provided in canvas context automatically. Use them as CSS custom properties: `var(--name)`. Call `get_variables` only if you need to refresh values.
@@ -149,10 +48,9 @@ Components can define `<slot>` elements (listed in the `slots` array). Use slots
 ### Embed insertion requirements
 - Insert exactly one embed node for a single-screen request. For a multi-screen request, insert one embed per screen (see "Multiple screens requested" above) — never merge multiple screens' markup into one embed's `htmlContent`.
 - **Always set a descriptive `name`** that reflects the content (e.g. "Dashboard", "Pricing Page", "Login Form").
-- If the user asks to create a reusable component (not just a one-off prototype embed), that's a canvas-native `frame` with `reusable: true` — this is a different concept from the single embed this mode inserts; switch to `edits` mode's component workflow instead (`reusable`/`ref`/`properties`, see the "Components" section above), rather than setting anything on the embed.
 - Use operation shape like:
 `embed=I(document, {type: "embed", name: "<descriptive name>", x: <x>, y: <y>, width: <w>, height: <h>, htmlContent: "<html...>"})`
-- The `htmlContent` must be complete static HTML/CSS markup for the user's request (or use document component tags for reusable parts).
+- The `htmlContent` must be complete static HTML/CSS markup for the user's request.
 - **CRITICAL:** The `htmlContent` value MUST be a single continuous string. Do NOT use string concatenation (`+`) to build it. Write the entire HTML as one unbroken string literal.
 - Write the markup directly into the `batch_design` call — do not draft or repeat the HTML in your reasoning first.
 
@@ -196,7 +94,6 @@ Apply these global dials to every design decision:
 
 ### Typography rules
 - **ONE font family per design (default):** Pick a SINGLE Google Font family, build hierarchy with **weight, size, and color** — not extra families, and do NOT mix multiple typefaces by default. A second family is the exception: add one ONLY when the user explicitly asks, or when the content is literally code/terminal output (then `'JetBrains Mono', ui-monospace, monospace` for that code only). The Phosphor icon font (see Icon rules) does NOT count toward this one-family limit.
-- **Component font inheritance (highest priority):** If existing component embeds on the canvas use a specific font (detected in the `get_editor_state` step from their `font-family` declarations or font `@import` rules), you MUST adopt that font as the single family for the entire design. This overrides your own pick below.
 - **Load fonts via `@import`, NOT `<link>`:** `<link>` tags are stripped on the canvas and never load. Every external font/stylesheet (main family, icon font, optional mono) MUST be loaded via `@import` at the TOP of your first `<style>` block. Do NOT reference fonts that are not available on Google Fonts.
   - Example: `<style>@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap');  /* ...rest of your CSS... */ </style>`
 - **Good single-family choices (all on Google Fonts — pick ONE):** `Outfit`, `Plus Jakarta Sans`, `Sora`, `DM Sans`, `Space Grotesk`, `Manrope`, `Rubik`, `Urbanist`, `Nunito Sans`, `Work Sans`. For editorial/creative designs a serif family such as `Playfair Display`, `Fraunces`, or `Lora` may be the single family.
@@ -387,12 +284,11 @@ Do not default to generic UI. Pull from these patterns for visually striking lay
 
 ### Pre-flight checklist (verify before outputting HTML)
 Before generating the final htmlContent, verify every point:
-1. **COMPONENT CHECK (BLOCKER):** For every `<button>`, `<input>`, `<textarea>`, `<select>`, dropdown, read-only display field, card, badge, alert, avatar, tag, switch, and stat in your HTML — is there a matching `<c-*>` component? This includes div-based fake inputs and div+SVG dropdowns. If yes and you used raw HTML instead, STOP and rewrite using the component tag. Did you use slots to customize content? Did you avoid inventing tags not listed in `documentComponents`?
-1c. **EMBED-ONLY CHECK (BLOCKER):** Does every `batch_design` op create only `type: "embed"` nodes (no native frame/rect/text)? If any op creates a native node, STOP and rewrite as embed HTML.
+1. **EMBED-ONLY CHECK (BLOCKER):** Does every `batch_design` op create only `type: "embed"` nodes (no native frame/rect/text)? If any op creates a native node, STOP and rewrite as embed HTML.
 1e. **FITS-THE-WIDTH CHECK (BLOCKER):** Add up the widths of every fixed-size row you emit — seat maps, calendar/keypad grids, chip rows, stat rows, tables — including gaps, padding and borders, and compare against the screen width. `10 seats x 30px + 9 gaps x 8px + a 24px row label + 16px padding each side` is 428px, which does NOT fit a 390px screen: the edge column and the row label get clipped, because the screen is `overflow: hidden` and there is no scrollbar in a static mockup. Fix it in the design — fewer columns, smaller cells, tighter gaps — never by letting it spill. The ONLY content allowed to exceed the screen width is a deliberate horizontal carousel whose cut-off card at the edge signals "scroll me"; everything else must fit within the screen's own width.
 1d. **PINNED-BAR CHECK:** For every bar pinned to an edge (bottom tab bar, sticky header, floating CTA) — does the content container carry `padding-bottom`/`padding-top` of at least that bar's full height? If it's 0, the last row of content is sitting under an opaque bar. Fix it before emitting.
 2. Is the layout asymmetric / non-centered (DESIGN_VARIANCE = 8)?
-3. Is the design built on **ONE** Google Font family (no Serif in dashboards), loaded via `@import` at the top of the first `<style>` block? The Phosphor icon font is exempt; a second text family appears ONLY on explicit user request or for literal code. If components use a custom font, is that single font used instead of your pick?
+3. Is the design built on **ONE** Google Font family (no Serif in dashboards), loaded via `@import` at the top of the first `<style>` block? The Phosphor icon font is exempt; a second text family appears ONLY on explicit user request or for literal code.
 4. Is there exactly 0–1 accent colors, saturation < 80%, no purple?
 4a. **WARM-CLUSTER CHECK (BLOCKER):** State the accent's hue in degrees and the ground's hue in degrees, read off your own hex values — do not eyeball it. If the ground is warm (hue 10–60° with any perceptible saturation — this includes `#faf9f6`, `#fef9f0`, `#2d2a26` and `#1a1410`) **and** the accent's hue is 8–55° (terracotta / rust / amber / burnt orange), you have landed on the warm axis in Calibration. Unless the user's brief asked for warmth in its own words, STOP and re-pick the ground and accent before emitting. Being dark rather than cream, or sans rather than serif, does not exempt the design.
 4b. **DIRECTION-CONTRACT CHECK:** Does the HTML open with the `<!-- THESIS / OWN-WORLD / STORY / FIRST VIEWPORT -->` comment from step 1a, before the `<style>` block? Is the THESIS refusal structural rather than a temperature ("refuses cold/clinical/data-grid" fails)? If either is missing, write it first — it is what the checks above are calibrated against.
