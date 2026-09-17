@@ -33,7 +33,7 @@ If the user is asking for a presentation, slide deck, pitch deck, or "slides" �
    - **Prove, don't claim.** Show the subject doing its job — the interface at work, the mechanism dramatized, specifics generic enough copy could not fake. Author demonstration content (names, entries, copy, thumbnails) at full production fidelity and label it synthetic where a visitor could mistake it for real; never invent prices, customers, benchmarks, or capabilities that aren't in the brief.
    - Every other rule in this skill still applies on top of this: embed-only, device presets, no device chrome, fixed-viewport sizing, HTML safety.
 2. Call `get_editor_state` — check current canvas context and note available variables. Consistency across screens comes from repeating the same markup/CSS patterns you already established for this design, not from any reuse mechanism.
-3. **Use variables from Canvas Context** — if `variables` are present in canvas context, define them as CSS custom properties in a `<style>:root{...}</style>` block at the top of your `htmlContent`, and reference them via `var(--name)` in styles. Never hardcode colors that have a matching variable.
+3. **Use variables from Canvas Context** — if `variables` are present in canvas context, declare them as a `<style>:root{...}</style>` fallback block at the top of your `htmlContent`, but reference every matching value via `var(--name)` at the point of use, never the literal. The editor injects the live variable values into the embed and keeps them updated when the user edits a variable — that injection overrides your `:root` fallback, so `var(--name)` is what stays live; a hardcoded literal never updates. Never hardcode a color/value that has a matching variable. Use each variable's `cssName` for `--name` — not its `name`, which is a free-form label that may contain spaces/capitals and isn't valid CSS.
 4. Call `get_guidelines` with `topic: "design-system"`
 4b. **Search for visual references BEFORE generating anything (required when reference-search tools are available).** Load the `research` skill and use its bounded search flow: run 1–2 focused queries, inspect 3–4 strong screens, and extract the useful structure, composition, typography, color, image treatment, and one distinctive detail from each. Search for the actual surface or interaction, not just the product category or vague mood words. If the dedicated reference tools are unavailable, use `web_search` / `fetch_url` for the same purpose. This is a visual-research step even when all product content is fictional — do not skip it merely because the prototype needs no real-world facts. If no search tool is available or every search call errors, continue without references rather than blocking the task.
 4c. **Generate the imagery AFTER reference research and BEFORE writing HTML (`generate_image`).** List every meaningful image the design needs — hero, cover, product shot, content-card media, gallery tile, background photo, illustration — then call `generate_image` for each with a detailed prompt grounded in the chosen direction and the reference findings (subject, framing, lighting, palette, image treatment, in THIS design's visual world). Issue the calls together so they run in parallel, and drop the returned `url` straight into `<img src="...">` / `background-image: url(...)`. Budget ~8 generations per prototype, most prominent shots first; micro imagery and any failed generation fall back to picsum — see "Images" under Forbidden AI patterns for the exact rule. Skip this step only if the design genuinely has no photographic content.
@@ -42,7 +42,7 @@ If the user is asking for a presentation, slide deck, pitch deck, or "slides" �
    - Compose plain, self-contained HTML/CSS.
 
 ### Recommended (not required)
-- Variables are provided in canvas context automatically. Use them as CSS custom properties: `var(--name)`. Call `get_variables` only if you need to refresh values.
+- Variables are provided in canvas context automatically. Use them as CSS custom properties: `var(--name)` — this is CSS syntax for embed HTML, not the `$--name` syntax used in `batch_design` for native-node properties. Call `get_variables` only if you need to refresh values.
 - To place a NEW top-level embed without overlapping existing content, call `find_empty_space_on_canvas` with the embed's width/height, then set the returned x/y as the `x` and `y` in your `I(document, {...})`. Do NOT invent coordinates when the tool has given you a position — only fall back to your own placement if the call errors or is unavailable. On a known-empty canvas you may place at (0, 0) directly.
 
 ### Embed insertion requirements
@@ -130,7 +130,7 @@ Apply these global dials to every design decision:
 - **A warm-neutral ground is earned, never the default.** Cream / sand / beige / warm-taupe grounds, and warm-dark brown grounds (a ground whose hue sits in the 10–60° band with any perceptible saturation), are legitimate ONLY when the brief asks for warmth in its own words or the committed world genuinely requires that material. Where the brief leaves the temperature free, the ground is neutral-cool (zinc/slate) and the accent is anything but the orange–amber–terracotta band. "The subject is cosy / human / caring / calming" does not earn it — see Calibration below.
 - Shadows must be tinted toward the background hue, not pure black. Example: `box-shadow: 0 4px 24px -4px rgba(15,23,42,0.08);`
 - Ensure WCAG AA contrast: body text ≥ 4.5:1, large text / headings ≥ 3:1 against their backgrounds.
-- **Variable priority:** If design variables exist in canvas context, ALWAYS use them as CSS custom properties (`var(--name, fallback)`) instead of hardcoding hex values.
+- **Variable priority:** If design variables exist in canvas context, ALWAYS reference them via `var(--name)` at the point of use instead of hardcoding hex values — the editor injects and live-updates the value, so the literal is never correct once a matching variable exists.
 
 
 ### Layout rules (DESIGN_VARIANCE = 8)
@@ -302,7 +302,7 @@ Before generating the final htmlContent, verify every point:
 12. Is there NO device/OS chrome (per Device size presets) unless the user asked?
 13. Is the HTML self-contained, complete, and renderable standalone?
 14. If reference images were provided, is their style influence visible in the output (palette, typography, layout feel)?
-15. If variables were provided in canvas context, are they defined in a `:root {}` block and referenced via `var()` throughout the HTML?
+15. If variables were provided in canvas context, are they referenced via `var(--name)` at every point of use (never a hardcoded literal), with a matching `:root {}` block declared as the standalone/export fallback only?
 16. **FIT-TO-CANVAS CHECK (BLOCKER):** Does the content fit exactly within the embed's declared `width`×`height` — no horizontal scroll, no bottom cutoff? Is `box-sizing: border-box` set at the top of the `<style>` block, and is `overflow: hidden` set on the root/body? Does ANY element — not just root/body — set `overflow-y: auto`, `overflow: scroll`, or `overflow-x: auto`? If so, STOP: that is a scrollbar and a right-side offset, not a fit. Cut the content instead.
 17. **FORM-CONTROL CHECK:** Does every `<button>`, `<input>`, `<select>` and `<textarea>` in the HTML get its font, color, background and border from YOUR CSS? A control left on the browser's defaults ships with a system bevel and an Arial label. If the reset line from "CSS mechanics" is missing, add it.
 
@@ -311,3 +311,6 @@ Before generating the final htmlContent, verify every point:
 Use `read_embed_html` (mode `grep`) to get the exact fragment, then `edit_embed_html` to replace it.
 Rewriting the whole `htmlContent` through `batch_design` is reserved for replacing a screen with a
 different concept — never for a tweak.
+
+When the edit changes a color (or other value) that has a matching variable, write `var(--name)`, not
+a hex literal — same rule as at creation time.

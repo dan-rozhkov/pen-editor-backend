@@ -52,7 +52,7 @@ You are building a presentation DECK: a sequence of slides, each its own top-lev
 - **Max one accent color** for the whole deck, saturation < 80%, no neon/AI-purple. Neutral base (Zinc or Slate), off-black text (never pure `#000000`).
 - **No JavaScript, no `<script>`, no inline event handlers, no CSS `transition`/`animation`/`@keyframes`/`filter`/`backdrop-filter`.**
 - **Content realism:** creative real-sounding names/brands/numbers per `prototype`'s anti-slop rules — no "Jane Doe", no "Acme", no suspiciously round numbers.
-- **Use canvas variables** (`var(--name)`) for any value that has a matching variable in canvas context, same priority as `prototype`.
+- **Use canvas variables** (`var(--name)`) for any value that has a matching variable in canvas context, same priority as `prototype` — the editor injects and live-updates these into the embed, overriding any `:root` fallback you declare, so reference via `var(--name)` and never inline the literal. Use the variable's `cssName`, not its human-readable `name`, as `--name`.
 
 ### Pre-flight checklist (verify before calling batch_design)
 1. Is every slide its OWN embed (never multiple slides in one `htmlContent`)?
@@ -72,3 +72,6 @@ You are building a presentation DECK: a sequence of slides, each its own top-lev
 Use `read_embed_html` (mode `grep`) to get the exact fragment, then `edit_embed_html` to replace it.
 Rewriting the whole `htmlContent` through `batch_design` is reserved for replacing a screen with a
 different concept — never for a tweak.
+
+When the edit changes a color (or other value) that has a matching variable, write `var(--name)`, not
+a hex literal — same rule as at creation time.
