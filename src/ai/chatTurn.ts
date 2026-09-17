@@ -32,6 +32,8 @@ import { getSelfSkillTools } from "./skills/tool.js";
 import type { TraceQueryable } from "../tracing/traceStore.js";
 import { getUserSkillCatalog } from "./skills/userSkillCatalog.js";
 import type { UserSkill, UserSkillStore } from "./skills/userStore.js";
+import { createSystemOne, type SystemOneClient } from "../services/systemone.js";
+import { routeSkill } from "./skillRouting.js";
 
 // Bounds the memory-snapshot read on top of (not instead of) the pool's own
 // connectionTimeoutMillis (src/tracing/traceStore.ts): that setting only
@@ -163,6 +165,16 @@ export interface PrepareChatTurnInput {
    * flag: presence of BOTH a store AND input.userId is what gates it.
    */
   userSkillStore?: UserSkillStore | null;
+  /**
+   * Jev client for skillRouting.ts's auto-pick. Undefined → falls back to
+   * createSystemOne(config) (null when TYPESAFE_API_KEY is unset, which is
+   * also how the route is skipped entirely in production without the key).
+   * Threaded through here — rather than constructed unconditionally inside
+   * this function — so tests can inject a fake client without a network
+   * stub, mirroring how memoryStore/learnedSkillStore/userSkillStore are
+   * wired above.
+   */
+  systemOneClient?: SystemOneClient | null;
 }
 
 export interface PreparedChatTurn {
@@ -213,6 +225,23 @@ export async function prepareChatTurn(
   // "/prototype ..."), regardless of whether it resolved to a known skill —
   // used by resolveTaskPolicy below to route batch_design's embed-only guard.
   let slashSkillName: string | undefined;
+  // Captured here (rather than re-extracted later) so the Jev auto-pick
+  // below can see the same last-user-message text this block worked with.
+  // When a slash command was detected, this is ALWAYS the stripped text
+  // (detected.userText) regardless of whether the token resolved to a
+  // known skill — a pasted path ("/Users/me/shot.png make this bigger") or
+  // an unrecognized "/word" still has a slash-shaped token at the front
+  // that Jev has no business routing on. When it resolved to a curated or
+  // enabled user skill, skillContent is already set and the auto-pick is
+  // skipped anyway; when it named a real-but-DISABLED user skill,
+  // skipAutoPick below suppresses the auto-pick entirely instead.
+  let lastUserText: string | undefined;
+  // Set when the slash command named a real user skill the owner has
+  // disabled. That skill is deliberately unresolvable here (mirrors
+  // load_skill's own enabled check) — letting Jev auto-pick a DIFFERENT
+  // curated skill for this message would be a back door around that
+  // deliberate choice, so no auto-pick happens at all in this case.
+  let skipAutoPick = false;
   const lastMsg = messages[messages.length - 1];
   if (lastMsg && lastMsg.role === "user") {
     const parts = lastMsg.parts ?? lastMsg.content;
@@ -240,10 +269,16 @@ export async function prepareChatTurn(
       };
     }
 
+    lastUserText = rawText;
+
     if (rawText && setText) {
       const detected = detectSkillCommand(rawText);
       if (detected) {
         slashSkillName = detected.skillName;
+        // Route Jev on the stripped text unconditionally from here on — see
+        // the doc comment on `lastUserText` above for why this must happen
+        // even when the token doesn't resolve to anything.
+        lastUserText = detected.userText;
         const skill = getSkill(detected.skillName);
         // Unknown "/..." (a pasted path, "/как дела") is not an error —
         // the message passes through as plain text.
@@ -281,8 +316,94 @@ export async function prepareChatTurn(
               USER_SKILLS_TIMEOUT_MS,
               "[userskills] slash-command bumpUse",
             ).catch(() => undefined);
+          } else if (userSkill) {
+            // A real user skill that exists but is disabled — see
+            // skipAutoPick's doc comment above.
+            skipAutoPick = true;
           }
         }
+      }
+    }
+  }
+
+  // Jev auto-pick: when no slash command already resolved a skill, ask Jev
+  // whether the message matches one of the curated skills up front, instead
+  // of spending a whole extra round trip on the model reading the catalog,
+  // emitting a load_skill call, and getting the result back. An explicit
+  // slash command always wins — this never overrides it, and is skipped
+  // entirely rather than called when it can't matter, so it costs nothing
+  // on the vast majority of turns that don't touch it.
+  //
+  // Candidates are curated skills ONLY (getAllSkills()) — deliberately not
+  // widened to user/learned skills, which need their own Postgres reads
+  // (further down, already guarded by their own timeouts) and whose
+  // inclusion here is a separate decision to make later.
+  if (config.SKILL_ROUTING_MODE !== "off" && !skillContent && !skipAutoPick && lastUserText) {
+    const systemOne = input.systemOneClient !== undefined
+      ? input.systemOneClient
+      : createSystemOne(config);
+    if (systemOne) {
+      const routeArgs = {
+        messageText: lastUserText,
+        candidates: getAllSkills().map((s) => ({ name: s.name, description: s.description })),
+        threshold: config.SKILL_ROUTING_MIN_CONFIDENCE,
+      };
+      const logPick = (verdict: Awaited<ReturnType<typeof routeSkill>>, mode: "shadow" | "enforce") => {
+        if (!verdict.skill) return;
+        const picked = getSkill(verdict.skill);
+        if (!picked) {
+          // Previously dropped silently — a pick whose name fails to
+          // resolve via getSkill is exactly the kind of drift shadow mode
+          // exists to surface, so it must be logged too, not just a
+          // resolvable pick.
+          console.log(
+            `[skillRouting] ${mode} pick: "${verdict.skill}" does not resolve via getSkill ` +
+              `(confidence ${verdict.confidence.toFixed(2)}, model ${verdict.model})`,
+          );
+          return;
+        }
+        console.log(
+          `[skillRouting] ${mode} pick: would have injected "${verdict.skill}" ` +
+            `(confidence ${verdict.confidence.toFixed(2)}, model ${verdict.model})`,
+        );
+        return picked;
+      };
+
+      if (config.SKILL_ROUTING_MODE === "enforce") {
+        // Only enforce needs the answer to act on, so only enforce may pay
+        // for it — this await is the one legitimate cost on the request
+        // path.
+        const verdict = await routeSkill(systemOne, routeArgs);
+        const picked = logPick(verdict, "enforce");
+        if (picked) {
+          skillContent = picked.content;
+          // Without this, resolveTaskPolicy (taskPolicy.ts) never learns
+          // this turn picked "prototype"/"slides" — it only trusts an
+          // explicit slash command or a load_skill call already in
+          // history, neither of which this synthetic lookup_skill
+          // injection satisfies (different tool name, empty input). That
+          // left taskPolicy at "native" while the model was told it's in
+          // prototype/slides mode, defeating the FIR-45 embed-only guard:
+          // the model would get the native batch_design instead of the
+          // embed-only variant. Setting this makes an enforced pick
+          // resolve exactly like the equivalent explicit slash command.
+          slashSkillName = verdict.skill ?? undefined;
+        }
+      } else {
+        // shadow: this mode by definition changes nothing, so it must not
+        // cost the user anything either — fire the call WITHOUT awaiting it
+        // so measurement adds zero latency to time-to-first-token, and log
+        // once it resolves (unconditionally, matching triage.ts's shadow
+        // tally — not gated behind ENABLE_AGENT_LOGGING, which is off by
+        // default and would make the "measure before trusting enforce"
+        // story unmeasurable). routeSkill is already fail-open (never
+        // rejects), but attach .catch regardless so a future change there
+        // can never turn this into an unhandled rejection.
+        void routeSkill(systemOne, routeArgs)
+          .then((verdict) => logPick(verdict, "shadow"))
+          .catch((err) => {
+            console.warn("[skillRouting] shadow pick failed unexpectedly:", err);
+          });
       }
     }
   }

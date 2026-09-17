@@ -15,6 +15,8 @@ import { scrubPii } from "./pii.js";
 import { extractInsights, type SessionInsights } from "./insights.js";
 import { bucketAtoms, extractScenarios, type InsightRowForScenarios } from "./scenarios.js";
 import { upsertScenario } from "./scenarioStore.js";
+import { createSystemOne } from "../services/systemone.js";
+import { triageSession, TRIAGE_MAX_CHARS, type TriageVerdict } from "./triage.js";
 
 // Must match migrations/001_init.sql's `embedding vector(768)` column and the
 // text-embedding-004 model's output dimension (see embeddings.ts).
@@ -110,6 +112,25 @@ export async function buildInsightsForSession(
   return extractInsights(model, renderSessionText(assembleSession(rows)));
 }
 
+// All four insight arrays empty. Used by shadow-mode tallying (an "empty"
+// extraction is what a correct triage "skip" verdict predicts) and by the
+// enforce path's synthetic skip row.
+export function isEmptyInsights(insights: SessionInsights): boolean {
+  return (
+    insights.errors.length === 0 &&
+    insights.corrections.length === 0 &&
+    insights.memory_requests.length === 0 &&
+    insights.agent_claims.length === 0
+  );
+}
+
+const EMPTY_INSIGHTS: SessionInsights = {
+  errors: [],
+  corrections: [],
+  memory_requests: [],
+  agent_claims: [],
+};
+
 // Positional bind values for the session_insights INSERT, matching the column
 // order (session_id, errors, corrections, memory_requests, agent_claims, model).
 // The four insight arrays are serialized to jsonb strings.
@@ -149,6 +170,15 @@ async function main(): Promise<void> {
     if (applied.length) console.log(`[analyze] applied migrations: ${applied.join(", ")}`);
     const model = createModel(config, config.ANALYSIS_MODEL);
     const embedder = createEmbedder(config);
+    const systemOne = createSystemOne(config);
+    const triageActive = config.TRIAGE_MODE !== "off" && systemOne !== null;
+    if (config.TRIAGE_MODE === "off") {
+      console.log("[analyze] triage: off (TRIAGE_MODE=off)");
+    } else if (!systemOne) {
+      console.log("[analyze] triage: off (TYPESAFE_API_KEY unset)");
+    } else {
+      console.log(`[analyze] triage: ${config.TRIAGE_MODE} mode, threshold ${config.TRIAGE_THRESHOLD}`);
+    }
 
     // 1. Summarize completed, not-yet-summarized sessions (quiet for 30+ min).
     const { rows: pending } = await pool.query<{ session_id: string }>(
@@ -232,17 +262,69 @@ async function main(): Promise<void> {
     );
     console.log(`[analyze] ${needInsights.length} session(s) to extract insights from`);
     let failedInsights = 0;
+    // Shadow-mode tally: how well would triage's verdict have predicted
+    // whether extraction actually came back empty. "FALSE SKIPS" — a verdict
+    // of "skip" for a session whose real extraction was non-empty — is the
+    // dangerous cell: in enforce mode that session's insights are lost.
+    let triageJudged = 0;
+    let triageWouldSkip = 0;
+    let triageWouldSkipTrulyEmpty = 0;
+    let triageFalseSkips = 0;
+    let triageWouldExtract = 0;
+    let triageWouldExtractNonEmpty = 0;
+    let triageEnforcedSkips = 0;
     for (const { session_id } of needInsights) {
       try {
         const { rows } = await pool.query<RawTraceDbRow>(
           "SELECT * FROM raw_traces WHERE session_id = $1 ORDER BY created_at",
           [session_id],
         );
+        if (rows.length === 0) {
+          console.log(`[analyze] ${session_id}: raw traces expired, skipping insights`);
+          continue;
+        }
+
+        let verdict: TriageVerdict | null = null;
+        if (triageActive && systemOne) {
+          const triageText = renderSessionText(assembleSession(rows), TRIAGE_MAX_CHARS);
+          verdict = await triageSession(systemOne, triageText, config.TRIAGE_THRESHOLD);
+          console.log(
+            `[analyze] ${session_id}: triage ${verdict.decision} (max ${verdict.max.toFixed(2)}, model ${verdict.model ?? "n/a"}, reason ${verdict.reason})`,
+          );
+        }
+
+        if (config.TRIAGE_MODE === "enforce" && verdict?.decision === "skip") {
+          triageEnforcedSkips += 1;
+          await pool.query(
+            `INSERT INTO session_insights
+               (session_id, errors, corrections, memory_requests, agent_claims, model)
+             VALUES ($1,$2::jsonb,$3::jsonb,$4::jsonb,$5::jsonb,$6)
+             ON CONFLICT (session_id) DO NOTHING`,
+            insightInsertValues(session_id, EMPTY_INSIGHTS, verdict.model ?? "triage-skip"),
+          );
+          console.log(`[analyze] ${session_id}: skipped extraction (triage enforce)`);
+          continue;
+        }
+
         const insights = await buildInsightsForSession(model, rows);
         if (insights === null) {
           console.log(`[analyze] ${session_id}: raw traces expired, skipping insights`);
           continue;
         }
+
+        if (config.TRIAGE_MODE === "shadow" && verdict) {
+          triageJudged += 1;
+          const empty = isEmptyInsights(insights);
+          if (verdict.decision === "skip") {
+            triageWouldSkip += 1;
+            if (empty) triageWouldSkipTrulyEmpty += 1;
+            else triageFalseSkips += 1;
+          } else {
+            triageWouldExtract += 1;
+            if (!empty) triageWouldExtractNonEmpty += 1;
+          }
+        }
+
         await pool.query(
           `INSERT INTO session_insights
              (session_id, errors, corrections, memory_requests, agent_claims, model)
@@ -261,6 +343,16 @@ async function main(): Promise<void> {
     }
     if (failedInsights > 0) {
       console.log(`[analyze] ${failedInsights} session(s) failed insight extraction`);
+    }
+    if (config.TRIAGE_MODE === "shadow" && triageJudged > 0) {
+      console.log(
+        `[analyze] triage shadow: ${triageJudged} judged | would-skip ${triageWouldSkip} (${triageWouldSkipTrulyEmpty} truly empty, ${triageFalseSkips} FALSE SKIPS) | would-extract ${triageWouldExtract} (${triageWouldExtractNonEmpty} non-empty)`,
+      );
+    }
+    if (config.TRIAGE_MODE === "enforce" && triageEnforcedSkips > 0) {
+      console.log(
+        `[analyze] triage enforce: skipped extraction for ${triageEnforcedSkips} session(s), saving ${triageEnforcedSkips} extractInsights call(s)`,
+      );
     }
 
     // 1c. Build the L2 scenario layer from the L1 atoms of the window. One
