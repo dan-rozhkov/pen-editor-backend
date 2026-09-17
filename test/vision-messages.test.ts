@@ -206,6 +206,80 @@ describe("applyVisionPreprocessing", () => {
     expect(JSON.stringify(result)).not.toContain("image-data");
   });
 
+  it("replaces a tool-result image from a tool OTHER than get_screenshot", async () => {
+    // Regression test for the bug this module's own INVARIANT comment warns
+    // about: the tool-result scan used to hardcode `toolName === "get_screenshot"`,
+    // so an image from any other tool — every MCP tool included, since
+    // @ai-sdk/mcp's mcpToModelOutput promotes an MCP image content part into
+    // this exact `image-data` shape for every tool the client returns —
+    // sailed straight past this pass untouched.
+    vi.mocked(describeImage).mockResolvedValue({ ok: true, text: "A pricing screen from Refero." });
+    const config = makeConfig();
+    const messages: ModelMessage[] = [
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "call-mcp-1",
+            toolName: "refero_get_screen_image",
+            output: {
+              type: "content",
+              value: [{ type: "image-data", data: "AAAA", mediaType: "image/jpeg" }],
+            },
+          },
+        ],
+      },
+    ];
+
+    const result = await applyVisionPreprocessing(messages, { config, modelId: BLIND_MODEL });
+
+    const part = (result[0] as { content: { output: { type: string; value: string } }[] })
+      .content[0];
+    expect(part.output).toEqual({
+      type: "text",
+      value: expect.stringContaining("A pricing screen from Refero."),
+    });
+    // Labeled "Image" rather than "Screenshot" (that label is reserved for
+    // get_screenshot specifically), and no raw bytes survive either way.
+    expect(part.output.value).toContain("[Image: visual description]");
+    expect(JSON.stringify(result)).not.toContain("image-data");
+    expect(JSON.stringify(result)).not.toContain("AAAA");
+  });
+
+  it("leaves a non-get_screenshot tool result whose TEXT merely embeds a data: URL completely untouched", async () => {
+    // Regression test for finding 1: extractToolResultImageDataUrl's LOOSE
+    // fallback (parseScreenshotDataUrl -> fromDataUrl -> an UNANCHORED regex
+    // matching `data:image/...;base64,...` anywhere in the string) must stay
+    // gated to get_screenshot specifically. read_embed_html (and any other
+    // string-returning tool) commonly returns HTML that merely CONTAINS one
+    // inline data: URL icon — widening the loose fallback to every tool
+    // would replace that tool's entire output with an image caption, losing
+    // the markup the model needs to edit.
+    const html =
+      '<html><body><img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciLz4=" />' +
+      "<p>the rest of the document the model must still see</p></body></html>";
+    const config = makeConfig();
+    const messages: ModelMessage[] = [
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "call-embed-1",
+            toolName: "read_embed_html",
+            output: { type: "text", value: html },
+          },
+        ],
+      },
+    ];
+
+    const result = await applyVisionPreprocessing(messages, { config, modelId: BLIND_MODEL });
+
+    expect(result).toEqual(messages);
+    expect(describeImage).not.toHaveBeenCalled();
+  });
+
   it("leaves a get_screenshot error result (no imageData) untouched", async () => {
     const config = makeConfig();
     const messages: ModelMessage[] = [

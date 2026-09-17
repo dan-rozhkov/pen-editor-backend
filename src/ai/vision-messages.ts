@@ -134,15 +134,39 @@ function toImageString(data: unknown, mediaType: string | undefined): string | n
   return null;
 }
 
-// By the time this pass runs, a get_screenshot result has already been through
-// the tool's own `toModelOutput` (src/ai/tools.ts), which promotes the
-// handler's `JSON.stringify({ imageData })` into a real image part so a
-// vision-capable model actually sees the picture. So the shape here is usually
-// `{type:"content", value:[{type:"image-data", data, mediaType}]}` — and that
-// part is exactly what must NOT survive for a vision-less model. The
-// text/json/object shapes are still handled, since toModelOutput passes an
-// error result through untouched and older histories may predate it.
-function extractScreenshotDataUrl(output: ToolResultPart["output"]): string | null {
+// By the time this pass runs, an image-bearing tool result has already been
+// through that tool's own `toModelOutput`, which promotes a raw image
+// payload into a real image part so a vision-capable model actually sees
+// the picture. For get_screenshot that's src/ai/tools.ts's own
+// `toModelOutput`, promoting the handler's `JSON.stringify({ imageData })`.
+// For every MCP tool (Refero included) it's `mcpToModelOutput`
+// (@ai-sdk/mcp), which promotes an MCP `{type:"image", data, mimeType}`
+// content part into exactly the same `image-data` shape — confirmed by
+// reading node_modules/@ai-sdk/mcp/dist/index.js's mcpToModelOutput, which
+// is wired onto every tool the client returns, not only the ones this repo
+// hand-wraps. So regardless of which tool produced it, the shape here is
+// usually `{type:"content", value:[{type:"image-data", data, mediaType}]}`
+// — and that part is exactly what must NOT survive for a vision-less model
+// or a provider that can't carry a tool-result image. The text/json/object
+// shapes are still handled, since toModelOutput passes an error result
+// through untouched and older histories may predate it.
+//
+// Belt-and-suspenders with src/ai/mcp.ts's sanitizeMcpToolResult, which
+// already strips MCP image content at the SOURCE (before it ever becomes a
+// ToolResultPart) — this function is the backstop for any image that gets
+// here anyway: a tool this module doesn't know is MCP-backed, a future
+// client-executed tool that returns image bytes, or a sanitizer bug. The
+// INVARIANT on applyVisionPreprocessing above is what this backstop exists
+// to hold even when the primary defense has a gap.
+function extractToolResultImageDataUrl(
+  output: ToolResultPart["output"],
+  toolName: string,
+): string | null {
+  // STRUCTURED path: `output.type === "content"` with an image-shaped part.
+  // Safe to widen to any tool — see collectImageSlots' comment — because
+  // this shape only ever arrives via a real toModelOutput promotion (either
+  // get_screenshot's own, or @ai-sdk/mcp's mcpToModelOutput for every MCP
+  // tool), never by a plain tool just happening to embed base64 in its text.
   if (output.type === "content") {
     for (const part of output.value) {
       if (part.type === "image-data" || part.type === "file-data" || part.type === "media") {
@@ -152,6 +176,22 @@ function extractScreenshotDataUrl(output: ToolResultPart["output"]): string | nu
     }
     return null;
   }
+  // LOOSE fallback: a plain string/text output run through
+  // parseScreenshotDataUrl(), which for a bare string ends in fromDataUrl()
+  // — an UNANCHORED regex that matches `data:image/...;base64,...` ANYWHERE
+  // inside the text. Every client-executed tool returning a string arrives
+  // in exactly this `{type:"text", value:"<whole string>"}` shape, so
+  // widening this branch to any tool (not just get_screenshot) would let
+  // read_embed_html/read_repo_files/read_design_repo's ENTIRE HTML/text
+  // output get replaced by an image caption the moment it merely contains
+  // one inline `data:image/svg+xml;base64,...` icon — the model loses the
+  // markup it needs to edit and a describeImage budget unit is burned for
+  // nothing. get_screenshot is the one tool whose whole string payload is
+  // KNOWN to be `JSON.stringify({imageData: "<data url>"})` or an error
+  // object (see screenshotOutput.ts's own doc comment) — never prose that
+  // might innocently contain a data: URL — so this fallback stays gated to
+  // it specifically.
+  if (toolName !== "get_screenshot") return null;
   const raw = "value" in output ? output.value : undefined;
   return parseScreenshotDataUrl(raw)?.dataUrl ?? null;
 }
@@ -228,10 +268,30 @@ function collectImageSlots(messages: ModelMessage[]): ImageSlot[] {
     if (message.role === "tool") {
       message.content.forEach((part, partIndex) => {
         const typed = part as ToolResultPart | ToolApprovalResponse;
-        if (typed.type !== "tool-result" || typed.toolName !== "get_screenshot") return;
-        const dataUrl = extractScreenshotDataUrl(typed.output);
+        if (typed.type !== "tool-result") return;
+        // Was: `|| typed.toolName !== "get_screenshot"` here too, which let
+        // an image from ANY other tool result — every MCP tool included —
+        // bypass this whole pass entirely (both the structured AND the loose
+        // extraction paths). That violated this module's own INVARIANT (see
+        // applyVisionPreprocessing's doc comment) for the STRUCTURED path: an
+        // MCP image, once it reaches this far, is a real ImagePart-shaped
+        // `image-data` content part exactly like get_screenshot's (see
+        // extractToolResultImageDataUrl's comment), so there was never a
+        // reason to gate that half on one tool's name. But the LOOSE fallback
+        // inside extractToolResultImageDataUrl is a different, riskier
+        // extraction (an unanchored regex over a tool's whole string output)
+        // that is only safe for get_screenshot specifically — see that
+        // function's own comment — so only the structured branch is widened;
+        // extractToolResultImageDataUrl re-gates the loose branch on
+        // toolName itself. The label distinguishes get_screenshot
+        // ("Screenshot") from everything else ("Image") purely for
+        // readability in the rendered description — it changes no
+        // budget/cache/placeholder behavior below, all of which key off
+        // `kind: "tool-result"`, not toolName.
+        const dataUrl = extractToolResultImageDataUrl(typed.output, typed.toolName);
         if (!dataUrl) return; // an error result is already plain text
-        slots.push(makeSlot(messageIndex, partIndex, dataUrl, "Screenshot", "tool-result"));
+        const label = typed.toolName === "get_screenshot" ? "Screenshot" : "Image";
+        slots.push(makeSlot(messageIndex, partIndex, dataUrl, label, "tool-result"));
       });
     }
   });
@@ -440,7 +500,8 @@ export async function applyVisionPreprocessing(
   if (vision && toolResultImagesNative) return messages;
 
   // vision=true here means we only need to rewrite TOOL-RESULT image slots
-  // (get_screenshot) — user-attached images are left native since the model
+  // (get_screenshot, or any MCP tool that returns image content) —
+  // user-attached images are left native since the model
   // itself can read them. vision=false means every image slot, as before.
   const scope: "all" | "tool-result-only" = vision ? "tool-result-only" : "all";
 
