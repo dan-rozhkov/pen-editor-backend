@@ -66,13 +66,6 @@ export function makeConfig(overrides: Partial<Config> = {}): Config {
     FAL_BG_MODEL: "smoretalk-ai/rembg-enhance",
     FAL_VECTORIZE_MODEL: "fal-ai/recraft/vectorize",
     FAL_TIMEOUT_MS: 60_000,
-    TYPESAFE_API_KEY: undefined,
-    TYPESAFE_MODEL: "jev-latest",
-    TYPESAFE_BASE_URL: "https://api.typesafe.ai/v1",
-    TRIAGE_MODE: "shadow",
-    TRIAGE_THRESHOLD: 0.15,
-    SKILL_ROUTING_MODE: "off",
-    SKILL_ROUTING_MIN_CONFIDENCE: 0.7,
     ...overrides,
   };
 }

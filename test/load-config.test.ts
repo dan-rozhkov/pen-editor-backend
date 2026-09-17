@@ -216,18 +216,6 @@ describe("loadConfig", () => {
     }
   });
 
-  // Deliberately different default from TRIAGE_MODE's "shadow": both share
-  // the single TYPESAFE_API_KEY gate, but this one sits in the hot path of
-  // every /api/chat request, while triage only runs from the offline
-  // analysis CLI. Setting the key alone must not silently turn on a
-  // user-facing network call — see src/config.ts's comment.
-  it("defaults SKILL_ROUTING_MODE to off (opt-in, unlike TRIAGE_MODE)", () => {
-    process.env = { ...BASE_ENV, TYPESAFE_API_KEY: "k" } as NodeJS.ProcessEnv;
-    const config = loadConfig();
-    expect(config.SKILL_ROUTING_MODE).toBe("off");
-    expect(config.TRIAGE_MODE).toBe("shadow");
-  });
-
   it("defaults the scenario confirmation threshold to 3 and accepts an override", () => {
     process.env = { ...BASE_ENV } as NodeJS.ProcessEnv;
     expect(loadConfig().SCENARIO_CONFIRM_THRESHOLD).toBe(

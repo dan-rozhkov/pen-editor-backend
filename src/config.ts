@@ -294,46 +294,6 @@ export const envSchema = z.object({
   // These operations are fast (5-15s) but must not hold a client connection
   // open forever if fal.ai hangs — same reasoning as IMAGE_GENERATION_TIMEOUT_MS.
   FAL_TIMEOUT_MS: z.coerce.number().default(60_000),
-  // --- TypeSafe AI "System One" (Jev) evaluation model (optional) ---
-  // Unset TYPESAFE_API_KEY = the whole feature is off (see
-  // src/services/systemone.ts's createSystemOne, mirroring createEmbedder's
-  // null-when-unset convention above).
-  TYPESAFE_API_KEY: z.string().optional(),
-  TYPESAFE_MODEL: z.string().default("jev-latest"),
-  TYPESAFE_BASE_URL: z.string().url().default("https://api.typesafe.ai/v1"),
-  // Jev pre-filter in front of extractInsights (src/analysis/triage.ts).
-  // "off" never calls Jev; "shadow" (default) calls it, logs the verdict,
-  // but always runs the real extraction anyway so the model can be judged
-  // against our own data before it's trusted; "enforce" actually skips
-  // extraction on a "skip" verdict. Defaulting to "shadow" (not "off") means
-  // a deployment with TYPESAFE_API_KEY set starts measuring immediately
-  // without risking dropped insights.
-  TRIAGE_MODE: z.enum(["off", "shadow", "enforce"]).default("shadow"),
-  // A session skips extraction (in "enforce" mode) only when EVERY one of
-  // the four noul scores is strictly below this. Default 0.15 favors
-  // recall — see docs/specs/2026-09-17-jev-triage-design.md for how to
-  // retune it from the shadow-mode tally.
-  TRIAGE_THRESHOLD: z.coerce.number().min(0).max(1).default(0.15),
-  // Jev auto-pick of a skill from the user's message, skipping the
-  // load_skill round trip (src/ai/skillRouting.ts). "off" (default) never
-  // calls Jev; "shadow" calls it and logs what it would have injected, but
-  // never actually injects — this is how picks get measured against real
-  // traffic before they're trusted to act; "enforce" injects the pick.
-  // Deliberately opt-in, unlike TRIAGE_MODE's "shadow" default: both
-  // features share the single TYPESAFE_API_KEY gate, but triage only runs
-  // from the offline analysis CLI, while this one sits in the hot path of
-  // every /api/chat request. Defaulting it to "shadow" would mean setting
-  // TYPESAFE_API_KEY to turn on the analysis-CLI triage silently adds a
-  // network call (and, pre-fix, up to 1.5s of blocking latency even in
-  // shadow — see the chatTurn.ts fire-and-forget fix) to every production
-  // chat turn. A key must not switch on a user-facing network call by
-  // itself; SKILL_ROUTING_MODE has to be turned on explicitly, deployment
-  // by deployment.
-  SKILL_ROUTING_MODE: z.enum(["off", "shadow", "enforce"]).default("off"),
-  // Deliberately higher than TRIAGE_THRESHOLD: injecting the wrong skill
-  // wastes context and can mislead the whole turn, so only a confident pick
-  // should act, unlike triage's bias toward recall.
-  SKILL_ROUTING_MIN_CONFIDENCE: z.coerce.number().min(0).max(1).default(0.7),
 });
 
 export type Config = z.infer<typeof envSchema>;
