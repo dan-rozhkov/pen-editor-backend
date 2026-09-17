@@ -39,13 +39,17 @@ describe("supportsReasoningControl", () => {
       "z-ai/glm-4.6",
       "nvidia/nemotron-4",
       "xiaomi/mimo-7b",
+      "stealth/union-alpha",
+      "google/gemini-3.8-flash",
+      "tencent/hy4-preview",
+      "openai/gpt-5.6-luna",
     ]) {
       expect(supportsReasoningControl(modelId)).toBe(true);
     }
   });
 
   it("returns false for a model family outside the allowlist", () => {
-    expect(supportsReasoningControl("openai/gpt-4o-mini")).toBe(false);
+    expect(supportsReasoningControl("mistralai/mistral-large")).toBe(false);
   });
 });
 
@@ -84,7 +88,7 @@ describe("createModel reasoning effort", () => {
   });
 
   it("omits reasoning settings for a model family outside the allowlist", () => {
-    const config = makeConfig({ CHAT_MODEL: "openai/gpt-4o-mini" });
+    const config = makeConfig({ CHAT_MODEL: "mistralai/mistral-large" });
     const model = createModel(config) as unknown as {
       settings: { reasoning?: { effort?: string } };
     };

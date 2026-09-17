@@ -411,7 +411,9 @@ export interface ModelOption {
 // src/ai/vision-messages.ts.
 //
 // `supportsVision` was read off openrouter.ai/api/v1/models'
-// `architecture.input_modalities` on 2026-09-14: all four list "image". An
+// `architecture.input_modalities` (2026-09-14 for the first four, 2026-09-17
+// for the six added since): tencent/hy4-preview, z-ai/glm-5.3 and
+// z-ai/glm-5.2 are text-only, every other id lists "image". An
 // operator who points CHAT_MODEL at an id that is NOT in this list can still
 // do so (getModels appends it) and should set CHAT_MODEL_SUPPORTS_VISION if
 // that model is text-only.
@@ -435,6 +437,36 @@ export const DEFAULT_MODELS: ModelOption[] = [
     id: "deepseek/deepseek-v4.1-flash",
     label: "DeepSeek V4.1 Flash",
     supportsVision: true,
+  },
+  {
+    id: "stealth/union-alpha",
+    label: "Union Alpha",
+    supportsVision: true,
+  },
+  {
+    id: "google/gemini-3.8-flash",
+    label: "Gemini 3.8 Flash",
+    supportsVision: true,
+  },
+  {
+    id: "tencent/hy4-preview",
+    label: "Hy4 Preview",
+    supportsVision: false,
+  },
+  {
+    id: "z-ai/glm-5.3",
+    label: "GLM 5.3",
+    supportsVision: false,
+  },
+  {
+    id: "openai/gpt-5.6-luna",
+    label: "GPT-5.6 Luna",
+    supportsVision: true,
+  },
+  {
+    id: "z-ai/glm-5.2",
+    label: "GLM 5.2",
+    supportsVision: false,
   },
 ];
 

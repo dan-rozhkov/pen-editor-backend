@@ -47,6 +47,16 @@ export const REASONING_MODEL_PREFIXES = [
   "x-ai/",
   "nvidia/",
   "deepseek/",
+  // Added 2026-09-17 alongside the six models appended to DEFAULT_MODELS.
+  // These are whole-FAMILY prefixes, so they also cover older siblings that
+  // have no reasoning of their own (openai/gpt-4o-mini, say) — OpenRouter
+  // normalizes `reasoning` and drops it for a model that can't use it, so
+  // the cost of that is nothing, while leaving a family off costs the
+  // uncapped open-ended thinking this list exists to prevent.
+  "stealth/",
+  "google/",
+  "tencent/",
+  "openai/",
 ];
 
 export function supportsReasoningControl(modelId: string): boolean {

@@ -65,6 +65,24 @@ describe("DEFAULT_MODELS", () => {
         label: "DeepSeek V4.1 Flash",
         supportsVision: true,
       },
+      { id: "stealth/union-alpha", label: "Union Alpha", supportsVision: true },
+      {
+        id: "google/gemini-3.8-flash",
+        label: "Gemini 3.8 Flash",
+        supportsVision: true,
+      },
+      {
+        id: "tencent/hy4-preview",
+        label: "Hy4 Preview",
+        supportsVision: false,
+      },
+      { id: "z-ai/glm-5.3", label: "GLM 5.3", supportsVision: false },
+      {
+        id: "openai/gpt-5.6-luna",
+        label: "GPT-5.6 Luna",
+        supportsVision: true,
+      },
+      { id: "z-ai/glm-5.2", label: "GLM 5.2", supportsVision: false },
     ]);
   });
 });
