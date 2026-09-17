@@ -294,6 +294,27 @@ export const envSchema = z.object({
   // These operations are fast (5-15s) but must not hold a client connection
   // open forever if fal.ai hangs — same reasoning as IMAGE_GENERATION_TIMEOUT_MS.
   FAL_TIMEOUT_MS: z.coerce.number().default(60_000),
+  // --- TypeSafe AI "System One" (Jev) evaluation model (optional) ---
+  // Unset TYPESAFE_API_KEY = the whole feature is off (see
+  // src/services/systemone.ts's createSystemOne, mirroring createEmbedder's
+  // null-when-unset convention above).
+  TYPESAFE_API_KEY: z.string().optional(),
+  TYPESAFE_MODEL: z.string().default("jev-latest"),
+  TYPESAFE_BASE_URL: z.string().url().default("https://api.typesafe.ai/v1"),
+  // Jev auto-pick of a skill from the user's message, skipping the
+  // load_skill round trip (src/ai/skillRouting.ts). "off" never calls Jev;
+  // "shadow" calls it and logs what it would have injected, but never
+  // actually injects — this is how picks get measured against real traffic
+  // before they're trusted to act; "enforce" injects the pick.
+  // Deliberately opt-in rather than on-by-key: this sits in the hot path of
+  // every /api/chat request, and setting TYPESAFE_API_KEY must not by
+  // itself add a user-facing network call to every chat turn. The mode has
+  // to be turned on explicitly, deployment by deployment.
+  SKILL_ROUTING_MODE: z.enum(["off", "shadow", "enforce"]).default("off"),
+  // Injecting the wrong skill wastes context and can mislead the whole
+  // turn, so only a confident pick acts; everything below this falls back
+  // to today's behavior (the model calling load_skill itself).
+  SKILL_ROUTING_MIN_CONFIDENCE: z.coerce.number().min(0).max(1).default(0.7),
 });
 
 export type Config = z.infer<typeof envSchema>;

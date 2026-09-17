@@ -216,6 +216,15 @@ describe("loadConfig", () => {
     }
   });
 
+  // Skill routing sits in the hot path of every /api/chat request, so
+  // supplying the key alone must not silently turn on a user-facing
+  // network call — see src/config.ts's comment.
+  it("defaults SKILL_ROUTING_MODE to off even when the key is set", () => {
+    process.env = { ...BASE_ENV, TYPESAFE_API_KEY: "k" } as NodeJS.ProcessEnv;
+    const config = loadConfig();
+    expect(config.SKILL_ROUTING_MODE).toBe("off");
+  });
+
   it("defaults the scenario confirmation threshold to 3 and accepts an override", () => {
     process.env = { ...BASE_ENV } as NodeJS.ProcessEnv;
     expect(loadConfig().SCENARIO_CONFIRM_THRESHOLD).toBe(

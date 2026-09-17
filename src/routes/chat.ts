@@ -301,6 +301,7 @@ export async function chatRoutes(
       selectedModelId,
       systemPromptHash,
       slashSkillName,
+      skillSource,
     } = preparedTurn;
     const maxSteps = MAX_AGENT_STEPS;
 
@@ -411,6 +412,12 @@ export async function chatRoutes(
             finish_reason: steps[steps.length - 1]?.finishReason ?? null,
             mode: agentMode,
             skill: slashSkillName ?? null,
+            // "slash" = the user typed it; "auto" = Jev's skill router
+            // picked it (src/ai/skillRouting.ts). Without this the two are
+            // indistinguishable in analytics, and the whole point of the
+            // shadow→enforce rollout is being able to judge the auto-picks
+            // separately from what users asked for.
+            skill_source: skillSource ?? null,
             // See the turnComplete doc comment above: filter to this when
             // computing headline metrics from raw event counts, since a
             // single user turn can otherwise emit several partial events.
