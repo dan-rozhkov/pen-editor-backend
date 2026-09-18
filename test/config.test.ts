@@ -88,7 +88,7 @@ describe("DEFAULT_MODELS", () => {
       {
         id: "opencode-go/deepseek-v4.1-flash",
         label: "DeepSeek V4.1 Flash · Go",
-        supportsVision: false,
+        supportsVision: true,
         requiresUserKey: true,
       },
       {
@@ -100,7 +100,7 @@ describe("DEFAULT_MODELS", () => {
       {
         id: "opencode-go/glm-5.3-flash",
         label: "GLM 5.3 Flash · Go",
-        supportsVision: false,
+        supportsVision: true,
         requiresUserKey: true,
       },
       {
@@ -124,13 +124,13 @@ describe("DEFAULT_MODELS", () => {
       {
         id: "opencode/glm-5.3-flash",
         label: "GLM 5.3 Flash · Zen",
-        supportsVision: false,
+        supportsVision: true,
         requiresUserKey: true,
       },
       {
         id: "opencode/kimi-k2.7-code",
         label: "Kimi K2.7 Code · Zen",
-        supportsVision: false,
+        supportsVision: true,
         requiresUserKey: true,
       },
     ]);
@@ -181,10 +181,32 @@ describe("DEFAULT_MODELS", () => {
     }
   });
 
-  it("has deepseek-v4-flash-vision-exp as the only vision-capable OpenCode entry", () => {
-    const visionCapable = openCodeModels.filter((m) => m.supportsVision);
-    expect(visionCapable.map((m) => m.id)).toEqual([
+  // Pins the LIVE MEASUREMENT recorded above DEFAULT_MODELS (2026-09-18,
+  // real Go key, blue/yellow split image, repeated per model). Vision on this
+  // route is an endpoint property, so neither list is derivable from the
+  // model names or from their OpenRouter twins — if an entry moves between
+  // these two arrays, it must be because someone re-measured it, not because
+  // it looked like it should.
+  it("pins which OpenCode entries were measured vision-capable", () => {
+    const visionCapable = openCodeModels.filter((m) => m.supportsVision).map((m) => m.id);
+    expect(visionCapable).toEqual([
+      "opencode-go/deepseek-v4.1-flash",
       "opencode-go/deepseek-v4-flash-vision-exp",
+      "opencode-go/glm-5.3-flash",
+      "opencode/glm-5.3-flash",
+      "opencode/kimi-k2.7-code",
+    ]);
+  });
+
+  // These three answered an image with an EMPTY completion 3/3 — no error, no
+  // refusal. A `true` here would read as a working model gone quiet; `false`
+  // routes the image through VISION_MODEL's text description instead.
+  it("pins which OpenCode entries answered images with silence", () => {
+    const textOnly = openCodeModels.filter((m) => !m.supportsVision).map((m) => m.id);
+    expect(textOnly).toEqual([
+      "opencode-go/glm-5.3",
+      "opencode-go/glm-5.2",
+      "opencode/deepseek-v4-flash",
     ]);
   });
 });

@@ -25,32 +25,54 @@ CI (`.github/workflows/ci.yml`) runs lint + test + build on every push to `main`
 
 ## Chat model provider (`src/ai/provider.ts`)
 
-**OpenRouter is the only provider.** A DeepSeek-direct branch
-(`@ai-sdk/deepseek`, its own key) existed for one day and was removed: it
-never passed a live smoke, and it cost three silent divergences from the
-OpenRouter path (always-on `thinking`, tool-result images flattened to
-base64 text, no structured outputs). `DEEPSEEK_API_KEY` is gone;
-`OPENROUTER_API_KEY` is the one required key.
+**Two providers: OpenRouter (default, server key) and OpenCode (BYOK).** A
+DeepSeek-direct branch (`@ai-sdk/deepseek`, its own key) existed for one day
+and was removed: it never passed a live smoke, and it cost three silent
+divergences from the OpenRouter path (always-on `thinking`, tool-result
+images flattened to base64 text, no structured outputs). Those lessons shape
+the OpenCode route, which is deliberately narrow — see
+`docs/specs/2026-09-18-opencode-byok-design.md`.
 
-`createModel(config, modelOverride?, {chatAgent?})` resolves a model
-reference through `parseModelRef` (`src/ai/modelRef.ts`): an
-`"openrouter:"` prefix is stripped, anything else is a bare OpenRouter id.
-The prefix is matched against a one-name allowlist — never a blind
-`split(":")`, since OpenRouter ids themselves contain colons
-(`openai/gpt-4o:extended`). A `"deepseek:"`-prefixed value in any model env
-var is a **loud boot failure** (`rejectDeepSeekModelRef` in `src/config.ts`),
-not a bare id silently sent upstream as a 404ing model name.
+`createModel(config, modelOverride?, {chatAgent?, sessionId?, opencodeApiKey?})`
+resolves a reference through `parseModelRef` (`src/ai/modelRef.ts`):
+- `"openrouter:"` (COLON) is stripped; anything unprefixed is a bare
+  OpenRouter id. Never a blind `split(":")` — OpenRouter ids contain their
+  own colons (`openai/gpt-4o:extended`).
+- `"opencode-go/"` and `"opencode/"` (SLASH) route to OpenCode's Go
+  subscription and Zen pay-as-you-go bases (`src/ai/opencode.ts`). Order
+  matters: the longer prefix is tested first.
+- A `"deepseek:"` value, or an OpenCode reference in ANY of `CHAT_MODEL`/
+  `STRUCTURED_MODEL`/`ANALYSIS_MODEL`/`VISION_MODEL`, is a **loud boot
+  failure** (`src/config.ts`). There is no server-side OpenCode key at all,
+  so those roles could never serve one.
+
+**The OpenCode key belongs to the user and lives in their browser.** It
+arrives as the `X-OpenCode-Key` header (never in the body — the body is
+written to `raw_traces`), must be listed in `src/plugins/cors.ts`'s
+`allowedHeaders` or the preflight kills it, and an OpenCode model picked
+WITHOUT it is a 400 (`opencode_key_required`), not the silent
+fall-back-to-default an unknown id still gets. Only `/chat/completions`-family
+models are supported; `OPENCODE_CHAT_COMPLETIONS_MODELS` is an allowlist
+because OpenCode's other two endpoint families answer with junk rather than a
+clear error. Two traps found by reading `node_modules`, both silent:
+`@ai-sdk/openai-compatible` **v3 is incompatible with `ai` v6** (needs v2 —
+the majors are offset), and a `User-Agent` set on the provider config is
+overwritten by `ai`'s own, so both required OpenCode headers are forced in a
+`fetch` wrapper instead.
 
 Three invariants:
-- **The provider prefix never leaves `createModel`.** `GET /api/models`,
-  `raw_traces`, and the showcase's `model` column all store/report the bare
-  id (`bareModelId`).
+- **What a client sends back must round-trip.** `bareModelId` strips ONLY
+  the legacy `openrouter:` colon prefix; an OpenCode slash prefix is part of
+  the id and travels verbatim through `GET /api/models`, the user's pick,
+  and `raw_traces.model`. Strip it and the next request routes to OpenRouter
+  under a model name that doesn't exist there, with no error anywhere.
 - **`CHAT_REASONING_EFFORT` follows the chat agent, not the absence of an
   override.** A model the *user* picked in the composer arrives as a
   `modelOverride` just like `ANALYSIS_MODEL` does, so the chat route and the
   showcase runner pass `{chatAgent: true}` to keep the operator's measured
   `"none"`; helper roles (analysis, vision, selfimprove review, user skills,
-  prototype-link) stay on `"minimal"`.
+  prototype-link) stay on `"minimal"`. It is never sent to OpenCode at all —
+  `{reasoning: {effort}}` is an OpenRouter-shaped option.
 - **`REASONING_MODEL_PREFIXES` is an allowlist and drifts silently.** An id
   outside it gets no reasoning cap at all — how the agent once ended up
   thinking before every reply. Every `DEFAULT_MODELS` id and the shipped

@@ -553,26 +553,36 @@ export const DEFAULT_MODELS: ModelOption[] = [
   // key, so nothing here is ever filtered by config, only by whether the
   // requesting browser has stored its own OpenCode key.
   //
-  // `supportsVision: false` on seven of the eight is deliberate, NOT
-  // copy-paste laziness. Their OpenRouter twins (e.g.
-  // "deepseek/deepseek-v4.1-flash" above) are `true`, but vision here is a
-  // property of the OpenCode /chat/completions ENDPOINT, not of the model
-  // family — and it has never been verified live on this route (see
-  // providerHandlesToolResultImages in src/ai/modelRef.ts: OpenCode's
-  // @ai-sdk/openai-compatible integration is already known to stringify a
-  // tool-result image, a DIFFERENT axis from whether a user-attached image
-  // reaches the model at all). An unverified `true` here would mean an
-  // attached image silently goes nowhere while the model confidently
-  // hallucinates about it. These flags get raised to `true` only after a
-  // real live smoke test against the OpenCode endpoint, never speculatively.
-  // The one exception, "deepseek-v4-flash-vision-exp", is exempt because
-  // OpenCode's own Go docs explicitly describe it as accepting images, billed
-  // by image size — that's a documented endpoint property, not an inference
-  // from the model's name.
+  // `supportsVision` here is MEASURED, not inferred. Vision on this route is
+  // a property of the OpenCode /chat/completions ENDPOINT, not of the model
+  // family, so the OpenRouter twin's flag (e.g. "deepseek/deepseek-v4.1-flash"
+  // above) says nothing about it. Measured live 2026-09-18 against a real Go
+  // key, by sending a 64x64 PNG split into a blue and a yellow half and asking
+  // which side is which — a question a blind model cannot guess. Repeated 2-3x
+  // per model, because a single sample lies: a first pass showed five of these
+  // failing and two of those five turned out to be fine on retry.
+  //
+  // `true` (answered correctly): deepseek-v4.1-flash (3/3), glm-5.3-flash on
+  // BOTH bases (2/2 each), kimi-k2.7-code (2/3, one flaky blank), and
+  // deepseek-v4-flash-vision-exp, which OpenCode's own docs also describe as
+  // accepting images billed by size.
+  //
+  // `false` (glm-5.3, glm-5.2, Zen's deepseek-v4-flash): 3/3 returned an
+  // EMPTY completion when an image was attached — no HTTP error, no refusal,
+  // just nothing. That silent shape is exactly why an unverified `true` is
+  // dangerous here: it reads as a working model that has simply gone quiet.
+  // With `false` the image is instead described as text by VISION_MODEL
+  // (visionFallback), so the user still gets an answer.
+  //
+  // This is a DIFFERENT axis from providerHandlesToolResultImages
+  // (src/ai/modelRef.ts), which stays false for OpenCode: the
+  // @ai-sdk/openai-compatible integration carries a USER-attached image
+  // natively but stringifies an image inside a TOOL RESULT. Both measurements
+  // hold at once, and the smoke above confirms the user-attachment half.
   {
     id: "opencode-go/deepseek-v4.1-flash",
     label: "DeepSeek V4.1 Flash · Go",
-    supportsVision: false,
+    supportsVision: true,
     requiresUserKey: true,
   },
   {
@@ -584,7 +594,7 @@ export const DEFAULT_MODELS: ModelOption[] = [
   {
     id: "opencode-go/glm-5.3-flash",
     label: "GLM 5.3 Flash · Go",
-    supportsVision: false,
+    supportsVision: true,
     requiresUserKey: true,
   },
   {
@@ -608,13 +618,13 @@ export const DEFAULT_MODELS: ModelOption[] = [
   {
     id: "opencode/glm-5.3-flash",
     label: "GLM 5.3 Flash · Zen",
-    supportsVision: false,
+    supportsVision: true,
     requiresUserKey: true,
   },
   {
     id: "opencode/kimi-k2.7-code",
     label: "Kimi K2.7 Code · Zen",
-    supportsVision: false,
+    supportsVision: true,
     requiresUserKey: true,
   },
 ];
