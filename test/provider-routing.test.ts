@@ -5,6 +5,11 @@ import {
   parseModelRef,
   supportsReasoningControl,
 } from "../src/ai/provider.js";
+import {
+  isOpenCodeProvider,
+  providerHandlesToolResultImages,
+  type ModelProviderId,
+} from "../src/ai/modelRef.js";
 import { DEFAULT_MODELS, envSchema } from "../src/config.js";
 import { makeConfig } from "./helpers.js";
 
@@ -43,6 +48,23 @@ describe("parseModelRef", () => {
       modelId: "google/gemini-3.7-flash",
     });
   });
+
+  // opencode-go/ must be checked BEFORE opencode/, or "opencode-go/glm-5.3"
+  // parses as provider=opencode, modelId="go/glm-5.3" — silently wrong
+  // provider AND a mangled model id.
+  it("recognizes the opencode-go/ prefix without falling into opencode/", () => {
+    expect(parseModelRef("opencode-go/glm-5.3-flash")).toEqual({
+      provider: "opencode-go",
+      modelId: "glm-5.3-flash",
+    });
+  });
+
+  it("recognizes the opencode/ prefix", () => {
+    expect(parseModelRef("opencode/glm-5.3-flash")).toEqual({
+      provider: "opencode",
+      modelId: "glm-5.3-flash",
+    });
+  });
 });
 
 describe("bareModelId", () => {
@@ -54,6 +76,59 @@ describe("bareModelId", () => {
 
   it("returns a bare id unchanged", () => {
     expect(bareModelId("google/gemini-3.7-flash")).toBe("google/gemini-3.7-flash");
+  });
+
+  // The core semantic change: bareModelId now strips ONLY the legacy
+  // "openrouter:" colon prefix. A slash-prefixed opencode id must survive
+  // whole, because it re-enters parseModelRef on the way back in (GET
+  // /api/models -> UI pick -> POST /api/chat body -> createModel) and a
+  // stripped prefix would silently misroute the request to OpenRouter with a
+  // nonexistent model name.
+  it("preserves the opencode-go/ prefix", () => {
+    expect(bareModelId("opencode-go/glm-5.3-flash")).toBe("opencode-go/glm-5.3-flash");
+  });
+
+  it("preserves the opencode/ prefix", () => {
+    expect(bareModelId("opencode/glm-5.3-flash")).toBe("opencode/glm-5.3-flash");
+  });
+
+  // The round trip the whole design hinges on: whatever bareModelId hands
+  // back to a client must, when sent straight back as the next request's
+  // model id, parse to the SAME provider it started as.
+  it("round-trips the provider through parseModelRef(bareModelId(x)) for every known form", () => {
+    const refs = [
+      "openrouter:deepseek/deepseek-v4.1-flash",
+      "deepseek/deepseek-v4.1-flash",
+      "opencode-go/glm-5.3-flash",
+      "opencode/glm-5.3-flash",
+    ];
+    for (const ref of refs) {
+      expect(parseModelRef(bareModelId(ref)).provider).toBe(parseModelRef(ref).provider);
+    }
+  });
+});
+
+describe("providerHandlesToolResultImages", () => {
+  it("is true only for openrouter", () => {
+    const expected: Record<ModelProviderId, boolean> = {
+      openrouter: true,
+      opencode: false,
+      "opencode-go": false,
+    };
+    for (const [provider, result] of Object.entries(expected) as [
+      ModelProviderId,
+      boolean,
+    ][]) {
+      expect(providerHandlesToolResultImages(provider)).toBe(result);
+    }
+  });
+});
+
+describe("isOpenCodeProvider", () => {
+  it("is true for both opencode providers and false for openrouter", () => {
+    expect(isOpenCodeProvider("opencode")).toBe(true);
+    expect(isOpenCodeProvider("opencode-go")).toBe(true);
+    expect(isOpenCodeProvider("openrouter")).toBe(false);
   });
 });
 
