@@ -1,7 +1,9 @@
+import { randomUUID } from "node:crypto";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import type { LanguageModel } from "ai";
 import type { Config } from "../config.js";
-import { parseModelRef } from "./modelRef.js";
+import { parseModelRef, isOpenCodeProvider } from "./modelRef.js";
+import { createOpenCodeModel } from "./opencode.js";
 
 // Re-exported so existing importers of these helpers keep working and so
 // there is one obvious place to look for them; the definitions live in
@@ -10,6 +12,7 @@ export {
   parseModelRef,
   bareModelId,
   providerHandlesToolResultImages,
+  isOpenCodeProvider,
   type ModelRef,
   type ModelProviderId,
 } from "./modelRef.js";
@@ -75,6 +78,21 @@ export interface CreateModelOptions {
    * ANALYSIS_MODEL/VISION_MODEL-style override at this boundary.
    */
   chatAgent?: boolean;
+
+  /**
+   * Stable id for the current conversation, sent upstream as OpenCode's
+   * `x-opencode-session` header (see src/ai/opencode.ts). Only meaningful
+   * when the resolved provider is an OpenCode route; ignored for OpenRouter.
+   */
+  sessionId?: string;
+
+  /**
+   * The CALLING USER'S OWN OpenCode API key (never a server-side key — none
+   * exists for OpenCode in this product, see
+   * docs/specs/2026-09-18-opencode-byok-design.md). Only meaningful when the
+   * resolved provider is an OpenCode route.
+   */
+  opencodeApiKey?: string;
 }
 
 export function createModel(
@@ -82,10 +100,45 @@ export function createModel(
   modelOverride?: string,
   options: CreateModelOptions = {},
 ): LanguageModel {
+  const ref = parseModelRef(modelOverride ?? config.CHAT_MODEL);
+
+  if (isOpenCodeProvider(ref.provider)) {
+    if (!options.opencodeApiKey || !options.opencodeApiKey.trim()) {
+      throw new Error(
+        `Model provider "${ref.provider}" requires the calling user's own ` +
+          "OpenCode API key (opencodeApiKey) — there is no server-side " +
+          "OpenCode key in this product, unlike OPENROUTER_API_KEY.",
+      );
+    }
+    // A stable id is generated when the caller doesn't supply one, rather
+    // than omitting the x-opencode-session header entirely: OpenCode's Go
+    // docs say this header drives THEIR routing and prompt-cache behavior,
+    // and this codebase treats prompt-cache stability as a load-bearing
+    // invariant elsewhere (see modelRef.ts's header and
+    // docs/superpowers/specs/2026-08-*-prompt-cache*). A missing/rotating
+    // session id would deny OpenCode's own cache the same stable prefix we
+    // go out of our way to preserve for OpenRouter.
+    const sessionId = options.sessionId ?? randomUUID();
+    // CHAT_REASONING_EFFORT / {reasoning: {effort}} is an OpenRouter-shaped
+    // option (see supportsReasoningControl below) and must NEVER be sent to
+    // OpenCode's /chat/completions client — this branch does not touch
+    // reasoning at all, deliberately.
+    return createOpenCodeModel({
+      // isOpenCodeProvider(ref.provider) above already narrowed this to
+      // "opencode" | "opencode-go" at runtime; it isn't a TS type predicate
+      // (defined in modelRef.ts, which this task must not edit), so the
+      // narrowing is asserted here instead of inferred.
+      provider: ref.provider as "opencode" | "opencode-go",
+      modelId: ref.modelId,
+      apiKey: options.opencodeApiKey,
+      sessionId,
+    });
+  }
+
   const openrouter = createOpenRouter({
     apiKey: config.OPENROUTER_API_KEY,
   });
-  const modelId = parseModelRef(modelOverride ?? config.CHAT_MODEL).modelId;
+  const modelId = ref.modelId;
   if (!supportsReasoningControl(modelId)) {
     return openrouter(modelId);
   }

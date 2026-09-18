@@ -165,13 +165,24 @@ describe("createModel provider routing", () => {
 // up thinking before every reply. The list of selectable models is the one
 // thing that can drift here now that there are four of them, so gate every
 // entry, plus the shipped default (which need not be in DEFAULT_MODELS).
+//
+// Scoped to provider "openrouter" only: REASONING_MODEL_PREFIXES and
+// CHAT_REASONING_EFFORT are an OpenRouter-shaped concept
+// (`{reasoning: {effort}}`) that createModel's OpenCode branch never touches
+// at all (see provider.ts) — reasoning coverage is simply inapplicable to an
+// "opencode"/"opencode-go" DEFAULT_MODELS entry, and asserting
+// supportsReasoningControl against a bare opencode model id (which has no
+// provider prefix left after parseModelRef) would either false-fail or,
+// worse, coincidentally pass/fail based on an unrelated OpenRouter family
+// prefix matching an OpenCode model's bare id by accident.
 describe("selectable models reasoning coverage gate", () => {
-  it.each(DEFAULT_MODELS.map((model) => model.id))(
-    "%s is covered by REASONING_MODEL_PREFIXES",
-    (modelId) => {
-      expect(supportsReasoningControl(modelId)).toBe(true);
-    },
-  );
+  const openRouterModelIds = DEFAULT_MODELS.filter(
+    (model) => parseModelRef(model.id).provider === "openrouter",
+  ).map((model) => model.id);
+
+  it.each(openRouterModelIds)("%s is covered by REASONING_MODEL_PREFIXES", (modelId) => {
+    expect(supportsReasoningControl(parseModelRef(modelId).modelId)).toBe(true);
+  });
 
   it("covers the shipped CHAT_MODEL default", () => {
     const shippedDefault = envSchema.shape.CHAT_MODEL.parse(undefined);
