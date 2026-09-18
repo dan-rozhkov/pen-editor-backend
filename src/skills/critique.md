@@ -39,12 +39,31 @@ Sub-agent gate (all harnesses):
 - If and only if sub-agents are unavailable, fall back sequentially: finish and record Assessment A, then run Assessment B, then synthesize, and emit the degraded banner.
 - Whichever path you take, declare it in the report header (see Report header provenance). Skipping sub-agents without the banner is the most common failure of this command.
 
+### The slop-tell scan (checkable)
+
+Both assessments below run this same numbered list. It exists because "check all DON'T guidance" is prose a model can nod at without doing; a checklist with a pass/fail test per line is not.
+
+1. **The reassuring-naturals default** — a warm ground (cream/sand/beige/warm off-white/warm taupe/warm-dark brown) with an accent in the terracotta-rust-amber-burnt-orange band OR the sage-olive-moss-forest-green band, with or without a serif, in either light or dark. Test: read the ground's and accent's hue in degrees off the actual hex values, don't eyeball. Record: hues measured, fired y/n.
+2. **Untouched component-library surface** — the same neutral card repeated as the page structure: 1px border + small radius + faint shadow + identical padding on every card. Test: could this card be told apart from the stock component in a screenshot? Record: which cards, y/n.
+3. **AI purple** — violet/indigo/purple (hue roughly 255-295) as the primary or CTA colour. Test: the primary's hue. Record: hue value.
+4. **Gradients as decoration**, above all gradient-clipped text. Test: any gradient on running text or a heading is an automatic fire. Record: element and gradient stops.
+5. **Uniform motion** — the same entrance on every section, a scale-up on every card hover. Test: does any single moment mean something the others don't? Record: which moments repeat.
+6. **One radius everywhere** plus pill-shaped everything. Test: is there a radius scale, or one token reused? Record: the radius values seen.
+7. **Emoji standing in for UI glyphs.** Test: any emoji inside a heading, a feature title, or where an icon belongs. Record: location and emoji.
+8. **Autopilot type** — a single generic sans (Inter/Geist/Roboto/system) as the only face, or the "tasteful" serif default (Playfair Display/Fraunces/Instrument Serif/Cormorant/DM Serif/DM Sans) as the display face, with no stated reason. Test: can the design say in one clause what this face does for it? A neutral reading face under a display voice with character is not a fire. Record: face(s) and the one-clause reason, or "none given".
+9. **The skeleton** — centered hero, then a row of equal icon-and-blurb cards, then a centered CTA band; on mobile: hero card, three equal stat cards, a list, a tab bar. Test: name the page's structure out loud; if it is that, it fires. Record: the structure named.
+10. **Unearned glow** — coloured zero-offset halos, neon on near-black nobody asked for. Test: does any shadow have no offset and no blur? Record: which shadow, its values.
+11. **Layout-quality tells** — text overflowing its container, padding that's nearly-but-not-quite consistent, misaligned edges, everything the same distance apart, no focal point. Test: measure, don't trust the eye; these are invisible in markup and obvious in a screenshot. Record: measurements taken.
+12. **Copy tells** — "Built for the modern team", "Ship faster", "Get Started", "Transform your X", "Elevate/Seamless/Unleash", placeholder names, round numbers. Test: could this string appear unchanged on a competitor's page? Record: the string and location.
+
+**A tell is an unspecified default, not a forbidden value.** Every look on this list was once somebody's fix for the previous one, so a finding that only proposes a different default is not a finding. Before reporting a tell, check the brief and the design's own direction contract: a colour, face, or layout the brief actually asked for is not slop, whatever it is. Report the ones nobody chose.
+
 ### Assessment A: Design Review
 
 Inspect the target's structure and visually inspect the rendered design when possible. Think like a design director.
 
 Evaluate:
-- **AI slop**: Would someone believe "AI made this" immediately? Check all DON'T guidance from the frontend-design skill.
+- **AI slop**: Would someone believe "AI made this" immediately? Run the [slop-tell scan](#the-slop-tell-scan-checkable) above and name which numbered tells fired, not just yes/no. Also check any remaining DON'T guidance from the frontend-design skill not covered by the scan.
 - **Holistic design**: hierarchy, IA, emotional fit, discoverability, composition, typography, color, accessibility, states, copy, and edge cases.
 - **Cognitive load**: consult the [Cognitive Load Assessment](#cognitive-load-assessment) section below; report checklist failures and decision points with >4 visible options.
 - **Emotional journey**: peak-end rule, emotional valleys, reassurance at high-stakes moments.
@@ -57,7 +76,8 @@ Return: AI slop verdict, heuristic scores, cognitive load, emotional journey, 2-
 Run an independent, systematic anti-pattern scan plus visual evidence. Assessment B is mandatory and must remain isolated from Assessment A until both are complete.
 
 Systematic scan:
-- Review the design methodically against every DON'T / anti-pattern in the frontend-design skill. For each violation, record the rule, the specific node or element, and its location in the scene.
+- Run the [slop-tell scan](#the-slop-tell-scan-checkable) above in full. For each tell that fires, record: the tell's number and name, the specific node/element, its location, and the one-clause reason the design gives for it (or "none given").
+- Review the design methodically against every remaining DON'T / anti-pattern in the frontend-design skill. For each violation, record the rule, the specific node or element, and its location in the scene.
 - Cover the whole target; do not sample.
 - Respect the Design-System-Lock discipline: check whether the design honors existing tokens/variables and reusable components, and flag places where it reinvents values that already exist in the project's design system.
 
@@ -108,9 +128,9 @@ Be honest with scores. A 4 means genuinely excellent. Most real interfaces score
 
 **Start here.** Does this look AI-generated?
 
-**LLM assessment**: Your own evaluation of AI slop tells. Cover overall aesthetic feel, layout sameness, generic composition, missed opportunities for personality.
+**LLM assessment**: Your own evaluation of AI slop tells. State the verdict as the list of fired slop-tell numbers (e.g. "tells #1, #3, #9 fired"), not a bare yes/no. Cover overall aesthetic feel, layout sameness, generic composition, missed opportunities for personality.
 
-**Anti-pattern scan**: Summarize what the systematic anti-pattern review found, with counts and locations. Note any additional issues the scan caught that you missed, and flag any false positives.
+**Anti-pattern scan**: Summarize what the systematic anti-pattern review found, with counts and locations, including the fired slop-tell numbers it recorded. Note any additional issues the scan caught that you missed, and flag any false positives.
 
 **Visual evidence** (if you inspected the rendered design): Summarize what the screenshot inspection revealed about the detected issues. If visual inspection was not possible, say that no reliable visual evidence is available and report the fallback signal instead.
 
@@ -751,5 +771,6 @@ Only generate project-specific personas when real audience/brand data is availab
 
 **Refuse**
 - Softening a verdict to avoid an uncomfortable finding, or skipping the anti-pattern scan to save time — a critique that can't say "this looks AI-generated" plainly is not a critique.
+- Withholding a fired tell because you can't immediately propose a replacement — naming the default is the finding; picking the replacement is the designer's job.
 
 Full floor lives in the `frontend-design` skill.

@@ -88,7 +88,12 @@ export function buildShowcasePrompt(
   const paletteClause = avoid.length
     ? `\n\nPalette: the last apps published in this gallery used these accent hue families — ` +
       `${avoid.join(", ")}. Pick an accent from a DIFFERENT family, and let the ground follow ` +
-      `from it rather than defaulting to a warm neutral. This is a hard requirement of this ` +
+      `from it rather than defaulting to a warm neutral. Rotating the accent is not on its own ` +
+      `an escape from the skill's reassuring-naturals axis: a warm ground under a sage/olive/` +
+      `forest green accent is the same cluster as one under terracotta. So re-pick the ground ` +
+      `together with the accent — nothing here asks for warmth, and this clause must NOT be read ` +
+      `as the brief asking for it, so it never exempts the design from the skill's ` +
+      `naturals-cluster check. This is a hard requirement of this ` +
       `request, not a preference: two apps side by side in the same warm palette read as one ` +
       `template. It does NOT suspend any rule in the skill — in particular the ban on purple / ` +
       `"AI violet" still stands, so a "different family" means a different one the skill already ` +

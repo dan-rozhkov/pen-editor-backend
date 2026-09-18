@@ -407,6 +407,19 @@ describe("buildShowcasePrompt", () => {
     // electric violet, the one accent the skill bans outright.
     expect(prompt).toContain("does NOT suspend any rule in the skill");
     expect(prompt).toMatch(/ban on purple/i);
+    // Rotation and the skill's Calibration axis can pull against each other:
+    // told to rotate off terracotta, a run can pick sage/forest green, keep
+    // the warm ground, and land back in the same cluster the skill calls the
+    // reassuring-naturals axis. The clause has to close that door itself —
+    // the rotation is the only mechanism that knows an accent was forced.
+    expect(prompt).toMatch(/reassuring-naturals axis/i);
+    expect(prompt).toMatch(/re-pick the ground together with the accent/i);
+    // The clause is phrased as the requester's requirement, and the skill's
+    // naturals blocker exempts a design when "the brief asked for warmth in
+    // its own words" — so the clause has to disclaim being that brief, or a
+    // run can read it as a licence to keep the cream ground and pass both
+    // checks at once.
+    expect(prompt).toMatch(/never exempts the design/i);
     // The clause must not push the theme or the imagery instructions out.
     expect(prompt).toContain("/prototype mobile app — sleep tracker");
     expect(prompt).toContain("generate_image");

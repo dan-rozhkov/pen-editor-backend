@@ -627,39 +627,310 @@ export async function getStyleGuideTagsImpl(): Promise<{ tags: Record<string, st
   };
 }
 
+// ── get_style_guide: tag-keyed generation, not a single hardcoded system ──
+//
+// The whole point of this tool is to stop the agent from defaulting to the
+// same "AI purple + Inter" system on every creative task. So the output is
+// composed from small per-axis lookup tables keyed to the tags published by
+// getStyleGuideTagsImpl, rather than one fixed "nice" palette. Two axes do
+// the composing:
+//   - `style`  (minimal/bold/elegant/.../brutalist) drives typography
+//     (font pairing, weight, size scale) and shape (border radius + spacing
+//     scale — brutalist is near-zero radius, playful is generous).
+//   - `color`  (monochrome/vibrant/.../earth-tones) drives the palette via
+//     HSV hues chosen per tag, converted to hex. Hue is the ONLY axis that
+//     ever varies hue, and no color-tag entry below uses a hue in the
+//     255-295 (violet/indigo/purple) band, so no combination of style+color
+//     can land there.
+// A request with no tags gets an explicit, documented neutral fallback
+// (style "modern", color "monochrome") — chosen because they sort first in
+// their arrays, not because either one is "tasteful"; the `note` below spells
+// that out so the model doesn't mistake the fallback for a recommendation.
+
+function hsvToHex(h: number, s: number, v: number): string {
+  // h: 0-360, s/v: 0-100
+  const sf = s / 100;
+  const vf = v / 100;
+  const c = vf * sf;
+  const hp = (((h % 360) + 360) % 360) / 60;
+  const x = c * (1 - Math.abs((hp % 2) - 1));
+  let r: number, g: number, b: number;
+  if (hp < 1) [r, g, b] = [c, x, 0];
+  else if (hp < 2) [r, g, b] = [x, c, 0];
+  else if (hp < 3) [r, g, b] = [0, c, x];
+  else if (hp < 4) [r, g, b] = [0, x, c];
+  else if (hp < 5) [r, g, b] = [x, 0, c];
+  else [r, g, b] = [c, 0, x];
+  const m = vf - c;
+  const toHex = (n: number) =>
+    Math.round((n + m) * 255)
+      .toString(16)
+      .padStart(2, "0")
+      .toUpperCase();
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+
+// WCAG relative luminance / contrast ratio, used below to guarantee the brand
+// roles separate from the ground they sit on rather than assuming a value cap
+// does it (it does not — the required value depends on the hue).
+function relativeLuminance(hex: string): number {
+  const int = parseInt(hex.slice(1), 16);
+  const channel = (c: number) => {
+    const s = c / 255;
+    return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+  };
+  return (
+    0.2126 * channel((int >> 16) & 255) +
+    0.7152 * channel((int >> 8) & 255) +
+    0.0722 * channel(int & 255)
+  );
+}
+
+function contrastRatio(a: string, b: string): number {
+  const la = relativeLuminance(a);
+  const lb = relativeLuminance(b);
+  return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+}
+
+type StyleAxis = {
+  headingFont: string;
+  bodyFont: string;
+  headingWeight: string;
+  // Separate from headingWeight: some display faces ship a single weight
+  // (Archivo Black, Righteous are 400-only), so reusing headingWeight for
+  // `emphasis` silently made bolded inline text identical to body copy.
+  // emphasisWeight names a weight the BODY family actually carries.
+  emphasisWeight: string;
+  bodyWeight: string;
+  scale: number; // multiplier on the base heading/size scale
+  satBoost: number; // percentage points added/subtracted from base saturation
+  valBoost: number; // percentage points added/subtracted from base value
+  radius: { sm: number; md: number; lg: number; xl: number; full: number };
+  spacing: { xs: number; sm: number; md: number; lg: number; xl: number; xxl: number; section: number };
+};
+
+// Typography + shape vary by `style`. Fonts are always a distinct pairing
+// (never the same family twice, never Inter on both sides). Radius/spacing
+// are the shape half of "style": brutalist is square and blocky, playful and
+// elegant are generous, corporate/minimal sit in between.
+const STYLE_AXIS: Record<string, StyleAxis> = {
+  minimal: {
+    headingFont: "Manrope", bodyFont: "Inter",
+    headingWeight: "500", emphasisWeight: "600", bodyWeight: "400", scale: 0.95,
+    satBoost: -10, valBoost: 5,
+    radius: { sm: 2, md: 4, lg: 6, xl: 8, full: 9999 },
+    spacing: { xs: 4, sm: 8, md: 16, lg: 32, xl: 48, xxl: 64, section: 96 },
+  },
+  bold: {
+    // Archivo Black ships a single 400 weight. Asking Google Fonts for
+    // `Archivo+Black:wght@900` is an HTTP 400, and the skill mandates @import
+    // (<link> is stripped on the canvas), so a bad weight here means no font
+    // loads at all — not a fallback weight, the UA default.
+    headingFont: "Archivo Black", bodyFont: "Inter",
+    headingWeight: "400", emphasisWeight: "700", bodyWeight: "500", scale: 1.15,
+    satBoost: 15, valBoost: 0,
+    radius: { sm: 4, md: 8, lg: 12, xl: 20, full: 9999 },
+    spacing: { xs: 4, sm: 8, md: 16, lg: 24, xl: 40, xxl: 56, section: 72 },
+  },
+  elegant: {
+    // Not Playfair/Fraunces/Instrument Serif/Cormorant/DM Serif: those are the
+    // "tasteful" autopilot set the skills now flag by name (src/skills/
+    // frontend-design.md, Typography). Handing one back here would have the
+    // tool contradicting the floor it is supposed to feed.
+    headingFont: "Bodoni Moda", bodyFont: "Karla",
+    headingWeight: "600", emphasisWeight: "700", bodyWeight: "400", scale: 1.05,
+    satBoost: -15, valBoost: 5,
+    radius: { sm: 1, md: 2, lg: 4, xl: 6, full: 9999 },
+    spacing: { xs: 6, sm: 12, md: 20, lg: 36, xl: 56, xxl: 80, section: 112 },
+  },
+  playful: {
+    headingFont: "Baloo 2", bodyFont: "Nunito",
+    headingWeight: "700", emphasisWeight: "700", bodyWeight: "500", scale: 1.1,
+    satBoost: 20, valBoost: 10,
+    radius: { sm: 12, md: 20, lg: 28, xl: 36, full: 9999 },
+    spacing: { xs: 6, sm: 12, md: 20, lg: 28, xl: 40, xxl: 56, section: 72 },
+  },
+  corporate: {
+    headingFont: "IBM Plex Sans", bodyFont: "Source Sans 3",
+    headingWeight: "600", emphasisWeight: "600", bodyWeight: "400", scale: 0.95,
+    satBoost: -10, valBoost: -5,
+    radius: { sm: 2, md: 4, lg: 6, xl: 8, full: 9999 },
+    spacing: { xs: 4, sm: 8, md: 16, lg: 24, xl: 32, xxl: 48, section: 64 },
+  },
+  modern: {
+    headingFont: "Space Grotesk", bodyFont: "Inter",
+    headingWeight: "600", emphasisWeight: "600", bodyWeight: "400", scale: 1,
+    satBoost: 0, valBoost: 0,
+    radius: { sm: 6, md: 10, lg: 14, xl: 20, full: 9999 },
+    spacing: { xs: 4, sm: 8, md: 16, lg: 24, xl: 32, xxl: 48, section: 64 },
+  },
+  retro: {
+    headingFont: "Righteous", bodyFont: "Work Sans",
+    headingWeight: "400", emphasisWeight: "700", bodyWeight: "400", scale: 1,
+    satBoost: -5, valBoost: -10,
+    radius: { sm: 8, md: 14, lg: 20, xl: 28, full: 9999 },
+    spacing: { xs: 4, sm: 8, md: 16, lg: 24, xl: 40, xxl: 56, section: 72 },
+  },
+  brutalist: {
+    // Arial would be idiomatic for brutalism but sits on the skills' overused
+    // list; Inter is legitimate as the reading face under a display voice with
+    // character, which the mono heading supplies.
+    headingFont: "IBM Plex Mono", bodyFont: "Inter",
+    headingWeight: "700", emphasisWeight: "700", bodyWeight: "400", scale: 1.1,
+    satBoost: 25, valBoost: -15,
+    radius: { sm: 0, md: 0, lg: 0, xl: 0, full: 9999 },
+    spacing: { xs: 4, sm: 8, md: 12, lg: 16, xl: 24, xxl: 32, section: 40 },
+  },
+};
+
+type ColorAxis = {
+  primaryHue: number;
+  secondaryHue: number;
+  accentHue: number;
+  saturation: number;
+  value: number;
+  darkMode: boolean;
+};
+
+// Palette hues by `color` tag. None of these fall in the 255-295 hue band
+// (violet/indigo/purple) — that band is deliberately never used as a
+// primary/secondary/accent hue, no matter what `style` multiplies it by,
+// since style only ever adjusts saturation/value, never hue.
+const COLOR_AXIS: Record<string, ColorAxis> = {
+  monochrome: { primaryHue: 0, secondaryHue: 0, accentHue: 40, saturation: 0, value: 20, darkMode: false },
+  vibrant: { primaryHue: 200, secondaryHue: 340, accentHue: 45, saturation: 85, value: 90, darkMode: false },
+  pastel: { primaryHue: 190, secondaryHue: 20, accentHue: 100, saturation: 35, value: 95, darkMode: false },
+  dark: { primaryHue: 165, secondaryHue: 20, accentHue: 45, saturation: 70, value: 85, darkMode: true },
+  light: { primaryHue: 210, secondaryHue: 0, accentHue: 35, saturation: 60, value: 95, darkMode: false },
+  warm: { primaryHue: 15, secondaryHue: 45, accentHue: 355, saturation: 75, value: 90, darkMode: false },
+  cool: { primaryHue: 200, secondaryHue: 175, accentHue: 220, saturation: 65, value: 80, darkMode: false },
+  "earth-tones": { primaryHue: 30, secondaryHue: 90, accentHue: 15, saturation: 45, value: 55, darkMode: false },
+};
+
+const DEFAULT_STYLE = "modern";
+const DEFAULT_COLOR = "monochrome";
+
+// First recognised tag per axis wins; later ones on the same axis are ignored
+// rather than blended, so ["minimal","bold"] resolves to minimal. Blending two
+// style tags would just average them, which is the failure this tool exists to
+// avoid. The `note` tells the caller which tags actually drove the result.
+function pickAxisTag(tags: string[] | undefined, table: Record<string, unknown>, fallback: string): string {
+  const found = (tags ?? []).find((t) => Object.prototype.hasOwnProperty.call(table, t));
+  return found ?? fallback;
+}
+
 export async function getStyleGuideImpl(args: { tags?: string[]; name?: string }): Promise<{
   name: string;
   basedOn: string[];
+  note: string;
   typography: unknown;
   colors: unknown;
   spacing: unknown;
   borderRadius: unknown;
 }> {
   const { tags, name } = args;
+
+  const styleKey = pickAxisTag(tags, STYLE_AXIS, DEFAULT_STYLE);
+  const colorKey = pickAxisTag(tags, COLOR_AXIS, DEFAULT_COLOR);
+  const style = STYLE_AXIS[styleKey];
+  const color = COLOR_AXIS[colorKey];
+
+  const sat = Math.max(0, Math.min(100, color.saturation + style.satBoost));
+  const val = Math.max(0, Math.min(100, color.value + style.valBoost));
+
+  // Tint the ground toward the palette only when the palette HAS a hue — at
+  // saturation 0 ("monochrome") a 4% tint at hue 0 is a pink page, which is
+  // the one thing a monochrome guide must not hand back. Test the FAMILY's own
+  // saturation, not the style-boosted `sat`: bold/playful/brutalist add +15/
+  // +20/+25, so keying off `sat` left "monochrome" achromatic for only the
+  // four styles whose boost happens to be <= 0.
+  const achromatic = color.saturation === 0;
+  const groundSat = achromatic ? 0 : 4;
+  const background = color.darkMode ? hsvToHex(0, 0, 10) : hsvToHex(color.primaryHue, groundSat, 99);
+  const surface = color.darkMode ? hsvToHex(0, 0, 16) : hsvToHex(color.primaryHue, groundSat, 97);
+
+  // primary/secondary/accent are brand roles: they land on buttons, links and
+  // CTAs, so they have to separate from the ground they sit on. `val` carries
+  // the family's own brightness intent, which for a pale family (pastel at
+  // value 95, pushed to 100 by an elegant/playful valBoost) emits a near-white
+  // primary on a near-white background — technically a pastel palette,
+  // practically an invisible button.
+  //
+  // A fixed value cap does not fix this, because how dark a hue must be to
+  // clear a contrast bar depends on the hue: at the same HSV value an amber
+  // (#B89325) carries far more luminance than a blue, and misses 3:1 where the
+  // blue clears it comfortably. So solve for the actual ratio instead of
+  // guessing a cap — step the value toward the legible side until the role
+  // clears WCAG's 3:1 floor for UI components and large text, which is the
+  // right bar for a fill color. Surfaces keep the family's paleness; only the
+  // roles that must be seen are adjusted.
+  const legible = (hue: number, saturation: number, startValue: number): string => {
+    const step = color.darkMode ? 2 : -2;
+    let v = startValue;
+    for (let i = 0; i < 50; i++) {
+      const hex = hsvToHex(hue, saturation, v);
+      if (contrastRatio(hex, background) >= 3) return hex;
+      const next = v + step;
+      if (next < 0 || next > 100) return hex;
+      v = next;
+    }
+    return hsvToHex(hue, saturation, v);
+  };
+
+  // An achromatic family has no hue to tell the three roles apart with, so
+  // `monochrome` used to return four indistinguishable darks (#333333 /
+  // #262626 / #333230) — and since it is DEFAULT_COLOR, that was the guide the
+  // no-tags call handed back: a direction with no usable CTA colour at all.
+  // In a real monochrome system the accent IS value contrast, so separate the
+  // roles on value here instead of on a hue that cannot render.
+  const roleValue = achromatic
+    ? { primary: val, secondary: val + 28, accent: Math.max(4, val - 12) }
+    : { primary: val, secondary: Math.max(0, val - 5), accent: val };
+  const primary = legible(color.primaryHue, sat, roleValue.primary);
+  const secondary = legible(color.secondaryHue, Math.max(0, sat - 10), roleValue.secondary);
+  const accent = legible(color.accentHue, achromatic ? 0 : Math.min(100, sat + 5), roleValue.accent);
+  const text = color.darkMode ? hsvToHex(0, 0, 95) : hsvToHex(0, 0, 10);
+  const textMuted = color.darkMode ? hsvToHex(0, 0, 65) : hsvToHex(0, 0, 42);
+  const border = color.darkMode ? hsvToHex(0, 0, 28) : hsvToHex(0, 0, 88);
+
+  const baseSizes = { h1: 48, h2: 36, h3: 24, h4: 18, body: 16, small: 14, caption: 12 };
+  const sizes = Object.fromEntries(
+    Object.entries(baseSizes).map(([k, v]) => [k, Math.round(v * style.scale)]),
+  ) as typeof baseSizes;
+
   return {
-    name: name ?? "Generated Style Guide",
+    name: name ?? `${styleKey}-${colorKey}`,
     basedOn: tags ?? [],
+    note:
+      `A starting point, not a system to adopt as-is. What varies here is driven by your ` +
+      `\`style\` tag (${styleKey}) and your \`color\` tag (${colorKey}) — the first one of each ` +
+      `that this tool recognises; industry/platform/layout tags are echoed in basedOn but do ` +
+      `not change these values, so do not read them as reflected here. Keep only what you have ` +
+      `a one-clause reason for on THIS design, and treat lifting the guide unchanged as the ` +
+      `tell of a generic AI output.`,
     typography: {
-      headingFont: "Inter",
-      bodyFont: "Inter",
-      sizes: { h1: 48, h2: 36, h3: 24, h4: 18, body: 16, small: 14, caption: 12 },
-      weights: { heading: "700", body: "400", emphasis: "600" },
+      headingFont: style.headingFont,
+      bodyFont: style.bodyFont,
+      sizes,
+      weights: { heading: style.headingWeight, body: style.bodyWeight, emphasis: style.emphasisWeight },
     },
     colors: {
-      primary: "#3B82F6",
-      secondary: "#8B5CF6",
-      accent: "#F59E0B",
-      background: "#FFFFFF",
-      surface: "#F8FAFC",
-      text: "#0F172A",
-      textMuted: "#64748B",
-      border: "#E2E8F0",
+      primary,
+      secondary,
+      accent,
+      background,
+      surface,
+      text,
+      textMuted,
+      border,
+      // Semantic colors are conventional (success=green, error=red,
+      // warning=amber) rather than aesthetic choices, so they stay fixed.
       success: "#22C55E",
       error: "#EF4444",
       warning: "#F59E0B",
     },
-    spacing: { xs: 4, sm: 8, md: 16, lg: 24, xl: 32, xxl: 48, section: 64 },
-    borderRadius: { sm: 4, md: 8, lg: 12, xl: 16, full: 9999 },
+    spacing: style.spacing,
+    borderRadius: style.radius,
   };
 }
 
@@ -1230,7 +1501,7 @@ Returns the created/updated style ids and names (with a created|updated status) 
 
   get_style_guide: tool({
     description:
-      "Get a style guide for design inspiration. Either pass 5-10 tags to find a matching style, or pass a specific name to retrieve a known style guide.",
+      "Get tag-keyed style inspiration to react to — not a system to adopt verbatim. Pass tags from get_style_guide_tags: the returned typography/colors/spacing/radius vary with the `style` and `color` tags specifically (the first recognised one of each); industry/platform/layout tags are echoed back but do not change the values. Pass a name to label the result. Treat what comes back as a starting point: keep only what you have a concrete reason for on this design, and read the `note` field before reusing anything unchanged.",
     inputSchema: z.object({
       tags: z
         .array(z.string())

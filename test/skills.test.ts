@@ -219,6 +219,76 @@ describe("loadSkills / getSkill", () => {
     expect(proto.content).toContain("NO device/OS chrome");
   });
 
+  // The Calibration block is COPY-PASTED into three skills rather than
+  // referenced from one — prototype inlines it so it stays self-sufficient
+  // under one-skill injection, and new-work carries its own. Widening the axis
+  // in one file and not the others is the failure mode this pins: a guardrail
+  // that only two of three carriers enforce is a guardrail with a hole in it.
+  const CALIBRATION_CARRIERS = ["prototype", "frontend-design", "new-work"] as const;
+
+  it("carries the same anti-default Calibration axis in every skill that copies it", () => {
+    for (const name of CALIBRATION_CARRIERS) {
+      const skill = getSkill(name)!;
+      expect(skill, `${name} skill missing`).toBeDefined();
+      // The axis covers BOTH accent bands. Described as a conjunction of
+      // traits ("cream AND serif AND terracotta") it missed every variation,
+      // so it is an axis: a warm ground plus either naturals accent, serif or
+      // not, light or dark.
+      expect(skill.content, name).toMatch(/reassuring-naturals axis/i);
+      expect(skill.content, name).toMatch(/terracotta/i);
+      expect(skill.content, name).toMatch(/forest green/i);
+      // The meta-trap: swapping one default for another is not a fix, so the
+      // escape from the list is a stated reason and never a new palette.
+      expect(skill.content, name).toContain(
+        "A tell is an unspecified default, not a forbidden value.",
+      );
+    }
+  });
+
+  it("makes the naturals-cluster check numeric in the prototype pre-flight", () => {
+    const proto = getSkill("prototype")!;
+    // Checklists work on these models where prose floors do not, and "read the
+    // hue off your own hex" is what stops the check being eyeballed away.
+    expect(proto.content).toContain("NATURALS-CLUSTER CHECK");
+    expect(proto.content).toContain("8–55°");
+    expect(proto.content).toContain("75–160°");
+  });
+
+  it("forbids vague adjectives and reference-averaging in the prototype skill", () => {
+    const proto = getSkill("prototype")!;
+    // An unspecified brief returns the median of the training data, and
+    // "modern / clean / premium / sleek" specify nothing.
+    expect(proto.content).toContain("Vague adjectives are not a direction");
+    // The old wording told the model to synthesize references into their
+    // common threads — i.e. to compute the median of the median. It must not
+    // come back.
+    expect(proto.content).not.toContain("synthesize a cohesive style from their common threads");
+    expect(proto.content).toContain("Never average them.");
+  });
+
+  it("gives the critique skill a numbered, checkable slop-tell scan", () => {
+    const critique = getSkill("critique")!;
+    const heading = "### The slop-tell scan (checkable)";
+    expect(critique.content).toContain(heading);
+    // Count the tells INSIDE the scan section only — the file carries other
+    // numbered lists further down, so counting across the whole document
+    // would still pass with half the tells deleted.
+    const start = critique.content.indexOf(heading) + heading.length;
+    const next = critique.content.indexOf("\n### ", start);
+    const section = critique.content.slice(start, next === -1 ? undefined : next);
+    const tells = section.match(/^\d{1,2}\. \*\*/gm) ?? [];
+    expect(tells.length).toBe(12);
+    // Each tell has to carry its own pass/fail test and say what to record —
+    // that is the whole difference from the prose it replaces.
+    expect(section.match(/Test:/g) ?? []).toHaveLength(12);
+    expect(section.match(/Record:/g) ?? []).toHaveLength(12);
+    // Both assessments must run it, and the verdict must name which fired.
+    expect(critique.content).toContain("name which numbered tells fired");
+    expect(critique.content).toContain(
+      "A tell is an unspecified default, not a forbidden value.",
+    );
+  });
+
   it("searches for slide references before generating deck imagery", () => {
     const slides = getSkill("slides")!;
     const referenceStep = slides.content.indexOf(

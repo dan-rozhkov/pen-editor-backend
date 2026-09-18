@@ -11,6 +11,7 @@ This skill guides creation of distinctive, production-grade frontend interfaces 
 Commit to a BOLD aesthetic direction:
 - **Purpose**: What problem does this interface solve? Who uses it?
 - **Tone**: Pick an extreme: brutally minimal, maximalist chaos, retro-futuristic, organic/natural, luxury/refined, playful/toy-like, editorial/magazine, brutalist/raw, art deco/geometric, soft/pastel, industrial/utilitarian, etc. There are so many flavors to choose from. Use these for inspiration but design one that is true to the aesthetic direction.
+- **Words that carry instruction**: "modern", "clean", "premium", "sleek", "beautiful", "elegant" name no material and no attitude, so they resolve to the category median. Name a material, a place, a discipline, or an attitude instead. If a word in your direction could be swapped for "nice" without changing a single pixel, it is doing no work.
 - **Constraints**: Technical requirements (framework, performance, accessibility).
 - **Differentiation**: What makes this UNFORGETTABLE? What's the one thing someone will remember?
 
@@ -30,8 +31,9 @@ Choose a font that is beautiful, unique, and interesting. Default to a SINGLE di
 
 **DO**: Use a modular type scale with fluid sizing (clamp)
 **DO**: Vary font weights and sizes to create clear visual hierarchy
-**DON'T**: Use overused fonts—Inter, Roboto, Arial, Open Sans, system defaults
-**DON'T**: Mix multiple typefaces by default—one family, varied by weight/size, reads as more intentional
+**DON'T**: Reach for a face on autopilot—Inter, Geist, Roboto, Arial, Open Sans and system defaults on the sans side; Playfair Display, Fraunces, Instrument Serif, Cormorant, DM Serif and DM Sans on the "tasteful" side. The second list only *looks* like taste, which is why it now reads as generated faster than the first.
+**DO**: Use any of them when you can say in one clause what the face does for THIS design—a neutral reading face under a display voice with real character is a choice; the same face chosen because it is what "good" autocompletes to is the tell.
+**DON'T**: Mix multiple typefaces by default—one family, varied by weight/size, reads as more intentional. Two faces split by ROLE, a display voice (titles, large numerals, wordmark) against a reading face (running text, meta, captions), is a real system; a second family that exists only to make a heading bigger is noise.
 **DON'T**: Use monospace typography as lazy shorthand for "technical/developer" vibes
 **DON'T**: Use emoji as icons—load a real icon set (e.g. the Phosphor web font, or an inline SVG set for bespoke aesthetics), never an emoji where a UI glyph belongs
 **DON'T**: Put large icons with rounded corners above every heading—they rarely add value and make sites look templated
@@ -111,6 +113,8 @@ A distinctive interface should make someone ask "how was this made?" not "which 
 
 Review the DON'T guidelines above—they are the fingerprints of AI-generated work from 2024-2025.
 
+Then run it a second time against this year's answer, not last year's: "would someone believe an AI made this *while trying not to look like an AI*?" A cream ground under a serif display with a sage accent passes the first test and fails the second. Both failures have the same cause — a look nobody chose.
+
 ---
 
 ## Implementation Principles
@@ -167,6 +171,14 @@ Surface habits:
 
 ### Calibration (anti-default self-check)
 
-Name the AI-cluster looks so you can catch yourself reaching for one by reflex: warm cream + high-contrast serif + terracotta/signal-red; near-black + one neon accent + glow; broadsheet hairlines + italic serif + tracked mono labels. Where the brief leaves the aesthetic free, if someone could guess your aesthetic from the category alone, rework it. Book, warm, or child-oriented subjects do not license cream+serif by default. A brief-pinned world pins the world itself, not its softest, safest rendition.
+Name the AI-cluster looks so you can catch yourself reaching for one by reflex:
+
+- **The reassuring-naturals axis (most common failure):** any warm ground — cream, sand, beige, warm off-white, warm taupe, *or* warm-dark brown/espresso — paired with an accent from the naturals band: terracotta / rust / amber / burnt-orange **or** sage / olive / moss / forest green. Either accent lands you in this cluster. It counts **with or without** the serif display, in light **or** dark, on sans type, at any saturation. Cream + a serif + forest green is the same cluster as cream + a serif + terracotta: it is the look the previous round of anti-slop advice produced, which is exactly why it now reads as generated.
+- Near-black + one neon accent + glowing edges.
+- Broadsheet-editorial hairlines + italic serif + tracked mono labels.
+
+Where the brief leaves the aesthetic free, if someone could guess your aesthetic from the category alone, rework it. Book, warm, or child-oriented subjects do not license the naturals axis by default. A brief-pinned world pins the world itself, not its softest, safest rendition.
+
+**A tell is an unspecified default, not a forbidden value.** Every look on this list was once somebody's fix for the previous one, so trading one default for another resets the clock instead of solving anything. What takes a choice off this list is a reason you can state in one clause — from the brief, the subject, or the committed world — never a different palette. A colour, face, or layout the brief actually asked for is not slop, whatever it is.
 
 The floor holds the mechanics; it never picks the direction. With every check green, spend the page on the committed world; when torn between refined and committed, commit.

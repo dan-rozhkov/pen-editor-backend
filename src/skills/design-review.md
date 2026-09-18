@@ -47,6 +47,11 @@ Walk the subtree and check, per `scope` (or all of these if no scope was given):
   inconsistent values, especially inconsistent gaps between visually similar rows.
 - **Consistency**: repeated components (cards, buttons, list rows) that drifted from
   each other — mismatched corner radius, spacing, or color where they should match.
+- **Unchosen defaults**: an element whose color, face, radius, or structure matches a
+  known category default (warm-neutral palette, AI-purple accent, generic sans, single
+  reused radius, hero-then-equal-cards skeleton) with no backing in the loaded style
+  guide or the design's own direction contract. File it against "no style rule backs
+  this value" so it stays checkable — not against taste.
 
 For each real finding, note: the exact `nodeId`, what's wrong, and which guideline or
 style rule it violates.

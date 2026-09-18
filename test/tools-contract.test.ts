@@ -805,6 +805,7 @@ describe("get_style_guide schema + execute", () => {
     const named = (await execute({ name: "Acme" })) as {
       name: string;
       basedOn: string[];
+      note: string;
       typography: unknown;
       colors: unknown;
     };
@@ -812,12 +813,16 @@ describe("get_style_guide schema + execute", () => {
     expect(named.basedOn).toEqual([]);
     expect(named.typography).toBeDefined();
     expect(named.colors).toBeDefined();
+    expect(typeof named.note).toBe("string");
+    expect(named.note.length).toBeGreaterThan(0);
 
     const tagged = (await execute({ tags: ["minimal", "dark"] })) as {
       name: string;
       basedOn: string[];
     };
-    expect(tagged.name).toBe("Generated Style Guide");
+    // The name is no longer a single hardcoded string — it reflects the
+    // tags that drove the generated guide.
+    expect(tagged.name).not.toBe("Generated Style Guide");
     expect(tagged.basedOn).toEqual(["minimal", "dark"]);
   });
 });

@@ -63,7 +63,19 @@ Choose fonts like objects from the subject's world, in the mode's register. Oper
 
 Fraunces, Playfair Display, Cormorant, Lora, Crimson, Newsreader, Syne, Space Grotesk, Space Mono, IBM Plex, Inter-as-display, DM Sans, DM Serif, Outfit, Plus Jakarta Sans, Instrument Sans.
 
-**Calibration:** AI-generated interfaces cluster around a few looks regardless of subject — warm cream ground with a high-contrast serif display and a terracotta/signal-red accent; near-black with one neon accent and glowing edges; broadsheet-editorial hairlines with an italic display serif and small tracked mono labels. All are legitimate when the brief calls for them; the brief always wins. Where the brief leaves the aesthetic free, landing in one of them means the self-check failed — if someone could guess your aesthetic from the category alone, rework until that's no longer true. A bookish, warm, or child-facing subject does not license cream+serif by default: book cloth, thread, jackets, endpapers, and shelf ephemera span the whole saturated spectrum, and cream paper is only the smallest corner of that world. A brief-pinned world pins the world, not its softest rendition — the pinned world's full material range stays in play.
+**Calibration:** AI-generated interfaces cluster around a few looks regardless of subject. These are **axes**, not three exact pictures — matching the axis is enough, and dropping one trait does not exempt you.
+
+- **The reassuring-naturals axis (most common failure):** any warm ground — cream, sand, beige, warm off-white, warm taupe, *or* warm-dark brown/espresso — carrying an accent from the naturals band: terracotta / rust / amber / burnt-orange **or** sage / olive / moss / forest green. Either accent lands you in this cluster, with or without the serif display, in light or dark, on sans type, at any saturation. Cream with a serif and forest green is the same cluster as cream with a serif and terracotta: it is the look the previous round of anti-slop advice produced, which is exactly why it now reads as generated.
+- Near-black with one neon accent and glowing edges.
+- Broadsheet-editorial hairlines with an italic display serif and small tracked mono labels.
+
+All are legitimate when the brief calls for them; the brief always wins. Where the brief leaves the aesthetic free, landing in one of them means the self-check failed — if someone could guess your aesthetic from the category alone, rework until that's no longer true. A bookish, warm, or child-facing subject does not license the naturals axis by default: book cloth, thread, jackets, endpapers, and shelf ephemera span the whole saturated spectrum, and cream paper is only the smallest corner of that world. A brief-pinned world pins the world, not its softest rendition — the pinned world's full material range stays in play.
+
+**A tell is an unspecified default, not a forbidden value.** Every look above was once somebody's fix for the previous one, so trading one default for another resets the clock instead of solving anything. What takes a choice off this list is a reason you can state in one clause — from the brief, the subject, or the committed world — never a different palette.
+
+Name the world in words that would fail as a caption for anything else: a material, a place, a discipline, an attitude. "Modern," "clean," "premium," and "sleek" describe the category median, not a world — they survive being applied to the opposite design unchanged, which is the tell.
+
+When references are in hand, do not average them: naming their common thread is naming the median, which is the generated look with extra steps. Take one specific, nameable quality from each reference and state why it earns its place, plus one thing from that same reference deliberately left behind — then let the committed world, not the reference set, reconcile the mix.
 
 ## 5. Record the decision
 
