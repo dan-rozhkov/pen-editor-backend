@@ -224,6 +224,29 @@ describe("mcpRoutes — HTTP (auth enabled)", () => {
     );
   });
 
+  // OpenCode BYOK (docs/specs/2026-09-18-opencode-byok-design.md): the
+  // browser sends the user's own OpenCode key as X-OpenCode-Key on
+  // POST /api/chat whenever the picked model is an OpenCode one. This header
+  // is answered by the SAME global cors plugin exercised above (the
+  // allowlist is shared across every route, not just /api/mcp) — a missing
+  // entry here means a real cross-origin chat request carrying the header
+  // dies on preflight before src/routes/chat.ts ever sees it.
+  it("allows the X-OpenCode-Key header on preflight", async () => {
+    const res = await app.inject({
+      method: "OPTIONS",
+      url: "/api/mcp",
+      headers: {
+        origin: "https://example.com",
+        "access-control-request-method": "POST",
+        "access-control-request-headers": "x-opencode-key",
+      },
+    });
+    expect(res.statusCode).toBe(204);
+    expect(res.headers["access-control-allow-headers"]).toContain(
+      "X-OpenCode-Key",
+    );
+  });
+
 
   it("reflects an allowed origin's CORS header even on a 401", async () => {
     const res = await app.inject({

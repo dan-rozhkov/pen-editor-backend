@@ -6,6 +6,8 @@ import {
   isOriginAllowed,
   parseEnvList,
 } from "../src/config.js";
+import { bareModelId, parseModelRef } from "../src/ai/modelRef.js";
+import { OPENCODE_CHAT_COMPLETIONS_MODELS } from "../src/ai/opencode.js";
 import { makeConfig } from "./helpers.js";
 
 describe("parseEnvList", () => {
@@ -83,6 +85,106 @@ describe("DEFAULT_MODELS", () => {
         supportsVision: true,
       },
       { id: "z-ai/glm-5.2", label: "GLM 5.2", supportsVision: false },
+      {
+        id: "opencode-go/deepseek-v4.1-flash",
+        label: "DeepSeek V4.1 Flash · Go",
+        supportsVision: false,
+        requiresUserKey: true,
+      },
+      {
+        id: "opencode-go/deepseek-v4-flash-vision-exp",
+        label: "DeepSeek V4 Flash Vision · Go",
+        supportsVision: true,
+        requiresUserKey: true,
+      },
+      {
+        id: "opencode-go/glm-5.3-flash",
+        label: "GLM 5.3 Flash · Go",
+        supportsVision: false,
+        requiresUserKey: true,
+      },
+      {
+        id: "opencode-go/glm-5.3",
+        label: "GLM 5.3 · Go",
+        supportsVision: false,
+        requiresUserKey: true,
+      },
+      {
+        id: "opencode-go/glm-5.2",
+        label: "GLM 5.2 · Go",
+        supportsVision: false,
+        requiresUserKey: true,
+      },
+      {
+        id: "opencode/deepseek-v4-flash",
+        label: "DeepSeek V4 Flash · Zen",
+        supportsVision: false,
+        requiresUserKey: true,
+      },
+      {
+        id: "opencode/glm-5.3-flash",
+        label: "GLM 5.3 Flash · Zen",
+        supportsVision: false,
+        requiresUserKey: true,
+      },
+      {
+        id: "opencode/kimi-k2.7-code",
+        label: "Kimi K2.7 Code · Zen",
+        supportsVision: false,
+        requiresUserKey: true,
+      },
+    ]);
+  });
+
+  const openCodeModels = DEFAULT_MODELS.filter((model) =>
+    ["opencode", "opencode-go"].includes(parseModelRef(model.id).provider),
+  );
+
+  it("has at least the eight OpenCode BYOK entries this task added", () => {
+    expect(openCodeModels.length).toBeGreaterThanOrEqual(8);
+  });
+
+  it("marks every OpenCode entry requiresUserKey: true", () => {
+    for (const model of openCodeModels) {
+      expect(model.requiresUserKey, model.id).toBe(true);
+    }
+  });
+
+  it("labels every Go entry with the · Go suffix and every Zen entry with · Zen", () => {
+    for (const model of openCodeModels) {
+      const provider = parseModelRef(model.id).provider;
+      const suffix = provider === "opencode-go" ? " · Go" : " · Zen";
+      expect(model.label.endsWith(suffix), model.id).toBe(true);
+    }
+  });
+
+  // bareModelId must return the OpenCode entry VERBATIM, prefix and all —
+  // regression guard for task 1's "bare and provider-qualified are the same
+  // string" invariant (src/ai/modelRef.ts).
+  it("round-trips every OpenCode entry's id through bareModelId unchanged", () => {
+    for (const model of openCodeModels) {
+      expect(bareModelId(model.id)).toBe(model.id);
+    }
+  });
+
+  // Every OpenCode DEFAULT_MODELS entry must be an id createOpenCodeModel can
+  // actually serve — otherwise a model only reachable from the /responses or
+  // /messages endpoint family could be picked in the composer and fail only
+  // in production (src/ai/opencode.ts's allowlist guard would throw at
+  // request time, not at any test or CI step).
+  it("has every OpenCode entry present in the matching OPENCODE_CHAT_COMPLETIONS_MODELS allowlist", () => {
+    for (const model of openCodeModels) {
+      const { provider, modelId } = parseModelRef(model.id);
+      const allowlist =
+        OPENCODE_CHAT_COMPLETIONS_MODELS[provider as "opencode" | "opencode-go"];
+      expect(allowlist, model.id).toContain(modelId);
+    }
+  });
+
+  it("has deepseek-v4-flash-vision-exp as the only vision-capable OpenCode entry", () => {
+    const visionCapable = openCodeModels.filter((m) => m.supportsVision);
+    expect(visionCapable.map((m) => m.id)).toEqual([
+      "opencode-go/deepseek-v4-flash-vision-exp",
     ]);
   });
 });

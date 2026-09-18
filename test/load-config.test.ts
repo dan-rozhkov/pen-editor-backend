@@ -337,3 +337,73 @@ describe("loadConfig deepseek: model rejection", () => {
     expect(() => loadConfig()).toThrow("process.exit(1)");
   });
 });
+
+// OpenCode BYOK (docs/specs/2026-09-18-opencode-byok-design.md): there is no
+// server-side OpenCode key, so none of the four model env vars may ever
+// resolve to an OpenCode reference — neither the colon form (which
+// parseModelRef doesn't even recognize, and would otherwise silently ship
+// upstream as a bogus bare OpenRouter id) nor the real slash form (which IS
+// a valid OpenCode reference, but one none of these vars can ever actually
+// use, since they're all resolved without a per-request user key).
+describe("loadConfig opencode: / opencode-go: model rejection", () => {
+  it.each(["CHAT_MODEL", "STRUCTURED_MODEL", "ANALYSIS_MODEL", "VISION_MODEL"])(
+    "exits loudly when %s carries the colon form opencode-go:glm-5.3-flash",
+    (name) => {
+      process.env = {
+        ...BASE_ENV,
+        [name]: "opencode-go:glm-5.3-flash",
+      } as NodeJS.ProcessEnv;
+      expect(() => loadConfig()).toThrow("process.exit(1)");
+      expect(console.error).toHaveBeenCalledWith(expect.stringContaining(name));
+    },
+  );
+
+  it.each(["CHAT_MODEL", "STRUCTURED_MODEL", "ANALYSIS_MODEL", "VISION_MODEL"])(
+    "exits loudly when %s carries the colon form opencode:deepseek-v4-flash",
+    (name) => {
+      process.env = {
+        ...BASE_ENV,
+        [name]: "opencode:deepseek-v4-flash",
+      } as NodeJS.ProcessEnv;
+      expect(() => loadConfig()).toThrow("process.exit(1)");
+      expect(console.error).toHaveBeenCalledWith(expect.stringContaining(name));
+    },
+  );
+
+  it.each(["CHAT_MODEL", "STRUCTURED_MODEL", "ANALYSIS_MODEL", "VISION_MODEL"])(
+    "exits loudly when %s carries the valid slash form opencode-go/glm-5.3-flash",
+    (name) => {
+      process.env = {
+        ...BASE_ENV,
+        [name]: "opencode-go/glm-5.3-flash",
+      } as NodeJS.ProcessEnv;
+      expect(() => loadConfig()).toThrow("process.exit(1)");
+      expect(console.error).toHaveBeenCalledWith(expect.stringContaining(name));
+    },
+  );
+
+  it.each(["CHAT_MODEL", "STRUCTURED_MODEL", "ANALYSIS_MODEL", "VISION_MODEL"])(
+    "exits loudly when %s carries the valid slash form opencode/deepseek-v4-flash",
+    (name) => {
+      process.env = {
+        ...BASE_ENV,
+        [name]: "opencode/deepseek-v4-flash",
+      } as NodeJS.ProcessEnv;
+      expect(() => loadConfig()).toThrow("process.exit(1)");
+      expect(console.error).toHaveBeenCalledWith(expect.stringContaining(name));
+    },
+  );
+
+  // Ordinary OpenRouter values (including ones with unrelated colons/slashes)
+  // must keep booting normally — this rejection must not overreach.
+  it("does not reject ordinary OpenRouter model refs", () => {
+    process.env = {
+      ...BASE_ENV,
+      CHAT_MODEL: "openai/gpt-4o:extended",
+      STRUCTURED_MODEL: "openrouter:deepseek/deepseek-v4.1-flash",
+      ANALYSIS_MODEL: "google/gemini-2.5-flash",
+      VISION_MODEL: "openrouter:google/gemini-2.5-flash",
+    } as NodeJS.ProcessEnv;
+    expect(() => loadConfig()).not.toThrow();
+  });
+});

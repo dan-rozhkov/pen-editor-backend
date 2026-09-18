@@ -79,6 +79,14 @@ describe("getModels", () => {
       expect(models).toEqual(DEFAULT_MODELS);
     });
   });
+
+  it("carries requiresUserKey through unmodified for every model, including OpenCode entries", () => {
+    const models = getModels(makeConfig({ CHAT_MODEL: DEFAULT_MODELS[0].id }));
+    const opencode = models.find((m) => m.id === "opencode-go/glm-5.3-flash");
+    expect(opencode?.requiresUserKey).toBe(true);
+    const openrouter = models.find((m) => m.id === DEFAULT_MODELS[0].id);
+    expect(openrouter?.requiresUserKey).toBeUndefined();
+  });
 });
 
 describe("GET /api/models", () => {
@@ -111,6 +119,24 @@ describe("GET /api/models", () => {
     // VISION_MODEL defaults to a non-empty value in makeConfig(), so the
     // server reports it can fall back to auxiliary vision for any model.
     expect(body.visionFallback).toBe(true);
+  });
+
+  // OpenCode BYOK (docs/specs/2026-09-18-opencode-byok-design.md): the
+  // picker needs requiresUserKey on every entry to draw the lock icon.
+  // Server-side config gates nothing here — there's no server key to gate
+  // against — so every OpenCode entry must come back regardless of config.
+  it("serves requiresUserKey: true on OpenCode entries and omits it on OpenRouter entries", async () => {
+    const base = await start(makeConfig({ CHAT_MODEL: DEFAULT_MODELS[0].id }));
+    const res = await fetch(`${base}/api/models`);
+    const body = (await res.json()) as { models: ModelOption[] };
+
+    const openRouterEntry = body.models.find((m) => m.id === DEFAULT_MODELS[0].id);
+    expect(openRouterEntry?.requiresUserKey).toBeUndefined();
+
+    const openCodeEntry = body.models.find(
+      (m) => m.id === "opencode-go/glm-5.3-flash",
+    );
+    expect(openCodeEntry?.requiresUserKey).toBe(true);
   });
 
   it("reports visionFallback: false when VISION_MODEL is empty", async () => {

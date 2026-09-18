@@ -15,7 +15,18 @@ export async function registerCors(app: FastifyInstance, config: Config) {
     // config is what a real cross-origin MCP client (e.g. the MCP
     // Inspector) actually sees on preflight.
     methods: ["GET", "POST", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "Mcp-Session-Id"],
+    // X-OpenCode-Key: the browser-only OpenCode BYOK header (see
+    // docs/specs/2026-09-18-opencode-byok-design.md, "Поток ключа") sent on
+    // POST /api/chat when the picked model is an OpenCode one. This is an
+    // explicit allowlist, not a wildcard — without this entry, any real
+    // cross-origin browser request carrying that header dies on the CORS
+    // preflight before it ever reaches the chat route handler.
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "Mcp-Session-Id",
+      "X-OpenCode-Key",
+    ],
     exposedHeaders: ["Mcp-Session-Id"],
   });
 }

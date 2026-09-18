@@ -5,6 +5,13 @@ import { isVisionConfigured } from "../services/vision.js";
 // Exposes the chat model list (with UI metadata) so the frontend has a single
 // source of truth instead of mirroring the list. The shape is derived from the
 // same config helpers used to validate model overrides in the chat route.
+//
+// Every entry's `requiresUserKey` flows straight from DEFAULT_MODELS/getModels
+// (src/config.ts) with no transformation here: `true` for the OpenCode BYOK
+// entries, and simply ABSENT (not `false`) for every OpenRouter entry, since
+// ModelOption never sets the field for those and JSON.stringify drops an
+// undefined property. The frontend's picker treats "absent" and "false" the
+// same way (no lock icon, no key required) — see chatModels.ts.
 export async function modelsRoutes(app: FastifyInstance, config: Config) {
   const models = getModels(config);
   const defaultModel = getDefaultModel(config);

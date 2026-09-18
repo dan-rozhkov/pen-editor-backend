@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { bareModelId } from "./ai/modelRef.js";
+import { bareModelId, isOpenCodeProvider, parseModelRef } from "./ai/modelRef.js";
 
 /**
  * Completed user turns between background memory reviews.
@@ -359,6 +359,56 @@ function rejectDeepSeekModelRef(env: Record<string, string | undefined>): void {
   }
 }
 
+// The four model env vars that OpenCode BYOK (docs/specs/2026-09-18-opencode-
+// byok-design.md) must never reach, and why both spellings are rejected:
+//
+// 1. The COLON form ("opencode-go:glm-5.3-flash", "opencode:deepseek-v4-
+//    flash") is not something parseModelRef recognizes at all — only the
+//    SLASH form ("opencode-go/...", "opencode/...") is a real OpenCode
+//    reference (see src/ai/modelRef.ts). Left alone, a colon-prefixed value
+//    would be read as a bare OpenRouter id and shipped upstream as a model
+//    name that doesn't exist there — same failure shape as the "deepseek:"
+//    mistake rejectDeepSeekModelRef guards above, so it gets the same
+//    loud-boot-failure treatment rather than a silent 404 on every turn.
+// 2. The SLASH form is a real, parseable OpenCode reference — and it is
+//    STILL rejected here, for a different reason: CHAT_MODEL,
+//    STRUCTURED_MODEL, ANALYSIS_MODEL and VISION_MODEL are all resolved with
+//    NO per-request user key (createModel's opencodeApiKey only ever comes
+//    from the chat route's X-OpenCode-Key header on a live request — see the
+//    spec's "Серверного OPENCODE_API_KEY не существует"). An OpenCode model
+//    as any of these four defaults could never answer a single request, on
+//    any deployment, ever — that is a boot-time misconfiguration, not a
+//    runtime one. CHAT_MODEL is included here (not just the three "helper"
+//    vars) for the same reason: there is no server-side key for it either.
+function rejectOpenCodeModelRef(env: Record<string, string | undefined>): void {
+  const OPENCODE_COLON_PREFIXES = ["opencode-go:", "opencode:"];
+  for (const name of ["CHAT_MODEL", "STRUCTURED_MODEL", "ANALYSIS_MODEL", "VISION_MODEL"]) {
+    const value = env[name];
+    if (!value) continue;
+    const colonPrefix = OPENCODE_COLON_PREFIXES.find((prefix) => value.startsWith(prefix));
+    if (colonPrefix) {
+      console.error(
+        `${name} is set to "${value}", but parseModelRef does not recognize a ` +
+          `colon-prefixed OpenCode reference — OpenCode model ids use a SLASH ` +
+          `prefix instead (e.g. "opencode-go/glm-5.3-flash"). Left as-is, this ` +
+          "value would be silently sent to OpenRouter as a nonexistent bare " +
+          "model id.",
+      );
+      process.exit(1);
+    }
+    if (isOpenCodeProvider(parseModelRef(value).provider)) {
+      console.error(
+        `${name} is set to "${value}", an OpenCode model reference — but there ` +
+          "is no server-side OpenCode API key (OpenCode is BYOK-only; see " +
+          "docs/specs/2026-09-18-opencode-byok-design.md). This var is resolved " +
+          "without a per-request user key, so it could never actually answer a " +
+          "request. Use an OpenRouter model here instead.",
+      );
+      process.exit(1);
+    }
+  }
+}
+
 export function loadConfig(): Config {
   const env: Record<string, string | undefined> = { ...process.env };
   for (const [newName, oldName] of LEGACY_ENV_ALIASES) {
@@ -367,6 +417,7 @@ export function loadConfig(): Config {
     }
   }
   rejectDeepSeekModelRef(env);
+  rejectOpenCodeModelRef(env);
   const result = envSchema.safeParse(env);
   if (!result.success) {
     console.error("Invalid environment variables:", result.error.format());
@@ -398,10 +449,23 @@ export interface ModelOption {
   id: string;
   label: string;
   supportsVision: boolean;
+  /**
+   * True when this model only ever works with a key the USER entered in
+   * their own browser — there is no server-side key for it at all (see
+   * docs/specs/2026-09-18-opencode-byok-design.md, "Серверного
+   * OPENCODE_API_KEY не существует"). Absent/false for every OpenRouter
+   * entry, which the server can always answer for on its own. getModels()
+   * never filters these out and never gates them on anything server-side —
+   * there is no server-side key to gate against, so the lock icon (and
+   * whether the picker is usable) is entirely a frontend decision based on
+   * whether the browser has a key stored.
+   */
+  requiresUserKey?: boolean;
 }
 
-// The models a user may pick in the composer, with UI metadata. Every id
-// here is an OpenRouter id, bare (see the central invariant in
+// The models a user may pick in the composer, with UI metadata. The first
+// ten ids are bare OpenRouter ids; the eight OpenCode BYOK entries below them
+// are bare in their OWN sense too (see the central invariant in
 // src/ai/modelRef.ts: bareModelId — GET /api/models, raw_traces and the
 // showcase gallery's `model` column must only ever see the bare id, never an
 // "openrouter:" prefix). This list powers GET /api/models (the frontend
@@ -467,6 +531,82 @@ export const DEFAULT_MODELS: ModelOption[] = [
     id: "z-ai/glm-5.2",
     label: "GLM 5.2",
     supportsVision: false,
+  },
+  // --- OpenCode BYOK (docs/specs/2026-09-18-opencode-byok-design.md) ---
+  // Eight entries, five on Go ($10/mo flat subscription) and three on Zen
+  // (pay-as-you-go) — every id here is the SLASH-prefixed form
+  // ("opencode-go/<id>" / "opencode/<id>") parseModelRef recognizes, kept
+  // verbatim by bareModelId (see the central invariant in
+  // src/ai/modelRef.ts): for these two providers "bare" and
+  // "provider-qualified" are the same string, unlike the legacy
+  // "openrouter:" colon form. All eight carry `requiresUserKey: true` — see
+  // getModels()/ModelOption above for what that means: there is no server
+  // key, so nothing here is ever filtered by config, only by whether the
+  // requesting browser has stored its own OpenCode key.
+  //
+  // `supportsVision: false` on seven of the eight is deliberate, NOT
+  // copy-paste laziness. Their OpenRouter twins (e.g.
+  // "deepseek/deepseek-v4.1-flash" above) are `true`, but vision here is a
+  // property of the OpenCode /chat/completions ENDPOINT, not of the model
+  // family — and it has never been verified live on this route (see
+  // providerHandlesToolResultImages in src/ai/modelRef.ts: OpenCode's
+  // @ai-sdk/openai-compatible integration is already known to stringify a
+  // tool-result image, a DIFFERENT axis from whether a user-attached image
+  // reaches the model at all). An unverified `true` here would mean an
+  // attached image silently goes nowhere while the model confidently
+  // hallucinates about it. These flags get raised to `true` only after a
+  // real live smoke test against the OpenCode endpoint, never speculatively.
+  // The one exception, "deepseek-v4-flash-vision-exp", is exempt because
+  // OpenCode's own Go docs explicitly describe it as accepting images, billed
+  // by image size — that's a documented endpoint property, not an inference
+  // from the model's name.
+  {
+    id: "opencode-go/deepseek-v4.1-flash",
+    label: "DeepSeek V4.1 Flash · Go",
+    supportsVision: false,
+    requiresUserKey: true,
+  },
+  {
+    id: "opencode-go/deepseek-v4-flash-vision-exp",
+    label: "DeepSeek V4 Flash Vision · Go",
+    supportsVision: true,
+    requiresUserKey: true,
+  },
+  {
+    id: "opencode-go/glm-5.3-flash",
+    label: "GLM 5.3 Flash · Go",
+    supportsVision: false,
+    requiresUserKey: true,
+  },
+  {
+    id: "opencode-go/glm-5.3",
+    label: "GLM 5.3 · Go",
+    supportsVision: false,
+    requiresUserKey: true,
+  },
+  {
+    id: "opencode-go/glm-5.2",
+    label: "GLM 5.2 · Go",
+    supportsVision: false,
+    requiresUserKey: true,
+  },
+  {
+    id: "opencode/deepseek-v4-flash",
+    label: "DeepSeek V4 Flash · Zen",
+    supportsVision: false,
+    requiresUserKey: true,
+  },
+  {
+    id: "opencode/glm-5.3-flash",
+    label: "GLM 5.3 Flash · Zen",
+    supportsVision: false,
+    requiresUserKey: true,
+  },
+  {
+    id: "opencode/kimi-k2.7-code",
+    label: "Kimi K2.7 Code · Zen",
+    supportsVision: false,
+    requiresUserKey: true,
   },
 ];
 
