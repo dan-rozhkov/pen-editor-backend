@@ -42,6 +42,8 @@ Pinterest search is the worked example:
 
 `browse_act` also supports `click`/`type` (target a CSS selector or just the visible text) and `back`/`forward`, so you can click into a specific pin, a related-search chip, or navigate elsewhere entirely — the browser tab is a normal tab, not limited to Pinterest.
 
+**`browse_task` is the "just get me there" path.** Reach for `browse_open`/`browse_act`/`browse_find_images` when you already know the exact URL and just need to land on it or read a page you're already on — each of those is one chat turn per step. `browse_task({ goal })` instead runs a WHOLE multi-step task (search, click through a cookie banner or login wall, pick a facet) in one call, driven by a cheap decision loop rather than the design model, and is the right choice whenever there is no clean URL to open directly — "search this site for X and open the first result" rather than a URL you can type. It shares the same browser tab, so the two approaches compose: `browse_open` to land on a site, then `browse_task` to work your way to a specific page on it, then `browse_find_images` to read what's there.
+
 Keep Mobbin as the curated-catalogue path whenever its tools are present — it gives you `mobbin_url` citations and vetted, deduplicated screens that a raw web search doesn't. The built-in browser is what to reach for when Mobbin isn't connected, or when the reference you need (a specific live site, a Pinterest board, anything outside Mobbin's catalogue) isn't something Mobbin indexes.
 
 ## The Mobbin Tools

@@ -905,18 +905,33 @@ export async function prepareChatTurn(
     // it before the request goes out.
     delete tools.attach_local_repo;
 
-    // Structural gate: browse_open/browse_act/browse_find_images are
-    // client-executed against a browser tab that only exists inside the
+    // Structural gate: browse_open/browse_act/browse_find_images/browse_task
+    // are client-executed against a browser tab that only exists inside the
     // Electron shell (pen-editor-desktop's BrowserController, driven over
     // window.penDesktop.browser) — a browser-hosted session has no such
     // bridge, so offering these there could only waste a tool-call step,
     // the same reasoning as the attach_local_repo gate just above. The flag
     // is derived once at module scope on the frontend (useDesignChat.ts) so
     // it can't vary mid-conversation and invalidate the cached tool set.
+    // browse_task additionally drives POST /api/browse/step (Jev) from the
+    // frontend's own loop, but that's a frontend/backend detail — the gate
+    // here is purely about whether the desktop browser bridge exists.
     if (!input.clientCapabilities?.desktopBrowser) {
       delete tools.browse_open;
       delete tools.browse_act;
       delete tools.browse_find_images;
+      delete tools.browse_task;
+    }
+
+    // Key gate, browse_task only: unlike browse_open/browse_act/
+    // browse_find_images (which act on the browser tab directly, no
+    // backend call involved), browse_task's loop calls POST
+    // /api/browse/step, which 503s outright without TYPESAFE_API_KEY. Left
+    // ungated, every browse_task call would burn its whole step budget on
+    // identical 503s instead of never being offered — the same reasoning
+    // as the FAL_KEY gate on remove_background/vectorize_image just below.
+    if (!config.TYPESAFE_API_KEY) {
+      delete tools.browse_task;
     }
 
     // Structural gate: remove_background/vectorize_image are client-executed

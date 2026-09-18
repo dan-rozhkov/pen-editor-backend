@@ -1872,4 +1872,19 @@ Returns the created/updated style ids and names (with a created|updated status) 
       limit: z.number().optional().describe("Maximum number of images to return. Default 30, hard cap 100."),
     }),
   }),
+
+  browse_task: tool({
+    description:
+      "Run a WHOLE multi-step browsing task in the built-in browser tab in ONE call — navigate, click through a cookie banner or login wall, fill a search box, select a facet — without spending a chat turn per step. Internally this repeats snapshot -> a cheap decision model -> act, driven by Jev (not the design model), until the goal is reached, nothing more can be done, or the step/time budget runs out. Use this instead of browse_open/browse_act when there is no single clean URL to open directly — e.g. \"search this site for X and open the first result\", or \"dismiss the cookie banner and get to the pricing page\". Prefer browse_open when you already know the exact URL and just need to land on it; prefer browse_find_images once you're on a page and want its images. Returns a transcript: `{ status: \"done\" | \"blocked\" | \"budget\", steps: [{ operation, label, ok }], url, title, reason? }`. Never types into a password field — the user logs in themselves in the visible tab.",
+    inputSchema: z.object({
+      goal: z.string().min(1).describe("Plain-language description of what to accomplish in the browser, e.g. \"search this site for wireless headphones and open the first result\"."),
+      maxSteps: z
+        .number()
+        .int()
+        .positive()
+        .max(25)
+        .optional()
+        .describe("Maximum number of snapshot/decide/act cycles. Default 12, hard cap 25."),
+    }),
+  }),
 };

@@ -341,6 +341,56 @@ describe("prepareChatTurn", () => {
     });
   });
 
+  describe("browse_task key gate", () => {
+    // browse_task, unlike its browse_open/browse_act/browse_find_images
+    // siblings, drives POST /api/browse/step (Jev) from the frontend's own
+    // loop — that route 503s outright without TYPESAFE_API_KEY. Gate it
+    // the same way remove_background/vectorize_image are gated on FAL_KEY,
+    // so the tool is never advertised only to fail every call.
+    it("is absent when TYPESAFE_API_KEY is unset, even with desktopBrowser", async () => {
+      const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+      const { penTools } = await import("../src/ai/tools.js");
+
+      expect(penTools.browse_task).toBeDefined();
+
+      const messages = [userMessage("log in and get to the pricing page")];
+      const turn = await prepareChatTurn({
+        config: makeConfig({ TYPESAFE_API_KEY: undefined }),
+        messages,
+        clientCapabilities: { desktopBrowser: true },
+      });
+
+      expect(turn.tools.browse_task).toBeUndefined();
+      // Its siblings are unaffected by the key gate.
+      expect(turn.tools.browse_open).toBeDefined();
+    });
+
+    it("is present when both desktopBrowser and TYPESAFE_API_KEY are set", async () => {
+      const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+
+      const messages = [userMessage("log in and get to the pricing page")];
+      const turn = await prepareChatTurn({
+        config: makeConfig({ TYPESAFE_API_KEY: "key" }),
+        messages,
+        clientCapabilities: { desktopBrowser: true },
+      });
+
+      expect(turn.tools.browse_task).toBeDefined();
+    });
+
+    it("is absent without desktopBrowser even when TYPESAFE_API_KEY is set", async () => {
+      const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+
+      const messages = [userMessage("log in and get to the pricing page")];
+      const turn = await prepareChatTurn({
+        config: makeConfig({ TYPESAFE_API_KEY: "key" }),
+        messages,
+      });
+
+      expect(turn.tools.browse_task).toBeUndefined();
+    });
+  });
+
   describe("analyze_image gate", () => {
     it("is absent with no VISION_MODEL — it would have nothing to call", async () => {
       const { prepareChatTurn } = await import("../src/ai/chatTurn.js");

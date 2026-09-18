@@ -63,6 +63,7 @@ describe("penTools registry", () => {
         "browse_open",
         "browse_act",
         "browse_find_images",
+        "browse_task",
       ].sort(),
     );
   });
@@ -116,6 +117,7 @@ describe("penTools registry", () => {
       "browse_open",
       "browse_act",
       "browse_find_images",
+      "browse_task",
     ] as const) {
       expect(hasExecute(name), `${name} must be client-executed`).toBe(false);
     }
@@ -1153,6 +1155,27 @@ describe("read_design_repo / read_repo_files schema: repo is optional", () => {
   it("read_repo_files accepts a call with no repo argument, only paths", () => {
     const schema = schemaOf("read_repo_files");
     expect(() => schema.parse({ paths: ["src/App.tsx"] })).not.toThrow();
+  });
+});
+
+describe("browse_task schema", () => {
+  const schema = schemaOf("browse_task");
+
+  it("accepts a goal with no maxSteps", () => {
+    expect(schema.safeParse({ goal: "search for wireless headphones and open the first result" }).success).toBe(true);
+  });
+
+  it("accepts a goal with an explicit maxSteps", () => {
+    expect(
+      schema.safeParse({ goal: "dismiss the cookie banner", maxSteps: 5 }).success,
+    ).toBe(true);
+  });
+
+  it("rejects an empty goal and a maxSteps above the hard cap", () => {
+    expect(schema.safeParse({ goal: "" }).success).toBe(false);
+    expect(schema.safeParse({}).success).toBe(false);
+    expect(schema.safeParse({ goal: "x", maxSteps: 26 }).success).toBe(false);
+    expect(schema.safeParse({ goal: "x", maxSteps: 0 }).success).toBe(false);
   });
 });
 
