@@ -175,6 +175,26 @@ export interface PrepareChatTurnInput {
    * wired above.
    */
   systemOneClient?: SystemOneClient | null;
+  /**
+   * Stable id for this conversation, threaded straight into
+   * createModel({sessionId}) — see src/ai/provider.ts. Only meaningful when
+   * the resolved model's provider is an OpenCode route (OpenCode's Go docs
+   * use it for their own routing/prompt-cache); ignored on an OpenRouter
+   * turn. Undefined for callers that don't have one (e.g. the showcase
+   * runner, which never resolves to an OpenCode model since it has no user
+   * key to pass either).
+   */
+  sessionId?: string;
+  /**
+   * The calling user's OWN OpenCode API key (never a server-side key — none
+   * exists for OpenCode in this product), threaded straight into
+   * createModel({opencodeApiKey}). Only meaningful when the resolved
+   * model's provider is an OpenCode route. Undefined for every OpenRouter
+   * turn and for every caller that doesn't have one (the showcase runner
+   * never wires this — see src/ai/provider.ts's CreateModelOptions doc
+   * comment).
+   */
+  opencodeApiKey?: string;
 }
 
 export interface PreparedChatTurn {
@@ -490,7 +510,11 @@ export async function prepareChatTurn(
     messages.splice(lastUserIndex >= 0 ? lastUserIndex : messages.length - 1, 0, skillMsg);
   }
 
-  const model = createModel(config, modelOverride, { chatAgent: true });
+  const model = createModel(config, modelOverride, {
+    chatAgent: true,
+    sessionId: input.sessionId,
+    opencodeApiKey: input.opencodeApiKey,
+  });
 
   // Self-authored skills (phase 2). Everything here is additive and
   // best-effort: the flag gates it (ignoring even an explicitly-passed

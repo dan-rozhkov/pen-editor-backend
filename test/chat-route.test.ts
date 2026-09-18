@@ -273,10 +273,16 @@ describe("POST /api/chat — validation errors", () => {
     expect(res.status).toBe(200);
     await res.text();
 
-    expect(vi.mocked(createModel).mock.calls[0]?.slice(1)).toEqual([
-      picked,
-      { chatAgent: true },
-    ]);
+    // `sessionId` is always the (generated, when absent from the request)
+    // traceSessionId now — see test/chat-route-opencode.test.ts for the
+    // OpenCode-specific assertions on that field and on opencodeApiKey.
+    // toMatchObject (not toEqual) here on purpose: this test only cares that
+    // the picked model and chatAgent flag reached createModel unchanged.
+    expect(vi.mocked(createModel).mock.calls[0]?.[0]).toBeDefined();
+    expect(vi.mocked(createModel).mock.calls[0]?.[1]).toBe(picked);
+    expect(vi.mocked(createModel).mock.calls[0]?.[2]).toMatchObject({
+      chatAgent: true,
+    });
   });
 
   // A client cached before a list change still posts its old stored

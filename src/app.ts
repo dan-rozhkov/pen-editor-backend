@@ -19,6 +19,7 @@ import {
   type HandshakeFileEntry,
 } from "./mcp/autoToken.js";
 import { modelsRoutes } from "./routes/models.js";
+import { opencodeRoutes } from "./routes/opencode.js";
 import { prototypeLinkRoutes } from "./routes/prototype-link.js";
 import { showcaseRoutes } from "./routes/showcase.js";
 import { showcasePublishRoutes } from "./routes/showcasePublish.js";
@@ -346,6 +347,7 @@ export async function buildApp(
   await userSkillRoutes(app, config, userSkillStore);
   await sharedCanvasRoutes(app, config, sharedCanvasStore);
   await modelsRoutes(app, config);
+  await opencodeRoutes(app, config);
   await uploadRoutes(app, config);
   await generateImageRoutes(app, config, analytics);
   await falRoutes(app, config, analytics);

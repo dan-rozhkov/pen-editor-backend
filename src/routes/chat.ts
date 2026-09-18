@@ -18,6 +18,7 @@ import { AGENT_MODES } from "../ai/system-prompt.js";
 import { logSession, type LogStep } from "../logging.js";
 import { randomUUID } from "node:crypto";
 import { getAllSkills } from "../ai/skills.js";
+import { isOpenCodeProvider, parseModelRef } from "../ai/modelRef.js";
 import { writeRawTraceSafe, type TraceStore } from "../tracing/traceStore.js";
 import {
   prepareChatTurn,
@@ -63,6 +64,26 @@ export function streamErrorMessage(error: unknown): string {
   return "An error occurred.";
 }
 const MAX_AGENT_STEPS = 12;
+
+// Reads the browser-only OpenCode BYOK header (X-OpenCode-Key — see
+// docs/specs/2026-09-18-opencode-byok-design.md, "Поток ключа"). Deliberately
+// NEVER folded into chatBodySchema/the request body: the whole body is
+// stored verbatim in raw_traces (buildTraceRow below stores `messages` —
+// the parsed body's own fields, not this header, which is why this function
+// reads directly off request.headers and its return value is kept OUT of
+// every object that gets logged, traced, or captured to analytics).
+// Fastify normalizes header names to lowercase and a header sent twice
+// arrives as an array — take the first non-empty value in that case, same
+// as most single-value header conventions. Blank/whitespace-only counts as
+// absent, matching how the rest of this route treats an absent field.
+export function readOpenCodeKeyHeader(
+  value: string | string[] | undefined,
+): string | undefined {
+  const raw = Array.isArray(value) ? value[0] : value;
+  if (typeof raw !== "string") return undefined;
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
 
 // Coarse, PII-free error category for the `agent_turn_failed` analytics
 // event — never the raw error message (which can carry provider response
@@ -232,6 +253,14 @@ export async function chatRoutes(
     const userId = rawUserId && isPlausibleUserId(rawUserId) ? rawUserId : undefined;
 
     const traceSessionId = chatSessionId ?? `anon-${randomUUID()}`;
+
+    // The user's OWN OpenCode key, read from a header — never the body (see
+    // readOpenCodeKeyHeader's doc comment). Deliberately kept as its own
+    // local, never merged into `parsed.data` or any object that gets
+    // traced/logged/captured below.
+    const opencodeApiKey = readOpenCodeKeyHeader(
+      request.headers["x-opencode-key"],
+    );
     // Same id the frontend's PostHog capture (if any) would use for this
     // person, so client and server events join on one distinct id: the
     // client-supplied anonymous userId when shape-valid, else the (always
@@ -240,6 +269,34 @@ export async function chatRoutes(
     // model/image checks below) so every rejection path below — not just a
     // successful turn — can tag its agent_turn_failed event with it.
     const analyticsDistinctId = userId ?? traceSessionId ?? "anonymous";
+
+    // New rule (docs/specs/2026-09-18-opencode-byok-design.md, "Слом
+    // действующего правила роута"): a requested model that IS in the
+    // allowlist (modelOverride is set) and whose provider is an OpenCode
+    // route, with no X-OpenCode-Key header, is a hard 400 — NOT the silent
+    // "run the default" fallback an UNKNOWN id still gets a few lines above
+    // (that case stays untouched: a stale client cache is not the user's
+    // fault). The two cases must not be conflated: a known opencode id with
+    // no key means the user explicitly picked a subscription-gated model,
+    // and silently rerouting that request to the operator's own OpenRouter
+    // key would spend real money on the wrong model with no signal to
+    // anyone that it happened. There is no server-side OpenCode key to fall
+    // back to in the first place (see src/ai/opencode.ts).
+    if (modelOverride) {
+      const requestedRef = parseModelRef(modelOverride);
+      if (isOpenCodeProvider(requestedRef.provider) && !opencodeApiKey) {
+        analytics?.capture({
+          event: "agent_turn_failed",
+          distinctId: analyticsDistinctId,
+          properties: { error_kind: "opencode_key_required" },
+        });
+        return reply.status(400).send({
+          error:
+            "This model requires your own OpenCode API key — there is no server-side OpenCode key. Add your key and try again.",
+          code: "opencode_key_required",
+        });
+      }
+    }
 
     const maxImagesInOneMessage = messages.reduce((max, msg) => {
       const parts = msg.parts;
@@ -278,6 +335,18 @@ export async function chatRoutes(
         learnedSkillStore,
         auditDb,
         userSkillStore,
+        // Stable per-conversation id, already used for tracing — reused as
+        // OpenCode's x-opencode-session so their prompt cache gets the same
+        // stability guarantee we already give the tracing layer. Ignored by
+        // createModel whenever the resolved provider isn't an OpenCode
+        // route (see src/ai/provider.ts).
+        sessionId: traceSessionId,
+        // The user's own key (see readOpenCodeKeyHeader above); undefined on
+        // every OpenRouter turn. createModel throws if the resolved
+        // provider needs one and none was supplied — this can only happen
+        // here if opencodeApiKey somehow went missing between the 400 check
+        // above and this call, which the request lifecycle rules out.
+        opencodeApiKey,
       });
     } catch (err) {
       // MCP/provider/skill setup failure before the model even starts
