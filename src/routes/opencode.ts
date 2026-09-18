@@ -55,52 +55,115 @@ function extractModelIds(payload: unknown): string[] {
     .filter((id): id is string => typeof id === "string");
 }
 
+type OpenCodeProviderId = "opencode" | "opencode-go";
+
+type CheckResult =
+  | { kind: "ok"; models: string[] }
+  | { kind: "invalid_key" }
+  | { kind: "upstream_error" };
+
+// Checks one API key against one OpenCode base. Factored out of the route
+// handler so the "provider unspecified" branch below can try both bases
+// without duplicating the upstream call/timeout/error handling.
+async function checkOpenCodeKey(
+  provider: OpenCodeProviderId,
+  apiKey: string,
+): Promise<CheckResult> {
+  const baseUrl = OPENCODE_BASE_URLS[provider];
+  try {
+    const upstream = await fetch(`${baseUrl}/models`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      // Bounded so a hanging upstream can't hold this connection open
+      // indefinitely — this is a user-triggered "check my key" click, not
+      // a background job that can afford to wait.
+      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+    });
+
+    if (upstream.status === 401 || upstream.status === 403) {
+      // A rejected key is an ordinary, expected answer to "is this key
+      // valid?" — not an error on OUR api.
+      return { kind: "invalid_key" };
+    }
+    if (!upstream.ok) {
+      return { kind: "upstream_error" };
+    }
+
+    const payload = await upstream.json().catch(() => undefined);
+    return { kind: "ok", models: extractModelIds(payload) };
+  } catch {
+    // Network failure, timeout, or a non-JSON body from upstream — all
+    // collapse to the same "we couldn't check it" answer. The key itself
+    // is never included in this error path.
+    return { kind: "upstream_error" };
+  }
+}
+
 export async function opencodeRoutes(app: FastifyInstance, _config: Config) {
-  app.post("/api/opencode/validate", async (request, reply) => {
-    const apiKey = readOpenCodeKeyHeader(request.headers["x-opencode-key"]);
-    if (!apiKey) {
-      return reply.status(400).send({
-        error:
-          "Validating an OpenCode key requires the key itself (X-OpenCode-Key header).",
-        code: "opencode_key_required",
-      });
-    }
-
-    // A malformed body just falls back to the default provider rather than
-    // 400ing — the only thing this endpoint truly needs is the header.
-    const parsedBody = validateBodySchema.safeParse(request.body ?? {});
-    const provider =
-      parsedBody.success && parsedBody.data.provider
-        ? parsedBody.data.provider
-        : "opencode-go";
-    const baseUrl = OPENCODE_BASE_URLS[provider];
-
-    try {
-      const upstream = await fetch(`${baseUrl}/models`, {
-        headers: { Authorization: `Bearer ${apiKey}` },
-        // Bounded so a hanging upstream can't hold this connection open
-        // indefinitely — this is a user-triggered "check my key" click, not
-        // a background job that can afford to wait.
-        signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
-      });
-
-      if (upstream.status === 401 || upstream.status === 403) {
-        // A rejected key is an ordinary, expected answer to "is this key
-        // valid?" — not an error on OUR api, hence 200.
-        return reply.send({ ok: false, reason: "invalid_key" });
-      }
-      if (!upstream.ok) {
-        return reply.send({ ok: false, reason: "upstream_error" });
+  app.post(
+    "/api/opencode/validate",
+    {
+      // Unauthenticated relay that reports whether an arbitrary caller-
+      // supplied key is accepted by opencode.ai, from our IP — without a
+      // limit this is a free credential-checking oracle for anyone else's
+      // stolen/guessed OpenCode keys. Same conservative 10/min/IP budget as
+      // the other unauthenticated outbound relay, /api/prototype-link.
+      config: {
+        rateLimit: { max: 10, timeWindow: "1 minute" },
+      },
+    },
+    async (request, reply) => {
+      const apiKey = readOpenCodeKeyHeader(request.headers["x-opencode-key"]);
+      if (!apiKey) {
+        return reply.status(400).send({
+          error:
+            "Validating an OpenCode key requires the key itself (X-OpenCode-Key header).",
+          code: "opencode_key_required",
+        });
       }
 
-      const payload = await upstream.json().catch(() => undefined);
-      const models = extractModelIds(payload);
-      return reply.send({ ok: true, provider, models });
-    } catch {
-      // Network failure, timeout, or a non-JSON body from upstream — all
-      // collapse to the same "we couldn't check it" answer. The key itself
-      // is never included in this error path.
-      return reply.send({ ok: false, reason: "upstream_error" });
-    }
-  });
+      // A malformed body is treated as "no provider specified" rather than
+      // 400ing — the only thing this endpoint truly needs is the header.
+      const parsedBody = validateBodySchema.safeParse(request.body ?? {});
+      const requestedProvider =
+        parsedBody.success && parsedBody.data.provider
+          ? parsedBody.data.provider
+          : undefined;
+
+      if (requestedProvider) {
+        // Caller named an exact base — check only that one, so this branch
+        // never makes a second outgoing request.
+        const result = await checkOpenCodeKey(requestedProvider, apiKey);
+        if (result.kind === "ok") {
+          return reply.send({ ok: true, provider: requestedProvider, models: result.models });
+        }
+        return reply.send({ ok: false, reason: result.kind });
+      }
+
+      // No provider given: the only caller (the composer's "Validate key"
+      // dialog) always sends an empty body, and the two OpenCode bases are
+      // keyed by DIFFERENT subscriptions (Go's flat plan vs. Zen's
+      // pay-as-you-go) — a key good on one is routinely rejected by the
+      // other. Defaulting to a single hardcoded base (Go) meant a
+      // Zen-only key always failed validation here even though the same
+      // key would work fine in a real chat turn on a Zen model. Try Go
+      // first, then Zen, and report whichever base actually accepted the
+      // key — the response's own `provider` field is what tells the caller
+      // which one that was.
+      const goResult = await checkOpenCodeKey("opencode-go", apiKey);
+      if (goResult.kind === "ok") {
+        return reply.send({ ok: true, provider: "opencode-go", models: goResult.models });
+      }
+      if (goResult.kind !== "invalid_key") {
+        // A non-auth failure (timeout, network error, upstream 5xx) isn't
+        // evidence the key is bad — don't mask it by trying the second base
+        // and reporting THAT base's unrelated outcome instead.
+        return reply.send({ ok: false, reason: goResult.kind });
+      }
+      const zenResult = await checkOpenCodeKey("opencode", apiKey);
+      if (zenResult.kind === "ok") {
+        return reply.send({ ok: true, provider: "opencode", models: zenResult.models });
+      }
+      return reply.send({ ok: false, reason: zenResult.kind });
+    },
+  );
 }

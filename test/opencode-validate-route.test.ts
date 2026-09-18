@@ -125,6 +125,93 @@ describe("POST /api/opencode/validate", () => {
     expect(body).toEqual({ ok: false, reason: "upstream_error" });
   });
 
+  // Regression (defect 4): the default provider used to be hardcoded to
+  // "opencode-go", so a key that only works on Zen ("opencode") always
+  // failed validation here even though the same key would succeed in a
+  // real chat turn on a Zen model. With no `provider` in the body, Go must
+  // be tried first, and — because Go rejects it with 401 — Zen must be
+  // tried second and win.
+  it("falls back to the Zen base when Go rejects the key and no provider was specified", async () => {
+    let goCalled = false;
+    let zenCalled = false;
+    fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.startsWith(server.url)) {
+        return realFetch(input, init);
+      }
+      if (url === "https://opencode.ai/zen/go/v1/models") {
+        goCalled = true;
+        return new Response("unauthorized", { status: 401 });
+      }
+      if (url === "https://opencode.ai/zen/v1/models") {
+        zenCalled = true;
+        const headers = new Headers(init?.headers);
+        expect(headers.get("authorization")).toBe("Bearer sk-zen-only-key");
+        return new Response(JSON.stringify({ data: [{ id: "minimax-m3" }] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      throw new Error(`unexpected upstream url: ${url}`);
+    });
+
+    const res = await realFetch(`${server.url}/api/opencode/validate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-OpenCode-Key": "sk-zen-only-key" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; provider: string; models: string[] };
+    expect(body).toEqual({ ok: true, provider: "opencode", models: ["minimax-m3"] });
+    expect(goCalled).toBe(true);
+    expect(zenCalled).toBe(true);
+  });
+
+  it("returns ok:false reason:invalid_key when BOTH bases reject the key and no provider was specified", async () => {
+    let callCount = 0;
+    fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.startsWith(server.url)) {
+        return realFetch(input, init);
+      }
+      callCount += 1;
+      return new Response("unauthorized", { status: 401 });
+    });
+
+    const res = await realFetch(`${server.url}/api/opencode/validate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-OpenCode-Key": "sk-bad-everywhere" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; reason: string };
+    expect(body).toEqual({ ok: false, reason: "invalid_key" });
+    expect(callCount).toBe(2);
+  });
+
+  it("makes exactly ONE outgoing request when provider is explicitly given", async () => {
+    let callCount = 0;
+    fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.startsWith(server.url)) {
+        return realFetch(input, init);
+      }
+      callCount += 1;
+      expect(url).toBe("https://opencode.ai/zen/go/v1/models");
+      return new Response("unauthorized", { status: 401 });
+    });
+
+    const res = await realFetch(`${server.url}/api/opencode/validate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-OpenCode-Key": "sk-test-key" },
+      body: JSON.stringify({ provider: "opencode-go" }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; reason: string };
+    expect(body).toEqual({ ok: false, reason: "invalid_key" });
+    expect(callCount).toBe(1);
+  });
+
   it("returns ok:false reason:upstream_error when the upstream fetch rejects (network error)", async () => {
     fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = typeof input === "string" ? input : input.toString();
@@ -148,3 +235,39 @@ describe("POST /api/opencode/validate", () => {
 // Real, unmocked fetch — captured before any spy is installed so the tests
 // above can still reach the real HTTP server they started.
 const realFetch = globalThis.fetch.bind(globalThis);
+
+describe("POST /api/opencode/validate rate limiting", () => {
+  // Regression (defect 3): the route had no `config.rateLimit`, and
+  // registerRateLimit (src/plugins/rateLimit.ts) is registered with
+  // `global: false` — so without an explicit opt-in this route was entirely
+  // unthrottled, unlike every other unauthenticated route that calls out to
+  // a third party (chat: 60/min, generateImage/fal/repo: 20/min,
+  // prototype-link: 10/min). An unlimited, unauthenticated relay that
+  // reports whether an arbitrary caller-supplied key is valid is a free
+  // credential-checking oracle. This confirms a 429 now fires once the
+  // per-IP budget (10/min, same as prototype-link) is exceeded.
+  it("returns 429 once the per-IP limit (10/min) is exceeded", async () => {
+    const server2 = await startServer();
+    try {
+      const responses: Response[] = [];
+      for (let i = 0; i < 11; i++) {
+        responses.push(
+          await realFetch(`${server2.url}/api/opencode/validate`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({}),
+          }),
+        );
+      }
+      const statuses = responses.map((r) => r.status);
+      // Every one of the first 10 requests is missing the key header, so
+      // each is a 400 (opencode_key_required) — a rejection this route
+      // returns BEFORE any upstream call, but still after the rate-limit
+      // plugin's onRequest hook, which is what's under test here.
+      expect(statuses.slice(0, 10).every((s) => s === 400)).toBe(true);
+      expect(statuses[10]).toBe(429);
+    } finally {
+      await server2.app.close();
+    }
+  });
+});

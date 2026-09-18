@@ -6,6 +6,7 @@
 // factory that turns {provider, modelId, apiKey, sessionId} into a
 // LanguageModel via @ai-sdk/openai-compatible.
 
+import { randomUUID } from "node:crypto";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { LanguageModel } from "ai";
 import type { ModelProviderId } from "./modelRef.js";
@@ -110,6 +111,26 @@ export interface CreateOpenCodeModelOptions {
   fetch?: typeof globalThis.fetch;
 }
 
+// `sessionId` (forced into the `x-opencode-session` header below) traces
+// back to the chat route's `traceSessionId`, which is the client-supplied
+// body `id` — only validated by zod as `z.string().max(200)`, with no
+// restriction on WHICH characters it contains. A raw newline (CRLF/LF header
+// injection) or any codepoint outside Latin-1 makes the WHATWG `Headers`
+// implementation throw a TypeError inside `.set()` (Node's `undici`
+// enforces ByteString-only header values), which happens inside this
+// module's `forcedHeadersFetch` — i.e. on EVERY request of that session —
+// and surfaces to the user as an unhelpful, undiagnosable "An error
+// occurred." Strip it down to a conservative safe set instead of trusting
+// the caller; fall back to a generated id (rather than sending the empty
+// string, or omitting the header, which OpenCode's routing/prompt-cache
+// treats as no session at all) if nothing safe survives.
+const SAFE_SESSION_ID_CHARS = /[^A-Za-z0-9._-]/g;
+
+function sanitizeSessionId(sessionId: string): string {
+  const cleaned = sessionId.replace(SAFE_SESSION_ID_CHARS, "");
+  return cleaned.length > 0 ? cleaned : randomUUID();
+}
+
 export function createOpenCodeModel(options: CreateOpenCodeModelOptions): LanguageModel {
   const { provider, modelId, apiKey, sessionId } = options;
 
@@ -161,11 +182,12 @@ export function createOpenCodeModel(options: CreateOpenCodeModelOptions): Langua
   // exactly ONE mechanism responsible for both required OpenCode headers,
   // rather than one path that happens to survive and one that needed a
   // workaround.
+  const safeSessionId = sanitizeSessionId(sessionId);
   const baseFetch = options.fetch ?? globalThis.fetch;
   const forcedHeadersFetch: typeof fetch = (input, init) => {
     const headers = new Headers(init?.headers);
     headers.set("user-agent", OPENCODE_USER_AGENT);
-    headers.set("x-opencode-session", sessionId);
+    headers.set("x-opencode-session", safeSessionId);
     return baseFetch(input, { ...init, headers });
   };
 
@@ -182,6 +204,18 @@ export function createOpenCodeModel(options: CreateOpenCodeModelOptions): Langua
     baseURL: OPENCODE_BASE_URLS[provider],
     apiKey,
     fetch: forcedHeadersFetch,
+    // Without this, @ai-sdk/openai-compatible never sends
+    // `stream_options: {include_usage: true}` on the outgoing
+    // /chat/completions request (verified against node_modules/@ai-sdk/
+    // openai-compatible/dist/index.js — both the stream and generate paths
+    // gate that body field on `this.config.includeUsage`), so an
+    // OpenAI-compatible streaming response carries no usage block at all
+    // unless a client explicitly asks for it. src/routes/chat.ts reads
+    // `usage.inputTokens ?? 0` — every OpenCode turn would silently record
+    // zero tokens in raw_traces and the agent_turn_completed PostHog event,
+    // which is exactly the prompt-cache/cost measurement this repo treats
+    // as load-bearing (see modelRef.ts's header and CLAUDE.md).
+    includeUsage: true,
   });
 
   return openaiCompatible(modelId);

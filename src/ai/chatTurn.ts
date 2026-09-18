@@ -8,7 +8,7 @@ import {
 } from "ai";
 import { randomUUID, createHash } from "node:crypto";
 import type { Config } from "../config.js";
-import { bareModelId, createModel } from "./provider.js";
+import { bareModelId, createModel, parseModelRef, providerHandlesToolResultImages } from "./provider.js";
 import { penTools, makeBatchDesignTool, makeAnalyzeImageTool } from "./tools.js";
 import { buildSystemPrompt } from "./system-prompt.js";
 import { resolveTaskPolicy, type TaskPolicy } from "./taskPolicy.js";
@@ -820,12 +820,35 @@ export async function prepareChatTurn(
   }
 
   // Structural gate (mirrors the embed-only guard above): get_screenshot is
-  // client-executed and returns an image, so it is only useful when the
-  // main model can read that image natively, or a VISION_MODEL is
-  // configured to describe it instead. Otherwise it's a phantom tool nobody
-  // could act on, so it's removed from the per-request set rather than
-  // merely discouraged in the prompt.
-  if (!modelSupportsVision(config, selectedModelId) && !isVisionConfigured(config)) {
+  // client-executed and returns an image, so it is only useful when that
+  // image can actually reach the model as something readable. That is now
+  // TWO independent axes (see vision-messages.ts's doc comment on
+  // applyVisionPreprocessing), not one:
+  //   1. Can the model see at all (modelSupportsVision)?
+  //   2. Can THIS PROVIDER'S AI SDK integration carry an image found inside
+  //      a tool result through to the model natively
+  //      (providerHandlesToolResultImages)? OpenRouter can; both OpenCode
+  //      routes route through @ai-sdk/openai-compatible and cannot — that
+  //      package JSON.stringifies a tool-result image part into plain text
+  //      instead (see providerHandlesToolResultImages's doc comment).
+  // A vision-capable model on a provider that can't carry the image STILL
+  // has its get_screenshot result routed through applyVisionPreprocessing's
+  // "tool-result-only" rewrite path — but with no VISION_MODEL configured,
+  // describeImage has nothing to call, so every screenshot arrives as the
+  // literal string "Vision is not configured on this server"
+  // (src/services/vision.ts). That is exactly the "phantom tool nobody
+  // could act on" this gate exists to prevent, so the tool must only stay
+  // in the set when EITHER a real image reaches the model natively (axes 1
+  // AND 2 both true) OR a VISION_MODEL is configured to describe it instead
+  // — the previous single-axis check (model vision OR VISION_MODEL) missed
+  // exactly this case: a vision-capable model on a non-native provider with
+  // no VISION_MODEL set.
+  const chatModelRef = modelOverride ?? config.CHAT_MODEL;
+  const toolResultImagesNative = providerHandlesToolResultImages(
+    parseModelRef(chatModelRef).provider,
+  );
+  const nativeVisionPath = modelSupportsVision(config, selectedModelId) && toolResultImagesNative;
+  if (!nativeVisionPath && !isVisionConfigured(config)) {
     delete tools.get_screenshot;
   }
 

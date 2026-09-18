@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { generateText } from "ai";
+import { generateText, streamText } from "ai";
 import {
   OPENCODE_BASE_URLS,
   OPENCODE_CHAT_COMPLETIONS_MODELS,
@@ -114,6 +114,113 @@ describe("createOpenCodeModel", () => {
     expect(headers.get("x-opencode-session")).toBe("session-abc");
     expect(headers.get("user-agent")).toBe(OPENCODE_USER_AGENT);
     expect(headers.get("authorization")).toBe("Bearer the-users-key");
+  });
+
+  // Regression: sessionId traces back to the chat route's traceSessionId,
+  // which is the client-supplied body `id` — validated only by
+  // `z.string().max(200)`, with no restriction on which characters it
+  // contains. A raw newline or a non-Latin-1 character used to reach
+  // `headers.set("x-opencode-session", sessionId)` unsanitized, and the
+  // WHATWG Headers implementation throws a TypeError on either (Node's
+  // undici enforces ByteString-only header values) — which used to crash
+  // every request of that session with an undiagnosable "An error
+  // occurred.". This pins that a call with such a sessionId no longer
+  // throws, and that the header actually sent upstream is a safe value.
+  it("sanitizes a sessionId containing a newline instead of crashing on Headers.set", async () => {
+    const { fetchStub, calls } = fakeChatCompletionsFetch();
+
+    const model = createOpenCodeModel({
+      provider: "opencode-go",
+      modelId: "glm-5.3-flash",
+      apiKey: "the-users-key",
+      sessionId: "line1\nline2",
+      fetch: fetchStub as unknown as typeof fetch,
+    });
+
+    await expect(generateText({ model, prompt: "hello" })).resolves.toBeDefined();
+
+    const headers = new Headers(calls[0].init?.headers);
+    const sent = headers.get("x-opencode-session");
+    expect(sent).not.toBeNull();
+    expect(sent).not.toContain("\n");
+    expect(sent).toBe("line1line2");
+  });
+
+  it("sanitizes a sessionId containing non-Latin-1 characters (e.g. Cyrillic) instead of crashing", async () => {
+    const { fetchStub, calls } = fakeChatCompletionsFetch();
+
+    const model = createOpenCodeModel({
+      provider: "opencode-go",
+      modelId: "glm-5.3-flash",
+      apiKey: "the-users-key",
+      sessionId: "сессияабв",
+      fetch: fetchStub as unknown as typeof fetch,
+    });
+
+    await expect(generateText({ model, prompt: "hello" })).resolves.toBeDefined();
+
+    const headers = new Headers(calls[0].init?.headers);
+    const sent = headers.get("x-opencode-session");
+    expect(sent).not.toBeNull();
+    // Every Cyrillic character is stripped by the safe charset; nothing of
+    // the original survives, so a generated UUID fallback is used instead.
+    expect(sent).toMatch(/^[0-9a-f-]{36}$/);
+  });
+});
+
+// A minimal fetch stub that answers a well-formed SSE chat-completions
+// stream, so a real streamText() call (the AI SDK path that would actually
+// go over the wire on /api/chat — unlike generateText/doGenerate above) can
+// run against createOpenCodeModel without any network access, and the
+// captured request body can be inspected for `stream_options`.
+function fakeStreamingChatCompletionsFetch() {
+  const calls: { url: string; init: RequestInit | undefined }[] = [];
+  const sse =
+    'data: {"id":"1","object":"chat.completion.chunk","created":0,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"},"finish_reason":null}]}\n\n' +
+    'data: {"id":"1","object":"chat.completion.chunk","created":0,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n' +
+    "data: [DONE]\n\n";
+  const fetchStub = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input.toString();
+    calls.push({ url, init });
+    return new Response(sse, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+  });
+  return { fetchStub, calls };
+}
+
+describe("createOpenCodeModel streaming usage", () => {
+  // Regression: createOpenAICompatible was built without `includeUsage:
+  // true`, so @ai-sdk/openai-compatible never sent `stream_options:
+  // {include_usage: true}` on the outgoing /chat/completions request —
+  // verified against node_modules/@ai-sdk/openai-compatible/dist/index.js's
+  // doStream, which gates that field on `this.config.includeUsage`. Without
+  // it, an OpenAI-compatible streaming response carries no usage block at
+  // all, so src/routes/chat.ts's `usage.inputTokens ?? 0` silently recorded
+  // zero tokens for every OpenCode turn in raw_traces and the
+  // agent_turn_completed PostHog event.
+  it("requests usage on the streaming request body (stream_options.include_usage)", async () => {
+    const { fetchStub, calls } = fakeStreamingChatCompletionsFetch();
+
+    const model = createOpenCodeModel({
+      provider: "opencode-go",
+      modelId: "glm-5.3-flash",
+      apiKey: "the-users-key",
+      sessionId: "session-abc",
+      fetch: fetchStub as unknown as typeof fetch,
+    });
+
+    const result = streamText({ model, prompt: "hello" });
+    // Drain the stream so the request has actually been made before we
+    // inspect it.
+    await result.text;
+
+    expect(calls).toHaveLength(1);
+    const body = JSON.parse(calls[0].init?.body as string) as {
+      stream_options?: { include_usage?: boolean };
+    };
+    expect(body.stream_options).toEqual({ include_usage: true });
   });
 });
 

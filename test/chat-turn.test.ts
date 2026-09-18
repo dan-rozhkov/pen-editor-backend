@@ -223,6 +223,49 @@ describe("prepareChatTurn", () => {
 
       expect(turn.tools.get_screenshot).toBeDefined();
     });
+
+    // Regression: the gate used to be single-axis ("does the model see, OR
+    // is VISION_MODEL configured") and ignored providerHandlesToolResultImages
+    // entirely. opencode-go/deepseek-v4-flash-vision-exp is vision-capable
+    // (no DEFAULT_MODELS entry, so modelSupportsVision assumes true) but its
+    // provider ("opencode-go") routes through @ai-sdk/openai-compatible,
+    // which cannot carry a tool-result image natively — so with no
+    // VISION_MODEL configured, every get_screenshot call would resolve to
+    // the literal "Vision is not configured on this server" placeholder
+    // (src/services/vision.ts), a phantom tool exactly like the vision-less
+    // case above. The old single-axis check kept the tool in this case
+    // because it only asked "does the model see" — this pins the fix.
+    it("is absent for a vision-capable OpenCode model when no VISION_MODEL is configured", async () => {
+      const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+
+      const config = makeConfig({ VISION_MODEL: "" });
+      const messages = [userMessage("make the header bigger")];
+
+      const turn = await prepareChatTurn({
+        config,
+        messages,
+        modelOverride: "opencode-go/deepseek-v4-flash-vision-exp",
+        opencodeApiKey: "sk-test-key",
+      });
+
+      expect(turn.tools.get_screenshot).toBeUndefined();
+    });
+
+    it("is present for the same vision-capable OpenCode model once VISION_MODEL is configured", async () => {
+      const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+
+      const config = makeConfig({ VISION_MODEL: "google/gemini-2.5-flash" });
+      const messages = [userMessage("make the header bigger")];
+
+      const turn = await prepareChatTurn({
+        config,
+        messages,
+        modelOverride: "opencode-go/deepseek-v4-flash-vision-exp",
+        opencodeApiKey: "sk-test-key",
+      });
+
+      expect(turn.tools.get_screenshot).toBeDefined();
+    });
   });
 
   describe("attach_local_repo gate", () => {

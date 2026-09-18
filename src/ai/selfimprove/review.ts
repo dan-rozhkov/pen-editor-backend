@@ -1,7 +1,7 @@
 import { generateText, stepCountIs, tool, type ModelMessage, type ToolSet } from "ai";
 import type { Config } from "../../config.js";
 import { logSession } from "../../logging.js";
-import { bareModelId, createModel } from "../provider.js";
+import { bareModelId, createModel, isOpenCodeProvider, parseModelRef } from "../provider.js";
 import type { MemoryStore } from "../memory/store.js";
 import { createMemoryToolContext, getMemoryTools, memoryInputSchema } from "../memory/tool.js";
 import { renderMemorySnapshot } from "../memory/render.js";
@@ -19,6 +19,26 @@ import {
 } from "./scenarioFeed.js";
 
 const REVIEW_MAX_STEPS = 8;
+
+// The review is a helper role (like ANALYSIS_MODEL/VISION_MODEL/
+// STRUCTURED_MODEL), and per docs/specs/2026-09-18-opencode-byok-design.md
+// helper roles deliberately stay on OpenRouter and never spend the user's
+// own OpenCode key: createModel throws when an OpenCode-provider ref is
+// passed without `opencodeApiKey` (see src/ai/provider.ts), and
+// maybeRunReview never has that key (it isn't threaded through
+// MaybeRunReviewInput at all — see runReviewSafe's caller in
+// src/routes/chat.ts). Passing a user-picked OpenCode `modelOverride`
+// straight through therefore always throws, and since runReviewSafe only
+// `console.error`s a rejected promise, the entire memory/skill review loop
+// silently stops firing for every user who happens to have picked an
+// OpenCode model in the composer. So: an OpenCode-provider override is
+// never valid here — fall back to the operator's own CHAT_MODEL (an
+// OpenRouter id) instead, exactly as if no override had been passed at all.
+// An OpenRouter override still passes through unchanged.
+function reviewModelOverride(modelOverride: string | undefined): string | undefined {
+  if (!modelOverride) return modelOverride;
+  return isOpenCodeProvider(parseModelRef(modelOverride).provider) ? undefined : modelOverride;
+}
 
 /* Both review thresholds now live in config.ts
  * (MEMORY_REVIEW_INTERVAL / SKILL_REVIEW_INTERVAL, defaults
@@ -432,7 +452,7 @@ export async function maybeRunReview(
     dueForAudit = { memoryDue: due.memoryDue, skillDue: due.skillDue };
     scenariosForAudit = scenarios;
     const result = await generateText({
-      model: createModel(config, input.modelOverride),
+      model: createModel(config, reviewModelOverride(input.modelOverride)),
       system: input.system,
       messages,
       tools: reviewTools,
@@ -494,7 +514,7 @@ export async function maybeRunReview(
       await logSession({
         sessionId: `memory-review-${Date.now()}`,
         timestamp: new Date().toISOString(),
-        model: bareModelId(input.modelOverride ?? config.CHAT_MODEL),
+        model: bareModelId(reviewModelOverride(input.modelOverride) ?? config.CHAT_MODEL),
         systemPrompt: input.system,
         messages: messages as unknown[],
         steps: result.steps.map((step, i) => ({
