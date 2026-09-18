@@ -29,6 +29,8 @@ const {
   MAX_ELEMENT_OPTIONS,
   MAX_OPTION_CHARS,
   MIN_STEP_CONFIDENCE,
+  BROWSE_STEP_TIMEOUT_MS,
+  BROWSE_TEXT_TIMEOUT_MS,
 } = await import("../src/ai/browseStep.js");
 type BrowseStepElement = import("../src/ai/browseStep.js").BrowseStepElement;
 type BrowseStepInput = import("../src/ai/browseStep.js").BrowseStepInput;
@@ -507,6 +509,31 @@ describe("decideBrowseStep", () => {
       const client = fakeClient({ op: choice("TYPE_TEXT", 0.9), target_type: choice("5", 0.9) });
       await decideBrowseStep(client, makeConfig(), baseInput([typeable]));
       expect(probe.seenSignal()).toBeInstanceOf(AbortSignal);
+    });
+
+    it("gives the text generation a LONGER budget than the Jev call, not the same one", async () => {
+      // These two calls are different animals and sharing one budget was a
+      // measured defect, not a theoretical one: Jev answers a real fan-out
+      // in 0.25-0.70s, while STRUCTURED_MODEL is an ordinary chat-model
+      // round trip measured live at 1.4-5.0s — under the shared 4s budget
+      // one TYPE_TEXT step in five aborted. A future tidy-up that collapses
+      // them back into one constant must fail here.
+      expect(BROWSE_TEXT_TIMEOUT_MS).toBeGreaterThan(BROWSE_STEP_TIMEOUT_MS);
+
+      vi.useFakeTimers();
+      try {
+        const probe = mockStructuredModelOnce("hello world");
+        const client = fakeClient({ op: choice("TYPE_TEXT", 0.9), target_type: choice("5", 0.9) });
+        const pending = decideBrowseStep(client, makeConfig(), baseInput([typeable]));
+        await vi.advanceTimersByTimeAsync(BROWSE_STEP_TIMEOUT_MS + 500);
+        // Past the Jev budget, well short of the text budget: a generation
+        // that is merely slower than Jev must still be in flight.
+        expect(probe.seenSignal()?.aborted).toBe(false);
+        await vi.advanceTimersByTimeAsync(BROWSE_TEXT_TIMEOUT_MS);
+        await pending;
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("passes an AbortSignal through to the SELECT generation call", async () => {

@@ -40,13 +40,29 @@ export const MAX_OPTION_CHARS = 200;
  * is worse than stopping. */
 export const MIN_STEP_CONFIDENCE = 0.55;
 
-/** Per-request timeout for the whole evaluate() round trip, and the budget
- * the TYPE_TEXT/SELECT text-generation call is also bounded by (finding
- * #8) — a hung STRUCTURED_MODEL call must not hold the request (and the
- * frontend's tool call) open past this. Not the 1.5s TTFT budget
- * skillRouting.ts uses — nothing is streaming behind this call — but it
- * must stay well under the frontend loop's own per-step budget. */
+/** Per-request timeout for the whole evaluate() round trip.
+ * Not the 1.5s TTFT budget skillRouting.ts uses — nothing is streaming
+ * behind this call — but it must stay well under the frontend loop's own
+ * per-step budget. Measured live 2026-09-18: Jev answers a real fan-out in
+ * 0.25–0.70s, so 4s is generous for it. */
 export const BROWSE_STEP_TIMEOUT_MS = 4_000;
+
+/** Separate, larger budget for the TYPE_TEXT/SELECT text generation.
+ *
+ * This used to share BROWSE_STEP_TIMEOUT_MS, which looked tidy and was
+ * wrong: the two calls are different animals. Jev is a single fast
+ * classification (sub-second, measured); STRUCTURED_MODEL is an ordinary
+ * chat-model round trip over OpenRouter, measured live at 1.4–5.0s from
+ * this machine. Under the shared 4s budget one TYPE_TEXT step in five
+ * aborted — the step came back as `retry` (correctly, it is transient), but
+ * a 20% failure rate on every text entry is a broken feature, not a blip.
+ *
+ * Still bounded, and for the original reason (finding #8): a hung provider
+ * call must not hold the request — and the frontend's whole tool call —
+ * open indefinitely. Worst case per step is now
+ * BROWSE_STEP_TIMEOUT_MS + BROWSE_TEXT_TIMEOUT_MS, which stays under the
+ * loop's 90s BROWSE_TASK_DEADLINE_MS with room for several steps. */
+export const BROWSE_TEXT_TIMEOUT_MS = 15_000;
 
 export type BrowseOperation =
   | "CLICK"
@@ -471,7 +487,7 @@ export async function decideBrowseStep(
         config,
         scrubbedGoal,
         targetElement.label,
-        AbortSignal.timeout(BROWSE_STEP_TIMEOUT_MS),
+        AbortSignal.timeout(BROWSE_TEXT_TIMEOUT_MS),
       );
     } catch (err) {
       // The small model call failing is transient, same class as a Jev
@@ -501,7 +517,7 @@ export async function decideBrowseStep(
         scrubbedGoal,
         targetElement.label,
         options as [string, ...string[]],
-        AbortSignal.timeout(BROWSE_STEP_TIMEOUT_MS),
+        AbortSignal.timeout(BROWSE_TEXT_TIMEOUT_MS),
       );
     } catch (err) {
       return retry(
