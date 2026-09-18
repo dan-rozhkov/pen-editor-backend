@@ -25,11 +25,11 @@ import { BRIDGED_TOOL_NAMES, SKILL_TOOL_NAMES, STATIC_TOOL_NAMES } from "./toolN
 // Without these, ALL_KNOWN_TOOL_NAMES below can only ever detect a skill
 // calling a *known* tool that's missing from the MCP surface; a skill built
 // entirely on tools this repo never declares (research.md, which calls only
-// Refero tools) would score zero mentions and getUnavailableToolsForSkill
+// Mobbin MCP tools) would score zero mentions and getUnavailableToolsForSkill
 // would silently return [] — exactly the dead-end this module exists to
-// prevent, and the worst case: research mode returns 503 off the chat route
-// (see POLICY_DEPENDENT_SKILL_NAMES below) with load_skill("research") never
-// having said a word about it.
+// prevent, and the worst case: research mode silently runs with NO reference
+// tools at all off the chat route (see POLICY_DEPENDENT_SKILL_NAMES below)
+// with load_skill("research") never having said a word about it.
 //
 // Kept as an explicit, sourced list rather than inferring "any snake_case
 // identifier not on our surface" from prose — that would also catch a design
@@ -38,16 +38,10 @@ import { BRIDGED_TOOL_NAMES, SKILL_TOOL_NAMES, STATIC_TOOL_NAMES } from "./toolN
 // every one of them into a false "unavailable tool" claim. An explicit list
 // only grows when a skill actually needs a new external name recognized;
 // each entry below is one this repo can point to:
-//   - search_screens/search_flows/get_screen/get_flow/get_design_guidance —
-//     the Refero MCP tool names exactly as src/skills/research.md spells
-//     them (its Tool Selection table and Search Strategy section).
-//   - refero_get_screen/refero_get_style — the same Refero tools' actual
-//     wire names, per the `refero_`-prefixed spelling src/ai/mcp.ts uses
-//     when it wraps them (wrapReferoTool calls). research.md's unprefixed
-//     spelling above and mcp.ts's prefixed one may be two names for the
-//     same live tools (or the skill doc may be stale) — both spellings are
-//     listed so a warning fires either way rather than betting on which one
-//     is current.
+//   - search_screens/search_flows/search_sections — the entire Mobbin MCP
+//     tool surface (src/ai/mcp.ts), exactly as src/skills/research.md spells
+//     them. Unlike Refero, Mobbin's tools have no server-side name prefix,
+//     so there is no second "wire name" spelling to also list here.
 //   - web_search/fetch_url — the built-in internet tools src/ai/system-
 //     prompt.ts documents as "if available"; never configured for this MCP
 //     server (which has no web-search wiring at all), so always unavailable
@@ -55,11 +49,7 @@ import { BRIDGED_TOOL_NAMES, SKILL_TOOL_NAMES, STATIC_TOOL_NAMES } from "./toolN
 const EXTERNAL_SKILL_TOOL_NAMES: readonly string[] = [
   "search_screens",
   "search_flows",
-  "get_screen",
-  "get_flow",
-  "get_design_guidance",
-  "refero_get_screen",
-  "refero_get_style",
+  "search_sections",
   "web_search",
   "fetch_url",
 ];
@@ -126,17 +116,23 @@ export function detectReferencedToolNames(
 // a missing tool at all — it's a missing subsystem.
 //
 // "research" belongs here too, for a related but distinct reason: /api/chat's
-// research mode (AGENT_MODES in src/ai/system-prompt.ts) 503s outright when
-// no MCP tools are connected there — the whole mode doesn't exist without a
-// reachable Refero server. That's a second, independent gap from the tool-name
-// detection above (EXTERNAL_SKILL_TOOL_NAMES already flags every Refero tool
-// research.md mentions as unavailable on its own): even a caller who somehow
-// tolerated every missing Refero tool would still be relying on a mode that
-// has its own separate kill switch on the chat route. getSkillSurfaceWarning
-// below renders a research-specific sentence for this (distinct from
-// prototype/slides' resolveTaskPolicy sentence) so the warning names the
-// actual mechanism instead of a generic "policy routing" that wouldn't be
-// true of research.
+// `agentMode` field (AGENT_MODES in src/ai/system-prompt.ts) is recorded into
+// traces/analytics only — there is no gate on the chat route that 503s, or
+// otherwise rejects, a request with no Mobbin MCP connection. Research mode
+// simply runs with whatever tools getMCPTools resolves for that request:
+// the full Mobbin toolset when the browser supplied a valid X-Mobbin-Token
+// (per-user OAuth, unlike the old Refero setup's shared server key), or NO
+// reference tools at all when it didn't — silently, not as an error. That's
+// a second, independent gap from the tool-name detection above
+// (EXTERNAL_SKILL_TOOL_NAMES already flags every Mobbin tool research.md
+// mentions as unavailable on its own): even a caller who somehow tolerated
+// every missing Mobbin tool would still be relying on a mode whose entire
+// reference-tool surface is opportunistic, not guaranteed, on this MCP path
+// (which has no equivalent of the browser's X-Mobbin-Token header at all).
+// getSkillSurfaceWarning below renders a research-specific sentence for this
+// (distinct from prototype/slides' resolveTaskPolicy sentence) so the
+// warning names the actual mechanism instead of a generic "policy routing"
+// that wouldn't be true of research.
 export const POLICY_DEPENDENT_SKILL_NAMES: ReadonlySet<string> = new Set([
   "prototype",
   "slides",
@@ -183,10 +179,11 @@ export function getSkillSurfaceWarning(skill: Pick<Skill, "name" | "content">): 
   if (policyDependent) {
     lines.push(
       skill.name === "research"
-        ? `This skill also assumes the chat route's research mode, which returns 503 there without a connected ` +
-            `MCP server (AGENT_MODES in src/ai/system-prompt.ts) — the mode itself is gated, on top of whichever ` +
-            `Refero tools above are unavailable. Treat this whole skill as unsupported unless Refero tools are ` +
-            `genuinely reachable through this session.`
+        ? `This skill also assumes the chat route's research mode, whose Mobbin reference tools only exist there ` +
+            `when the browser supplies a per-user X-Mobbin-Token (see src/routes/mobbinAuth.ts) — there is no ` +
+            `equivalent credential on this MCP path, so research runs with NO reference tools here, silently, ` +
+            `on top of whichever Mobbin tools above are unavailable. Treat this whole skill as unsupported unless ` +
+            `Mobbin tools are genuinely reachable through this session.`
         : `This skill also assumes the chat route's mode/policy routing (resolveTaskPolicy, embed-only ` +
             `batch_design) which does not exist on this MCP path — treat any instruction that depends on it as inapplicable.`,
     );

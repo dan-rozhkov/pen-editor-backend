@@ -8,6 +8,8 @@ import type { MemorySnapshot } from "../src/ai/memory/types.js";
 vi.mock("../src/ai/mcp.js", () => ({
   getMCPTools: vi.fn(async () => ({})),
   closeAllMCPClients: vi.fn(async () => {}),
+  attachMobbinRelease: vi.fn(),
+  releaseMCPTools: vi.fn(),
 }));
 
 function storeWith(snapshot: MemorySnapshot): MemoryStore {

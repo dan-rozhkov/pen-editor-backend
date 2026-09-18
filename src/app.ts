@@ -25,6 +25,7 @@ import { showcaseRoutes } from "./routes/showcase.js";
 import { showcasePublishRoutes } from "./routes/showcasePublish.js";
 import { uploadRoutes } from "./routes/upload.js";
 import { repoRoutes } from "./routes/repo.js";
+import { mobbinAuthRoutes } from "./routes/mobbinAuth.js";
 import { createTraceStore, type TraceStore } from "./tracing/traceStore.js";
 import type { ShowcaseStore } from "./showcase/store.js";
 import { createMemoryStore, type MemoryStore } from "./ai/memory/store.js";
@@ -353,6 +354,7 @@ export async function buildApp(
   await falRoutes(app, config, analytics);
   await prototypeLinkRoutes(app, config);
   await repoRoutes(app, config);
+  await mobbinAuthRoutes(app, config);
   const showcaseStore = await showcaseRoutes(app, config, options.showcaseStore);
   if (showcaseStore) {
     app.addHook("onClose", async () => {

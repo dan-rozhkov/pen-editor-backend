@@ -106,7 +106,7 @@ describe("renderSessionText", () => {
               parts: [
                 {
                   type: "dynamic-tool",
-                  toolName: "refero_search",
+                  toolName: "search_screens",
                   state: "output-available",
                   input: { query: "cards" },
                   output: "3 results",
@@ -120,7 +120,7 @@ describe("renderSessionText", () => {
     ]);
     const text = renderSessionText(s);
     expect(text).not.toContain("secret chain of thought");
-    expect(text).toContain("[tool refero_search]");
+    expect(text).toContain("[tool search_screens]");
     expect(text).toContain('input: {"query":"cards"}');
     expect(text).toContain("output: 3 results");
   });

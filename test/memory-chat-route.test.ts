@@ -19,6 +19,8 @@ vi.mock("../src/ai/provider.js", async (importOriginal) => {
 vi.mock("../src/ai/mcp.js", () => ({
   getMCPTools: vi.fn(async () => ({})),
   closeAllMCPClients: vi.fn(async () => {}),
+  attachMobbinRelease: vi.fn(),
+  releaseMCPTools: vi.fn(),
 }));
 
 const USAGE = {

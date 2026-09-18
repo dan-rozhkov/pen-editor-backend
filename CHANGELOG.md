@@ -9,6 +9,24 @@ While on `0.x`, minor bumps may include breaking changes.
 ## [Unreleased]
 
 ### Changed
+- **Refero MCP replaced with Mobbin MCP.** Refero's single server-held
+  `REFERO_API_KEY` (one shared reference library for every user) is gone;
+  research mode now connects Mobbin, which each user authorizes with their
+  own Mobbin account via OAuth 2.1 (Dynamic Client Registration + PKCE
+  S256). The backend proxies the OAuth dance (`POST /api/mobbin/register`,
+  `/token`, `/refresh` — `src/routes/mobbinAuth.ts`) but stores no
+  credential: the access token lives in the browser and travels per request
+  as the `X-Mobbin-Token` header, threaded through `prepareChatTurn` into
+  `getMCPTools`. Mobbin's tool surface is narrower than Refero's — just
+  `search_screens`/`search_flows`/`search_sections`, no per-item fetch — so
+  `src/ai/mcp.ts` lost ~350 lines of Refero-specific result wrapping
+  (`wrapReferoTool(s)`, the style-UUID retry hint, the screen-image-URL
+  fallback) and gained a token-hash-keyed client cache with a TTL and a max
+  size (a shared single-client cache was safe only because there was ever
+  one credential; a per-user credential without eviction would leak one
+  live MCP client per user for the life of the process). `src/skills/
+  research.md` and `src/mcp/skillSurface.ts`'s `EXTERNAL_SKILL_TOOL_NAMES`
+  were rewritten around the three real tools.
 - **The chat agent moved off OpenRouter onto DeepSeek's own API.** Default
   `CHAT_MODEL` is now `deepseek:deepseek-flash`, served through
   `@ai-sdk/deepseek` rather than `@openrouter/ai-sdk-provider`. Everything

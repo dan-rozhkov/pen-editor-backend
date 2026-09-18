@@ -112,6 +112,16 @@ export const envSchema = z.object({
   // Comma-separated list of origins allowed by CORS. Empty = allow any origin
   // (suitable for local development only).
   CORS_ALLOWED_ORIGINS: z.string().optional(),
+  // Origins allowed as the `redirectUri` of the Mobbin OAuth flow
+  // (src/routes/mobbinAuth.ts). Deliberately separate from
+  // CORS_ALLOWED_ORIGINS: an unset CORS allowlist means "reflect any origin",
+  // which is permissive but survivable, whereas an unconstrained redirect
+  // target is an open redirect into a real OAuth flow. The two cannot share a
+  // default. Unset here falls back to CORS_ALLOWED_ORIGINS, and when that is
+  // empty too, to loopback only — so a deployment with neither set serves
+  // nobody but a developer on localhost. Production must set one of them;
+  // mobbinAuthRoutes logs a warning at boot when neither is present.
+  MOBBIN_REDIRECT_ORIGINS: z.string().optional(),
   // Note: do NOT use z.coerce.boolean() here — it treats any non-empty string
   // (incl. "false"/"0") as true, so ENABLE_AGENT_LOGGING=false would not disable
   // logging. Only "true"/"1" (case-insensitive) enable it; absent/anything else
@@ -123,7 +133,6 @@ export const envSchema = z.object({
       const s = v?.toLowerCase();
       return s === "true" || s === "1";
     }),
-  REFERO_API_KEY: z.string().optional(),
   // GitHub REST access for read_design_repo/read_repo_files (src/services/
   // github.ts). Unset = unauthenticated requests only — public repos work,
   // capped at GitHub's ~60 req/hour/IP. Set a personal access token (no
@@ -197,7 +206,7 @@ export const envSchema = z.object({
   // --- MCP server (optional) ---
   // Shared bearer secret gating /api/mcp (streamable HTTP) and /api/mcp/ws
   // (browser bridge). Unset = the whole /api/mcp* surface returns 503,
-  // mirroring the S3/Refero optional-feature gating pattern above.
+  // mirroring the S3 optional-feature gating pattern above.
   MCP_AUTH_TOKEN: z
     .string()
     .min(16, "MCP_AUTH_TOKEN must be at least 16 characters")

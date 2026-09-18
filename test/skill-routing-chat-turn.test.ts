@@ -8,6 +8,8 @@ import type { UserSkill, UserSkillStore } from "../src/ai/skills/userStore.js";
 vi.mock("../src/ai/mcp.js", () => ({
   getMCPTools: vi.fn(async () => ({})),
   closeAllMCPClients: vi.fn(async () => {}),
+  attachMobbinRelease: vi.fn(),
+  releaseMCPTools: vi.fn(),
 }));
 
 function userMessage(text: string) {

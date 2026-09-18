@@ -641,12 +641,12 @@ scans a skill's body for backtick-quoted or call-style (`tool_name(`)
 mentions of any tool name and flags the ones not on this MCP surface. The
 candidate set isn't just `penTools`/`SKILL_TOOL_NAMES` — it also lists a
 handful of tools this repo never declares a schema for at all
-(`EXTERNAL_SKILL_TOOL_NAMES`: Refero's MCP tools as `research.md` spells them
-— `search_screens`, `search_flows`, `get_screen`, `get_flow`,
-`get_design_guidance` — plus their `refero_`-prefixed wire names from
-`src/ai/mcp.ts`, and the built-in `web_search`/`fetch_url`). Without that
+(`EXTERNAL_SKILL_TOOL_NAMES`: Mobbin's MCP tools as `research.md` spells them
+— `search_screens`, `search_flows`, `search_sections` (Mobbin's tools carry
+no server-side name prefix, unlike Refero's `refero_`-prefixed ones before
+it) — and the built-in `web_search`/`fetch_url`). Without that
 list, a skill built entirely on tools outside `penTools` (research.md calls
-only Refero tools) would score zero mentions and look fully usable here,
+only Mobbin tools) would score zero mentions and look fully usable here,
 which is the opposite of true. `list_skills` adds an `unavailableTools` array
 per catalog entry (omitted when empty) plus a general notice in the
 response, and `load_skill` prepends an explicit warning naming them.

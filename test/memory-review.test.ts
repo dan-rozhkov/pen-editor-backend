@@ -328,7 +328,7 @@ describe("maybeRunReview", () => {
           inputSchema: z.object({ name: z.string() }),
         }),
         // Simulates an MCP tool discovered for this turn — also no execute.
-        refero_search_screens: tool({
+        search_screens: tool({
           description: "Search screens",
           inputSchema: z.object({ query: z.string() }),
         }),

@@ -301,9 +301,10 @@ export function buildMcpServer(): McpServer {
         // catalog (no unavailableTools) even though load_skill warns about
         // all three — the catalog was silent about exactly the entries
         // whose entire MODE is gated (resolveTaskPolicy for prototype/
-        // slides, the research-mode 503 for research), not just missing an
-        // individual tool. A caller that only ever reads list_skills (never
-        // loads every skill just to check) had no way to see that.
+        // slides, research's Mobbin-token-only reference tools for
+        // research), not just missing an individual tool. A caller that
+        // only ever reads list_skills (never loads every skill just to
+        // check) had no way to see that.
         const policyDependent = POLICY_DEPENDENT_SKILL_NAMES.has(s.name);
         return {
           name: s.name,

@@ -30,7 +30,8 @@ npm run dev            # tsx watch on http://localhost:3001
 | `CHAT_REASONING_EFFORT` | no | `xhigh\|high\|medium\|low\|minimal\|none`, default `none`; applies to the main chat model only. DeepSeek only accepts `low\|high\|max`, so the scale is compressed: `none`→disabled, `minimal`/`low`→`low`, `medium`/`high`→`high`, `xhigh`→`max`. For an OpenRouter `CHAT_MODEL`, only `none` was measured to actually suppress reasoning on `deepseek/*` — `effort` gradations and `reasoning.max_tokens` are both ignored by it |
 | `STRUCTURED_MODEL` | no | model for the two `generateObject()` calls needing a real `json_schema` response format (user-skills generate, prototype-link); default `openrouter:deepseek/deepseek-v4.1-flash`, always OpenRouter regardless of `CHAT_MODEL` — `@ai-sdk/deepseek` has no structured-output support |
 | `CORS_ALLOWED_ORIGINS` | no | comma-separated origin allowlist |
-| `REFERO_API_KEY` | no | enables research mode (Refero MCP) |
+| `MOBBIN_REDIRECT_ORIGINS` | no | comma-separated allowlist of origins `/api/mobbin/register`/`/token` will accept as an OAuth redirect URI. Falls back to `CORS_ALLOWED_ORIGINS`, then to loopback-only — production runs with an empty `CORS_ALLOWED_ORIGINS`, so **this must be set in production** or `/api/mobbin/register` 400s for every real origin (boot logs a warning either way) |
+| `X-Mobbin-Token` (request header, not an env var) | no | per-request Mobbin OAuth access token — enables research mode's Mobbin MCP toolset for that request only. The backend stores no credential; see `src/routes/mobbinAuth.ts` and `docs/superpowers/specs/2026-09-18-mobbin-mcp-design.md` |
 | `TAVILY_API_KEY` | no | enables internet search (`web_search` / `fetch_url`) |
 | `S3_*` | no | image upload (all four required together) |
 
@@ -50,7 +51,7 @@ Set via the `agentMode` field on `POST /api/chat` (`src/ai/system-prompt.ts`):
 
 - **edits** (default) — create/modify designs on the canvas.
 - **prototype** — quickly insert a single top-level `embed` node of static HTML.
-- **research** — Refero-only toolset for design research; returns 503 if no MCP is connected.
+- **research** — Mobbin-only toolset for design research. There is no gate on this mode: `agentMode` is recorded into traces/analytics only, and a user who hasn't connected their own Mobbin account via `X-Mobbin-Token` simply gets no reference tools at all for that request, silently.
 
 ## Tools
 

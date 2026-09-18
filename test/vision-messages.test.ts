@@ -213,7 +213,7 @@ describe("applyVisionPreprocessing", () => {
     // @ai-sdk/mcp's mcpToModelOutput promotes an MCP image content part into
     // this exact `image-data` shape for every tool the client returns —
     // sailed straight past this pass untouched.
-    vi.mocked(describeImage).mockResolvedValue({ ok: true, text: "A pricing screen from Refero." });
+    vi.mocked(describeImage).mockResolvedValue({ ok: true, text: "A pricing screen from Mobbin." });
     const config = makeConfig();
     const messages: ModelMessage[] = [
       {
@@ -222,7 +222,7 @@ describe("applyVisionPreprocessing", () => {
           {
             type: "tool-result",
             toolCallId: "call-mcp-1",
-            toolName: "refero_get_screen_image",
+            toolName: "search_screens",
             output: {
               type: "content",
               value: [{ type: "image-data", data: "AAAA", mediaType: "image/jpeg" }],
@@ -238,7 +238,7 @@ describe("applyVisionPreprocessing", () => {
       .content[0];
     expect(part.output).toEqual({
       type: "text",
-      value: expect.stringContaining("A pricing screen from Refero."),
+      value: expect.stringContaining("A pricing screen from Mobbin."),
     });
     // Labeled "Image" rather than "Screenshot" (that label is reserved for
     // get_screenshot specifically), and no raw bytes survive either way.

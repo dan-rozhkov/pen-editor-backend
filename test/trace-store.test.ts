@@ -65,6 +65,104 @@ describe("redactBase64DataUrls", () => {
     const text = `{"text":"here is a very long sentence ${"word ".repeat(300)}"}`;
     expect(redactBase64DataUrls(text)).toBe(text);
   });
+
+  // Finding 2: an MCP tool result (Mobbin's search_screens/search_sections,
+  // etc.) carries its image as the raw MCP content-part shape —
+  // {"type":"image","data":"<base64>", ...} — with NO "data:...;base64,"
+  // prefix at all. BASE64_DATA_URL_RE alone can't match this, so before
+  // this fix it sailed straight into raw_traces on every tool-loop step,
+  // reproducing the exact failure that already once filled the Neon
+  // quota with base64 screenshots.
+  it("redacts a bare MCP image content-part 'data' field with no data: prefix", () => {
+    const big = "A".repeat(2000);
+    const json = `{"type":"image","data":"${big}","mimeType":"image/jpeg"}`;
+    const out = redactBase64DataUrls(json);
+    expect(out).not.toContain(big);
+    expect(out).toContain(`"data":"[redacted 2000 chars]"`);
+    // Round-trips as valid JSON with everything else intact.
+    expect(JSON.parse(out)).toEqual({
+      type: "image",
+      data: `[redacted 2000 chars]`,
+      mimeType: "image/jpeg",
+    });
+  });
+
+  it("redacts a bare MCP embedded-resource 'blob' field with no data: prefix", () => {
+    const big = "B".repeat(2000);
+    const json = `{"type":"resource","resource":{"blob":"${big}","mimeType":"image/png"}}`;
+    const out = redactBase64DataUrls(json);
+    expect(out).not.toContain(big);
+    expect(JSON.parse(out).resource.blob).toBe("[redacted 2000 chars]");
+  });
+
+  it("keeps a small bare 'data' field untouched — same floor as data URLs", () => {
+    const small = `{"type":"image","data":"AAA","mimeType":"image/png"}`;
+    expect(redactBase64DataUrls(small)).toBe(small);
+  });
+
+  it("does not touch an ordinary 'data' field that just happens to hold a short, non-base64-length string", () => {
+    const json = `{"data":"not-an-image","other":"value"}`;
+    expect(redactBase64DataUrls(json)).toBe(json);
+  });
+
+  // Regression (defect 4): an MCP server can return
+  // `content:[{type:"text", text:"<JSON-encoded string>"}]` with a base64
+  // "data"/"blob" field INSIDE that string. Once the outer payload goes
+  // through JSON.stringify (as buildTraceRow's payload always does before
+  // reaching redactBase64DataUrls), every `"` inside that inner JSON string
+  // is escaped to `\"` — so the literal substring is `\"data\":\"<base64>\"`,
+  // not `"data":"<base64>"`, and the old regex (which only matched an
+  // UNESCAPED `"data":"..."`) silently sailed straight past it. This is
+  // exactly the shape that once filled the Neon raw_traces quota, just one
+  // level of encoding deeper than the case already covered above.
+  it("redacts a bare 'data' field nested one level inside a JSON-encoded string (escaped quotes)", () => {
+    const big = "C".repeat(2000);
+    // Build the inner JSON exactly as a real MCP text-content part would
+    // carry it, then JSON.stringify the WHOLE thing the way buildTraceRow
+    // does — this is what actually produces the escaped-quote form.
+    const inner = JSON.stringify({ type: "image", data: big, mimeType: "image/jpeg" });
+    const outer = JSON.stringify({
+      content: [{ type: "text", text: inner }],
+    });
+    // Sanity check: the naive OLD pattern genuinely cannot see this — the
+    // literal, unescaped substring never occurs in `outer` at all.
+    expect(outer).not.toContain(`"data":"${big}"`);
+    expect(outer).toContain(big);
+
+    const out = redactBase64DataUrls(outer);
+    expect(out).not.toContain(big);
+
+    // Must still round-trip as valid JSON at BOTH levels — the outer
+    // object, and the inner JSON string once re-parsed — since this exact
+    // string is inserted into a `::jsonb` column.
+    const parsedOuter = JSON.parse(out) as { content: Array<{ text: string }> };
+    const parsedInner = JSON.parse(parsedOuter.content[0].text) as { data: string };
+    expect(parsedInner.data).toBe("[redacted 2000 chars]");
+  });
+
+  it("redacts a nested 'blob' field the same way", () => {
+    const big = "D".repeat(2000);
+    const inner = JSON.stringify({
+      type: "resource",
+      resource: { blob: big, mimeType: "image/png" },
+    });
+    const outer = JSON.stringify({ content: [{ type: "text", text: inner }] });
+
+    const out = redactBase64DataUrls(outer);
+    expect(out).not.toContain(big);
+
+    const parsedOuter = JSON.parse(out) as { content: Array<{ text: string }> };
+    const parsedInner = JSON.parse(parsedOuter.content[0].text) as {
+      resource: { blob: string };
+    };
+    expect(parsedInner.resource.blob).toBe("[redacted 2000 chars]");
+  });
+
+  it("keeps a small nested 'data' field untouched — same floor applies one level deep", () => {
+    const inner = JSON.stringify({ type: "image", data: "AAA", mimeType: "image/png" });
+    const outer = JSON.stringify({ content: [{ type: "text", text: inner }] });
+    expect(redactBase64DataUrls(outer)).toBe(outer);
+  });
 });
 
 function fakePool(): TraceQueryable & { calls: Array<{ sql: string; params?: unknown[] }> } {
@@ -138,6 +236,48 @@ describe("createTraceStore", () => {
     expect(stored).toContain("[redacted 4000 chars]");
     // Everything that is not an image survives verbatim.
     expect(JSON.parse(stored).messages[0].parts[0].text).toBe("look");
+  });
+
+  // Finding 2, end to end: a Mobbin MCP tool result stored as a raw
+  // toolResults[].result object (see routes/chat.ts's mapSteps, which
+  // writes `tr.output ?? tr.result` verbatim) — NOT a data: URL string —
+  // must still get its image payload redacted before landing in
+  // raw_traces.
+  it("strips a bare MCP image content-part ('data', no data: prefix) out of a tool result", async () => {
+    const pool = fakePool();
+    const store = createTraceStore(
+      makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
+      pool,
+    );
+    const base64 = "M".repeat(4000);
+    await store!.writeRawTrace({
+      ...row,
+      payload: {
+        ...row.payload,
+        steps: [
+          {
+            toolResults: [
+              {
+                toolName: "search_screens",
+                result: {
+                  content: [
+                    { type: "image", data: base64, mimeType: "image/jpeg" },
+                    { type: "text", text: "iOS onboarding screen" },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      },
+    });
+    const stored = pool.calls[0].params?.[4] as string;
+    expect(stored).not.toContain(base64);
+    expect(stored).toContain("[redacted 4000 chars]");
+    const parsedSteps = JSON.parse(stored).steps;
+    expect(parsedSteps[0].toolResults[0].result.content[1].text).toBe(
+      "iOS onboarding screen",
+    );
   });
 });
 

@@ -139,7 +139,7 @@ function toImageString(data: unknown, mediaType: string | undefined): string | n
 // payload into a real image part so a vision-capable model actually sees
 // the picture. For get_screenshot that's src/ai/tools.ts's own
 // `toModelOutput`, promoting the handler's `JSON.stringify({ imageData })`.
-// For every MCP tool (Refero included) it's `mcpToModelOutput`
+// For every MCP tool (Mobbin included) it's `mcpToModelOutput`
 // (@ai-sdk/mcp), which promotes an MCP `{type:"image", data, mimeType}`
 // content part into exactly the same `image-data` shape — confirmed by
 // reading node_modules/@ai-sdk/mcp/dist/index.js's mcpToModelOutput, which

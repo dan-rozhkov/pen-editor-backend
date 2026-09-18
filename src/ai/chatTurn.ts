@@ -14,7 +14,7 @@ import { buildSystemPrompt } from "./system-prompt.js";
 import { resolveTaskPolicy, type TaskPolicy } from "./taskPolicy.js";
 import { applyVisionPreprocessing, modelSupportsVision } from "./vision-messages.js";
 import { isVisionConfigured } from "../services/vision.js";
-import { getMCPTools } from "./mcp.js";
+import { attachMobbinRelease, getMCPTools, releaseMCPTools } from "./mcp.js";
 import { getWebTools } from "./web-search.js";
 import {
   detectSkillCommand,
@@ -141,6 +141,15 @@ export interface PrepareChatTurnInput {
   /** Client-generated stable anonymous id. Absent → memory is disabled for
    * this turn (the showcase runner and every headless entry point). */
   userId?: string;
+  /**
+   * The browser's own Mobbin OAuth access token (`X-Mobbin-Token` request
+   * header, read by src/routes/chat.ts — never stored server-side, see
+   * docs/superpowers/specs/2026-09-18-mobbin-mcp-design.md). Undefined →
+   * getMCPTools returns no Mobbin tools for this turn, same as an
+   * unconnected user or a headless caller (the showcase runner, background
+   * reviews).
+   */
+  mobbinAccessToken?: string;
   memoryStore?: MemoryStore | null;
   /**
    * Phase 2: injected learned-skill store. Undefined/null → no self-authored
@@ -745,146 +754,176 @@ export async function prepareChatTurn(
   // the current slash command name, if any.
   const taskPolicy = resolveTaskPolicy({ messages, slashSkillName });
 
-  const mcpTools = await getMCPTools(config);
-  // One run context per request: load_skill marks what the model actually
-  // read this turn, and skill_manage refuses to patch/delete anything it
-  // did not — see SkillRunContext's doc comment for why this must be fresh
-  // per request rather than shared across turns.
-  const skillRunContext = createSkillRunContext();
-  const tools = {
-    ...penTools,
-    ...getWebTools(config),
-    ...mcpTools,
-    ...getSkillTools({
-      learnedStore,
-      runContext: skillRunContext,
-      userSkills: userSkillStore && input.userId ? { store: userSkillStore, userId: input.userId } : null,
-    }),
-  } as ToolSet;
-  if (memoryInjected && memoryStore && input.userId) {
-    Object.assign(
-      tools,
-      getMemoryTools(createMemoryToolContext(memoryStore, input.userId, "foreground")),
-    );
-  }
-  if (learnedStore && auditDb) {
-    Object.assign(
-      tools,
-      getSelfSkillTools({
-        store: learnedStore,
+  const mcpTools = await getMCPTools(config, {
+    mobbinAccessToken: input.mobbinAccessToken,
+    // Same source of truth get_screenshot's own gate uses below — reused
+    // rather than a second copy, so "can this model see" can never disagree
+    // between the two gates. This decides whether getMCPTools hands back a
+    // Mobbin tool set whose inline preview images survive, or one that's
+    // been rewritten to drop them per-request (never baked into its
+    // token-keyed client cache — see gateImagesForVisionlessModel's doc
+    // comment in mcp.ts for why that has to happen outside the cache).
+    modelSupportsVision: modelSupportsVision(config, selectedModelId),
+  });
+  // getMCPTools has already incremented a refCount for this lease by the
+  // time it resolves (see mcp.ts) — anything below that throws before the
+  // `return` at the end of this function would otherwise leak that lease
+  // forever: routes/chat.ts's releaseMCPTools call is wired onto the
+  // *returned* `tools` object's "close" handler, which is registered AFTER
+  // prepareChatTurn returns, so a throw here means that handler never gets
+  // wired at all and the lease is orphaned until the 10-minute
+  // RETIRE_FORCE_CLOSE_MS backstop. getWebTools/getSkillTools/
+  // getMemoryTools/getSelfSkillTools/makeAnalyzeImageTool can all throw
+  // (config lookups, store construction), so the whole remainder of this
+  // function is wrapped.
+  try {
+    // One run context per request: load_skill marks what the model actually
+    // read this turn, and skill_manage refuses to patch/delete anything it
+    // did not — see SkillRunContext's doc comment for why this must be
+    // fresh per request rather than shared across turns.
+    const skillRunContext = createSkillRunContext();
+    const tools = {
+      ...penTools,
+      ...getWebTools(config),
+      ...mcpTools,
+      ...getSkillTools({
+        learnedStore,
         runContext: skillRunContext,
-        db: auditDb,
-        // Skills are global, not per-user, so a write is legitimate without
-        // a userId; the audit row still needs one, and "anonymous" is the
-        // honest value for a caller with no client-supplied id.
-        userId: input.userId ?? "anonymous",
-        origin: "foreground",
-        // skill_view belongs to the background review run. In a design turn
-        // the model reads a skill via load_skill, which already satisfies
-        // skill_manage's read-before-write guard — a second reader here
-        // would just invite mid-task browsing of the library.
-        includeView: false,
+        userSkills: userSkillStore && input.userId ? { store: userSkillStore, userId: input.userId } : null,
       }),
+    } as ToolSet;
+    // The spread above only copies mcpTools' own ENUMERABLE properties, which
+    // drops the non-enumerable Mobbin-client release hook — reattach it onto
+    // the merged object so the caller's eventual releaseMCPTools(tools) call
+    // (see routes/chat.ts) still reaches the real cached client instead of
+    // becoming a silent no-op. See attachMobbinRelease's doc comment.
+    attachMobbinRelease?.(mcpTools, tools);
+    if (memoryInjected && memoryStore && input.userId) {
+      Object.assign(
+        tools,
+        getMemoryTools(createMemoryToolContext(memoryStore, input.userId, "foreground")),
+      );
+    }
+    if (learnedStore && auditDb) {
+      Object.assign(
+        tools,
+        getSelfSkillTools({
+          store: learnedStore,
+          runContext: skillRunContext,
+          db: auditDb,
+          // Skills are global, not per-user, so a write is legitimate without
+          // a userId; the audit row still needs one, and "anonymous" is the
+          // honest value for a caller with no client-supplied id.
+          userId: input.userId ?? "anonymous",
+          origin: "foreground",
+          // skill_view belongs to the background review run. In a design turn
+          // the model reads a skill via load_skill, which already satisfies
+          // skill_manage's read-before-write guard — a second reader here
+          // would just invite mid-task browsing of the library.
+          includeView: false,
+        }),
+      );
+    }
+    if (taskPolicy !== "native") {
+      tools.batch_design = makeBatchDesignTool({ embedOnly: true });
+      delete tools.draw_vector;
+      // This gate is about NOT CREATING NATIVE SCENE NODES in embed-only mode
+      // — not about which tools are "expensive" or "external". vectorize_image
+      // defaults to mode: "layers", which places native vector paths exactly
+      // like draw_vector does, so it's gated the same way.
+      //
+      // remove_background stays available here on purpose — it's an asymmetry,
+      // not an oversight. Its image_url branch never touches the scene graph:
+      // URL in, URL out, and the cut-out PNG is meant to be dropped straight
+      // into an embed's `<img src>` — exactly the "real imagery in the design"
+      // the prototype skill asks for. Gating it out would remove the one
+      // capability prototype/slides screens most want. Its node_id branch
+      // (replace a canvas node's image fill in place) simply won't find a
+      // matching node here — embed-only mode has no such nodes — and returns a
+      // clear error; one wasted step in a rare case is cheaper than losing the
+      // image_url path entirely.
+      delete tools.vectorize_image;
+    }
+
+    // analyze_image needs this request's real config (VISION_MODEL etc.) to
+    // actually call the vision service — the static penTools entry only
+    // exists so the tool-name contract test can see its schema without one.
+    // With no VISION_MODEL it has nothing to call, so it is dropped rather
+    // than left to burn a step reporting itself unavailable.
+    if (isVisionConfigured(config)) {
+      tools.analyze_image = makeAnalyzeImageTool(config);
+    } else {
+      delete tools.analyze_image;
+    }
+
+    // Structural gate (mirrors the embed-only guard above): get_screenshot is
+    // client-executed and returns an image, so it is only useful when that
+    // image can actually reach the model as something readable. That is
+    // TWO independent axes (see vision-messages.ts's doc comment on
+    // applyVisionPreprocessing), not one:
+    //   1. Can the model see at all (modelSupportsVision)?
+    //   2. Can THIS PROVIDER'S AI SDK integration carry an image found inside
+    //      a tool result through to the model natively
+    //      (providerHandlesToolResultImages)? OpenRouter can; both OpenCode
+    //      routes route through @ai-sdk/openai-compatible and cannot — that
+    //      package JSON.stringifies a tool-result image part into plain text
+    //      instead (see providerHandlesToolResultImages's doc comment).
+    // A vision-capable model on a provider that can't carry the image STILL
+    // has its get_screenshot result routed through applyVisionPreprocessing's
+    // "tool-result-only" rewrite path — but with no VISION_MODEL configured,
+    // describeImage has nothing to call, so every screenshot arrives as the
+    // literal string "Vision is not configured on this server"
+    // (src/services/vision.ts). That is exactly the "phantom tool nobody
+    // could act on" this gate exists to prevent, so the tool must only stay
+    // in the set when EITHER a real image reaches the model natively (axes 1
+    // AND 2 both true) OR a VISION_MODEL is configured to describe it instead.
+    const chatModelRef = modelOverride ?? config.CHAT_MODEL;
+    const toolResultImagesNative = providerHandlesToolResultImages(
+      parseModelRef(chatModelRef).provider,
     );
-  }
-  if (taskPolicy !== "native") {
-    tools.batch_design = makeBatchDesignTool({ embedOnly: true });
-    delete tools.draw_vector;
-    // This gate is about NOT CREATING NATIVE SCENE NODES in embed-only mode
-    // — not about which tools are "expensive" or "external". vectorize_image
-    // defaults to mode: "layers", which places native vector paths exactly
-    // like draw_vector does, so it's gated the same way.
-    //
-    // remove_background stays available here on purpose — it's an asymmetry,
-    // not an oversight. Its image_url branch never touches the scene graph:
-    // URL in, URL out, and the cut-out PNG is meant to be dropped straight
-    // into an embed's `<img src>` — exactly the "real imagery in the design"
-    // the prototype skill asks for. Gating it out would remove the one
-    // capability prototype/slides screens most want. Its node_id branch
-    // (replace a canvas node's image fill in place) simply won't find a
-    // matching node here — embed-only mode has no such nodes — and returns a
-    // clear error; one wasted step in a rare case is cheaper than losing the
-    // image_url path entirely.
-    delete tools.vectorize_image;
-  }
+    const nativeVisionPath =
+      modelSupportsVision(config, selectedModelId) && toolResultImagesNative;
+    if (!nativeVisionPath && !isVisionConfigured(config)) {
+      delete tools.get_screenshot;
+    }
 
-  // analyze_image needs this request's real config (VISION_MODEL etc.) to
-  // actually call the vision service — the static penTools entry only
-  // exists so the tool-name contract test can see its schema without one.
-  // With no VISION_MODEL it has nothing to call, so it is dropped rather
-  // than left to burn a step reporting itself unavailable.
-  if (isVisionConfigured(config)) {
-    tools.analyze_image = makeAnalyzeImageTool(config);
-  } else {
-    delete tools.analyze_image;
+    // Structural gate, unconditional (unlike the ones above): attach_local_repo
+    // is client-executed but exists purely for a LOCAL agent driving the
+    // editor tab over WebMCP to call directly — the design agent itself runs
+    // in a browser with no filesystem, so offering it here could only waste a
+    // tool-call step. It stays in penTools (with no execute) solely to satisfy
+    // pen-editor's cross-repo tool-name contract; every real chat turn drops
+    // it before the request goes out.
+    delete tools.attach_local_repo;
+
+    // Structural gate: remove_background/vectorize_image are client-executed
+    // but call our backend routes, which return 503 without FAL_KEY. Rather
+    // than advertise a tool that's guaranteed to fail, drop it from the
+    // per-request set when the feature isn't configured on this deployment.
+    if (!config.FAL_KEY) {
+      delete tools.remove_background;
+      delete tools.vectorize_image;
+    }
+
+    return {
+      model,
+      system,
+      modelMessages,
+      tools,
+      taskPolicy,
+      selectedModelId,
+      systemPromptHash,
+      slashSkillName,
+      skillSource,
+      memoryInjected,
+      // Reflects what was actually rendered into the catalog (deduped against
+      // curated names, capped at MAX_LEARNED_SKILLS_IN_PROMPT) — not the raw
+      // store read — since this is what other code inspects to know what the
+      // model was actually shown this turn.
+      learnedSkillNames: boundedLearnedSkills.map((s) => s.name),
+    };
+  } catch (err) {
+    releaseMCPTools(mcpTools);
+    throw err;
   }
-
-  // Structural gate (mirrors the embed-only guard above): get_screenshot is
-  // client-executed and returns an image, so it is only useful when that
-  // image can actually reach the model as something readable. That is now
-  // TWO independent axes (see vision-messages.ts's doc comment on
-  // applyVisionPreprocessing), not one:
-  //   1. Can the model see at all (modelSupportsVision)?
-  //   2. Can THIS PROVIDER'S AI SDK integration carry an image found inside
-  //      a tool result through to the model natively
-  //      (providerHandlesToolResultImages)? OpenRouter can; both OpenCode
-  //      routes route through @ai-sdk/openai-compatible and cannot — that
-  //      package JSON.stringifies a tool-result image part into plain text
-  //      instead (see providerHandlesToolResultImages's doc comment).
-  // A vision-capable model on a provider that can't carry the image STILL
-  // has its get_screenshot result routed through applyVisionPreprocessing's
-  // "tool-result-only" rewrite path — but with no VISION_MODEL configured,
-  // describeImage has nothing to call, so every screenshot arrives as the
-  // literal string "Vision is not configured on this server"
-  // (src/services/vision.ts). That is exactly the "phantom tool nobody
-  // could act on" this gate exists to prevent, so the tool must only stay
-  // in the set when EITHER a real image reaches the model natively (axes 1
-  // AND 2 both true) OR a VISION_MODEL is configured to describe it instead
-  // — the previous single-axis check (model vision OR VISION_MODEL) missed
-  // exactly this case: a vision-capable model on a non-native provider with
-  // no VISION_MODEL set.
-  const chatModelRef = modelOverride ?? config.CHAT_MODEL;
-  const toolResultImagesNative = providerHandlesToolResultImages(
-    parseModelRef(chatModelRef).provider,
-  );
-  const nativeVisionPath = modelSupportsVision(config, selectedModelId) && toolResultImagesNative;
-  if (!nativeVisionPath && !isVisionConfigured(config)) {
-    delete tools.get_screenshot;
-  }
-
-  // Structural gate, unconditional (unlike the ones above): attach_local_repo
-  // is client-executed but exists purely for a LOCAL agent driving the
-  // editor tab over WebMCP to call directly — the design agent itself runs
-  // in a browser with no filesystem, so offering it here could only waste a
-  // tool-call step. It stays in penTools (with no execute) solely to satisfy
-  // pen-editor's cross-repo tool-name contract; every real chat turn drops
-  // it before the request goes out.
-  delete tools.attach_local_repo;
-
-  // Structural gate: remove_background/vectorize_image are client-executed
-  // but call our backend routes, which return 503 without FAL_KEY. Rather
-  // than advertise a tool that's guaranteed to fail, drop it from the
-  // per-request set when the feature isn't configured on this deployment.
-  if (!config.FAL_KEY) {
-    delete tools.remove_background;
-    delete tools.vectorize_image;
-  }
-
-  return {
-    model,
-    system,
-    modelMessages,
-    tools,
-    taskPolicy,
-    selectedModelId,
-    systemPromptHash,
-    slashSkillName,
-    skillSource,
-    memoryInjected,
-    // Reflects what was actually rendered into the catalog (deduped against
-    // curated names, capped at MAX_LEARNED_SKILLS_IN_PROMPT) — not the raw
-    // store read — since this is what other code inspects to know what the
-    // model was actually shown this turn.
-    learnedSkillNames: boundedLearnedSkills.map((s) => s.name),
-  };
 }

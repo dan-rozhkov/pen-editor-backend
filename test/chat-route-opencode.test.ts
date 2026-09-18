@@ -24,6 +24,11 @@ vi.mock("../src/ai/provider.js", async (importOriginal) => {
 vi.mock("../src/ai/mcp.js", () => ({
   getMCPTools: vi.fn(async () => holders.mcpTools),
   closeAllMCPClients: vi.fn(async () => {}),
+  // The Mobbin client cache hands out a lease per turn; prepareChatTurn and
+  // the chat route both call these, so a mock of this module must declare
+  // them or the route 500s on an undefined call.
+  attachMobbinRelease: vi.fn(),
+  releaseMCPTools: vi.fn(),
 }));
 
 const USAGE = {

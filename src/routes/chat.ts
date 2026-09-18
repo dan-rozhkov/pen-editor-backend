@@ -20,6 +20,7 @@ import { randomUUID } from "node:crypto";
 import { getAllSkills } from "../ai/skills.js";
 import { isOpenCodeProvider, parseModelRef } from "../ai/modelRef.js";
 import { writeRawTraceSafe, type TraceStore } from "../tracing/traceStore.js";
+import { releaseMCPTools } from "../ai/mcp.js";
 import {
   prepareChatTurn,
   sanitizeMessagesForProvider,
@@ -45,6 +46,11 @@ export { sanitizeMessagesForProvider };
 
 // Maximum image parts per single message (not per conversation).
 const MAX_IMAGE_PARTS = 4;
+
+// Sane upper bound on the X-Mobbin-Token header — an OAuth access token is
+// nowhere near this long; this is only a coarse guard against an absurd or
+// malicious header value before it ever reaches getMCPTools/prepareChatTurn.
+const MAX_MOBBIN_TOKEN_LENGTH = 8192;
 
 // pipeUIMessageStreamToResponse masks every stream error to a generic
 // "An error occurred." by default (so server internals never leak to the
@@ -252,6 +258,18 @@ export async function chatRoutes(
     // comment on chatBodySchema above.
     const userId = rawUserId && isPlausibleUserId(rawUserId) ? rawUserId : undefined;
 
+    // Fastify lower-cases request header names. Read straight from headers,
+    // never from the body — this credential must never land in `messages`
+    // (see buildTraceRow below, which writes `messages` verbatim to
+    // raw_traces) or anywhere else the request body's shape is logged.
+    const rawMobbinToken = request.headers["x-mobbin-token"];
+    const mobbinAccessToken =
+      typeof rawMobbinToken === "string" &&
+      rawMobbinToken.length > 0 &&
+      rawMobbinToken.length <= MAX_MOBBIN_TOKEN_LENGTH
+        ? rawMobbinToken
+        : undefined;
+
     const traceSessionId = chatSessionId ?? `anon-${randomUUID()}`;
 
     // The user's OWN OpenCode key, read from a header — never the body (see
@@ -331,6 +349,7 @@ export async function chatRoutes(
         canvasContext,
         modelOverride,
         userId,
+        mobbinAccessToken,
         memoryStore,
         learnedSkillStore,
         auditDb,
@@ -381,6 +400,17 @@ export async function chatRoutes(
       if (!reply.raw.writableEnded) {
         abortController.abort();
       }
+      // Releases this request's lease on its Mobbin MCP client (a no-op if
+      // this turn never had one), exactly once, regardless of how the
+      // request ended — success, client abort, or a retried/failed
+      // attempt. Must happen here rather than in any single attempt's
+      // onFinish/onAbort: prepareChatTurn (and therefore getMCPTools) runs
+      // ONCE per request, but a retried request can build several
+      // streamText attempts sharing this same `tools` object, so releasing
+      // per-attempt would double-release (harmless, refCount floors at 0)
+      // or — worse — release too early, while a retry attempt is still
+      // using the very same cached client.
+      releaseMCPTools?.(tools);
     });
 
     // Builds the trace-store row shape; the only bits that vary per callback

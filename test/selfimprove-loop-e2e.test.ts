@@ -38,6 +38,8 @@ import type { TraceQueryable } from "../src/tracing/traceStore.js";
 vi.mock("../src/ai/mcp.js", () => ({
   getMCPTools: vi.fn(async () => ({})),
   closeAllMCPClients: vi.fn(async () => {}),
+  attachMobbinRelease: vi.fn(),
+  releaseMCPTools: vi.fn(),
 }));
 
 // createModel always returns whatever the current test has stashed here —

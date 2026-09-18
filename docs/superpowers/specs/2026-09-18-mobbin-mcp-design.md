@@ -57,17 +57,26 @@ browser                         pen-editor-backend            api.mobbin.com
   │                                                                 │
   │ localStorage: pen.mobbin.{clientId,accessToken,refreshToken,expiresAt}
   │                                                                 │
-  │ POST /api/chat  { …, mobbinAccessToken }                        │
+  │ POST /api/chat   header: X-Mobbin-Token: <access token>         │
   │                                    │─ MCP tool calls ──────────▶│
 ```
 
 Refresh follows the same shape: `POST /api/mobbin/refresh` with the refresh
 token, backend exchanges, browser re-stores.
 
-`mobbinAccessToken` is a top-level field of the chat request body, never a
-part of `messages`. `src/routes/chat.ts` records only `messages` into
-`raw_traces` (line 215), so keeping the token out of the message list is
-what keeps it out of the trace database.
+The token travels as an `X-Mobbin-Token` request header, not in the request
+body. A sibling design landed the same day (`0aa8551`, OpenCode Zen as a
+chat provider) establishes exactly this convention for a user-supplied
+credential with `X-OpenCode-Key`; matching it keeps one mechanism for
+user-held keys instead of two. A header also keeps the credential out of the
+request body entirely, which is a stronger guarantee than keeping it out of
+`messages` — `src/routes/chat.ts` records `messages` into `raw_traces`
+(line 215), and a body field would have relied on that boundary holding.
+
+`src/plugins/cors.ts` carries an explicit `allowedHeaders` allowlist
+(`Content-Type`, `Authorization`, `Mcp-Session-Id`). `X-Mobbin-Token` must
+be added there or every cross-origin preflight fails — the deployed frontend
+and backend are separate origins, so this is not optional.
 
 ## Backend changes
 
@@ -121,8 +130,9 @@ clamped result passes whole, or drops whole — never half.
 
 ### Other backend files
 
-- `src/routes/chat.ts` — add `mobbinAccessToken: z.string().min(1).max(4096).optional()`
-  to the request schema; thread it into `prepareChatTurn`.
+- `src/routes/chat.ts` — read the `X-Mobbin-Token` header (bounded to a sane
+  maximum length); thread it into `prepareChatTurn`.
+- `src/plugins/cors.ts` — add `X-Mobbin-Token` to `allowedHeaders`.
 - `src/ai/chatTurn.ts` — same field on `PrepareChatTurnInput` (near line 143);
   pass it to `getMCPTools` (line 724).
 - New `src/routes/mobbinAuth.ts` — `register`, `token`, `refresh`. Holds no
@@ -157,9 +167,10 @@ now matters more, since each result carries images.
   expiry.
 - New `src/routes/MobbinCallback.tsx` at `/oauth/mobbin/callback` — reads
   `code`/`state`, `postMessage`s to the opener, closes.
-- `src/hooks/useDesignChat.ts` — add `mobbinAccessToken` to the body built in
-  `prepareSendMessagesRequest` (line 317), next to `userId`; refresh an
-  expired token before sending.
+- `src/hooks/useDesignChat.ts` — send the `X-Mobbin-Token` header from
+  `prepareSendMessagesRequest` (line 317); refresh an expired token before
+  sending. Note the sibling OpenCode design edits the same function to add
+  its own header — expect to reconcile these two edits.
 - `src/components/Toolbar.tsx` — a "Connect Mobbin…" / "Disconnect Mobbin"
   item in the Settings submenu (line 233), showing connection state.
 - `src/components/icons/ReferoIcon.tsx` → `MobbinIcon.tsx`.
@@ -182,8 +193,8 @@ New coverage worth having:
 
 - The token-keyed client cache evicts and closes — the leak this design
   introduces is invisible otherwise.
-- A chat request with no `mobbinAccessToken` yields a tool set with no
-  Mobbin tools.
+- A chat request with no `X-Mobbin-Token` yields a tool set with no Mobbin
+  tools.
 - The token never appears in what is written to `raw_traces`.
 - `src/routes/mobbinAuth.ts` against a mocked Mobbin, including the
   free-plan rejection.
@@ -196,8 +207,12 @@ New coverage worth having:
 - **Headless callers.** The showcase runner has no user and therefore no
   Mobbin tools. If `prototype.md` still does `load_skill("research")`, the
   skill will recommend tools that are absent for that run.
-- **Body logging.** The token rides in every chat request body. Audit that
-  Fastify request logging and PostHog event capture do not record bodies.
+- **Header logging.** The token rides in every chat request header. Audit
+  that Fastify request logging does not record headers.
+- **Concurrent design.** `0aa8551` (OpenCode Zen provider) edits
+  `src/ai/chatTurn.ts`, `src/routes/chat.ts`, `src/config.ts`,
+  `src/plugins/cors.ts` and `src/hooks/useDesignChat.ts` — the same files as
+  this change. Rebase before pushing.
 - **Render SPA rewrite** must cover `/oauth/mobbin/callback`, or the
   callback 404s in production — the same trap `/app` and `/c/:id` hit before.
 - **Token in `localStorage`** is readable by any script running on the

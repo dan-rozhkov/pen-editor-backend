@@ -95,12 +95,66 @@ const BASE64_DATA_URL_RE = new RegExp(
   "g",
 );
 
-/** Replaces every large base64 data URL in a JSON string with a size marker. */
+// BASE64_DATA_URL_RE only catches an image that arrives wrapped as a
+// `data:<mime>;base64,...` STRING — the shape a screenshot/attachment takes
+// once the browser's own tool handlers embed it. An MCP tool result (e.g.
+// Mobbin's search_screens/search_sections, see src/ai/mcp.ts) instead
+// carries its payload as the raw MCP content-part shape,
+// `{"type":"image","data":"<base64, no "data:" prefix at all>", ...}` (or
+// the embedded-resource variant, `{"resource":{"blob":"<base64>", ...}}`) —
+// neither of which BASE64_DATA_URL_RE can match, since there is no literal
+// `data:...;base64,` substring anywhere in it. sanitizeMcpToolResult (mcp.ts)
+// redacts payloads over its OWN size ceiling before they ever reach the
+// model, but anything under that ceiling — which is most Mobbin previews —
+// sails straight through into `toolResults[].result` and gets stored here
+// verbatim on every turn of a tool loop. This is the exact failure mode
+// that already once filled the Neon `raw_traces` quota with base64
+// screenshots; redacted here on the bare `"data"`/`"blob"` JSON keys, the
+// same two fields sanitizeMcpToolResult's own extractBinaryField looks for.
+// Each `\\?` matches EITHER a literal `"` (a bare field at the top level of
+// the JSON being scanned) OR an escaped `\"` (the same field one level
+// DEEPER — inside a JSON string that itself got JSON.stringify'd once, e.g.
+// an MCP server's `content:[{type:"text", text:"<JSON-encoded string>"}]`
+// shape, where every `"` in the inner JSON is escaped to `\"` by the
+// stringify that produced the outer text). Base64 itself (A-Za-z0-9+/=)
+// never contains a `"` or `\`, so the payload capture group is unaffected
+// by which level it's found at — only the quote characters bracketing the
+// key/value change. Capturing each optional backslash (rather than
+// swallowing it in a non-capturing `\\?`) is what lets the replacement
+// below reproduce the exact same escaping on the way back out — dropping a
+// backslash that was actually there would corrupt the surrounding JSON
+// (turning an escaped quote into a real one), and this string is later fed
+// straight back into `::jsonb` at the INSERT in createTraceStore.
+const BASE64_BARE_FIELD_RE = new RegExp(
+  `(\\\\)?"(data|blob)(\\\\)?":(\\\\)?"([A-Za-z0-9+/]{${MIN_REDACTED_BASE64_CHARS},}={0,2})(\\\\)?"`,
+  "g",
+);
+
+/** Replaces every large base64 payload in a JSON string with a size marker
+ * — both a `data:...;base64,...` data URL, and a bare `"data"`/`"blob"`
+ * JSON field holding raw base64 with no `data:` prefix (the MCP image/
+ * embedded-resource content-part shape), at the top level OR nested one
+ * level deep inside a JSON-encoded string (see BASE64_BARE_FIELD_RE's doc
+ * comment) — the shape an MCP server's `content:[{type:"text", text:"<JSON
+ * string>"}]` response takes. */
 export function redactBase64DataUrls(json: string): string {
-  return json.replace(
+  const withDataUrlsRedacted = json.replace(
     BASE64_DATA_URL_RE,
     (_match, mime: string | undefined, params: string, data: string) =>
       `data:${mime ?? ""}${params};base64,[redacted ${data.length} chars]`,
+  );
+  return withDataUrlsRedacted.replace(
+    BASE64_BARE_FIELD_RE,
+    (
+      _match: string,
+      openKeyEsc: string | undefined,
+      key: string,
+      closeKeyEsc: string | undefined,
+      openValEsc: string | undefined,
+      data: string,
+      closeValEsc: string | undefined,
+    ) =>
+      `${openKeyEsc ?? ""}"${key}${closeKeyEsc ?? ""}":${openValEsc ?? ""}"[redacted ${data.length} chars]${closeValEsc ?? ""}"`,
   );
 }
 

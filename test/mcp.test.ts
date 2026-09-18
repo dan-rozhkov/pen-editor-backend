@@ -1,13 +1,11 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   MAX_INLINE_BINARY_CHARS,
+  MAX_TOTAL_BINARY_CHARS_PER_RESULT,
   removeBase64Fields,
   sanitizeAllToolResults,
   sanitizeMcpToolResult,
-  wrapReferoTools,
 } from "../src/ai/mcp.js";
-
-type ToolExecute = (input: unknown, options: unknown) => Promise<unknown>;
 
 describe("removeBase64Fields", () => {
   it("drops a top-level base64 key while keeping siblings", () => {
@@ -94,10 +92,9 @@ describe("sanitizeMcpToolResult", () => {
   });
 
   it("leaves a SMALL image content part untouched — under MAX_INLINE_BINARY_CHARS reaches a vision-capable model natively", () => {
-    // Finding 2/4: the sanitizer used to drop EVERY image regardless of
-    // size. A thumbnail well under the inline threshold must now pass
-    // through byte-for-byte so a vision-capable model on the shipped config
-    // (OpenRouter, native on both axes) can see it directly.
+    // Mobbin's own previews are deliberately low-resolution and meant to be
+    // read by the model — this must pass through byte-for-byte so the
+    // shipped OpenRouter provider (native on both axes) sees it directly.
     const smallPayload = "A".repeat(2000); // well under MAX_INLINE_BINARY_CHARS
     const result = {
       content: [{ type: "image", data: smallPayload, mimeType: "image/jpeg" }],
@@ -106,9 +103,9 @@ describe("sanitizeMcpToolResult", () => {
   });
 
   it("replaces an OVERSIZED MCP image content part with a text description, dropping the base64 payload", () => {
-    // This is the real shape a production session leaked: {type:"image",
-    // data, mimeType} is the standard MCP image content part, and the field
-    // is "data" — not "base64" — so removeBase64Fields alone never caught it.
+    // {type:"image", data, mimeType} is the standard MCP image content
+    // part, and the field is "data" — not "base64" — so removeBase64Fields
+    // alone never catches it.
     const bigPayload = "A".repeat(MAX_INLINE_BINARY_CHARS + 1);
     const result = {
       content: [{ type: "image", data: bigPayload, mimeType: "image/jpeg" }],
@@ -128,9 +125,9 @@ describe("sanitizeMcpToolResult", () => {
   });
 
   it("does not mention analyze_image for a dropped image when vision is not configured", () => {
-    // Finding 2b: chatTurn.ts deletes analyze_image from the tool set
-    // whenever isVisionConfigured(config) is false — naming it here would
-    // point the model at a tool that isn't in this turn's tool set.
+    // chatTurn.ts deletes analyze_image from the tool set whenever
+    // isVisionConfigured(config) is false — naming it here would point the
+    // model at a tool that isn't in this turn's tool set.
     const bigPayload = "A".repeat(MAX_INLINE_BINARY_CHARS + 1);
     const result = {
       content: [{ type: "image", data: bigPayload, mimeType: "image/jpeg" }],
@@ -153,7 +150,7 @@ describe("sanitizeMcpToolResult", () => {
     expect(JSON.stringify(out)).not.toContain(bigPayload);
   });
 
-  it("leaves a SMALL non-image 'file' content part (e.g. a small PDF) untouched", () => {
+  it("leaves a small non-image 'file' content part (e.g. a small PDF) untouched", () => {
     const result = {
       content: [{ type: "file", data: "not-really-checked", mimeType: "application/pdf" }],
     };
@@ -161,9 +158,6 @@ describe("sanitizeMcpToolResult", () => {
   });
 
   it("replaces an OVERSIZED non-image 'file' content part (e.g. a large PDF) too — the floor applies regardless of mimeType", () => {
-    // Finding 4: the size floor must apply to ANY oversized binary, not just
-    // images — an earlier version of this suite asserted a multi-MB PDF's
-    // `data` survived untouched, which was the exact gap this closes.
     const bigPdf = "P".repeat(MAX_INLINE_BINARY_CHARS + 1);
     const result = {
       content: [{ type: "file", data: bigPdf, mimeType: "application/pdf" }],
@@ -188,10 +182,6 @@ describe("sanitizeMcpToolResult", () => {
   });
 
   it("replaces an oversized MCP embedded resource ({type:'resource', resource:{blob, mimeType}})", () => {
-    // Finding 4: this shape carries its payload under resource.blob, not
-    // `data` or `base64` — isImageContentPart never looked at it and
-    // removeBase64Fields doesn't either (the key is "blob", not "base64"),
-    // so it used to pass through whole regardless of size.
     const bigBlob = "R".repeat(MAX_INLINE_BINARY_CHARS + 1);
     const result = {
       content: [
@@ -210,22 +200,138 @@ describe("sanitizeMcpToolResult", () => {
     };
     expect(sanitizeMcpToolResult(result, true)).toEqual(result);
   });
+
+  // Finding 1: the per-part ceiling (MAX_INLINE_BINARY_CHARS) alone lets a
+  // search result with many previews, each individually under that
+  // ceiling, sum to far more than any single-part check catches. This is
+  // the exact scenario the review called out: "one preview at 250k and
+  // seven at 150k" — reproduced here directly (the aggregate budget is what
+  // must catch the seven 150k parts; a 250k single part would already be
+  // caught by the per-part ceiling alone, which is covered by the existing
+  // oversized-part tests above).
+  describe("aggregate binary budget across one result's parts", () => {
+    it("passes through several small previews whose SUM stays under the aggregate budget", () => {
+      // 3 parts x 50,000 chars = 150,000 chars total, under both the
+      // per-part ceiling (200,000) and the aggregate budget (300,000).
+      const part = (n: number) => ({
+        type: "image",
+        data: "A".repeat(50_000),
+        mimeType: "image/jpeg",
+        id: n,
+      });
+      const result = { content: [part(1), part(2), part(3)] };
+      const out = sanitizeMcpToolResult(result, true) as {
+        content: { type: string; id: number }[];
+      };
+      expect(out.content.every((p) => p.type === "image")).toBe(true);
+      expect(out.content.map((p) => p.id)).toEqual([1, 2, 3]);
+    });
+
+    it("drops every part past the point the running total crosses the aggregate budget, keeping earlier ones intact", () => {
+      // 8 parts x 150,000 chars = 1,200,000 chars — each individually well
+      // under the 200,000-char per-part ceiling, but the sum is 4x the
+      // 300,000-char aggregate budget. This is the reviewer's "8 results,
+      // each with its own inline preview" scenario for search_screens/
+      // search_sections (MOBBIN_LIMIT_CAPS = 8).
+      const partSize = 150_000;
+      const parts = Array.from({ length: 8 }, (_, i) => ({
+        type: "image",
+        data: "A".repeat(partSize),
+        mimeType: "image/jpeg",
+        id: i,
+      }));
+      const result = { content: parts };
+      const out = sanitizeMcpToolResult(result, true) as {
+        content: { type: string; text?: string; id?: number }[];
+      };
+
+      // First two (300,000 chars) fit exactly at the budget; the third
+      // would push the running total to 450,000 and is dropped, along
+      // with every part after it.
+      expect(out.content[0].type).toBe("image");
+      expect(out.content[0].id).toBe(0);
+      expect(out.content[1].type).toBe("image");
+      expect(out.content[1].id).toBe(1);
+      for (let i = 2; i < 8; i++) {
+        expect(out.content[i].type).toBe("text");
+        expect(out.content[i].text).toContain("aggregate budget");
+      }
+
+      // The whole point: this tool result no longer carries anywhere near
+      // 1.2M base64 chars once sanitized.
+      const serialized = JSON.stringify(out);
+      expect(serialized.length).toBeLessThan(MAX_TOTAL_BINARY_CHARS_PER_RESULT + partSize * 2);
+    });
+
+    it("an individually-oversized part is dropped by the per-part check and never counts toward the aggregate running total", () => {
+      // A single part over MAX_INLINE_BINARY_CHARS is caught by the
+      // per-part ceiling first (existing behavior) — it must not also
+      // consume aggregate budget on the way out, since nothing of it
+      // survives either way. Two more small parts after it should still
+      // pass through untouched.
+      const oversizedPart = {
+        type: "image",
+        data: "B".repeat(MAX_INLINE_BINARY_CHARS + 1),
+        mimeType: "image/jpeg",
+      };
+      const smallPart = (id: number) => ({
+        type: "image",
+        data: "A".repeat(50_000),
+        mimeType: "image/jpeg",
+        id,
+      });
+      const result = { content: [oversizedPart, smallPart(1), smallPart(2)] };
+      const out = sanitizeMcpToolResult(result, true) as {
+        content: { type: string; id?: number }[];
+      };
+      expect(out.content[0].type).toBe("text"); // per-part drop
+      expect(out.content[1].type).toBe("image");
+      expect(out.content[1].id).toBe(1);
+      expect(out.content[2].type).toBe("image");
+      expect(out.content[2].id).toBe(2);
+    });
+
+    it("caps the aggregate cost of a realistic 8-item search_screens-shaped result end to end via sanitizeAllToolResults", async () => {
+      const partSize = 150_000;
+      const original = vi.fn(async () => ({
+        content: Array.from({ length: 8 }, () => ({
+          type: "image",
+          data: "A".repeat(partSize),
+          mimeType: "image/jpeg",
+        })),
+      }));
+      const tools = { search_screens: { execute: original } };
+      const wrapped = sanitizeAllToolResults(tools, true);
+      const exec = (
+        wrapped.search_screens as { execute: (i: unknown, o: unknown) => Promise<unknown> }
+      ).execute;
+      const result = (await exec({}, {})) as { content: { type: string }[] };
+
+      const imageParts = result.content.filter((p) => p.type === "image");
+      const textParts = result.content.filter((p) => p.type === "text");
+      expect(imageParts.length).toBeLessThan(8);
+      expect(textParts.length).toBeGreaterThan(0);
+      // Never even close to the un-budgeted ~1.2M chars this result would
+      // have cost before the aggregate budget existed.
+      expect(JSON.stringify(result).length).toBeLessThan(partSize * 3);
+    });
+  });
 });
 
 describe("sanitizeAllToolResults", () => {
-  it("sanitizes the result of a tool that is NOT one of the two hand-wrapped Refero tools", async () => {
-    // Before this fix, only refero_get_screen and refero_get_style ever had
-    // their execute() output sanitized (via wrapReferoTool inside
-    // wrapReferoTools) — every other MCP tool, refero_get_screen_image
-    // included, reached the model with raw image bytes intact.
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("sanitizes the result of an arbitrary MCP tool (e.g. search_screens)", async () => {
     const bigPayload = "C".repeat(MAX_INLINE_BINARY_CHARS + 1);
     const original = vi.fn(async () => ({
       content: [{ type: "image", data: bigPayload, mimeType: "image/jpeg" }],
     }));
-    const tools = { some_other_mcp_tool: { execute: original } };
+    const tools = { search_screens: { execute: original } };
 
     const wrapped = sanitizeAllToolResults(tools, true);
-    const exec = (wrapped.some_other_mcp_tool as { execute: (i: unknown, o: unknown) => Promise<unknown> })
+    const exec = (wrapped.search_screens as { execute: (i: unknown, o: unknown) => Promise<unknown> })
       .execute;
     const result = (await exec({}, {})) as { content: { type: string; text?: string }[] };
 
@@ -238,385 +344,5 @@ describe("sanitizeAllToolResults", () => {
     const tools = { static_tool: { description: "no execute here" } };
     const wrapped = sanitizeAllToolResults(tools, true);
     expect(wrapped.static_tool).toBe(tools.static_tool);
-  });
-});
-
-describe("wrapReferoTools", () => {
-  it("returns the tool map unchanged when refero_get_screen is absent", () => {
-    const tools = { some_tool: { execute: vi.fn() } };
-    expect(wrapReferoTools(tools, true)).toBe(tools);
-  });
-
-  it("returns the tool map unchanged when execute is not a function", () => {
-    const tools = { refero_get_screen: { description: "d" } };
-    expect(wrapReferoTools(tools, true)).toBe(tools);
-  });
-
-  it("forces image_size:none, sanitizes the result, and preserves other tools", async () => {
-    const original = vi.fn(async () => ({
-      base64: "TOP",
-      content: [
-        { type: "text", text: JSON.stringify({ url: "u", base64: "INNER" }) },
-      ],
-    }));
-    const otherTool = { execute: vi.fn() };
-    const tools = {
-      refero_get_screen: { description: "screens", execute: original },
-      other_tool: otherTool,
-    };
-
-    const wrapped = wrapReferoTools(tools, true);
-    const exec = (wrapped.refero_get_screen as {
-      execute: (i: unknown, o: unknown) => Promise<unknown>;
-    }).execute;
-
-    const result = (await exec({ query: "hero" }, { signal: 1 })) as {
-      base64?: string;
-      content: { text: string }[];
-    };
-
-    // input augmented with image_size: "none", existing fields kept
-    expect(original).toHaveBeenCalledWith(
-      { query: "hero", image_size: "none" },
-      { signal: 1 },
-    );
-    // result sanitized
-    expect(result.base64).toBeUndefined();
-    expect(result.content[0].text).not.toContain("INNER");
-    // unrelated tools left intact
-    expect(wrapped.other_tool).toBe(otherTool);
-  });
-
-  it("defaults to image_size:none when input is not an object", async () => {
-    const original = vi.fn(async () => ({ ok: true }));
-    const wrapped = wrapReferoTools(
-      { refero_get_screen: { execute: original } },
-      true,
-    );
-    const exec = (wrapped.refero_get_screen as {
-      execute: (i: unknown, o: unknown) => Promise<unknown>;
-    }).execute;
-
-    await exec(undefined, {});
-    expect(original).toHaveBeenCalledWith({ image_size: "none" }, {});
-  });
-
-  it("leaves the tool map unchanged (by reference) when neither refero tool is present", () => {
-    const tools = { other_tool: { execute: vi.fn() } };
-    expect(wrapReferoTools(tools, true)).toBe(tools);
-  });
-
-  it("leaves refero_get_screen's wrapping unaffected when refero_get_style is absent", async () => {
-    const original = vi.fn(async () => ({ ok: true }));
-    const tools = { refero_get_screen: { description: "d", execute: original } };
-    const wrapped = wrapReferoTools(tools, true);
-    expect(wrapped.refero_get_style).toBeUndefined();
-    const exec = (wrapped.refero_get_screen as { execute: ToolExecute }).execute;
-    await exec({}, {});
-    expect(original).toHaveBeenCalledWith({ image_size: "none" }, {});
-  });
-
-  it("appends the one-UUID sentence to refero_get_style's description and sanitizes results", async () => {
-    const original = vi.fn(async () => ({
-      base64: "TOP",
-      content: [{ type: "text", text: JSON.stringify({ ok: true, base64: "INNER" }) }],
-    }));
-    const tools = {
-      refero_get_style: { description: "Fetch a style.", execute: original },
-    };
-
-    const wrapped = wrapReferoTools(tools, true);
-    const tool = wrapped.refero_get_style as {
-      description: string;
-      execute: (i: unknown, o: unknown) => Promise<unknown>;
-    };
-
-    expect(tool.description).toBe(
-      "Fetch a style. Pass exactly one valid style UUID (from refero_search_styles results) per call; multiple UUIDs are rejected.",
-    );
-
-    const result = (await tool.execute({ style_uuid: "abc" }, {})) as {
-      base64?: string;
-      content: { text: string }[];
-    };
-    expect(original).toHaveBeenCalledWith({ style_uuid: "abc" }, {});
-    expect(result.base64).toBeUndefined();
-    const parsed = JSON.parse(result.content[0].text);
-    expect(parsed).toEqual({ ok: true });
-  });
-
-  it("uses a bare description when refero_get_style has none", () => {
-    const wrapped = wrapReferoTools(
-      { refero_get_style: { execute: vi.fn() } },
-      true,
-    );
-    const tool = wrapped.refero_get_style as { description: string };
-    expect(tool.description).toBe(
-      "Pass exactly one valid style UUID (from refero_search_styles results) per call; multiple UUIDs are rejected.",
-    );
-  });
-
-  it.each([
-    ["INVALID_STYLE_UUIDS", "invalid_style_uuids"],
-    ["invalid style uuids (mixed case)", "Invalid Style UUIDs"],
-    ["hyphenated", "invalid-style-uuid"],
-    ["camelCase singular, no separator", "InvalidStyleUuid"],
-  ])(
-    "appends the retry hint when the result content indicates %s",
-    async (_label, errorText) => {
-      const original = vi.fn(async () => ({
-        content: [{ type: "text", text: `Error: ${errorText}` }],
-      }));
-      const wrapped = wrapReferoTools({ refero_get_style: { execute: original } }, true);
-      const tool = wrapped.refero_get_style as {
-        execute: (i: unknown, o: unknown) => Promise<unknown>;
-      };
-
-      const result = (await tool.execute({}, {})) as { content: { text: string }[] };
-      expect(result.content[0].text).toBe(
-        `Error: ${errorText} Pass exactly one valid style UUID from refero_search_styles results per call.`,
-      );
-    },
-  );
-
-  it("does not append the retry hint to a benign isError:false result even if the text mentions invalid style uuids", async () => {
-    const original = vi.fn(async () => ({
-      isError: false,
-      content: [{ type: "text", text: "Docs: avoid invalid style uuids by using search first." }],
-    }));
-    const wrapped = wrapReferoTools({ refero_get_style: { execute: original } }, true);
-    const tool = wrapped.refero_get_style as {
-      execute: (i: unknown, o: unknown) => Promise<unknown>;
-    };
-
-    const result = (await tool.execute({}, {})) as { content: { text: string }[] };
-    expect(result.content[0].text).toBe(
-      "Docs: avoid invalid style uuids by using search first.",
-    );
-  });
-
-  it("leaves the result untouched when no content part matches the invalid-uuid hint", async () => {
-    const original = vi.fn(async () => ({
-      content: [{ type: "text", text: "all good, nothing to see here" }],
-    }));
-    const wrapped = wrapReferoTools({ refero_get_style: { execute: original } }, true);
-    const tool = wrapped.refero_get_style as {
-      execute: (i: unknown, o: unknown) => Promise<unknown>;
-    };
-
-    const result = (await tool.execute({}, {})) as { content: { text: string }[] };
-    expect(result.content[0].text).toBe("all good, nothing to see here");
-  });
-
-  it("appends the retry hint when execute throws an invalid-style-uuids error", async () => {
-    const original = vi.fn(async () => {
-      throw new Error("Request failed: invalid_style_uuids");
-    });
-    const wrapped = wrapReferoTools({ refero_get_style: { execute: original } }, true);
-    const tool = wrapped.refero_get_style as {
-      execute: (i: unknown, o: unknown) => Promise<unknown>;
-    };
-
-    await expect(tool.execute({}, {})).rejects.toThrow(
-      "Request failed: invalid_style_uuids Pass exactly one valid style UUID from refero_search_styles results per call.",
-    );
-  });
-
-  it("leaves unrelated errors and results untouched", async () => {
-    const original = vi.fn(async () => {
-      throw new Error("network timeout");
-    });
-    const wrapped = wrapReferoTools({ refero_get_style: { execute: original } }, true);
-    const tool = wrapped.refero_get_style as {
-      execute: (i: unknown, o: unknown) => Promise<unknown>;
-    };
-
-    await expect(tool.execute({}, {})).rejects.toThrow("network timeout");
-  });
-
-  it("wraps both refero_get_screen and refero_get_style without affecting each other", async () => {
-    const screenOriginal = vi.fn(async () => ({ ok: "screen" }));
-    const styleOriginal = vi.fn(async () => ({ ok: "style" }));
-    const tools = {
-      refero_get_screen: { description: "screens", execute: screenOriginal },
-      refero_get_style: { description: "styles", execute: styleOriginal },
-    };
-
-    const wrapped = wrapReferoTools(tools, true);
-    const screenExec = (wrapped.refero_get_screen as { execute: ToolExecute }).execute;
-    const styleExec = (wrapped.refero_get_style as { execute: ToolExecute }).execute;
-
-    await screenExec({}, {});
-    expect(screenOriginal).toHaveBeenCalledWith({ image_size: "none" }, {});
-
-    await styleExec({ style_uuid: "abc" }, {});
-    expect(styleOriginal).toHaveBeenCalledWith({ style_uuid: "abc" }, {});
-  });
-
-  describe("refero_get_screen_image", () => {
-    // A small, already-sanitized-looking result — what the tool's execute
-    // returns when the real image comes back under MAX_INLINE_BINARY_CHARS.
-    // In production this is what sanitizeAllToolResults (applied to every
-    // tool BEFORE wrapReferoTools ever sees it, see connectAndFetchTools)
-    // would already have produced; these unit tests craft it directly since
-    // they exercise wrapReferoTools in isolation from that earlier stage.
-    function smallImageResult() {
-      return { content: [{ type: "image", data: "AAAA", mimeType: "image/jpeg" }] };
-    }
-
-    // What sanitizeAllToolResults would have already turned an OVERSIZED raw
-    // image into — built via the real sanitizer so this fixture can't drift
-    // from describeDroppedBinaryPart's actual wording.
-    function droppedImageResult(visionConfigured: boolean) {
-      return sanitizeMcpToolResult(
-        {
-          content: [
-            { type: "image", data: "X".repeat(MAX_INLINE_BINARY_CHARS + 1), mimeType: "image/jpeg" },
-          ],
-        },
-        visionConfigured,
-      );
-    }
-
-    function makeTools(overrides: {
-      getScreen: ToolExecute;
-      getScreenImage?: ToolExecute;
-    }) {
-      return {
-        refero_get_screen: { description: "screens", execute: overrides.getScreen },
-        refero_get_screen_image: {
-          description: "raw image",
-          execute: overrides.getScreenImage ?? vi.fn(async () => ({ content: [] })),
-        },
-      };
-    }
-
-    it("lets a SMALL real image through untouched, without ever calling refero_get_screen for a URL", async () => {
-      // Finding 2a: the wrap used to unconditionally redirect to a text
-      // pointer regardless of size — a vision-capable model could never see
-      // this tool's image natively. Now a small (under-threshold) result
-      // passes straight through.
-      const getScreen = vi.fn();
-      const getScreenImage = vi.fn(async () => smallImageResult());
-      const wrapped = wrapReferoTools(makeTools({ getScreen, getScreenImage }), true);
-      const tool = wrapped.refero_get_screen_image as { execute: ToolExecute };
-
-      const result = (await tool.execute({ screen_id: "abc" }, {})) as {
-        content: { type: string; data?: string }[];
-      };
-
-      expect(getScreenImage).toHaveBeenCalledOnce();
-      expect(getScreen).not.toHaveBeenCalled();
-      expect(result).toEqual(smallImageResult());
-    });
-
-    it("resolves a URL via refero_get_screen when the real call's image was dropped as oversized", async () => {
-      const getScreen = vi.fn(async () => ({
-        preview_url: "https://images.refero.design/x_preview.jpg",
-        uuid: "abc",
-      }));
-      const getScreenImage = vi.fn(async () => droppedImageResult(true));
-      const wrapped = wrapReferoTools(makeTools({ getScreen, getScreenImage }), true);
-      const tool = wrapped.refero_get_screen_image as { execute: ToolExecute };
-
-      const result = (await tool.execute({ screen_id: "abc" }, {})) as {
-        content: { type: string; text: string }[];
-      };
-
-      // Exactly ONE real image-fetch call — the URL lookup is enrichment
-      // AFTER that call comes back dropped, never a second image call.
-      expect(getScreenImage).toHaveBeenCalledOnce();
-      expect(getScreenImage).toHaveBeenCalledWith({ screen_id: "abc" }, {});
-      // Goes through the ALREADY-WRAPPED refero_get_screen, which itself
-      // forces image_size:"none" onto every call (see the wrap above).
-      expect(getScreen).toHaveBeenCalledWith(
-        { screen_id: "abc", response_format: "json", image_size: "none" },
-        {},
-      );
-      expect(result.content[0].type).toBe("text");
-      expect(result.content[0].text).toContain(
-        "https://images.refero.design/x_preview.jpg",
-      );
-      expect(result.content[0].text).toContain("analyze_image");
-    });
-
-    it("returns the dropped placeholder as-is (no URL lookup) when there is no screen_id", async () => {
-      const getScreen = vi.fn();
-      const getScreenImage = vi.fn(async () => droppedImageResult(true));
-      const wrapped = wrapReferoTools(makeTools({ getScreen, getScreenImage }), true);
-      const tool = wrapped.refero_get_screen_image as { execute: ToolExecute };
-
-      const result = await tool.execute({}, {});
-
-      expect(getScreen).not.toHaveBeenCalled();
-      expect(result).toEqual(droppedImageResult(true));
-    });
-
-    it("returns the dropped placeholder as-is when refero_get_screen throws", async () => {
-      const getScreen = vi.fn(async () => {
-        throw new Error("not found");
-      });
-      const getScreenImage = vi.fn(async () => droppedImageResult(true));
-      const wrapped = wrapReferoTools(makeTools({ getScreen, getScreenImage }), true);
-      const tool = wrapped.refero_get_screen_image as { execute: ToolExecute };
-
-      const result = await tool.execute({ screen_id: "abc" }, {});
-
-      // Only the one (already-spent) image call — no second real call is
-      // made just because the URL lookup failed (finding 5).
-      expect(getScreenImage).toHaveBeenCalledOnce();
-      expect(result).toEqual(droppedImageResult(true));
-    });
-
-    it("returns the dropped placeholder as-is when refero_get_screen has no preview/thumbnail URL", async () => {
-      const getScreen = vi.fn(async () => ({ uuid: "abc" })); // no preview_url/thumbnail_url
-      const getScreenImage = vi.fn(async () => droppedImageResult(true));
-      const wrapped = wrapReferoTools(makeTools({ getScreen, getScreenImage }), true);
-      const tool = wrapped.refero_get_screen_image as { execute: ToolExecute };
-
-      const result = await tool.execute({ screen_id: "abc" }, {});
-
-      expect(result).toEqual(droppedImageResult(true));
-    });
-
-    it("forces image_size:thumbnail and never looks up a URL when vision is not configured", async () => {
-      // Finding 2b: chatTurn.ts deletes analyze_image whenever
-      // isVisionConfigured(config) is false, so a URL pointer naming it (or
-      // even attempting the lookup) would be worse than useless. Instead the
-      // real call is forced to the smallest size and its (still
-      // threshold-sanitized) result is returned as-is either way.
-      const getScreen = vi.fn();
-      const getScreenImage = vi.fn(async () => droppedImageResult(false));
-      const wrapped = wrapReferoTools(makeTools({ getScreen, getScreenImage }), false);
-      const tool = wrapped.refero_get_screen_image as { execute: ToolExecute };
-
-      const result = await tool.execute({ screen_id: "abc" }, {});
-
-      expect(getScreenImage).toHaveBeenCalledWith({ screen_id: "abc", image_size: "thumbnail" }, {});
-      expect(getScreen).not.toHaveBeenCalled();
-      expect(result).toEqual(droppedImageResult(false));
-      expect((result as { content: { text?: string }[] }).content[0].text).not.toContain(
-        "analyze_image",
-      );
-    });
-
-    it("forces image_size:thumbnail even when input is not an object, vision not configured", async () => {
-      const getScreenImage = vi.fn(async () => ({ content: [] }));
-      const wrapped = wrapReferoTools(
-        makeTools({ getScreen: vi.fn(), getScreenImage }),
-        false,
-      );
-      const tool = wrapped.refero_get_screen_image as { execute: ToolExecute };
-
-      await tool.execute(undefined, {});
-
-      expect(getScreenImage).toHaveBeenCalledWith({ image_size: "thumbnail" }, {});
-    });
-
-    it("leaves the tool map unchanged when refero_get_screen is absent", () => {
-      const tools = { refero_get_screen_image: { execute: vi.fn() } };
-      const wrapped = wrapReferoTools(tools, true);
-      expect(wrapped.refero_get_screen_image).toBe(tools.refero_get_screen_image);
-    });
   });
 });

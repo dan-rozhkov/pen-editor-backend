@@ -90,18 +90,18 @@ describe("MCP skill tools", () => {
   });
 
   // Defect 1 regression: research.md calls only tools outside penTools
-  // (Refero's search_screens/search_flows/get_screen/get_flow/
-  // get_design_guidance) — before EXTERNAL_SKILL_TOOL_NAMES existed, the
-  // detector's candidate set was penTools keys + SKILL_TOOL_NAMES only, so
-  // none of those mentions could ever be found and this entry silently came
-  // back with no unavailableTools at all.
-  it("list_skills flags research's Refero-only tool calls as unavailable", async () => {
+  // (Mobbin's search_screens/search_flows/search_sections) — before
+  // EXTERNAL_SKILL_TOOL_NAMES existed, the detector's candidate set was
+  // penTools keys + SKILL_TOOL_NAMES only, so none of those mentions could
+  // ever be found and this entry silently came back with no
+  // unavailableTools at all.
+  it("list_skills flags research's Mobbin-only tool calls as unavailable", async () => {
     const server = buildMcpServer();
     const { skills } = await listSkills(server);
     const entry = skills.find((s) => s.name === "research");
     expect(entry).toBeTruthy();
     expect(entry?.unavailableTools).toEqual(
-      expect.arrayContaining(["search_screens", "search_flows", "get_screen", "get_flow", "get_design_guidance"]),
+      expect.arrayContaining(["search_screens", "search_flows", "search_sections"]),
     );
   });
 
@@ -156,18 +156,24 @@ describe("MCP skill tools", () => {
   });
 
   // research's policy-dependent warning names a different mechanism (the
-  // chat route's research-mode 503 gate, not resolveTaskPolicy) — asserted
-  // separately rather than folded into the loop above so the test can't pass
-  // by accident if the two messages were ever conflated into one generic,
-  // partly-inaccurate sentence.
-  it("load_skill warns about the research-mode 503 gate for research, distinct from resolveTaskPolicy", async () => {
+  // chat route has no gate at all — research silently runs with no
+  // reference tools when there's no X-Mobbin-Token — not resolveTaskPolicy)
+  // — asserted separately rather than folded into the loop above so the
+  // test can't pass by accident if the two messages were ever conflated
+  // into one generic, partly-inaccurate sentence. Regression: this warning
+  // used to claim a 503 gate that was removed from the chat route (see
+  // "no longer 503s without MCP" in test/chat-route.test.ts) without ever
+  // being updated here — asserting the CORRECT mechanism, and that the old
+  // false claim is gone, catches that drift.
+  it("load_skill warns about research's Mobbin-token-only reference tools, distinct from resolveTaskPolicy", async () => {
     const server = buildMcpServer();
     const loadTool = getRegisteredTool(server, "load_skill");
     const result = await loadTool.handler({ name: "research" }, {});
     expect(result.isError).toBeFalsy();
     const text = result.content[0]?.text as string;
     expect(text).toContain("NOTE:");
-    expect(text).toContain("503");
+    expect(text).toContain("X-Mobbin-Token");
+    expect(text).not.toContain("503");
     expect(text).not.toContain("resolveTaskPolicy");
   });
 
@@ -237,19 +243,18 @@ describe("getUnavailableToolsForSkill", () => {
   });
 
   // Defect 1: the candidate set used to be penTools keys + SKILL_TOOL_NAMES
-  // only, so a skill referencing exclusively external (Refero/web) tool
+  // only, so a skill referencing exclusively external (Mobbin/web) tool
   // names scored zero unavailable tools — indistinguishable from a skill
   // that never mentioned any tool at all. This is research.md's actual shape
-  // (see research.md's Tool Selection table and Search Strategy section).
-  it("flags Refero tool names research.md actually uses, even though none is a penTools key", () => {
+  // (see research.md's "The Mobbin Tools" table).
+  it("flags Mobbin tool names research.md actually uses, even though none is a penTools key", () => {
     const skill = {
       content:
-        "Start with `get_design_guidance`. Use `search_screens` for a standalone screen, or " +
-        "`search_flows` and then `get_flow` for a whole journey. Deep-dive with `get_screen` on " +
-        "the best 3-4 results.",
+        "Use `search_screens` for a standalone screen, or `search_flows` for a whole journey. " +
+        "Use `search_sections` for a reusable component.",
     };
     expect(getUnavailableToolsForSkill(skill)).toEqual(
-      ["get_design_guidance", "get_flow", "get_screen", "search_flows", "search_screens"].sort(),
+      ["search_flows", "search_screens", "search_sections"].sort(),
     );
   });
 
