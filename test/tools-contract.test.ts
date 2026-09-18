@@ -60,6 +60,9 @@ describe("penTools registry", () => {
         "read_design_repo",
         "read_repo_files",
         "attach_local_repo",
+        "browse_open",
+        "browse_act",
+        "browse_find_images",
       ].sort(),
     );
   });
@@ -110,6 +113,9 @@ describe("penTools registry", () => {
       "read_design_repo",
       "read_repo_files",
       "attach_local_repo",
+      "browse_open",
+      "browse_act",
+      "browse_find_images",
     ] as const) {
       expect(hasExecute(name), `${name} must be client-executed`).toBe(false);
     }

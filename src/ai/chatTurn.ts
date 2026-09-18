@@ -204,6 +204,15 @@ export interface PrepareChatTurnInput {
    * comment).
    */
   opencodeApiKey?: string;
+  /**
+   * What the requesting client can actually do. Currently one flag:
+   * desktopBrowser — true only when the Electron shell's built-in browser
+   * bridge (window.penDesktop.browser) is present in that session. Threaded
+   * straight from chatBodySchema.clientCapabilities (src/routes/chat.ts).
+   * Undefined/false → the browse_* tools are dropped below, same as any
+   * other caller (the showcase runner, tests) that never wires this.
+   */
+  clientCapabilities?: { desktopBrowser?: boolean };
 }
 
 export interface PreparedChatTurn {
@@ -895,6 +904,20 @@ export async function prepareChatTurn(
     // pen-editor's cross-repo tool-name contract; every real chat turn drops
     // it before the request goes out.
     delete tools.attach_local_repo;
+
+    // Structural gate: browse_open/browse_act/browse_find_images are
+    // client-executed against a browser tab that only exists inside the
+    // Electron shell (pen-editor-desktop's BrowserController, driven over
+    // window.penDesktop.browser) — a browser-hosted session has no such
+    // bridge, so offering these there could only waste a tool-call step,
+    // the same reasoning as the attach_local_repo gate just above. The flag
+    // is derived once at module scope on the frontend (useDesignChat.ts) so
+    // it can't vary mid-conversation and invalidate the cached tool set.
+    if (!input.clientCapabilities?.desktopBrowser) {
+      delete tools.browse_open;
+      delete tools.browse_act;
+      delete tools.browse_find_images;
+    }
 
     // Structural gate: remove_background/vectorize_image are client-executed
     // but call our backend routes, which return 503 without FAL_KEY. Rather

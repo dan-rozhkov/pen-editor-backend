@@ -29,6 +29,21 @@ Before running any search, check whether these tools are actually available to y
 - If they are not, but `web_search`/`fetch_url` are available, use those instead for the same purpose (broad web research on the same subject, brands, and patterns) and adapt the output format below accordingly — you will not have `mobbin_url` citations or inline preview images from Mobbin, so cite whatever source you used instead.
 - If neither is available, or every call errors, say so plainly and continue with the rest of the task using your own knowledge rather than stalling on research — never call a tool that is not in your tool set.
 
+## The Built-in Browser (Desktop Only)
+
+`browse_open`/`browse_act`/`browse_find_images` are also **per-client, not always present**: they only exist in this turn's tool set inside the desktop app, when its built-in browser bridge is wired up. When they ARE available, this is a REAL browser tab running on the user's own logged-in session — not a curated catalogue, the open web. Prefer it for open-web reference hunting once Mobbin's curated screens/flows/sections aren't enough, or when Mobbin isn't connected at all.
+
+Pinterest search is the worked example:
+
+1. `browse_open` with a Pinterest search URL, e.g. `https://www.pinterest.com/search/pins/?q=minimal%20fintech%20app%20ui`.
+2. `browse_find_images` to read the grid — you get back `{ url, alt, width, height }` for every image currently on the page, largest first.
+3. Pinterest's grid is **infinite-scroll**: one `browse_find_images` call only sees what's already loaded. To see more, call `browse_act` with `action: "scroll"`, then call `browse_find_images` again. Repeat that scroll → find-images loop until you have enough references.
+4. A found image's `url` can be cited directly and, if the user wants it on the canvas, dropped straight into an image fill — no download step needed.
+
+`browse_act` also supports `click`/`type` (target a CSS selector or just the visible text) and `back`/`forward`, so you can click into a specific pin, a related-search chip, or navigate elsewhere entirely — the browser tab is a normal tab, not limited to Pinterest.
+
+Keep Mobbin as the curated-catalogue path whenever its tools are present — it gives you `mobbin_url` citations and vetted, deduplicated screens that a raw web search doesn't. The built-in browser is what to reach for when Mobbin isn't connected, or when the reference you need (a specific live site, a Pinterest board, anything outside Mobbin's catalogue) isn't something Mobbin indexes.
+
 ## The Mobbin Tools
 
 There are exactly three tools, and no per-item fetch — everything you need comes back inline from the search call itself:

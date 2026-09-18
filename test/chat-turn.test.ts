@@ -289,6 +289,58 @@ describe("prepareChatTurn", () => {
     });
   });
 
+  describe("browse_* gate", () => {
+    // browse_open/browse_act/browse_find_images only execute inside the
+    // Electron shell's built-in browser bridge — a browser-hosted session
+    // has no such bridge, so they must be absent unless the request says
+    // clientCapabilities.desktopBrowser is true.
+    it("is absent when clientCapabilities is not passed", async () => {
+      const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+      const { penTools } = await import("../src/ai/tools.js");
+
+      expect(penTools.browse_open).toBeDefined();
+      expect(penTools.browse_act).toBeDefined();
+      expect(penTools.browse_find_images).toBeDefined();
+
+      const messages = [userMessage("find some reference images")];
+      const turn = await prepareChatTurn({ config: makeConfig(), messages });
+
+      expect(turn.tools.browse_open).toBeUndefined();
+      expect(turn.tools.browse_act).toBeUndefined();
+      expect(turn.tools.browse_find_images).toBeUndefined();
+    });
+
+    it("is absent when desktopBrowser is explicitly false", async () => {
+      const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+
+      const messages = [userMessage("find some reference images")];
+      const turn = await prepareChatTurn({
+        config: makeConfig(),
+        messages,
+        clientCapabilities: { desktopBrowser: false },
+      });
+
+      expect(turn.tools.browse_open).toBeUndefined();
+      expect(turn.tools.browse_act).toBeUndefined();
+      expect(turn.tools.browse_find_images).toBeUndefined();
+    });
+
+    it("is present when desktopBrowser is true", async () => {
+      const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+
+      const messages = [userMessage("find some reference images")];
+      const turn = await prepareChatTurn({
+        config: makeConfig(),
+        messages,
+        clientCapabilities: { desktopBrowser: true },
+      });
+
+      expect(turn.tools.browse_open).toBeDefined();
+      expect(turn.tools.browse_act).toBeDefined();
+      expect(turn.tools.browse_find_images).toBeDefined();
+    });
+  });
+
   describe("analyze_image gate", () => {
     it("is absent with no VISION_MODEL — it would have nothing to call", async () => {
       const { prepareChatTurn } = await import("../src/ai/chatTurn.js");

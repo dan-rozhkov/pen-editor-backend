@@ -1823,4 +1823,53 @@ Returns the created/updated style ids and names (with a created|updated status) 
         .max(5),
     }),
   }),
+
+  // ── Built-in browser (desktop only) ────────────────────────────────
+  // Client-executed, and only useful inside the Electron shell: the browser
+  // tab lives in the desktop app's main process, driven over
+  // window.penDesktop.browser (see pen-editor's toolHandlers). A
+  // browser-hosted agent has no such bridge, so prepareChatTurn
+  // (src/ai/chatTurn.ts) deletes all three of these unless the request's
+  // clientCapabilities.desktopBrowser flag says the bridge is actually
+  // there — same structural-gate shape as attach_local_repo above. They
+  // stay in penTools (with no execute) purely so pen-editor's cross-repo
+  // tool-name contract has a schema to check the frontend handler against.
+
+  browse_open: tool({
+    description:
+      "Open the built-in browser tab (a REAL browser tab in the desktop app, running on the user's OWN logged-in session — cookies and all) and navigate it to `url`, waiting for the page to finish loading. Returns `{ url, title }` with the FINAL url after any redirects. This is how you reach outside references the canvas can't otherwise see: a Pinterest search URL " +
+      '(e.g. "https://www.pinterest.com/search/pins/?q=minimal%20fintech%20app%20ui") is the worked example — search results load as an infinite-scroll image grid you then read with browse_find_images. Use browse_act to click into the page, scroll for more results, or navigate back/forward once open.',
+    inputSchema: z.object({
+      url: z.string().describe("The URL to navigate the browser tab to."),
+    }),
+  }),
+
+  browse_act: tool({
+    description:
+      "Act on the currently open browser tab: click something, type into a field, scroll, or go back/forward in history. `target` (for click/type) is matched first as a CSS selector, then as visible text (case-insensitive, trimmed, first match in document order) — so you can pass either a selector or just the text you see on the page. Scrolling is what makes an infinite-scroll grid like Pinterest's usable: call `scroll` to load more results, then call browse_find_images again to read the newly loaded images — that scroll-then-find loop is how you gather more than one screenful of references. Returns `{ url, title, matched }` on success or `{ error }` naming what wasn't found.",
+    inputSchema: z.object({
+      action: z
+        .enum(["click", "type", "scroll", "back", "forward"])
+        .describe("Which action to perform."),
+      target: z
+        .string()
+        .optional()
+        .describe("CSS selector or visible text to act on. Used by click/type."),
+      text: z.string().optional().describe("Text to type. Used by type."),
+      amount: z
+        .number()
+        .optional()
+        .describe("Scroll distance in viewport heights. Used by scroll, default 1."),
+    }),
+  }),
+
+  browse_find_images: tool({
+    description:
+      "Read every image currently visible on the open browser tab's page — both <img> elements and CSS background-images — sorted largest-first and capped at `limit`. Returns `{ images: [{ url, alt, width, height }], count, pageUrl }`. The returned URLs go straight onto the canvas: imageFill.url already accepts remote http(s) URLs (falling back to the image proxy when direct loading trips CORS), so no download step is needed. On a search results grid (Pinterest et al.) this typically only sees the first screenful — call browse_act with `scroll` and call this again to see more, repeating the loop until you have enough references.",
+    inputSchema: z.object({
+      minWidth: z.number().optional().describe("Minimum rendered width in px to include. Default 200."),
+      minHeight: z.number().optional().describe("Minimum rendered height in px to include. Default 200."),
+      limit: z.number().optional().describe("Maximum number of images to return. Default 30, hard cap 100."),
+    }),
+  }),
 };

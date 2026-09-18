@@ -159,6 +159,14 @@ const chatBodySchema = z.object({
   // must silently fall back to a memory-free turn, not get an error for a
   // field it doesn't know the shape contract of.
   userId: z.string().min(1).max(64).optional(),
+  // Sent by useDesignChat.ts on every request, derived once at module scope
+  // from window.penDesktop?.browser — true only inside the Electron shell's
+  // browser-tab bridge. Threaded into prepareChatTurn, which deletes the
+  // browse_* tools unless this is true (see chatTurn.ts's gate) — a
+  // browser-hosted agent has no bridge to drive them with.
+  clientCapabilities: z
+    .object({ desktopBrowser: z.boolean().optional() })
+    .optional(),
 });
 
 export async function chatRoutes(
@@ -244,6 +252,7 @@ export async function chatRoutes(
       model: requestedModel,
       agentMode = "edits",
       userId: rawUserId,
+      clientCapabilities,
     } = parsed.data;
 
     // See chatBodySchema.model: an unknown id runs the default rather than
@@ -350,6 +359,7 @@ export async function chatRoutes(
         modelOverride,
         userId,
         mobbinAccessToken,
+        clientCapabilities,
         memoryStore,
         learnedSkillStore,
         auditDb,
