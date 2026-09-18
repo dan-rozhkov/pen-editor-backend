@@ -67,7 +67,6 @@ describe("DEFAULT_MODELS", () => {
         label: "DeepSeek V4.1 Flash",
         supportsVision: true,
       },
-      { id: "stealth/union-alpha", label: "Union Alpha", supportsVision: true },
       {
         id: "google/gemini-3.8-flash",
         label: "Gemini 3.8 Flash",

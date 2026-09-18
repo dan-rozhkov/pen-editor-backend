@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { createModel, supportsReasoningControl } from "../src/ai/provider.js";
+import {
+  createModel,
+  resolveReasoningEffort,
+  supportsReasoningControl,
+} from "../src/ai/provider.js";
 import { envSchema } from "../src/config.js";
 import { makeConfig } from "./helpers.js";
 
@@ -65,15 +69,18 @@ describe("CHAT_REASONING_EFFORT default", () => {
 });
 
 describe("createModel reasoning effort", () => {
-  it("passes the configured effort through to the OpenRouter model settings", () => {
+  // These assert the EFFORT DECISION rather than the returned model's
+  // `settings`: createModel's OpenRouter branch now returns a model wrapped
+  // by withReasoningMandatoryFallback, so the provider object's internals
+  // are no longer reachable — and reaching into them was never the contract
+  // worth pinning. resolveReasoningEffort is that decision, exported for
+  // exactly this.
+  it("passes the configured effort through for the chat model", () => {
     const config = makeConfig({
       CHAT_MODEL: OPENROUTER_STYLE_DEEPSEEK_ID,
       CHAT_REASONING_EFFORT: "high",
     });
-    const model = createModel(config) as unknown as {
-      settings: { reasoning?: { effort?: string } };
-    };
-    expect(model.settings.reasoning).toEqual({ effort: "high" });
+    expect(resolveReasoningEffort(config, undefined, undefined)).toBe("high");
   });
 
   it("defaults to 'none' when the config value is left at its schema default", () => {
@@ -81,10 +88,7 @@ describe("createModel reasoning effort", () => {
       CHAT_MODEL: OPENROUTER_STYLE_DEEPSEEK_ID,
       CHAT_REASONING_EFFORT: defaultReasoningEffort() as "none",
     });
-    const model = createModel(config) as unknown as {
-      settings: { reasoning?: { effort?: string } };
-    };
-    expect(model.settings.reasoning).toEqual({ effort: "none" });
+    expect(resolveReasoningEffort(config, undefined, undefined)).toBe("none");
   });
 
   it("omits reasoning settings for a model family outside the allowlist", () => {
@@ -107,15 +111,10 @@ describe("createModel reasoning effort", () => {
       CHAT_REASONING_EFFORT: "high",
     });
 
-    const chatModel = createModel(config) as unknown as {
-      settings: { reasoning?: { effort?: string } };
-    };
-    expect(chatModel.settings.reasoning).toEqual({ effort: "high" });
-
-    const overriddenModel = createModel(config, OPENROUTER_STYLE_DEEPSEEK_ID) as unknown as {
-      settings: { reasoning?: { effort?: string } };
-    };
-    expect(overriddenModel.settings.reasoning).toEqual({ effort: "minimal" });
+    expect(resolveReasoningEffort(config, undefined, undefined)).toBe("high");
+    expect(
+      resolveReasoningEffort(config, OPENROUTER_STYLE_DEEPSEEK_ID, undefined),
+    ).toBe("minimal");
   });
   // The one exception to the rule above: the chat agent itself, on a turn
   // where the model was chosen per request (the composer's picker, or
@@ -128,9 +127,6 @@ describe("createModel reasoning effort", () => {
       CHAT_MODEL: OPENROUTER_STYLE_DEEPSEEK_ID,
       CHAT_REASONING_EFFORT: "none",
     });
-    const picked = createModel(config, "qwen/qwen3.8-flash", {
-      chatAgent: true,
-    }) as unknown as { settings: { reasoning?: { effort?: string } } };
-    expect(picked.settings.reasoning).toEqual({ effort: "none" });
+    expect(resolveReasoningEffort(config, "qwen/qwen3.8-flash", true)).toBe("none");
   });
 });

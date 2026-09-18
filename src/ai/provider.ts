@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
+import { APICallError, wrapLanguageModel } from "ai";
 import type { LanguageModel } from "ai";
 import type { Config } from "../config.js";
 import { parseModelRef, isOpenCodeProvider } from "./modelRef.js";
@@ -95,6 +96,97 @@ export interface CreateModelOptions {
   opencodeApiKey?: string;
 }
 
+/**
+ * Which reasoning effort a given call gets. Its own function because
+ * createModel's OpenRouter branch now returns a *wrapped* model (see
+ * withReasoningMandatoryFallback), so the effort is no longer readable off
+ * the returned object's `settings` — and reaching into a third-party
+ * model's internals was never a contract worth pinning anyway. This is the
+ * decision itself, which is what the tests actually care about.
+ *
+ * CHAT_REASONING_EFFORT (and the live measurement backing its "none"
+ * default in config.ts) was only ever measured for the chat agent. Callers
+ * that pass a modelOverride WITHOUT `chatAgent` are a different job
+ * (ANALYSIS_MODEL in src/analysis/run.ts, VISION_MODEL in
+ * src/services/vision.ts, src/ai/selfimprove/review.ts,
+ * src/routes/userSkills.ts, src/ai/prototype-link.ts): analysis/review work
+ * benefits from actual reasoning, so gating those to the chat-tuned "none"
+ * default would silently regress them. Keep those on the pre-existing
+ * "minimal" behavior instead of threading the operator knob through.
+ */
+export function resolveReasoningEffort(
+  config: Config,
+  modelOverride?: string,
+  chatAgent?: boolean,
+): Config["CHAT_REASONING_EFFORT"] | "minimal" {
+  return modelOverride === undefined || chatAgent
+    ? config.CHAT_REASONING_EFFORT
+    : "minimal";
+}
+
+/**
+ * OpenRouter answers 400 "Reasoning is mandatory for this endpoint and
+ * cannot be disabled" for models that require reasoning — it does NOT
+ * quietly drop the parameter. REASONING_MODEL_PREFIXES lists whole
+ * families on the assumption that "OpenRouter normalizes `reasoning` and
+ * drops it for a model that can't use it, so the cost of that is nothing";
+ * that holds for a model with no reasoning, and is false for one that
+ * mandates it.
+ *
+ * Measured 2026-09-18 against the live API with `effort: "none"` (the
+ * CHAT_REASONING_EFFORT default): 4 of the 10 selectable OpenRouter models
+ * in DEFAULT_MODELS answered 400 — meta/muse-spark-1.3-contributor,
+ * z-ai/glm-5.3-flash, google/gemini-3.8-flash and z-ai/glm-5.3. Picking any
+ * of them in the composer failed every single turn with a bare "An error
+ * occurred".
+ *
+ * Handled as a retry rather than a denylist on purpose: which models
+ * mandate reasoning is the vendor's decision and changes without notice, so
+ * a hardcoded list would be wrong again by the next model refresh. The
+ * error is specific enough to match, the retry runs at most once, and
+ * anything that isn't this exact failure is rethrown untouched.
+ */
+function isReasoningMandatoryError(err: unknown): boolean {
+  if (!APICallError.isInstance(err)) return false;
+  if (err.statusCode !== 400) return false;
+  const body = typeof err.responseBody === "string" ? err.responseBody : "";
+  return /reasoning is mandatory/i.test(`${err.message} ${body}`);
+}
+
+/** Wraps `primary` so the one failure above retries once against a model
+ * built with no `reasoning` option at all. `params` is reused verbatim, so
+ * the retry differs from the original request only by that option. */
+function withReasoningMandatoryFallback(
+  primary: LanguageModel,
+  buildWithoutReasoning: () => LanguageModel,
+): LanguageModel {
+  const model = primary as Parameters<typeof wrapLanguageModel>[0]["model"];
+  return wrapLanguageModel({
+    model,
+    middleware: {
+      specificationVersion: "v3",
+      wrapGenerate: async ({ doGenerate, params }) => {
+        try {
+          return await doGenerate();
+        } catch (err) {
+          if (!isReasoningMandatoryError(err)) throw err;
+          const fallback = buildWithoutReasoning() as typeof model;
+          return fallback.doGenerate(params);
+        }
+      },
+      wrapStream: async ({ doStream, params }) => {
+        try {
+          return await doStream();
+        } catch (err) {
+          if (!isReasoningMandatoryError(err)) throw err;
+          const fallback = buildWithoutReasoning() as typeof model;
+          return fallback.doStream(params);
+        }
+      },
+    },
+  }) as LanguageModel;
+}
+
 export function createModel(
   config: Config,
   modelOverride?: string,
@@ -142,19 +234,11 @@ export function createModel(
   if (!supportsReasoningControl(modelId)) {
     return openrouter(modelId);
   }
-  // CHAT_REASONING_EFFORT (and the live measurement backing its "none"
-  // default in config.ts) was only ever measured for the chat agent.
-  // Callers that pass a modelOverride WITHOUT `chatAgent` are a different
-  // job (ANALYSIS_MODEL in src/analysis/run.ts, VISION_MODEL in
-  // src/services/vision.ts, src/ai/selfimprove/review.ts,
-  // src/routes/userSkills.ts, src/ai/prototype-link.ts): analysis/review
-  // work benefits from actual reasoning, so gating those to the chat-tuned
-  // "none" default would silently regress them. Keep those on the
-  // pre-existing "minimal" behavior instead of threading the operator knob
-  // through to them.
-  const effort =
-    modelOverride === undefined || options.chatAgent
-      ? config.CHAT_REASONING_EFFORT
-      : "minimal";
-  return openrouter(modelId, { reasoning: { effort } });
+  // See resolveReasoningEffort's own doc comment for why a modelOverride
+  // without `chatAgent` deliberately stays on "minimal".
+  const effort = resolveReasoningEffort(config, modelOverride, options.chatAgent);
+  return withReasoningMandatoryFallback(
+    openrouter(modelId, { reasoning: { effort } }),
+    () => openrouter(modelId),
+  );
 }
