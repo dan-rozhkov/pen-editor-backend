@@ -17,7 +17,7 @@
 // since it's an infrastructure detail of Mobbin's that can change without
 // notice. The only hardcoded URL is the entry point itself
 // (MOBBIN_PROTECTED_RESOURCE_URL).
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { parseEnvList, type Config } from "../config.js";
 
@@ -453,6 +453,61 @@ export async function mobbinAuthRoutes(app: FastifyInstance, config: Config): Pr
     },
   );
 
+  // /token and /refresh are the same request to Mobbin with a different
+  // grant: discover, exchange, and map the failure. Keeping one
+  // implementation is not just deduplication — the failure mapping is the
+  // security-relevant half (never echo the upstream body, invalidate a dead
+  // client_id, tell a terminal rejection apart from an outage), and two
+  // copies of it drift apart exactly where that matters least visibly.
+  // Only the grant parameters and the two user-facing sentences differ.
+  async function exchangeAndReply(
+    request: FastifyRequest,
+    reply: FastifyReply,
+    options: {
+      clientId: string;
+      params: Record<string, string>;
+      logLabel: string;
+      rejectedMessage: string;
+      failedMessage: string;
+    },
+  ) {
+    let metadata: MobbinOAuthMetadata;
+    try {
+      metadata = await discoverMobbinOAuth();
+    } catch (err) {
+      request.log.error({ err: err instanceof Error ? err.message : String(err) });
+      return reply.status(502).send({ error: "Failed to discover Mobbin's OAuth configuration" });
+    }
+
+    try {
+      return reply.send(await requestToken(metadata.tokenEndpoint, options.params));
+    } catch (err) {
+      // A dead cached client_id (Mobbin deleted or rotated the DCR
+      // registration) would otherwise fail every call using it the same way
+      // until the process restarts — client_id is cached for the process
+      // lifetime and has no other self-healing path. Drop it so the next
+      // /register re-registers fresh.
+      if (err instanceof TokenExchangeError && err.oauthErrorCode === "invalid_client") {
+        invalidateClientId(options.clientId);
+      }
+      // Free-plan accounts complete OAuth successfully — per Mobbin's docs
+      // the plan gate only fires at tool-call time — so a failure here is a
+      // genuine exchange problem (expired code, clock skew, wrong client),
+      // never a plan signal. We don't fabricate one Mobbin never gave us.
+      request.log.warn(
+        { err: err instanceof Error ? err.message : String(err) },
+        options.logLabel,
+      );
+      // A terminal rejection means "reconnect"; anything else is an outage
+      // the user should simply retry. Collapsing both into 502 is what left
+      // the browser unable to tell a dead grant from a dropped connection.
+      if (isTerminalOAuthRejection(err)) {
+        return reply.status(401).send({ error: options.rejectedMessage });
+      }
+      return reply.status(502).send({ error: options.failedMessage });
+    }
+  }
+
   app.post(
     "/api/mobbin/token",
     { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } },
@@ -466,53 +521,21 @@ export async function mobbinAuthRoutes(app: FastifyInstance, config: Config): Pr
         return reply.status(400).send({ error: "redirectUri is not an allowed origin" });
       }
 
-      let metadata: MobbinOAuthMetadata;
-      try {
-        metadata = await discoverMobbinOAuth();
-      } catch (err) {
-        request.log.error({ err: err instanceof Error ? err.message : String(err) });
-        return reply
-          .status(502)
-          .send({ error: "Failed to discover Mobbin's OAuth configuration" });
-      }
-
-      try {
-        const result = await requestToken(metadata.tokenEndpoint, {
+      return exchangeAndReply(request, reply, {
+        clientId,
+        params: {
           grant_type: "authorization_code",
           code,
           redirect_uri: redirectUri,
           client_id: clientId,
           code_verifier: codeVerifier,
-        });
-        return reply.send(result);
-      } catch (err) {
-        // A dead cached client_id (Mobbin deleted/rotated the DCR
-        // registration) would otherwise fail every /token call using it
-        // the same way until process restart — there is no other
-        // self-healing path since client_id is cached for the process
-        // lifetime. Drop it so the NEXT /register call re-registers fresh.
-        if (err instanceof TokenExchangeError && err.oauthErrorCode === "invalid_client") {
-          invalidateClientId(clientId);
-        }
-        // Free-plan accounts complete OAuth successfully — Mobbin's docs say
-        // the plan gate only fires at tool-call time, not here — so a failure
-        // at this step is a genuine exchange problem (expired code, clock
-        // skew, wrong client), not a plan issue. We don't fabricate a plan
-        // signal Mobbin never gave us.
-        request.log.warn(
-          { err: err instanceof Error ? err.message : String(err) },
-          "[mobbin-auth] token exchange failed",
-        );
-        if (isTerminalOAuthRejection(err)) {
-          return reply.status(401).send({
-            error:
-              "Mobbin rejected the authorization code exchange. The code may have expired — try connecting again.",
-          });
-        }
-        return reply.status(502).send({
-          error: "Failed to exchange the authorization code with Mobbin. Please try again.",
-        });
-      }
+        },
+        logLabel: "[mobbin-auth] token exchange failed",
+        rejectedMessage:
+          "Mobbin rejected the authorization code exchange. The code may have expired — try connecting again.",
+        failedMessage:
+          "Failed to exchange the authorization code with Mobbin. Please try again.",
+      });
     },
   );
 
@@ -526,40 +549,17 @@ export async function mobbinAuthRoutes(app: FastifyInstance, config: Config): Pr
       }
       const { refreshToken, clientId } = parsed.data;
 
-      let metadata: MobbinOAuthMetadata;
-      try {
-        metadata = await discoverMobbinOAuth();
-      } catch (err) {
-        request.log.error({ err: err instanceof Error ? err.message : String(err) });
-        return reply
-          .status(502)
-          .send({ error: "Failed to discover Mobbin's OAuth configuration" });
-      }
-
-      try {
-        const result = await requestToken(metadata.tokenEndpoint, {
+      return exchangeAndReply(request, reply, {
+        clientId,
+        params: {
           grant_type: "refresh_token",
           refresh_token: refreshToken,
           client_id: clientId,
-        });
-        return reply.send(result);
-      } catch (err) {
-        if (err instanceof TokenExchangeError && err.oauthErrorCode === "invalid_client") {
-          invalidateClientId(clientId);
-        }
-        request.log.warn(
-          { err: err instanceof Error ? err.message : String(err) },
-          "[mobbin-auth] refresh failed",
-        );
-        if (isTerminalOAuthRejection(err)) {
-          return reply.status(401).send({
-            error: "Mobbin rejected the refresh token. Reconnect your Mobbin account.",
-          });
-        }
-        return reply.status(502).send({
-          error: "Failed to refresh the Mobbin access token. Please try again.",
-        });
-      }
+        },
+        logLabel: "[mobbin-auth] refresh failed",
+        rejectedMessage: "Mobbin rejected the refresh token. Reconnect your Mobbin account.",
+        failedMessage: "Failed to refresh the Mobbin access token. Please try again.",
+      });
     },
   );
 }
