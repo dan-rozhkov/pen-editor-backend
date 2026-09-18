@@ -905,8 +905,8 @@ export async function prepareChatTurn(
     // it before the request goes out.
     delete tools.attach_local_repo;
 
-    // Structural gate: browse_open/browse_act/browse_find_images/browse_task
-    // are client-executed against a browser tab that only exists inside the
+    // Structural gate: browse_open/browse_act/browse_find_images/browse_task/
+    // browse_read are client-executed against a browser tab that only exists inside the
     // Electron shell (pen-editor-desktop's BrowserController, driven over
     // window.penDesktop.browser) — a browser-hosted session has no such
     // bridge, so offering these there could only waste a tool-call step,
@@ -921,6 +921,7 @@ export async function prepareChatTurn(
       delete tools.browse_act;
       delete tools.browse_find_images;
       delete tools.browse_task;
+      delete tools.browse_read;
     }
 
     // Key gate, browse_task only: unlike browse_open/browse_act/

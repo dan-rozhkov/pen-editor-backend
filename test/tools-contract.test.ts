@@ -64,6 +64,7 @@ describe("penTools registry", () => {
         "browse_act",
         "browse_find_images",
         "browse_task",
+        "browse_read",
       ].sort(),
     );
   });
@@ -118,6 +119,7 @@ describe("penTools registry", () => {
       "browse_act",
       "browse_find_images",
       "browse_task",
+      "browse_read",
     ] as const) {
       expect(hasExecute(name), `${name} must be client-executed`).toBe(false);
     }
@@ -1176,6 +1178,24 @@ describe("browse_task schema", () => {
     expect(schema.safeParse({}).success).toBe(false);
     expect(schema.safeParse({ goal: "x", maxSteps: 26 }).success).toBe(false);
     expect(schema.safeParse({ goal: "x", maxSteps: 0 }).success).toBe(false);
+  });
+});
+
+describe("browse_read schema", () => {
+  const schema = schemaOf("browse_read");
+
+  it("accepts a call with no arguments at all", () => {
+    expect(schema.safeParse({}).success).toBe(true);
+  });
+
+  it("accepts maxChars and selector together", () => {
+    expect(schema.safeParse({ maxChars: 4000, selector: "main" }).success).toBe(true);
+  });
+
+  it("rejects a maxChars above the hard cap and a non-positive maxChars", () => {
+    expect(schema.safeParse({ maxChars: 20001 }).success).toBe(false);
+    expect(schema.safeParse({ maxChars: 0 }).success).toBe(false);
+    expect(schema.safeParse({ maxChars: -1 }).success).toBe(false);
   });
 });
 

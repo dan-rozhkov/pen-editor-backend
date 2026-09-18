@@ -1829,7 +1829,7 @@ Returns the created/updated style ids and names (with a created|updated status) 
   // tab lives in the desktop app's main process, driven over
   // window.penDesktop.browser (see pen-editor's toolHandlers). A
   // browser-hosted agent has no such bridge, so prepareChatTurn
-  // (src/ai/chatTurn.ts) deletes all three of these unless the request's
+  // (src/ai/chatTurn.ts) deletes all of these unless the request's
   // clientCapabilities.desktopBrowser flag says the bridge is actually
   // there — same structural-gate shape as attach_local_repo above. They
   // stay in penTools (with no execute) purely so pen-editor's cross-repo
@@ -1885,6 +1885,24 @@ Returns the created/updated style ids and names (with a created|updated status) 
         .max(25)
         .optional()
         .describe("Maximum number of snapshot/decide/act cycles. Default 12, hard cap 25."),
+    }),
+  }),
+
+  browse_read: tool({
+    description:
+      "Read the TEXT of the page currently open in the built-in browser tab — headings, visible body text, and links — with scripts, styles, and nav chrome already stripped out. Returns `{ url, title, headings: string[], text: string, links: [{ label, href }], truncated: boolean }`. This is how you read a page you've already navigated to with browse_open/browse_task: once the browser is sitting on the page you need, call this INSTEAD OF falling back to web_search for the same information — web_search only re-finds pages you can already see, and cannot read this one's actual current content (a search result, a filtered listing, anything behind a click). Prefer browse_find_images when you want images rather than text. `maxChars` bounds the returned text (default 6000, hard cap 20000); `selector` narrows the read to one subtree of the page (e.g. \"main\", \"article\") — an unmatched selector is an error, not a silent whole-page read.",
+    inputSchema: z.object({
+      maxChars: z
+        .number()
+        .int()
+        .positive()
+        .max(20000)
+        .optional()
+        .describe("Maximum characters of visible text to return. Default 6000, hard cap 20000."),
+      selector: z
+        .string()
+        .optional()
+        .describe("CSS selector to narrow the read to one subtree of the page. Omit to read the whole page."),
     }),
   }),
 };

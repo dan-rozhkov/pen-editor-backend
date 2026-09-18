@@ -31,7 +31,7 @@ Before running any search, check whether these tools are actually available to y
 
 ## The Built-in Browser (Desktop Only)
 
-`browse_open`/`browse_act`/`browse_find_images` are also **per-client, not always present**: they only exist in this turn's tool set inside the desktop app, when its built-in browser bridge is wired up. When they ARE available, this is a REAL browser tab running on the user's own logged-in session — not a curated catalogue, the open web. Prefer it for open-web reference hunting once Mobbin's curated screens/flows/sections aren't enough, or when Mobbin isn't connected at all.
+`browse_open`/`browse_act`/`browse_find_images`/`browse_read` are also **per-client, not always present**: they only exist in this turn's tool set inside the desktop app, when its built-in browser bridge is wired up. When they ARE available, this is a REAL browser tab running on the user's own logged-in session — not a curated catalogue, the open web. Prefer it for open-web reference hunting once Mobbin's curated screens/flows/sections aren't enough, or when Mobbin isn't connected at all.
 
 Pinterest search is the worked example:
 
@@ -41,6 +41,8 @@ Pinterest search is the worked example:
 4. A found image's `url` can be cited directly and, if the user wants it on the canvas, dropped straight into an image fill — no download step needed.
 
 `browse_act` also supports `click`/`type` (target a CSS selector or just the visible text) and `back`/`forward`, so you can click into a specific pin, a related-search chip, or navigate elsewhere entirely — the browser tab is a normal tab, not limited to Pinterest.
+
+**Once the browser is on the page you need, `browse_read` is how you actually read it — use it instead of falling back to `web_search`.** `browse_read({ maxChars?, selector? })` returns `{ url, title, headings, text, links, truncated }`: visible text with scripts/styles/nav chrome stripped, headings in document order, and deduped http(s) links. This matters because `web_search` only re-finds pages you can already see the URL of — it cannot tell you what's actually on a page you already navigated to (a search result, a facet-filtered listing, a product page you clicked into). If the browser is already open on the page that has the answer, read it with `browse_read`; only reach for `web_search` when you need to find a page you haven't opened yet, or the built-in browser isn't available this turn.
 
 **`browse_task` is the "just get me there" path.** Reach for `browse_open`/`browse_act`/`browse_find_images` when you already know the exact URL and just need to land on it or read a page you're already on — each of those is one chat turn per step. `browse_task({ goal })` instead runs a WHOLE multi-step task (search, click through a cookie banner or login wall, pick a facet) in one call, driven by a cheap decision loop rather than the design model, and is the right choice whenever there is no clean URL to open directly — "search this site for X and open the first result" rather than a URL you can type. It shares the same browser tab, so the two approaches compose: `browse_open` to land on a site, then `browse_task` to work your way to a specific page on it, then `browse_find_images` to read what's there.
 

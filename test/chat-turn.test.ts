@@ -290,10 +290,10 @@ describe("prepareChatTurn", () => {
   });
 
   describe("browse_* gate", () => {
-    // browse_open/browse_act/browse_find_images only execute inside the
-    // Electron shell's built-in browser bridge — a browser-hosted session
-    // has no such bridge, so they must be absent unless the request says
-    // clientCapabilities.desktopBrowser is true.
+    // browse_open/browse_act/browse_find_images/browse_read only execute
+    // inside the Electron shell's built-in browser bridge — a browser-hosted
+    // session has no such bridge, so they must be absent unless the request
+    // says clientCapabilities.desktopBrowser is true.
     it("is absent when clientCapabilities is not passed", async () => {
       const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
       const { penTools } = await import("../src/ai/tools.js");
@@ -301,6 +301,7 @@ describe("prepareChatTurn", () => {
       expect(penTools.browse_open).toBeDefined();
       expect(penTools.browse_act).toBeDefined();
       expect(penTools.browse_find_images).toBeDefined();
+      expect(penTools.browse_read).toBeDefined();
 
       const messages = [userMessage("find some reference images")];
       const turn = await prepareChatTurn({ config: makeConfig(), messages });
@@ -308,6 +309,7 @@ describe("prepareChatTurn", () => {
       expect(turn.tools.browse_open).toBeUndefined();
       expect(turn.tools.browse_act).toBeUndefined();
       expect(turn.tools.browse_find_images).toBeUndefined();
+      expect(turn.tools.browse_read).toBeUndefined();
     });
 
     it("is absent when desktopBrowser is explicitly false", async () => {
@@ -323,6 +325,7 @@ describe("prepareChatTurn", () => {
       expect(turn.tools.browse_open).toBeUndefined();
       expect(turn.tools.browse_act).toBeUndefined();
       expect(turn.tools.browse_find_images).toBeUndefined();
+      expect(turn.tools.browse_read).toBeUndefined();
     });
 
     it("is present when desktopBrowser is true", async () => {
@@ -338,6 +341,7 @@ describe("prepareChatTurn", () => {
       expect(turn.tools.browse_open).toBeDefined();
       expect(turn.tools.browse_act).toBeDefined();
       expect(turn.tools.browse_find_images).toBeDefined();
+      expect(turn.tools.browse_read).toBeDefined();
     });
   });
 
