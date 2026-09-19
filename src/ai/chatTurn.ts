@@ -14,6 +14,7 @@ import { buildSystemPrompt } from "./system-prompt.js";
 import { resolveTaskPolicy, type TaskPolicy } from "./taskPolicy.js";
 import { applyVisionPreprocessing, modelSupportsVision } from "./vision-messages.js";
 import { isVisionConfigured } from "../services/vision.js";
+import { isQuiverConfigured } from "../services/quiver.js";
 import { attachMobbinRelease, getMCPTools, releaseMCPTools } from "./mcp.js";
 import { getWebTools } from "./web-search.js";
 import {
@@ -852,6 +853,22 @@ export async function prepareChatTurn(
       // clear error; one wasted step in a rare case is cheaper than losing the
       // image_url path entirely.
       delete tools.vectorize_image;
+      // generate_vector places its result as real scene nodes (paths/groups)
+      // via x/y/width/height/parentId, exactly like draw_vector — same
+      // "NOT CREATING NATIVE SCENE NODES in embed-only mode" reasoning as
+      // draw_vector/vectorize_image above, so it's gated the same way.
+      delete tools.generate_vector;
+    }
+
+    // generate_vector additionally needs QUIVER_API_KEY to do anything at
+    // all — it is client-executed (no `execute` here), so unlike
+    // analyze_image there's no backend call to make conditionally; the whole
+    // tool is either offered or not. Same reasoning as the FAL_KEY gate on
+    // remove_background/vectorize_image (GET /api/models) and the
+    // isVisionConfigured gate on analyze_image just below: an unusable tool
+    // left in the set would just burn a guaranteed-failing step.
+    if (!isQuiverConfigured(config)) {
+      delete tools.generate_vector;
     }
 
     // analyze_image needs this request's real config (VISION_MODEL etc.) to

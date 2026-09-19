@@ -177,6 +177,68 @@ describe("prepareChatTurn", () => {
     });
   });
 
+  // Finding #8 (2026-09 review): generate_vector has two independent gates —
+  // the embed-only structural gate (like draw_vector/vectorize_image) and
+  // the QUIVER_API_KEY key gate (like FAL_KEY on remove_background/
+  // vectorize_image) — and neither had a test. Without these, a refactor
+  // could silently advertise generate_vector on a deployment whose
+  // POST /api/vector/generate answers 503, a guaranteed-failing step for the
+  // model with a green suite.
+  describe("generate_vector gates", () => {
+    it("is absent without QUIVER_API_KEY, even on the native task policy", async () => {
+      const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+
+      const turn = await prepareChatTurn({
+        config: makeConfig({ QUIVER_API_KEY: undefined }),
+        messages: [userMessage("make the header bigger")],
+      });
+
+      expect(turn.taskPolicy).toBe("native");
+      expect(turn.tools.generate_vector).toBeUndefined();
+    });
+
+    it("is present on the native task policy when QUIVER_API_KEY is configured", async () => {
+      const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+      const { penTools } = await import("../src/ai/tools.js");
+
+      const turn = await prepareChatTurn({
+        config: makeConfig({ QUIVER_API_KEY: "qv-test" }),
+        messages: [userMessage("make the header bigger")],
+      });
+
+      expect(turn.taskPolicy).toBe("native");
+      expect(turn.tools.generate_vector).toBe(penTools.generate_vector);
+    });
+
+    it("is absent on a /prototype turn (embed-only gate) even with QUIVER_API_KEY configured", async () => {
+      // Isolates the embed-only structural gate from the QUIVER_API_KEY gate
+      // — generate_vector places real scene nodes (paths/groups) exactly
+      // like draw_vector/vectorize_image, so it's gated out of embed-only
+      // mode regardless of whether the key gate would otherwise pass it.
+      const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+
+      const turn = await prepareChatTurn({
+        config: makeConfig({ QUIVER_API_KEY: "qv-test" }),
+        messages: [userMessage("/prototype a login screen")],
+      });
+
+      expect(turn.taskPolicy).toBe("prototype");
+      expect(turn.tools.generate_vector).toBeUndefined();
+    });
+
+    it("is absent on a /slides turn (embed-only gate) even with QUIVER_API_KEY configured", async () => {
+      const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+
+      const turn = await prepareChatTurn({
+        config: makeConfig({ QUIVER_API_KEY: "qv-test" }),
+        messages: [userMessage("/slides a quarterly review")],
+      });
+
+      expect(turn.taskPolicy).toBe("slides");
+      expect(turn.tools.generate_vector).toBeUndefined();
+    });
+  });
+
   describe("get_screenshot gate", () => {
     // The shipped model reads images natively, so the vision-less cases below
     // use the other supported shape: an operator-pointed text-only model

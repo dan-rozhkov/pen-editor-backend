@@ -10,6 +10,7 @@ import { chatRoutes } from "./routes/chat.js";
 import type { AgentRetryPolicy } from "./ai/retry.js";
 import { generateImageRoutes } from "./routes/generateImage.js";
 import { falRoutes } from "./routes/fal.js";
+import { vectorRoutes } from "./routes/vector.js";
 import { mcpRoutes } from "./mcp/routes.js";
 import {
   getHandshakePath,
@@ -353,6 +354,7 @@ export async function buildApp(
   await uploadRoutes(app, config);
   await generateImageRoutes(app, config, analytics);
   await falRoutes(app, config, analytics);
+  await vectorRoutes(app, config, analytics);
   await prototypeLinkRoutes(app, config);
   await browseStepRoutes(app, config);
   await repoRoutes(app, config);

@@ -19,6 +19,7 @@ describe("penTools registry", () => {
         "batch_design",
         "batch_get",
         "draw_vector",
+        "generate_vector",
         "boolean_operation",
         "find_empty_space_on_canvas",
         "generate_frame_image",
@@ -78,6 +79,7 @@ describe("penTools registry", () => {
       "batch_design",
       "batch_get",
       "draw_vector",
+      "generate_vector",
       "get_editor_state",
       "get_variables",
       "set_variables",
@@ -159,6 +161,34 @@ describe("draw_vector schema", () => {
     { name: "Vector", commands: "x".repeat(32_769) },
   ])("rejects invalid bounds: %j", (input) => {
     expect(schema.safeParse(input).success).toBe(false);
+  });
+});
+
+describe("generate_vector schema", () => {
+  const schema = schemaOf("generate_vector");
+
+  it("accepts a prompt alone", () => {
+    expect(schema.safeParse({ prompt: "a minimal coffee cup icon, flat, two-tone" }).success).toBe(true);
+  });
+
+  it("accepts every optional field", () => {
+    expect(
+      schema.safeParse({
+        prompt: "a plant-shop logo mark",
+        instructions: "match the brand's sage green",
+        x: 10,
+        y: 20,
+        width: 200,
+        height: 200,
+        parentId: "frame-1",
+      }).success,
+    ).toBe(true);
+  });
+
+  it("rejects an empty or missing prompt", () => {
+    expect(schema.safeParse({}).success).toBe(false);
+    expect(schema.safeParse({ prompt: "" }).success).toBe(false);
+    expect(schema.safeParse({ prompt: "   " }).success).toBe(false);
   });
 });
 

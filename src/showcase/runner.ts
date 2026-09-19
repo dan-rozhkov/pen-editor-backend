@@ -248,6 +248,18 @@ function instrumentTools(
   delete instrumented.remove_background;
   delete instrumented.vectorize_image;
 
+  // generate_vector's whole point is landing real scene nodes (paths/groups
+  // placed at x/y/parentId) — there is no scene graph here at all, same
+  // "no canvas" reasoning as vectorize_image just above. Unlike
+  // remove_background it has no URL-in/URL-out branch to fall back to, so
+  // there's nothing useful a stub could return. It is ALSO already dropped
+  // before tools ever reach here — chatTurn.ts's embed-only gate deletes it
+  // for the same reason it deletes draw_vector/vectorize_image, and every
+  // showcase turn runs in that embed-only mode — so this line is a defensive
+  // second layer, not the primary gate, matching how the vectorize_image
+  // comment above already documents that same redundancy.
+  delete instrumented.generate_vector;
+
   for (const name of Object.keys(instrumented)) {
     const entry = instrumented[name] as { execute?: unknown };
     if (typeof entry.execute === "function") continue; // static tool, leave as-is

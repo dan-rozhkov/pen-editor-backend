@@ -429,6 +429,35 @@ Paint is optional: with no FILL and no STROKE, a default stroke is applied so th
   inputSchema: drawVectorInputSchema,
 });
 
+export const generateVectorInputSchema = z.object({
+  prompt: z
+    .string()
+    .trim()
+    .min(1)
+    .describe(
+      "A rich visual description of the artwork to generate: subject, style (flat/line/isometric/etc.), color palette, mood, level of detail. The more specific, the closer the result matches intent — this is prose fed to a dedicated vector-drawing model, not a batch_design script.",
+    ),
+  instructions: z
+    .string()
+    .trim()
+    .min(1)
+    .optional()
+    .describe("Optional extra style guidance separate from the subject description, e.g. brand constraints or a reference to match."),
+  x: z.number().optional().describe("Canvas X position for the generated artwork. Give x and y together; omit both to centre it in the user's current viewport."),
+  y: z.number().optional().describe("Canvas Y position for the generated artwork."),
+  width: z.number().positive().optional().describe("Target width in canvas units. The generated SVG is scaled to fit; omit to use its natural size."),
+  height: z.number().positive().optional().describe("Target height in canvas units."),
+  parentId: z.string().optional().describe("Frame/group node id to place the result into. Omit to let placement follow the geometry: the artwork is parented into whichever frame contains it, or added at the document root when none does."),
+});
+
+const generateVectorTool = tool({
+  description:
+    "Generate editable vector art (icon, logo, illustration, spot art) from a text description, using a dedicated vector-drawing model — you describe the artwork in words instead of computing coordinates yourself. Streams progressively and lands as real, editable vector nodes on the canvas (paths/groups), not a flattened image. " +
+    "Use draw_vector instead when YOU already know the exact geometry to place (diagrams, precise shapes, pixel-exact layouts) — that tool takes explicit coordinates and commands you compute. Use generate_vector when the ask is closer to \"draw me an icon of a coffee cup\" or \"a logo mark for a plant shop\": describing the result is easier and produces better art than hand-authoring path commands for it. " +
+    "This call is SLOW — roughly 30-90 seconds depending on complexity — because it streams a real generation from an external model. Do not call it in a tight loop or as a substitute for draw_vector on simple geometric shapes; batch what you need into one well-described call.",
+  inputSchema: generateVectorInputSchema,
+});
+
 // Shared by create_plugin/update_plugin so the panel-size shape can't drift
 // between the two tools.
 const pluginUiSchema = z
@@ -1196,6 +1225,7 @@ export const penTools = {
   batch_design: makeBatchDesignTool(),
 
   draw_vector: drawVectorTool,
+  generate_vector: generateVectorTool,
 
   rename_layers: tool({
     description:

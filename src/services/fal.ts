@@ -29,8 +29,12 @@ export class FalTimeoutError extends Error {
  * map this to a 4xx, not a generic 500 — it's a rejection of untrusted
  * upstream content, not a server failure. */
 export class UnsafeSvgError extends Error {
-  constructor(reason: string) {
-    super(`Refusing to use fal.ai's SVG result: ${reason}`);
+  // `source` names whose output is being rejected in the message — defaults
+  // to fal.ai's own wording so every pre-existing caller here is unaffected.
+  // quiver.ts (a different provider reusing this same check — see
+  // assertSvgIsInert below) passes its own name instead.
+  constructor(reason: string, source = "fal.ai's SVG result") {
+    super(`Refusing to use ${source}: ${reason}`);
     this.name = "UnsafeSvgError";
   }
 }
@@ -173,11 +177,15 @@ export function findUnsafeSvgConstruct(svg: string): string | null {
 }
 
 /** Throws UnsafeSvgError if `svg` contains anything that could execute.
- * Never modifies its input — a valid document is used exactly as received. */
-export function assertSvgIsInert(svg: string): void {
+ * Never modifies its input — a valid document is used exactly as received.
+ * `source` is forwarded to UnsafeSvgError's message; shared as-is by
+ * quiver.ts, which has no reason to reimplement this check — both routes
+ * hand untrusted provider-produced SVG to a browser DOMParser/paste/export
+ * path, so both need the same defense in depth. */
+export function assertSvgIsInert(svg: string, source?: string): void {
   const reason = findUnsafeSvgConstruct(svg);
   if (reason) {
-    throw new UnsafeSvgError(reason);
+    throw new UnsafeSvgError(reason, source);
   }
 }
 

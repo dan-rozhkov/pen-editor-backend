@@ -71,6 +71,10 @@ export function makeConfig(overrides: Partial<Config> = {}): Config {
     TYPESAFE_BASE_URL: "https://api.typesafe.ai/v1",
     SKILL_ROUTING_MODE: "off",
     SKILL_ROUTING_MIN_CONFIDENCE: 0.7,
+    QUIVER_API_KEY: undefined,
+    QUIVER_MODEL: "arrow-2",
+    QUIVER_BASE_URL: "https://api.quiver.ai/v1",
+    QUIVER_TIMEOUT_MS: 180_000,
     ...overrides,
   };
 }

@@ -324,6 +324,31 @@ export const envSchema = z.object({
   // turn, so only a confident pick acts; everything below this falls back
   // to today's behavior (the model calling load_skill itself).
   SKILL_ROUTING_MIN_CONFIDENCE: z.coerce.number().min(0).max(1).default(0.7),
+  // --- QuiverAI vector generation (optional) ---
+  // Unset = generate_vector is dropped from the per-request tool set
+  // (chatTurn.ts's gate, mirroring FAL_KEY/analyze_image's pattern) and
+  // POST /api/vector/generate answers 503 — same "the feature simply isn't
+  // there" contract as every other optional integration above, never a
+  // required boot var.
+  QUIVER_API_KEY: z.string().optional(),
+  // "arrow-2" is the only model verified live against the documented
+  // contract (POST /v1/svgs/generations, streaming draft/content events) —
+  // see docs/specs for the trace. It reports `supported_sampling_parameters:
+  // []`, so the request body must never add temperature/top_p/
+  // presence_penalty for this model; kept in env (not hardcoded) so a
+  // future model swap doesn't need a code change.
+  QUIVER_MODEL: z.string().default("arrow-2"),
+  // .url() (matching TYPESAFE_BASE_URL just below) so a typo'd or empty
+  // value fails at boot with a clear zod error instead of booting fine and
+  // surfacing at request time as an opaque `TypeError: Failed to parse URL`.
+  QUIVER_BASE_URL: z.string().url().default("https://api.quiver.ai/v1"),
+  // Measured live: a simple icon streams in ~26s, a complex illustration in
+  // ~90s (arrow-2, 2026-09). 180s gives a complex generation roughly 2x
+  // headroom over the slowest observed run rather than cutting it close —
+  // this is a background tool call the model is told to expect takes
+  // 30-90s, not a request a human is staring at, so erring long costs
+  // nothing but ties up one client connection.
+  QUIVER_TIMEOUT_MS: z.coerce.number().default(180_000),
 });
 
 export type Config = z.infer<typeof envSchema>;
