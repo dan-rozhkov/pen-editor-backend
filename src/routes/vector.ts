@@ -9,6 +9,7 @@ import {
 } from "../services/quiver.js";
 import { UnsafeSvgError } from "../services/fal.js";
 import type { AnalyticsClient } from "../analytics/posthog.js";
+import { abortOnClientDisconnect } from "./clientDisconnect.js";
 
 const bodySchema = z.object({
   prompt: z.string().min(1),
@@ -52,16 +53,7 @@ export async function vectorRoutes(
         return reply.status(400).send({ error: "Missing or invalid 'prompt'" });
       }
 
-      // Watch the response rather than the request — same pattern as
-      // generateImage.ts/fal.ts: IncomingMessage emits "close" once an
-      // ordinary request body finishes, which would abort generation
-      // immediately if we watched `request.raw` instead.
-      const abortController = new AbortController();
-      reply.raw.once("close", () => {
-        if (!reply.raw.writableEnded) {
-          abortController.abort();
-        }
-      });
+      const abortController = abortOnClientDisconnect(reply);
 
       const startedAt = Date.now();
       let streamStarted = false;

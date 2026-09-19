@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { Config } from "../config.js";
 import { generateImage, ImageGenerationTimeoutError } from "../services/imageGen.js";
 import type { AnalyticsClient } from "../analytics/posthog.js";
+import { abortOnClientDisconnect } from "./clientDisconnect.js";
 
 const bodySchema = z.object({ prompt: z.string().min(1) });
 
@@ -36,16 +37,7 @@ export async function generateImageRoutes(
         return reply.status(400).send({ error: "Missing or invalid 'prompt'" });
       }
 
-      // Watch the response rather than the request. IncomingMessage emits
-      // "close" after an ordinary request body finishes, which would abort
-      // image generation immediately. A response close before writableEnded
-      // means the client actually disconnected while waiting for the image.
-      const abortController = new AbortController();
-      reply.raw.once("close", () => {
-        if (!reply.raw.writableEnded) {
-          abortController.abort();
-        }
-      });
+      const abortController = abortOnClientDisconnect(reply);
 
       const startedAt = Date.now();
       try {

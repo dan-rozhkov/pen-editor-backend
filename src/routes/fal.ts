@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { Config } from "../config.js";
 import { removeBackground, vectorizeImage, FalTimeoutError, UnsafeSvgError } from "../services/fal.js";
 import type { AnalyticsClient } from "../analytics/posthog.js";
+import { abortOnClientDisconnect } from "./clientDisconnect.js";
 
 const bodySchema = z.object({ image_url: z.string().url() });
 type Body = z.infer<typeof bodySchema>;
@@ -56,16 +57,7 @@ function registerFalRoute(
         return reply.status(400).send({ error: "Missing or invalid 'image_url'" });
       }
 
-      // Watch the response rather than the request. IncomingMessage emits
-      // "close" after an ordinary request body finishes, which would abort
-      // the call immediately. A response close before writableEnded means
-      // the client actually disconnected while waiting for the result.
-      const abortController = new AbortController();
-      reply.raw.once("close", () => {
-        if (!reply.raw.writableEnded) {
-          abortController.abort();
-        }
-      });
+      const abortController = abortOnClientDisconnect(reply);
 
       const startedAt = Date.now();
       try {
