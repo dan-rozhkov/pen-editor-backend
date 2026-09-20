@@ -197,13 +197,20 @@ describe("applyVisionPreprocessing", () => {
 
     const result = await applyVisionPreprocessing(messages, { config, modelId: BLIND_MODEL });
 
-    const part = (result[0] as { content: { output: { type: string; value: string } }[] })
-      .content[0];
-    expect(part.output).toEqual({ type: "text", value: expect.stringContaining("A profile screen.") });
+    // The image PART is swapped for a text part in place; the output keeps
+    // its content shape so any sibling part of a multi-part result survives
+    // (see replaceImagePartsInOutput). What matters is the invariant: no
+    // image part, and no raw bytes, reach a blind model.
+    const part = (
+      result[0] as { content: { output: { type: string; value: { text: string }[] } }[] }
+    ).content[0];
+    expect(part.output.type).toBe("content");
+    expect(part.output.value[0].text).toContain("A profile screen.");
     expect(vi.mocked(describeImage).mock.calls[0][0].image).toBe(
       "data:image/png;base64,AAAA",
     );
     expect(JSON.stringify(result)).not.toContain("image-data");
+    expect(JSON.stringify(result)).not.toContain("AAAA");
   });
 
   it("replaces a tool-result image from a tool OTHER than get_screenshot", async () => {
@@ -234,17 +241,64 @@ describe("applyVisionPreprocessing", () => {
 
     const result = await applyVisionPreprocessing(messages, { config, modelId: BLIND_MODEL });
 
-    const part = (result[0] as { content: { output: { type: string; value: string } }[] })
-      .content[0];
-    expect(part.output).toEqual({
-      type: "text",
-      value: expect.stringContaining("A pricing screen from Mobbin."),
-    });
+    const part = (
+      result[0] as { content: { output: { type: string; value: { text: string }[] } }[] }
+    ).content[0];
+    expect(part.output.value[0].text).toContain("A pricing screen from Mobbin.");
     // Labeled "Image" rather than "Screenshot" (that label is reserved for
     // get_screenshot specifically), and no raw bytes survive either way.
-    expect(part.output.value).toContain("[Image: visual description]");
+    expect(part.output.value[0].text).toContain("[Image: visual description]");
     expect(JSON.stringify(result)).not.toContain("image-data");
     expect(JSON.stringify(result)).not.toContain("AAAA");
+  });
+
+  it("converts an MCP json result's images without destroying the prose beside them", async () => {
+    // The shape production actually produces: prepareChatTurn calls
+    // convertToModelMessages WITHOUT `{tools}`, so an MCP result never gets
+    // toModelOutput's `content` promotion and arrives as
+    // `{type:"json", value:{content:[...]}}`. Two regressions guarded here at
+    // once: the images must be converted (before this shape was handled a
+    // blind model received the raw base64, violating this module's own
+    // INVARIANT), and the sibling text must survive (an earlier fix replaced
+    // the WHOLE output with one text part, throwing away the app names and
+    // urls a Mobbin result carries next to its previews).
+    vi.mocked(describeImage).mockResolvedValue({ ok: true, text: "A login screen." });
+    const config = makeConfig();
+    const messages: ModelMessage[] = [
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "call-mcp-json",
+            toolName: "mcp__mobbin__search_screens",
+            output: {
+              type: "json",
+              value: {
+                content: [
+                  { type: "text", text: "RESULT: Acme app, mobbin_url=https://x/y" },
+                  { type: "image", data: "AAAA", mimeType: "image/png" },
+                  { type: "image", data: "BBBB", mimeType: "image/png" },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    ];
+
+    const result = await applyVisionPreprocessing(messages, { config, modelId: BLIND_MODEL });
+
+    const value = (
+      result[0] as { content: { output: { value: { content: { text: string }[] } } }[] }
+    ).content[0].output.value.content;
+    expect(value[0].text).toBe("RESULT: Acme app, mobbin_url=https://x/y"); // prose intact
+    expect(value[1].text).toContain("A login screen."); // first image described
+    expect(value[2].text).toContain("omitted"); // second image replaced, not left raw
+    // The invariant: no raw payload of EITHER image reaches a blind model.
+    const body = JSON.stringify(result);
+    expect(body).not.toContain("AAAA");
+    expect(body).not.toContain("BBBB");
   });
 
   it("leaves a non-get_screenshot tool result whose TEXT merely embeds a data: URL completely untouched", async () => {

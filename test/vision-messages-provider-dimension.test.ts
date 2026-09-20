@@ -84,14 +84,15 @@ describe("applyVisionPreprocessing with a provider that cannot carry tool-result
     // The user-attached image survives untouched — the model reads it natively.
     expect(result[0]).toEqual(messages[0]);
 
-    const toolPart = (result[1] as { content: { output: { type: string; value: string } }[] })
-      .content[0];
-    expect(toolPart.output).toEqual({
-      type: "text",
-      value: expect.stringContaining("A settings screen with three toggles."),
-    });
+    // The image PART becomes a text part in place; the content shape is kept
+    // so a multi-part result's siblings survive (replaceImagePartsInOutput).
+    const toolPart = (
+      result[1] as { content: { output: { type: string; value: { text: string }[] } }[] }
+    ).content[0];
+    expect(toolPart.output.value[0].text).toContain("A settings screen with three toggles.");
     expect(describeImage).toHaveBeenCalledOnce();
     expect(JSON.stringify(result)).not.toContain("image-data");
+    expect(JSON.stringify(result)).not.toContain("AAAA");
   });
 
   it("never leaks the raw image as text when no VISION_MODEL is configured", async () => {
@@ -111,11 +112,11 @@ describe("applyVisionPreprocessing with a provider that cannot carry tool-result
       chatModelRef: config.CHAT_MODEL,
     });
 
-    const toolPart = (result[0] as { content: { output: { type: string; value: string } }[] })
-      .content[0];
-    expect(toolPart.output.type).toBe("text");
-    expect(toolPart.output.value).toContain("Vision is not configured");
-    expect(toolPart.output.value).not.toContain("AAAA");
+    const toolPart = (
+      result[0] as { content: { output: { type: string; value: { text: string }[] } }[] }
+    ).content[0];
+    expect(toolPart.output.value[0].text).toContain("Vision is not configured");
+    expect(JSON.stringify(result)).not.toContain("AAAA");
     expect(JSON.stringify(result)).not.toContain("image-data");
   });
 });

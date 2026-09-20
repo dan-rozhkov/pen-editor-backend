@@ -556,4 +556,84 @@ describe("prepareChatTurn", () => {
       expect(bodyText).toContain("A header with a logo and three nav links.");
     });
   });
+
+  // Confirms applyImageBudget (src/ai/image-budget.ts) is actually wired
+  // into prepareChatTurn, not just unit-tested in isolation: a long history
+  // of screenshots must arrive at streamText already trimmed, since nothing
+  // else caps this for a vision-capable model on the shipped default
+  // (applyVisionPreprocessing itself returns such a history untouched).
+  describe("image budget", () => {
+    function screenshotHistory(count: number): Record<string, unknown>[] {
+      const messages: Record<string, unknown>[] = [userMessage("look at these screens")];
+      for (let i = 0; i < count; i++) {
+        messages.push({
+          id: `a${i}`,
+          role: "assistant",
+          parts: [
+            {
+              type: "tool-get_screenshot",
+              toolCallId: `call-${i}`,
+              state: "output-available",
+              input: { nodeId: `node-${i}` },
+              // Distinct payload per screenshot so each is individually
+              // greppable in the final request body.
+              output: JSON.stringify({
+                imageData: `data:image/png;base64,SCREEN${i}AAAA`,
+              }),
+            },
+          ],
+        });
+      }
+      return messages;
+    }
+
+    it("trims a long screenshot history before it reaches modelMessages, even for a vision-capable model", async () => {
+      const { MAX_LIVE_TOOL_RESULT_IMAGES, TOOL_RESULT_ELISION_STEP } = await import(
+        "../src/ai/image-budget.js"
+      );
+      const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+
+      const total = MAX_LIVE_TOOL_RESULT_IMAGES + TOOL_RESULT_ELISION_STEP + 4;
+      const config = makeConfig(); // shipped default: vision-capable, native tool-result images
+      const turn = await prepareChatTurn({ config, messages: screenshotHistory(total) });
+
+      const bodyText = JSON.stringify(turn.modelMessages);
+      const liveCount = Array.from({ length: total }, (_, i) => i).filter((i) =>
+        bodyText.includes(`SCREEN${i}AAAA`),
+      ).length;
+
+      expect(liveCount).toBeLessThan(total);
+      expect(liveCount).toBeLessThanOrEqual(
+        MAX_LIVE_TOOL_RESULT_IMAGES + TOOL_RESULT_ELISION_STEP - 1,
+      );
+      // The oldest screenshot must be the one that got elided, not some
+      // arbitrary/most-recent one.
+      expect(bodyText).not.toContain("SCREEN0AAAA");
+    });
+
+    it("does not run the budget when the model can't see, since vision preprocessing already converts every image", async () => {
+      // On a vision-less model applyVisionPreprocessing replaces each image
+      // with a cached, byte-stable description, so there is no base64 left
+      // for a budget to save. Running the budget in front of it would swap a
+      // real description for a constant placeholder — and would do it by
+      // rewriting the OLDEST tool message, invalidating the provider's whole
+      // cached prefix for no gain. So the budget must stay out of that path.
+      const { MAX_LIVE_TOOL_RESULT_IMAGES, TOOL_RESULT_ELISION_STEP } = await import(
+        "../src/ai/image-budget.js"
+      );
+      const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+
+      const total = MAX_LIVE_TOOL_RESULT_IMAGES + TOOL_RESULT_ELISION_STEP + 4;
+      const config = makeConfig({
+        CHAT_MODEL_SUPPORTS_VISION: false,
+        VISION_MODEL: "",
+      });
+      const turn = await prepareChatTurn({ config, messages: screenshotHistory(total) });
+
+      const bodyText = JSON.stringify(turn.modelMessages);
+      // The budget's own placeholder wording must be absent — whatever
+      // vision preprocessing did to these slots, the budget didn't do it.
+      expect(bodyText).not.toContain("aged out of the live-image window");
+    });
+  });
 });

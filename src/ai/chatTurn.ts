@@ -12,6 +12,7 @@ import { bareModelId, createModel, parseModelRef, providerHandlesToolResultImage
 import { penTools, makeBatchDesignTool, makeAnalyzeImageTool } from "./tools.js";
 import { buildSystemPrompt } from "./system-prompt.js";
 import { resolveTaskPolicy, type TaskPolicy } from "./taskPolicy.js";
+import { applyImageBudget } from "./image-budget.js";
 import { applyVisionPreprocessing, modelSupportsVision } from "./vision-messages.js";
 import { isVisionConfigured } from "../services/vision.js";
 import { isQuiverConfigured } from "../services/quiver.js";
@@ -779,6 +780,30 @@ export async function prepareChatTurn(
     normalizedMessages as unknown as UIMessage[],
   );
 
+  // Bounds the number of LIVE images in history, but ONLY on the path where
+  // images actually survive as images: a vision model on a provider that can
+  // carry tool-result images, which is exactly the case
+  // applyVisionPreprocessing below returns untouched and therefore the only
+  // one with no cap at all.
+  //
+  // Gating matters, it isn't just an optimization. On every other path
+  // applyVisionPreprocessing already replaces each image with a cached,
+  // byte-stable description, so no base64 was going to be sent and there are
+  // no tokens for a budget to save. Running the budget in front of it there
+  // would trade a real description for a constant placeholder — losing
+  // information the model could still use — and would do it by rewriting the
+  // OLDEST tool message in the history, invalidating the provider's whole
+  // cached prefix for nothing. See src/ai/image-budget.ts and
+  // docs/specs/2026-09-20-image-context-budget-design.md.
+  const imagesSurviveAsImages =
+    modelSupportsVision(config, selectedModelId) &&
+    providerHandlesToolResultImages(
+      parseModelRef(modelOverride ?? config.CHAT_MODEL).provider,
+    );
+  const budgetedMessages = imagesSurviveAsImages
+    ? applyImageBudget(convertedMessages)
+    : convertedMessages;
+
   // Our analog of Hermes's decide_image_input_mode, run once right before
   // streamText sees the messages. Two-dimensional (see vision-messages.ts's
   // doc comment): a vision-capable model on a provider that can carry
@@ -790,7 +815,7 @@ export async function prepareChatTurn(
   // showcase runner via this same function, so neither can send a raw
   // image part to a text-only model, or a raw base64 blob into a
   // tool-result a provider can't carry.
-  const modelMessages = await applyVisionPreprocessing(convertedMessages, {
+  const modelMessages = await applyVisionPreprocessing(budgetedMessages, {
     config,
     modelId: selectedModelId,
     chatModelRef: modelOverride ?? config.CHAT_MODEL,

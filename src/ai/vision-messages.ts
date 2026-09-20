@@ -158,24 +158,129 @@ function toImageString(data: unknown, mediaType: string | undefined): string | n
 // client-executed tool that returns image bytes, or a sanitizer bug. The
 // INVARIANT on applyVisionPreprocessing above is what this backstop exists
 // to hold even when the primary defense has a gap.
-function extractToolResultImageDataUrl(
+//
+// Returns the image parts of a tool result, cheaply: `count` is computed
+// without allocating anything image-sized, while `first()` builds the actual
+// data URL only when a caller asks for it. The split exists because
+// applyImageBudget walks every slot in the history to decide what stays live
+// but never needs a payload — it only counts — whereas
+// applyVisionPreprocessing needs the payload for the handful of slots it
+// actually describes. Materializing every ~1MB screenshot up front made that
+// cost unconditional for every request, synchronously before streamText().
+interface ToolResultImages {
+  count: number;
+  first: () => string | null;
+}
+
+const NO_IMAGES: ToolResultImages = { count: 0, first: () => null };
+
+/** An MCP content part, as it survives convertToModelMessages. */
+interface McpImagePart {
+  type: string;
+  data?: unknown;
+  mimeType?: unknown;
+}
+
+/**
+ * The three image-bearing MCP content shapes, kept in step with
+ * src/ai/mcp.ts's own extractBinaryField — which sanitizes exactly these:
+ * `{type:"image", data, mimeType}`, the rarer `{type:"file", data,
+ * mimeType:"image/…"}` some servers emit for an attachment, and
+ * `{type:"resource", resource:{blob, mimeType}}`. Missing any of them
+ * reopens the INVARIANT gap this whole branch exists to close.
+ */
+function mcpImagePayload(part: unknown): { data: string; mediaType: string } | null {
+  if (!part || typeof part !== "object") return null;
+  const typed = part as McpImagePart & { resource?: unknown };
+  const mediaTypeOf = (value: unknown, fallback: string): string =>
+    typeof value === "string" && value.startsWith("image/") ? value : fallback;
+
+  if (typed.type === "image" && typeof typed.data === "string") {
+    return { data: typed.data, mediaType: mediaTypeOf(typed.mimeType, "image/png") };
+  }
+  if (
+    typed.type === "file" &&
+    typeof typed.data === "string" &&
+    typeof typed.mimeType === "string" &&
+    typed.mimeType.startsWith("image/")
+  ) {
+    // Unlike `image`, a `file` part is only an image when it says so — a
+    // PDF attachment arrives in this same shape.
+    return { data: typed.data, mediaType: typed.mimeType };
+  }
+  if (typed.type === "resource" && typed.resource && typeof typed.resource === "object") {
+    const resource = typed.resource as { blob?: unknown; mimeType?: unknown };
+    if (
+      typeof resource.blob === "string" &&
+      typeof resource.mimeType === "string" &&
+      resource.mimeType.startsWith("image/")
+    ) {
+      return { data: resource.blob, mediaType: resource.mimeType };
+    }
+  }
+  return null;
+}
+
+/**
+ * The MCP content array inside a `json`-shaped tool result, or null.
+ *
+ * VERIFIED, not assumed: `prepareChatTurn` calls `convertToModelMessages`
+ * WITHOUT `{ tools }`, and the SDK only applies a tool's `toModelOutput`
+ * when the tool object is supplied. So the `content`-shaped output the
+ * branch below handles is NOT what an MCP result actually looks like by the
+ * time it reaches this module on a later turn — it arrives as
+ * `{type:"json", value:{content:[{type:"image", data, mimeType}]}}`.
+ * Without this branch, MCP images were invisible to both passes: never
+ * budgeted, and (worse) never converted to text for a vision-less model,
+ * silently violating applyVisionPreprocessing's own INVARIANT.
+ */
+function mcpContentParts(output: ToolResultPart["output"]): unknown[] | null {
+  if (output.type !== "json") return null;
+  const value = output.value as { content?: unknown } | null;
+  if (!value || typeof value !== "object" || !Array.isArray(value.content)) return null;
+  return value.content;
+}
+
+function extractToolResultImages(
   output: ToolResultPart["output"],
   toolName: string,
-): string | null {
+): ToolResultImages {
   // STRUCTURED path: `output.type === "content"` with an image-shaped part.
   // Safe to widen to any tool — see collectImageSlots' comment — because
-  // this shape only ever arrives via a real toModelOutput promotion (either
-  // get_screenshot's own, or @ai-sdk/mcp's mcpToModelOutput for every MCP
-  // tool), never by a plain tool just happening to embed base64 in its text.
+  // this shape only ever arrives via a real toModelOutput promotion, never
+  // by a plain tool just happening to embed base64 in its text. Kept even
+  // though the call site does not currently produce it (see
+  // mcpContentParts' comment): passing `tools` to convertToModelMessages
+  // would bring it back, and this is the defense that must not have a gap.
   if (output.type === "content") {
-    for (const part of output.value) {
-      if (part.type === "image-data" || part.type === "file-data" || part.type === "media") {
-        if (!part.mediaType.startsWith("image/")) continue;
-        return `data:${part.mediaType};base64,${part.data}`;
-      }
-    }
-    return null;
+    const parts = output.value.filter(
+      (part) =>
+        (part.type === "image-data" || part.type === "file-data" || part.type === "media") &&
+        part.mediaType.startsWith("image/"),
+    );
+    if (parts.length === 0) return NO_IMAGES;
+    return {
+      count: parts.length,
+      first: () => {
+        const part = parts[0] as { mediaType: string; data: unknown };
+        return `data:${part.mediaType};base64,${String(part.data)}`;
+      },
+    };
   }
+
+  // MCP path — the shape production actually sees. Widened to any tool for
+  // the same reason as the structured branch: it is a typed content array,
+  // not prose that merely happens to contain base64.
+  const mcpParts = mcpContentParts(output);
+  if (mcpParts) {
+    const images = mcpParts.map(mcpImagePayload).filter((p) => p !== null);
+    if (images.length === 0) return NO_IMAGES;
+    return {
+      count: images.length,
+      first: () => `data:${images[0].mediaType};base64,${images[0].data}`,
+    };
+  }
+
   // LOOSE fallback: a plain string/text output run through
   // parseScreenshotDataUrl(), which for a bare string ends in fromDataUrl()
   // — an UNANCHORED regex that matches `data:image/...;base64,...` ANYWHERE
@@ -191,18 +296,130 @@ function extractToolResultImageDataUrl(
   // object (see screenshotOutput.ts's own doc comment) — never prose that
   // might innocently contain a data: URL — so this fallback stays gated to
   // it specifically.
-  if (toolName !== "get_screenshot") return null;
+  if (toolName !== "get_screenshot") return NO_IMAGES;
   const raw = "value" in output ? output.value : undefined;
-  return parseScreenshotDataUrl(raw)?.dataUrl ?? null;
+  // The probe is the cheap half: parseScreenshotDataUrl() JSON.parse()s a
+  // string output, and a get_screenshot payload is ~1MB of base64, so the
+  // parse allocates a second copy of the whole thing. An error result
+  // (`{"error": "..."}`) can never contain a data URL, so this substring
+  // scan rules those out without allocating. Checks for the `data:image/`
+  // prefix rather than the `imageData` key so a bare-data-URL output (the
+  // non-JSON branch parseScreenshotDataUrl also supports) still counts.
+  if (typeof raw === "string") {
+    if (!raw.includes("data:image/")) return NO_IMAGES;
+    // Count without parsing; the parse itself is deferred to first().
+    return { count: 1, first: () => parseScreenshotDataUrl(raw)?.dataUrl ?? null };
+  }
+  // A non-string output (an already-parsed object, or a json/error-json
+  // shape) has no 1MB string to avoid parsing, so resolve it right here
+  // rather than promising an image that first() would then resolve to null.
+  // Reporting a phantom image would both inflate applyImageBudget's count —
+  // pushing a real screenshot out of the live window — and make phase 1.5
+  // below overwrite a genuine error result with "unsupported image data
+  // format", destroying the error text the model needs.
+  const resolved = parseScreenshotDataUrl(raw)?.dataUrl ?? null;
+  if (!resolved) return NO_IMAGES;
+  return { count: 1, first: () => resolved };
+}
+
+// ── Rewriting a tool result's images ────────────────────────────────────
+//
+// Shared by BOTH passes (this module and image-budget.ts) because both have
+// the same job at this seam: take one tool result and put text where its
+// images were. It must be one definition — applyVisionPreprocessing used to
+// replace the WHOLE `output` with a single text part, which was harmless
+// while only get_screenshot produced slots (its output IS the image and
+// nothing else) and became destructive the moment MCP results started
+// producing slots too: a Mobbin result carries app names and urls in a text
+// part next to its previews, and collapsing the output threw all of that
+// away along with every image past the first.
+
+const ADDITIONAL_IMAGE_NOTE =
+  "[Additional image in this tool result omitted — only the first was processed.]";
+
+function isImageContentPart(part: unknown): boolean {
+  if (!part || typeof part !== "object") return false;
+  const typed = part as { type?: unknown; mediaType?: unknown };
+  if (typed.type === "image-data" || typed.type === "file-data" || typed.type === "media") {
+    return typeof typed.mediaType === "string" && typed.mediaType.startsWith("image/");
+  }
+  // A url-shaped part carries a `url`, not a payload, and only `image-url`
+  // is an image by its own type — `file-url` needs an explicit image
+  // mediaType, or a `file-url` pointing at a PDF would be silently replaced
+  // by an image placeholder.
+  if (typed.type === "image-url") return true;
+  if (typed.type === "file-url") {
+    return typeof typed.mediaType === "string" && typed.mediaType.startsWith("image/");
+  }
+  return mcpImagePayload(part) !== null;
+}
+
+/**
+ * Replaces every image part of `output` with text, preserving each sibling
+ * part verbatim.
+ *
+ * The first image becomes `text`; any further image in the SAME result
+ * becomes a constant note, because the slot — and therefore the description
+ * or placeholder the caller computed — stands for the first image only.
+ * They must still be replaced rather than left alone: a surviving raw image
+ * part is exactly the INVARIANT violation this module exists to prevent.
+ */
+export function replaceImagePartsInOutput(
+  output: ToolResultPart["output"],
+  text: string,
+): ToolResultPart["output"] {
+  const rewrite = (parts: unknown[]): unknown[] => {
+    let seen = 0;
+    return parts.map((part) => {
+      if (!isImageContentPart(part)) return part;
+      seen += 1;
+      return { type: "text", text: seen === 1 ? text : ADDITIONAL_IMAGE_NOTE };
+    });
+  };
+
+  if (output.type === "content") {
+    return { type: "content", value: rewrite(output.value) } as ToolResultPart["output"];
+  }
+
+  const mcpParts = mcpContentParts(output);
+  if (mcpParts) {
+    // mcpContentParts already established this is the `json` shape, so
+    // `value` is present — the union as a whole doesn't know that.
+    const value = (output as { value: Record<string, unknown> }).value;
+    return {
+      type: "json",
+      value: { ...value, content: rewrite(mcpParts) },
+    } as ToolResultPart["output"];
+  }
+
+  // A string/JSON-string output (get_screenshot's own shape) IS the image
+  // and nothing else — see screenshotOutput.ts — so the whole output goes.
+  return { type: "text", value: text };
 }
 
 // One image found in the message list, addressed by its position so the
 // rewrite pass can put the resulting text back exactly where it came from.
-interface ImageSlot {
+// Exported for src/ai/image-budget.ts, which walks the SAME slots to decide
+// what stays live before this module ever sees them — see that module's
+// doc comment for why the extraction logic must not be duplicated.
+export interface ImageSlot {
   messageIndex: number;
   partIndex: number;
-  /** null when the payload isn't a shape we can describe. */
+  /**
+   * The image payload as a data URL, or null when it isn't a shape we can
+   * describe. LAZY: reading this may JSON.parse or concatenate a ~1MB
+   * payload, so a caller that only needs to know how many images a slot
+   * carries must read {@link imageCount} instead. Memoized.
+   */
   image: string | null;
+  /**
+   * How many images this slot's part actually carries — 1 for a user
+   * attachment or a get_screenshot result, but an MCP result can carry
+   * several. Cheap: computed without touching any payload. This, not the
+   * slot count, is what a budget must count, or a result holding eight
+   * previews would be charged the same as a single screenshot.
+   */
+  imageCount: number;
   /**
    * visionCacheKey(image) — this module never passes a `question`, so this
    * is the ONE place the (up to 6MB) image string gets hashed. Every other
@@ -217,24 +434,55 @@ interface ImageSlot {
   kind: "user-part" | "tool-result";
 }
 
+// A user attachment is always exactly one image; the payload stays lazy for
+// the same reason a tool result's does.
+function oneUserImage(resolve: () => string | null): ToolResultImages {
+  return { count: 1, first: resolve };
+}
+
 function makeSlot(
   messageIndex: number,
   partIndex: number,
-  image: string | null,
+  images: ToolResultImages,
   label: string,
   kind: ImageSlot["kind"],
 ): ImageSlot {
+  // `key` is a LAZY, memoized getter rather than an eagerly computed field.
+  // visionCacheKey() is a sha256 over the whole image string — up to
+  // MAX_DATA_URL_BYTES (6MB) each — run synchronously on the event loop
+  // before streamText(), which is exactly what that function's own comment
+  // warns about. Every caller of collectImageSlots walks ALL slots but needs
+  // the key for only some of them: applyVisionPreprocessing drops slots to
+  // the render limit and settles cache hits before it ever looks one up, and
+  // applyImageBudget never needs a key at all. Hashing every slot up front
+  // made that cost unconditional for every request the moment
+  // applyImageBudget started calling this on the vision-native fast path,
+  // which previously returned before collectImageSlots ran. Memoized so the
+  // repeated lookups in applyVisionPreprocessing's phase 2 still hash once.
+  let keyMemo: string | null | undefined;
+  let imageMemo: string | null | undefined;
   return {
     messageIndex,
     partIndex,
-    image,
-    key: image ? visionCacheKey(image) : null,
+    imageCount: images.count,
+    get image(): string | null {
+      if (imageMemo === undefined) imageMemo = images.first();
+      return imageMemo;
+    },
+    get key(): string | null {
+      if (keyMemo === undefined) {
+        const image = this.image;
+        keyMemo = image ? visionCacheKey(image) : null;
+      }
+      return keyMemo;
+    },
     label,
     kind,
   };
 }
 
-function collectImageSlots(messages: ModelMessage[]): ImageSlot[] {
+// Exported for image-budget.ts — see the ImageSlot export comment above.
+export function collectImageSlots(messages: ModelMessage[]): ImageSlot[] {
   const slots: ImageSlot[] = [];
   messages.forEach((message, messageIndex) => {
     if (!Array.isArray(message.content)) return;
@@ -246,7 +494,7 @@ function collectImageSlots(messages: ModelMessage[]): ImageSlot[] {
             makeSlot(
               messageIndex,
               partIndex,
-              toImageString(typed.image, typed.mediaType),
+              oneUserImage(() => toImageString(typed.image, typed.mediaType)),
               "Image",
               "user-part",
             ),
@@ -256,7 +504,7 @@ function collectImageSlots(messages: ModelMessage[]): ImageSlot[] {
             makeSlot(
               messageIndex,
               partIndex,
-              toImageString(typed.data, typed.mediaType),
+              oneUserImage(() => toImageString(typed.data, typed.mediaType)),
               "Image",
               "user-part",
             ),
@@ -276,22 +524,22 @@ function collectImageSlots(messages: ModelMessage[]): ImageSlot[] {
         // applyVisionPreprocessing's doc comment) for the STRUCTURED path: an
         // MCP image, once it reaches this far, is a real ImagePart-shaped
         // `image-data` content part exactly like get_screenshot's (see
-        // extractToolResultImageDataUrl's comment), so there was never a
+        // extractToolResultImages' comment), so there was never a
         // reason to gate that half on one tool's name. But the LOOSE fallback
-        // inside extractToolResultImageDataUrl is a different, riskier
+        // inside extractToolResultImages is a different, riskier
         // extraction (an unanchored regex over a tool's whole string output)
         // that is only safe for get_screenshot specifically — see that
         // function's own comment — so only the structured branch is widened;
-        // extractToolResultImageDataUrl re-gates the loose branch on
+        // extractToolResultImages re-gates the loose branch on
         // toolName itself. The label distinguishes get_screenshot
         // ("Screenshot") from everything else ("Image") purely for
         // readability in the rendered description — it changes no
         // budget/cache/placeholder behavior below, all of which key off
         // `kind: "tool-result"`, not toolName.
-        const dataUrl = extractToolResultImageDataUrl(typed.output, typed.toolName);
-        if (!dataUrl) return; // an error result is already plain text
+        const images = extractToolResultImages(typed.output, typed.toolName);
+        if (images.count === 0) return; // an error result is already plain text
         const label = typed.toolName === "get_screenshot" ? "Screenshot" : "Image";
-        slots.push(makeSlot(messageIndex, partIndex, dataUrl, label, "tool-result"));
+        slots.push(makeSlot(messageIndex, partIndex, images, label, "tool-result"));
       });
     }
   });
@@ -624,7 +872,8 @@ export async function applyVisionPreprocessing(
       if (!slot) return part;
       const text = texts.get(key(slot)) ?? "[Image attached but could not be analyzed.]";
       if (slot.kind === "tool-result") {
-        return { ...(part as ToolResultPart), output: { type: "text" as const, value: text } };
+        const typed = part as ToolResultPart;
+        return { ...typed, output: replaceImagePartsInOutput(typed.output, text) };
       }
       return { type: "text" as const, text };
     });
