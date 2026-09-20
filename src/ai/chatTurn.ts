@@ -34,7 +34,7 @@ import type { TraceQueryable } from "../tracing/traceStore.js";
 import { getUserSkillCatalog } from "./skills/userSkillCatalog.js";
 import type { UserSkill, UserSkillStore } from "./skills/userStore.js";
 import { createSystemOne, type SystemOneClient } from "../services/systemone.js";
-import { routeSkill } from "./skillRouting.js";
+import { routeSkill, SKILL_ROUTING_SHADOW_BUDGET_MS, type SkillRouteVerdict } from "./skillRouting.js";
 
 // Bounds the memory-snapshot read on top of (not instead of) the pool's own
 // connectionTimeoutMillis (src/tracing/traceStore.ts): that setting only
@@ -420,6 +420,54 @@ export async function prepareChatTurn(
     }
   }
 
+  // A short, deliberately small tail of the conversation immediately before
+  // the current turn, fed to Jev as `recent_context` (skillRouting.ts's
+  // state) so "make it bigger" or "now do the same for the login screen"
+  // gets some signal beyond the bare current message — without shipping the
+  // whole history to a third-party vendor. Only TEXT parts are read; tool
+  // calls/results are skipped deliberately (arbitrary HTML/JSON, not useful
+  // signal for "does this look like a documented workflow"). Final
+  // truncation + scrubPii happens inside routeSkill, AFTER this string is
+  // built — see MAX_CONTEXT_CHARS's comment there for why order matters.
+  const RECENT_CONTEXT_MESSAGES = 4;
+  const RECENT_CONTEXT_MESSAGE_CHARS = 500;
+  // Finding #9: AI SDK v6 assistant messages are routinely split into
+  // SEVERAL "text" parts around tool calls (e.g. a sentence before a tool
+  // call, then another after its result) — reading only the first one, as
+  // this used to, silently dropped every later fragment, so an assistant
+  // turn that reasoned across a tool call fed recent_context only its
+  // opening fragment. Every text part is joined (in document order) before
+  // truncation, not just the first.
+  function extractMessageText(msg: unknown): string | undefined {
+    if (!msg || typeof msg !== "object") return undefined;
+    const record = msg as Record<string, unknown>;
+    const parts = record.parts ?? record.content;
+    if (Array.isArray(parts)) {
+      const textParts = parts.filter(
+        (p) => p && typeof p === "object" && (p as { type?: string }).type === "text",
+      ) as Array<{ text?: string }>;
+      const joined = textParts
+        .map((p) => p.text ?? "")
+        .filter((t) => t.length > 0)
+        .join("\n");
+      return joined.length > 0 ? joined : undefined;
+    }
+    if (typeof parts === "string") return parts;
+    return undefined;
+  }
+  function buildRecentContext(allMessages: typeof messages, beforeIndex: number): string {
+    const lines: string[] = [];
+    for (let i = beforeIndex - 1; i >= 0 && lines.length < RECENT_CONTEXT_MESSAGES; i--) {
+      const msg = allMessages[i];
+      const role = (msg as { role?: string } | undefined)?.role;
+      if (role !== "user" && role !== "assistant") continue;
+      const text = extractMessageText(msg);
+      if (!text) continue;
+      lines.unshift(`${role}: ${text.slice(0, RECENT_CONTEXT_MESSAGE_CHARS)}`);
+    }
+    return lines.join("\n");
+  }
+
   // Jev auto-pick: when no slash command already resolved a skill, ask Jev
   // whether the message matches one of the curated skills up front, instead
   // of spending a whole extra round trip on the model reading the catalog,
@@ -439,36 +487,44 @@ export async function prepareChatTurn(
     if (systemOne) {
       const routeArgs = {
         messageText: lastUserText,
-        candidates: getAllSkills().map((s) => ({ name: s.name, description: s.description })),
+        candidates: getAllSkills().map((s) => ({ name: s.name, description: s.description, content: s.content })),
         threshold: config.SKILL_ROUTING_MIN_CONFIDENCE,
+        gateThreshold: config.SKILL_ROUTING_GATE_THRESHOLD,
+        fitsThreshold: config.SKILL_ROUTING_FITS_THRESHOLD,
+        recentContext: buildRecentContext(messages, lastUserIndex),
       };
-      const logPick = (verdict: Awaited<ReturnType<typeof routeSkill>>, mode: "shadow" | "enforce") => {
-        if (!verdict.skill) return;
-        const picked = getSkill(verdict.skill);
-        if (!picked) {
-          // Previously dropped silently — a pick whose name fails to
-          // resolve via getSkill is exactly the kind of drift shadow mode
-          // exists to surface, so it must be logged too, not just a
-          // resolvable pick.
-          console.log(
-            `[skillRouting] ${mode} pick: "${verdict.skill}" does not resolve via getSkill ` +
-              `(confidence ${verdict.confidence.toFixed(2)}, model ${verdict.model})`,
-          );
-          return;
-        }
-        console.log(
-          `[skillRouting] ${mode} pick: ` +
-            `${mode === "enforce" ? "injecting" : "would have injected"} "${verdict.skill}" ` +
-            `(confidence ${verdict.confidence.toFixed(2)}, model ${verdict.model})`,
-        );
-        return picked;
+
+      // Logs EVERY verdict, in BOTH modes, including every no-pick reason
+      // ("gated"/"no-fit"/"low-confidence"/"unavailable"/"error") — the
+      // previous version returned early on `!verdict.skill`, which made
+      // shadow mode's false-NEGATIVE rate unmeasurable: it only ever showed
+      // the turns where routing WOULD have fired. Deliberately NOT gated
+      // behind ENABLE_AGENT_LOGGING (off by default), which would make the
+      // "measure before trusting enforce" story unmeasurable. Never logs
+      // the user's message text or any state sent to Jev — verdict is
+      // reason codes and numbers only (see SkillRouteVerdict's doc comment).
+      const logVerdict = (verdict: SkillRouteVerdict, mode: "shadow" | "enforce"): void => {
+        const entry: Record<string, unknown> = { ...verdict, mode };
+        if (verdict.skill) entry.resolves = Boolean(getSkill(verdict.skill));
+        console.log(`[skillRouting] ${JSON.stringify(entry)}`);
+      };
+      const logPick = (verdict: SkillRouteVerdict, mode: "shadow" | "enforce") => {
+        logVerdict(verdict, mode);
+        return verdict.skill ? getSkill(verdict.skill) : undefined;
       };
 
       if (config.SKILL_ROUTING_MODE === "enforce") {
         // Only enforce needs the answer to act on, so only enforce may pay
         // for it — this await is the one legitimate cost on the request
-        // path.
-        const verdict = await routeSkill(systemOne, routeArgs);
+        // path, bounded overall by SKILL_ROUTING_ENFORCE_BUDGET_MS across
+        // BOTH of routeSkill's Jev requests (see routeSkill's `reason:
+        // "budget"` verdict for what happens if that budget runs out
+        // mid-flight — `verdict.skill` is null there, so `picked` below is
+        // simply undefined and nothing is injected).
+        const verdict = await routeSkill(systemOne, {
+          ...routeArgs,
+          overallBudgetMs: config.SKILL_ROUTING_ENFORCE_BUDGET_MS,
+        });
         const picked = logPick(verdict, "enforce");
         if (picked) {
           skillContent = picked.content;
@@ -489,13 +545,22 @@ export async function prepareChatTurn(
         // shadow: this mode by definition changes nothing, so it must not
         // cost the user anything either — fire the call WITHOUT awaiting it
         // so measurement adds zero latency to time-to-first-token, and log
-        // once it resolves (unconditionally — deliberately NOT gated
-        // behind ENABLE_AGENT_LOGGING, which is off by default and would
-        // make the "measure before trusting enforce" story unmeasurable).
-        // routeSkill is already fail-open (never
-        // rejects), but attach .catch regardless so a future change there
-        // can never turn this into an unhandled rejection.
-        void routeSkill(systemOne, routeArgs)
+        // once it resolves. Its overall budget is the much laxer
+        // SKILL_ROUTING_SHADOW_BUDGET_MS (fire-and-forget still needs a
+        // bound, just not one that touches TTFT). routeSkill is already
+        // fail-open (never rejects), but attach .catch regardless so a
+        // future change there can never turn this into an unhandled
+        // rejection.
+        void routeSkill(systemOne, {
+          ...routeArgs,
+          overallBudgetMs: SKILL_ROUTING_SHADOW_BUDGET_MS,
+          // Shadow mode's per-call cap must be the laxer shadow budget too,
+          // not routeSkill's enforce-shaped 1.5s default — otherwise Jev
+          // genuinely answering in 2s under load reads as `reason: "error"`
+          // instead of the real verdict shadow mode exists to collect. See
+          // SKILL_ROUTING_SHADOW_BUDGET_MS's comment in skillRouting.ts.
+          perCallTimeoutMs: SKILL_ROUTING_SHADOW_BUDGET_MS,
+        })
           .then((verdict) => logPick(verdict, "shadow"))
           .catch((err) => {
             console.warn("[skillRouting] shadow pick failed unexpectedly:", err);

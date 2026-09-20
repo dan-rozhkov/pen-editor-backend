@@ -322,8 +322,47 @@ export const envSchema = z.object({
   SKILL_ROUTING_MODE: z.enum(["off", "shadow", "enforce"]).default("off"),
   // Injecting the wrong skill wastes context and can mislead the whole
   // turn, so only a confident pick acts; everything below this falls back
-  // to today's behavior (the model calling load_skill itself).
-  SKILL_ROUTING_MIN_CONFIDENCE: z.coerce.number().min(0).max(1).default(0.7),
+  // to today's behavior (the model calling load_skill itself). Despite the
+  // name, this is a PEAK PROBABILITY bar (`max(probabilities)` of pass 2's
+  // winning Choice answer), not the vendor's `confidence` field — see
+  // skillRouting.ts's peakProbability and RouteSkillOptions.threshold doc
+  // comments. `confidence` is a deterministic function of the peak AND the
+  // option count, so a fixed bar on it gets stricter as the candidate set
+  // shrinks; peak probability does not move with the number of candidates,
+  // which is exactly why pass 2's 3-4-item shortlist needs this rather than
+  // the vendor confidence number. 0.6, not the original 0.7 (round-3
+  // review): 0.7 was measured/kept from when this gated pass 1's Choice over
+  // the FULL curated catalog (tens of candidates) — the same fixed-bar-on-a-
+  // small-shortlist artifact this comment describes, just not yet fixed. It
+  // also must NOT be reused as a Noul threshold elsewhere (the two are not
+  // comparable numbers).
+  SKILL_ROUTING_MIN_CONFIDENCE: z.coerce.number().min(0).max(1).default(0.6),
+  // Pass 1's gate: the mean of three Noul questions ("does this turn need a
+  // skill at all?"). Below this, pass 2 never runs and nothing is
+  // suggested. Default is the value TypeSafe's own skill-suggestion
+  // cookbook measured against (docs.typesafe.ai/cookbooks/skill_suggestion).
+  SKILL_ROUTING_GATE_THRESHOLD: z.coerce.number().min(0).max(1).default(0.3),
+  // Pass 2's per-candidate "does this specific skill fit" Noul: the WINNER
+  // of pass 2's Choice question — the skill actually about to be injected —
+  // must clear this on its OWN per-candidate fit Noul, or nothing is
+  // injected at all (a Choice is relative — it can be confident about the
+  // BEST of three bad options, so the fact that pass 2 picked a winner among
+  // the shortlist says nothing about whether that specific winner is any
+  // good). NOT the best fit anywhere in the shortlist: a runner-up with a
+  // high fit Noul does not save a winner whose own fit is low — see
+  // skillRouting.ts's `winnerFit` for the value actually gated on and the
+  // "gates on the pass-2 WINNER's own fit" comment above the gate itself.
+  // Same cookbook-measured default as the gate.
+  SKILL_ROUTING_FITS_THRESHOLD: z.coerce.number().min(0).max(1).default(0.3),
+  // Wall-clock budget across BOTH Jev requests combined, enforce mode only
+  // (shadow mode is fire-and-forget and uses its own, laxer, hardcoded
+  // budget — see SKILL_ROUTING_SHADOW_BUDGET_MS in skillRouting.ts). Awaited
+  // on the request path ahead of time-to-first-token, so it must stay small;
+  // if it's hit after pass 1 already succeeded, routeSkill resolves to
+  // `reason: "budget"` — pass 1's own winner is reported for measurement,
+  // but nothing is injected, since it was never checked against pass 2's
+  // per-candidate fit Noul (see routeSkill's pass1Budget).
+  SKILL_ROUTING_ENFORCE_BUDGET_MS: z.coerce.number().positive().default(2_500),
   // --- QuiverAI vector generation (optional) ---
   // Unset = generate_vector is dropped from the per-request tool set
   // (chatTurn.ts's gate, mirroring FAL_KEY/analyze_image's pattern) and
