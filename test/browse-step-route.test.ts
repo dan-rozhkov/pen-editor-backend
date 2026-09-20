@@ -64,6 +64,13 @@ describe("POST /api/browse/step", () => {
         jevResponse({
           model: "jev-latest",
           answers: {
+            // goal_met/dead_end ride along on every fan-out now (see
+            // buildBrowseStepQuestions) — the real systemone.ts response
+            // schema requires an answer for every question id that was
+            // sent, so a mocked response missing these would fail
+            // validation and come back as a spurious "retry".
+            goal_met: { type: "noul", noul: 0.1 },
+            dead_end: { type: "noul", noul: 0.1 },
             op: { type: "choice", choice: "CLICK", probabilities: { CLICK: 0.9 }, confidence: 0.9 },
             target_click: { type: "choice", choice: "3", probabilities: { "3": 0.9 }, confidence: 0.9 },
           },
@@ -93,6 +100,8 @@ describe("POST /api/browse/step", () => {
         jevResponse({
           model: "jev-latest",
           answers: {
+            goal_met: { type: "noul", noul: 0.1 },
+            dead_end: { type: "noul", noul: 0.1 },
             op: { type: "choice", choice: "CLICK", probabilities: { CLICK: 0.9 }, confidence: 0.9 },
             target_click: { type: "choice", choice: "3", probabilities: { "3": 0.9 }, confidence: 0.9 },
           },
@@ -136,6 +145,8 @@ describe("POST /api/browse/step", () => {
         jevResponse({
           model: "jev-latest",
           answers: {
+            goal_met: { type: "noul", noul: 0.1 },
+            dead_end: { type: "noul", noul: 0.1 },
             op: { type: "choice", choice: "TYPE_TEXT", probabilities: { TYPE_TEXT: 0.9 }, confidence: 0.9 },
             target_type: { type: "choice", choice: "9", probabilities: { "9": 0.9 }, confidence: 0.9 },
           },

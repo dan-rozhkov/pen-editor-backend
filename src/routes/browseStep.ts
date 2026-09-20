@@ -64,11 +64,12 @@ export async function browseStepRoutes(
     "/api/browse/step",
     {
       config: {
-        // Each request is one Jev call plus, on a TYPE_TEXT step, one small
-        // STRUCTURED_MODEL call — cheap individually, but this fires once
-        // per loop iteration of browse_task (up to 25), so a per-IP cap
-        // well above a single legitimate task's step rate still bounds a
-        // script hammering this endpoint directly.
+        // Each request is one Jev call, PLUS either a small STRUCTURED_MODEL
+        // call (TYPE_TEXT) or a second, small Jev call (SELECT — see
+        // chooseSelectOption in browseStep.ts) — cheap individually, but this
+        // fires once per loop iteration of browse_task (up to 25), so a
+        // per-IP cap well above a single legitimate task's step rate still
+        // bounds a script hammering this endpoint directly.
         rateLimit: { max: 60, timeWindow: "1 minute" },
       },
     },
