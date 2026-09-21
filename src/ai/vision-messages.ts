@@ -432,6 +432,18 @@ export interface ImageSlot {
   /** "Image" (user attachment) or "Screenshot" (get_screenshot result). */
   label: string;
   kind: "user-part" | "tool-result";
+  /**
+   * The tool call this result answers, for `kind: "tool-result"` slots only.
+   * Exported for src/ai/imageRelevance.ts's ratchet cache key and for
+   * correlating a candidate with its originating tool-call part (to read
+   * the call's arguments) — see that module's doc comment for why the key
+   * is toolCallId and not a hash of the image itself: it is stable across
+   * turns, unique, and free to read (unlike sha256-ing up to 6MB of base64
+   * synchronously on the event loop, which is exactly the cost `key` above
+   * was made lazy to avoid). Undefined for a `user-part` slot, which has no
+   * tool call to anchor to.
+   */
+  toolCallId?: string;
 }
 
 // A user attachment is always exactly one image; the payload stays lazy for
@@ -446,6 +458,7 @@ function makeSlot(
   images: ToolResultImages,
   label: string,
   kind: ImageSlot["kind"],
+  toolCallId?: string,
 ): ImageSlot {
   // `key` is a LAZY, memoized getter rather than an eagerly computed field.
   // visionCacheKey() is a sha256 over the whole image string — up to
@@ -478,11 +491,31 @@ function makeSlot(
     },
     label,
     kind,
+    toolCallId,
   };
 }
 
+// Memoized per message-array IDENTITY. One enforce turn now walks the same
+// `convertedMessages` several times — planImageElision, resolveImageRescues,
+// the freeze's second plan, applyImageBudget — and each walk runs a
+// `raw.includes("data:image/")` scan across every ~1MB screenshot string,
+// synchronously on the event loop, blocking every other request on the
+// process. The result is a pure function of the array (slots hold indices
+// and lazy getters, nothing mutable), and `convertedMessages` is never
+// mutated in place, so caching on identity is safe. WeakMap so a finished
+// request's history is collectable the moment nothing else holds it.
+const slotsByMessages = new WeakMap<object, ImageSlot[]>();
+
 // Exported for image-budget.ts — see the ImageSlot export comment above.
 export function collectImageSlots(messages: ModelMessage[]): ImageSlot[] {
+  const memo = slotsByMessages.get(messages);
+  if (memo) return memo;
+  const computed = computeImageSlots(messages);
+  slotsByMessages.set(messages, computed);
+  return computed;
+}
+
+function computeImageSlots(messages: ModelMessage[]): ImageSlot[] {
   const slots: ImageSlot[] = [];
   messages.forEach((message, messageIndex) => {
     if (!Array.isArray(message.content)) return;
@@ -539,7 +572,9 @@ export function collectImageSlots(messages: ModelMessage[]): ImageSlot[] {
         const images = extractToolResultImages(typed.output, typed.toolName);
         if (images.count === 0) return; // an error result is already plain text
         const label = typed.toolName === "get_screenshot" ? "Screenshot" : "Image";
-        slots.push(makeSlot(messageIndex, partIndex, images, label, "tool-result"));
+        slots.push(
+          makeSlot(messageIndex, partIndex, images, label, "tool-result", typed.toolCallId),
+        );
       });
     }
   });

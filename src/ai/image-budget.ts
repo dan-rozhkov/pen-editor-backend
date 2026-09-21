@@ -76,6 +76,21 @@ function placeholderFor(slot: ImageSlot): string {
   return slot.label === "Screenshot" ? SCREENSHOT_PLACEHOLDER : TOOL_IMAGE_PLACEHOLDER;
 }
 
+// How many IMAGES may be spared at once — not how many slots.
+//
+// Slot-counting was wrong: one tool result is one slot but can carry a
+// whole page of MCP previews, so "two rescued slots" could mean sixteen
+// images staying live. A rescued slot's images are the exact amount by
+// which the live-image ceiling rises above phase 1's H + S - 1, so the cap
+// has to be denominated in the same unit as the ceiling. A side effect
+// worth naming: a single result carrying more images than this cap can
+// never be rescued at all, which is the right call — sparing a sixteen-
+// image search result is not what this feature is for.
+//
+// Counted over candidates ALREADY cached as rescued (not a running total
+// across the process) — see resolveImageRescues for exactly what this gates.
+export const MAX_RESCUED_IMAGES = 2;
+
 // C(N) = floor(max(0, N - H) / S) * S — the chronological index below which
 // every slot is elided. Deliberately NOT "keep the H most recent": that form
 // recomputes to a different cutoff every time a single new image arrives, so
@@ -104,50 +119,150 @@ function cutoff(totalSlots: number, liveFloor: number, step: number): number {
  * one slot and the budget counts slots. That is the conservative direction:
  * a multi-image result is worth more than one slot's budget, never less.
  */
+// Filtered on `kind` and `imageCount` only — deliberately never on
+// `slot.image`, which is a lazy getter that would JSON.parse or concatenate
+// the ~1MB payload of every screenshot in the history just to answer a
+// question `imageCount` already answers for free. A tool result carrying no
+// image produces no slot at all (collectImageSlots bails when the count is
+// 0), so error results and plain-text tool output can never inflate the
+// budget and push a real screenshot out of the live window.
+function toolResultImageSlots(messages: ModelMessage[]): ImageSlot[] {
+  return collectImageSlots(messages).filter(
+    (slot) => slot.kind === "tool-result" && slot.imageCount > 0,
+  );
+}
+
+// Counted in IMAGES, not slots. One tool result is one slot but can carry
+// several images (an MCP search returns a handful of previews), so a
+// slot-based count would let eight results holding eight previews each stay
+// live under a budget that advertises six images.
+function elisionCutoff(slots: ImageSlot[]): number {
+  const totalImages = slots.reduce((sum, slot) => sum + slot.imageCount, 0);
+  return cutoff(totalImages, MAX_LIVE_TOOL_RESULT_IMAGES, TOOL_RESULT_ELISION_STEP);
+}
+
+/**
+ * Walks the slot list oldest-first and decides which ones pure recency
+ * would elide this turn, up to `elideUpToImages` IMAGES of budget.
+ *
+ * `rescued` (by `toolCallId`) is Jev's phase-2 addition: see
+ * docs/specs/2026-09-21-jev-image-relevance-design.md's "Спасение СДВИГАЕТ
+ * вытеснение" section. A rescued slot is SKIPPED, not kept live for free —
+ * it consumes none of `elideUpToImages`, so the walk simply continues to
+ * the next slot in line and elides THAT one instead: a rescue changes WHICH
+ * images go, not — in the common case — how many. A version that instead
+ * kept a rescued slot live AND left the budget unspent would let the live
+ * count grow past the ceiling one rescue at a time.
+ *
+ * "Common case" is load-bearing, and the ceiling is NOT exactly `H + S - 1`
+ * — the design doc retracts that claim explicitly. It holds only while each
+ * slot carries one image. The walk stops at the first slot that would
+ * overshoot, so skipping a rescued slot can bring an oversized multi-image
+ * result up against the quota sooner and elide FEWER images than pure
+ * recency would have. The honest bound is `(H + S - 1) + (images in rescued
+ * slots) + (tail of one multi-image result)`. That is why
+ * MAX_RESCUED_IMAGES is denominated in images, and why this function
+ * re-caps `sparedImages` below instead of trusting its caller — neither is
+ * redundant.
+ *
+ * Elision is still whole-slot: a result's images go together or not at all,
+ * so the walk stops at the first (non-rescued) slot that would overshoot
+ * the image budget rather than splitting it.
+ */
+function walkElisionPlan(
+  slots: ImageSlot[],
+  elideUpToImages: number,
+  rescued?: ReadonlySet<string>,
+): ImageSlot[] {
+  const plan: ImageSlot[] = [];
+  let elided = 0;
+  // Re-capped HERE, not just where rescues are granted. imageRelevance.ts's
+  // cap is read-then-await-then-write, so two overlapping turns for one
+  // session can each grant up to the cap and leave twice that many cached.
+  // The live-image ceiling is this function's promise to keep, so it
+  // enforces the bound itself rather than trusting its input.
+  let sparedImages = 0;
+  for (const slot of slots) {
+    if (
+      rescued &&
+      slot.toolCallId &&
+      rescued.has(slot.toolCallId) &&
+      sparedImages + slot.imageCount <= MAX_RESCUED_IMAGES
+    ) {
+      sparedImages += slot.imageCount;
+      continue;
+    }
+    if (elided + slot.imageCount > elideUpToImages) break;
+    elided += slot.imageCount;
+    plan.push(slot);
+  }
+  return plan;
+}
+
+/**
+ * The slots this turn's budget would elide. Called with no `rescued` it is
+ * the PURE RECENCY plan — `applyImageBudget`'s own decision before any Jev
+ * rescue is applied. Called WITH the resolved rescue set it is the FINAL
+ * plan, which the caller needs in order to freeze those slots as decided:
+ * a rescue shifts elision onto the next slot in line, and that victim was
+ * never a candidate, so nothing else would ever record a verdict for it —
+ * on a later turn it would show up as a FRESH candidate and Jev could
+ * rescue it back to life, un-eliding an image and rewriting the middle of
+ * the history. See imageRelevance.ts's freezeElidedSlots. Exported for
+ * src/ai/imageRelevance.ts: these are the only slots Jev is ever allowed to
+ * ask about, since it can rescue a slot recency was about to elide but can
+ * never reach past the recency boundary and elide one recency would have
+ * kept (see the design doc's "Спасение СДВИГАЕТ, а не отменяет" section —
+ * candidates are bounded to the eviction zone by construction here, not by
+ * a check downstream).
+ */
+export function planImageElision(
+  messages: ModelMessage[],
+  rescued?: ReadonlySet<string>,
+): ImageSlot[] {
+  const slots = toolResultImageSlots(messages);
+  const elideUpToImages = elisionCutoff(slots);
+  if (elideUpToImages === 0) return [];
+  return walkElisionPlan(slots, elideUpToImages, rescued);
+}
+
+export interface ApplyImageBudgetOptions {
+  /**
+   * toolCallIds of slots Jev rescued this turn (imageRelevance.ts's
+   * resolveImageRescues). A rescued slot is skipped during elision — see
+   * walkElisionPlan's doc comment — never kept live "for free". Omitted or
+   * empty behaves exactly like phase 1 (pure recency).
+   */
+  rescued?: ReadonlySet<string>;
+}
+
 /**
  * Collapses old tool-result images out of the message history before
  * `applyVisionPreprocessing` runs, using a step-wise hysteresis window. Pure:
- * depends only on `messages`, reads no mutable state, makes no network
- * calls, and returns untouched messages by reference.
+ * depends only on `messages` and `opts.rescued`, reads no mutable state,
+ * makes no network calls, and returns untouched messages by reference.
+ *
+ * `opts.rescued` must be computed BEFORE calling this — this function itself
+ * makes no Jev call and has no opinion about relevance, only about which
+ * candidate slots (see planImageElision) a caller already decided to spare.
  */
-export function applyImageBudget(messages: ModelMessage[]): ModelMessage[] {
-  // Filtered on `kind` and `imageCount` only — deliberately never on
-  // `slot.image`, which is a lazy getter that would JSON.parse or
-  // concatenate the ~1MB payload of every screenshot in the history just to
-  // answer a question `imageCount` already answers for free. A tool result
-  // carrying no image produces no slot at all (collectImageSlots bails when
-  // the count is 0), so error results and plain-text tool output can never
-  // inflate the budget and push a real screenshot out of the live window.
-  const slots = collectImageSlots(messages).filter(
-    (slot) => slot.kind === "tool-result" && slot.imageCount > 0,
-  );
-
-  // Counted in IMAGES, not slots. One tool result is one slot but can carry
-  // several images (an MCP search returns a handful of previews), so a
-  // slot-based count would let eight results holding eight previews each
-  // stay live under a budget that advertises six images.
-  const totalImages = slots.reduce((sum, slot) => sum + slot.imageCount, 0);
-  const elideUpToImages = cutoff(
-    totalImages,
-    MAX_LIVE_TOOL_RESULT_IMAGES,
-    TOOL_RESULT_ELISION_STEP,
-  );
+export function applyImageBudget(
+  messages: ModelMessage[],
+  opts: ApplyImageBudgetOptions = {},
+): ModelMessage[] {
+  const slots = toolResultImageSlots(messages);
+  const elideUpToImages = elisionCutoff(slots);
   if (elideUpToImages === 0) return messages;
 
-  // Elision is still whole-slot: a result's images go together or not at
-  // all, so walk the prefix and stop at the first slot that would overshoot
-  // the image budget rather than splitting it. Monotone for the same reason
-  // the cutoff is — older slots' image counts never change.
+  const toElide = walkElisionPlan(slots, elideUpToImages, opts.rescued);
+  if (toElide.length === 0) return messages;
+
   const touched = new Map<number, Map<number, ImageSlot>>();
-  let elided = 0;
-  for (const slot of slots) {
-    if (elided + slot.imageCount > elideUpToImages) break;
-    elided += slot.imageCount;
+  for (const slot of toElide) {
     const byPart = touched.get(slot.messageIndex) ?? new Map<number, ImageSlot>();
     byPart.set(slot.partIndex, slot);
     touched.set(slot.messageIndex, byPart);
   }
-  if (touched.size === 0) return messages;
 
   return messages.map((message, messageIndex) => {
     const byPart = touched.get(messageIndex);

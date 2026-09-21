@@ -363,6 +363,47 @@ export const envSchema = z.object({
   // but nothing is injected, since it was never checked against pass 2's
   // per-candidate fit Noul (see routeSkill's pass1Budget).
   SKILL_ROUTING_ENFORCE_BUDGET_MS: z.coerce.number().positive().default(2_500),
+  // --- Jev image relevance (phase 2 of the image context budget) ---
+  // src/ai/imageRelevance.ts asks Jev whether a tool-result image that
+  // phase 1's step-wise recency window is about to elide is still needed
+  // for the CURRENT request, and — if so — spares it (see
+  // docs/specs/2026-09-21-jev-image-relevance-design.md). Same
+  // off/shadow/enforce shape and the same reasoning as SKILL_ROUTING_MODE
+  // above: this is a per-request Jev round trip, so it must be opt-in
+  // per deployment rather than switched on the instant TYPESAFE_API_KEY is
+  // set. "off" is the default deliberately, and is covered by its own test —
+  // SKILL_ROUTING_MODE's own history (jev-skill-routing-two-pass-shadow) is
+  // a prod deployment that silently ended up in ENFORCE while everyone
+  // believed it was off, because the mode was never read from config in the
+  // first version and defaulted to a hardcoded value that drifted from this
+  // var's intent. Reading the mode here, with its own default, and pinning
+  // that default with a test, is what this repo now does everywhere Jev can
+  // change behavior.
+  IMAGE_RELEVANCE_MODE: z.enum(["off", "shadow", "enforce"]).default("off"),
+  // Probability threshold above which a candidate's Noul ("is this image
+  // still needed for what's being asked right now?") counts as a rescue.
+  // 0.6 mirrors SKILL_ROUTING_MIN_CONFIDENCE's default rather than being
+  // independently tuned — both read a single Noul/peak-probability value
+  // over a small candidate set, and 0.6 is this repo's one measured prior
+  // for "confident enough to act on" at that shape.
+  IMAGE_RELEVANCE_MIN_NOUL: z.coerce.number().min(0).max(1).default(0.6),
+  // Per-call budget for one evaluate() call, same shape as
+  // SKILL_ROUTING_TIMEOUT_MS: this pass sits ahead of the first streamed
+  // token in enforce mode, so it must stay small next to a multi-second LLM
+  // turn while still giving Jev a realistic window. 1.5s, not reusing
+  // SKILL_ROUTING_TIMEOUT_MS directly, because the two features are
+  // deployed and tuned independently — a change to one must not silently
+  // retime the other.
+  IMAGE_RELEVANCE_TIMEOUT_MS: z.coerce.number().positive().default(1_500),
+
+  // Shadow mode needs its OWN, laxer per-call cap, and this is not a
+  // nicety: SKILL_ROUTING_SHADOW_BUDGET_MS exists because reusing the
+  // enforce budget censored the very data shadow mode is there to collect —
+  // Jev genuinely answering in 2s under load was recorded as an error, and
+  // the measurement said the feature never fires. Shadow is fire-and-forget
+  // and never on the TTFT path, so it can afford to wait; it still needs a
+  // bound so a hung call can't pin a request's resources.
+  IMAGE_RELEVANCE_SHADOW_TIMEOUT_MS: z.coerce.number().positive().default(10_000),
   // --- QuiverAI vector generation (optional) ---
   // Unset = generate_vector is dropped from the per-request tool set
   // (chatTurn.ts's gate, mirroring FAL_KEY/analyze_image's pattern) and

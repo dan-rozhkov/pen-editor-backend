@@ -18,6 +18,7 @@ vi.mock("../src/services/vision.js", () => ({
 
 import {
   applyImageBudget,
+  planImageElision,
   MAX_LIVE_TOOL_RESULT_IMAGES,
   TOOL_RESULT_ELISION_STEP,
 } from "../src/ai/image-budget.js";
@@ -387,6 +388,92 @@ describe("applyImageBudget", () => {
     ];
     const result = applyImageBudget(messages);
     expect(result[0]).toBe(messages[0]);
+  });
+
+  // Phase 2 (docs/specs/2026-09-21-jev-image-relevance-design.md): a rescue
+  // SHIFTS elision to the next slot in line, it never REDUCES how many
+  // images get elided. src/ai/imageRelevance.ts decides WHICH toolCallIds
+  // to spare; these tests only cover applyImageBudget's/planImageElision's
+  // own half of the contract — that spending a rescue moves the cutoff
+  // sideways, not down.
+  describe("rescue (Jev phase 2 — planImageElision / opts.rescued)", () => {
+    it("planImageElision reports exactly the slots pure recency would elide", () => {
+      const tags = tagsOf(MAX_LIVE_TOOL_RESULT_IMAGES + TOOL_RESULT_ELISION_STEP, "s");
+      const messages = history([], tags);
+      const plan = planImageElision(messages);
+      const planned = new Set(plan.map((slot) => slot.toolCallId));
+      // Every planned slot must actually be elided by a plain (unrescued)
+      // applyImageBudget call, and vice versa.
+      const budgeted = applyImageBudget(messages);
+      for (const tag of tags) {
+        const elided = !isScreenshotSlotLive(budgeted, tag);
+        expect(planned.has(`call-${tag}`)).toBe(elided);
+      }
+    });
+
+    it("is empty when nothing is over budget", () => {
+      const messages = history([], tagsOf(MAX_LIVE_TOOL_RESULT_IMAGES, "s"));
+      expect(planImageElision(messages)).toEqual([]);
+    });
+
+    it("THE key property: rescuing one candidate elides a different slot, not fewer slots", () => {
+      const tags = tagsOf(MAX_LIVE_TOOL_RESULT_IMAGES + TOOL_RESULT_ELISION_STEP, "s");
+      const messages = history([], tags);
+
+      const plan = planImageElision(messages);
+      expect(plan.length).toBeGreaterThan(0);
+      const rescuedId = plan[0].toolCallId as string;
+
+      const withoutRescue = applyImageBudget(messages);
+      const withRescue = applyImageBudget(messages, { rescued: new Set([rescuedId]) });
+
+      const liveCount = (result: typeof messages) =>
+        tags.filter((tag) => isScreenshotSlotLive(result, tag)).length;
+
+      // A REAL bug this test must catch: "rescue reduces elision" would grow
+      // liveCount by one instead of leaving it unchanged.
+      expect(liveCount(withRescue)).toBe(liveCount(withoutRescue));
+
+      // The rescued slot is now live...
+      const rescuedTag = tags.find((tag) => `call-${tag}` === rescuedId) as string;
+      expect(isScreenshotSlotLive(withRescue, rescuedTag)).toBe(true);
+      // ...and exactly one slot that used to be live is now elided instead
+      // (the next-oldest one in line), keeping the total elided count fixed.
+      const elidedByRescue = tags.filter(
+        (tag) => isScreenshotSlotLive(withoutRescue, tag) && !isScreenshotSlotLive(withRescue, tag),
+      );
+      expect(elidedByRescue.length).toBe(1);
+    });
+
+    it("rescuing every candidate in the eviction zone still elides the same total count", () => {
+      const tags = tagsOf(MAX_LIVE_TOOL_RESULT_IMAGES + 2 * TOOL_RESULT_ELISION_STEP, "s");
+      const messages = history([], tags);
+
+      const plan = planImageElision(messages);
+      const rescued = new Set(plan.map((s) => s.toolCallId as string));
+
+      const withoutRescue = applyImageBudget(messages);
+      const withRescue = applyImageBudget(messages, { rescued });
+
+      const liveCount = (result: typeof messages) =>
+        tags.filter((tag) => isScreenshotSlotLive(result, tag)).length;
+
+      // Same total elided/live count regardless of how many were rescued —
+      // the walk just keeps reaching further back for a slot to elide.
+      expect(liveCount(withRescue)).toBe(liveCount(withoutRescue));
+    });
+
+    it("a rescued toolCallId outside the eviction zone (a live slot) has no effect", () => {
+      const messages = history([], tagsOf(MAX_LIVE_TOOL_RESULT_IMAGES, "s"));
+      const result = applyImageBudget(messages, { rescued: new Set(["call-s0"]) });
+      expect(result).toBe(messages); // nothing was ever going to be elided
+    });
+
+    it("with no opts, behaves byte-identically to phase 1 (opts is optional)", () => {
+      const tags = tagsOf(MAX_LIVE_TOOL_RESULT_IMAGES + TOOL_RESULT_ELISION_STEP, "s");
+      const messages = history([], tags);
+      expect(applyImageBudget(messages)).toEqual(applyImageBudget(messages, {}));
+    });
   });
 
   describe("integration with applyVisionPreprocessing", () => {

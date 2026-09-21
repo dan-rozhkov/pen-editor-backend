@@ -12,7 +12,8 @@ import { bareModelId, createModel, parseModelRef, providerHandlesToolResultImage
 import { penTools, makeBatchDesignTool, makeAnalyzeImageTool } from "./tools.js";
 import { buildSystemPrompt } from "./system-prompt.js";
 import { resolveTaskPolicy, type TaskPolicy } from "./taskPolicy.js";
-import { applyImageBudget } from "./image-budget.js";
+import { applyImageBudget, planImageElision } from "./image-budget.js";
+import { freezeElidedSlots, resolveImageRescues } from "./imageRelevance.js";
 import { applyVisionPreprocessing, modelSupportsVision } from "./vision-messages.js";
 import { isVisionConfigured } from "../services/vision.js";
 import { isQuiverConfigured } from "../services/quiver.js";
@@ -196,6 +197,15 @@ export interface PrepareChatTurnInput {
    * key to pass either).
    */
   sessionId?: string;
+  /**
+   * The REAL conversation id, undefined when the client sent none — unlike
+   * {@link sessionId}, which src/routes/chat.ts backfills with a per-REQUEST
+   * `anon-<uuid>`. Anything that must remember a decision ACROSS turns has
+   * to key off this one; an id that changes every request is not a session.
+   * Today that is imageRelevance.ts's ratchet, which skips Jev entirely
+   * when this is absent (see that module's doc comment).
+   */
+  chatSessionId?: string;
   /**
    * The calling user's OWN OpenCode API key (never a server-side key — none
    * exists for OpenCode in this product), threaded straight into
@@ -800,8 +810,105 @@ export async function prepareChatTurn(
     providerHandlesToolResultImages(
       parseModelRef(modelOverride ?? config.CHAT_MODEL).provider,
     );
+
+  // Phase 2 (see docs/specs/2026-09-21-jev-image-relevance-design.md): Jev
+  // can SPARE a slot phase 1's step-wise recency window was about to elide
+  // — never evict one recency would have kept, and never add tokens on the
+  // "off" path (imagesSurviveAsImages false), same gating reasoning as
+  // phase 1 above. `off` never touches Jev at all and must render
+  // byte-identical to before this feature existed — that is itself a
+  // dedicated test, per the design doc's callout that SKILL_ROUTING_MODE
+  // once shipped in enforce while everyone believed it was off.
+  let rescuedToolCallIds: ReadonlySet<string> | undefined;
+  if (imagesSurviveAsImages && config.IMAGE_RELEVANCE_MODE !== "off") {
+    // Candidates are bounded to phase 1's own eviction zone by
+    // planImageElision — Jev is never even asked about a slot recency
+    // would have kept live. Cheap to compute unconditionally when the mode
+    // is on: it reads slot counts only, no payload, same as
+    // applyImageBudget itself.
+    const candidates = planImageElision(convertedMessages);
+    if (candidates.length > 0) {
+      const systemOneForImages =
+        input.systemOneClient !== undefined ? input.systemOneClient : createSystemOne(config);
+      if (systemOneForImages) {
+        const resolveOpts = {
+          config,
+          sessionId: input.chatSessionId,
+          candidates,
+          messages: convertedMessages,
+        };
+        if (config.IMAGE_RELEVANCE_MODE === "enforce") {
+          // Only enforce needs the answer to act on, so only enforce pays
+          // for it on the request path — bounded per-call by
+          // config.IMAGE_RELEVANCE_TIMEOUT_MS inside resolveImageRescues,
+          // the same TTFT-shaped budget skillRouting.ts's enforce path
+          // uses for the same reason.
+          rescuedToolCallIds = await resolveImageRescues(systemOneForImages, resolveOpts);
+          // Freeze everything this turn ACTUALLY elides — the applied plan,
+          // not the candidate list and not just the shift victims.
+          //
+          // Two holes close here at once. A rescue pushes elision onto the
+          // next slot in line, and that slot was never a candidate, so
+          // nothing recorded a verdict for it. And when Jev fails — a
+          // timeout, a transport error, a malformed answer for one
+          // candidate — resolveImageRescues deliberately caches nothing,
+          // yet pure recency still elides those candidates this turn.
+          // Either way an unfrozen, already-elided slot comes back as a
+          // FRESH candidate once the cutoff advances, Jev says "keep it",
+          // and the image returns to life: its text flips from placeholder
+          // back to a real image part in the middle of the history, breaking
+          // the provider's cached prefix and silently re-adding the tokens
+          // the budget just saved.
+          //
+          // "The next turn is a free chance to ask again" only ever applied
+          // to slots that were NOT elided — and the plan is exactly the ones
+          // that were. A slot the walk stopped short of (a multi-image
+          // result can end it early) is not in the plan and stays askable.
+          freezeElidedSlots(
+            input.chatSessionId,
+            planImageElision(convertedMessages, rescuedToolCallIds).map((slot) => slot.toolCallId),
+          );
+          console.log(
+            `[imageRelevance] enforce: rescued ${rescuedToolCallIds.size}/${candidates.length} candidate(s)`,
+          );
+        } else {
+          // Shadow must be a faithful DRY RUN of enforce, not just a
+          // logger: it keeps the same ratchet enforce would keep, so the
+          // rescue counts it reports are the counts enforce would produce.
+          // Without freezing the shift victims here too, shadow lets slots
+          // enforce would have frozen come back as fresh candidates and
+          // reports rescues enforce would never grant.
+          // shadow: by definition changes nothing, so it must cost the
+          // user nothing either — fire-and-forget, never awaited, and the
+          // applied budget below never sees `rescuedToolCallIds` (it stays
+          // undefined on this branch). Mirrors chatTurn.ts's own shadow
+          // skill-routing call just above in this file.
+          void resolveImageRescues(systemOneForImages, {
+            ...resolveOpts,
+            timeoutMs: config.IMAGE_RELEVANCE_SHADOW_TIMEOUT_MS,
+          })
+            .then((verdicts) => {
+              // Shadow keeps the ratchet enforce would keep, over the plan
+              // enforce would have applied — that is what makes its numbers
+              // an estimate of enforce rather than of itself.
+              freezeElidedSlots(
+                input.chatSessionId,
+                planImageElision(convertedMessages, verdicts).map((slot) => slot.toolCallId),
+              );
+              console.log(
+                `[imageRelevance] shadow: would rescue ${verdicts.size}/${candidates.length} candidate(s)`,
+              );
+            })
+            .catch((err) => {
+              console.warn("[imageRelevance] shadow pick failed unexpectedly:", err);
+            });
+        }
+      }
+    }
+  }
+
   const budgetedMessages = imagesSurviveAsImages
-    ? applyImageBudget(convertedMessages)
+    ? applyImageBudget(convertedMessages, { rescued: rescuedToolCallIds })
     : convertedMessages;
 
   // Our analog of Hermes's decide_image_input_mode, run once right before

@@ -370,6 +370,17 @@ export async function chatRoutes(
         // createModel whenever the resolved provider isn't an OpenCode
         // route (see src/ai/provider.ts).
         sessionId: traceSessionId,
+        // The REAL conversation id — undefined when the client didn't send
+        // one. Deliberately NOT traceSessionId: that falls back to a fresh
+        // `anon-<uuid>` per REQUEST, which is fine for tracing (each row
+        // just needs a grouping key) but is poison for anything that has to
+        // remember a decision across turns. imageRelevance.ts's ratchet keys
+        // off this; given the anon fallback it would get a brand-new,
+        //permanently empty cache every request, re-ask Jev every turn, and let a
+        // verdict flip un-elide an image it already replaced with a
+        // placeholder — the exact mid-history rewrite the ratchet exists to
+        // prevent. Absent id → no ratchet home → Jev is skipped entirely.
+        chatSessionId,
         // The user's own key (see readOpenCodeKeyHeader above); undefined on
         // every OpenRouter turn. createModel throws if the resolved
         // provider needs one and none was supplied — this can only happen
