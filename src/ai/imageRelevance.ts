@@ -323,28 +323,62 @@ export interface ResolveImageRescuesOptions {
 }
 
 /**
+ * Why a turn's rescue count came out the way it did.
+ *
+ * This exists because "0 rescued" is ambiguous and the ambiguity bites in
+ * production: shadow mode is a MEASUREMENT, and a zero that means "Jev
+ * weighed six candidates and declined all six" calls for a threshold
+ * change, while a zero that means "Jev never answered" calls for fixing
+ * Jev. Both printed the same line until a live run against a TypeSafe
+ * account with no credits left reported `would rescue 0/6` four times in a
+ * row and looked exactly like a correctly-working, conservative model.
+ */
+export type ImageRescueOutcome =
+  /** Jev answered; `asked` candidates got a real verdict. */
+  | "asked"
+  /** Nothing to ask about — no candidates, or every one already decided. */
+  | "nothing-to-ask"
+  /** No conversation id, so no ratchet home: Jev is skipped by design. */
+  | "no-session"
+  /** No Jev client at all (TYPESAFE_API_KEY unset). */
+  | "no-client"
+  /** The rescue budget is already full, so no verdict could be acted on. */
+  | "budget-full"
+  /** Jev was asked and failed: timeout, transport, 4xx/5xx, bad response. */
+  | "failed";
+
+export interface ImageRescueResult {
+  /** toolCallIds to spare — feed to `applyImageBudget(messages, {rescued})`. */
+  rescued: ReadonlySet<string>;
+  outcome: ImageRescueOutcome;
+  /** How many candidates got a real verdict from Jev on THIS call. */
+  asked: number;
+}
+
+/**
  * Asks Jev which of this turn's eviction candidates are still needed, and
- * returns the toolCallIds to spare — for `applyImageBudget(messages,
- * {rescued})`. Fail-open on everything: no client, no sessionId, a timeout,
- * an error, or a malformed response all resolve to "nothing new rescued"
- * (though slots already ratcheted "rescued" on an earlier turn are still
- * returned — the ratchet is a fact this call already knows for free,
- * independent of whether THIS call to Jev succeeds).
+ * returns the toolCallIds to spare. Fail-open on everything: no client, no
+ * sessionId, a timeout, an error, or a malformed response all resolve to
+ * "nothing new rescued" (though slots already ratcheted "rescued" on an
+ * earlier turn are still returned — the ratchet is a fact this call already
+ * knows for free, independent of whether THIS call to Jev succeeds). The
+ * `outcome` field is what tells those cases apart; see ImageRescueOutcome.
  */
 export async function resolveImageRescues(
   client: SystemOneClient | null | undefined,
   opts: ResolveImageRescuesOptions,
-): Promise<ReadonlySet<string>> {
+): Promise<ImageRescueResult> {
   const { config, sessionId, candidates, messages } = opts;
 
   const rescued = new Set<string>();
-  if (!sessionId) return rescued; // no ratchet home — see the option's doc comment
-  if (candidates.length === 0) return rescued;
+  // no ratchet home — see the option's doc comment
+  if (!sessionId) return { rescued, outcome: "no-session", asked: 0 };
+  if (candidates.length === 0) return { rescued, outcome: "nothing-to-ask", asked: 0 };
 
   const withIds = candidates.filter(
     (candidate): candidate is RescueCandidate => typeof candidate.toolCallId === "string",
   );
-  if (withIds.length === 0) return rescued;
+  if (withIds.length === 0) return { rescued, outcome: "nothing-to-ask", asked: 0 };
 
   const uncached: RescueCandidate[] = [];
   for (const candidate of withIds) {
@@ -355,8 +389,9 @@ export async function resolveImageRescues(
     // cached === false: already decided against, stays out of `rescued`.
   }
 
-  if (!client) return rescued; // never asked, never cached — see doc comment
-  if (uncached.length === 0) return rescued;
+  // never asked, never cached — see doc comment
+  if (!client) return { rescued, outcome: "no-client", asked: 0 };
+  if (uncached.length === 0) return { rescued, outcome: "nothing-to-ask", asked: 0 };
 
   // MAX_RESCUED_IMAGES, counted over THIS candidate batch's already-
   // cached rescues (not a global/process-wide total — see the constant's
@@ -371,7 +406,7 @@ export async function resolveImageRescues(
   const remainingRescueImages = MAX_RESCUED_IMAGES - rescuedImages;
   if (remainingRescueImages <= 0) {
     for (const candidate of uncached) ratchetSet(ratchetKey(sessionId, candidate.toolCallId), false);
-    return rescued;
+    return { rescued, outcome: "budget-full", asked: 0 };
   }
 
   // MAX_NEW_VERDICTS_PER_TURN bounds how many brand-new candidates get a
@@ -391,7 +426,7 @@ export async function resolveImageRescues(
   const toAsk = uncached.slice(-MAX_NEW_VERDICTS_PER_TURN);
   const overflow = uncached.slice(0, Math.max(0, uncached.length - MAX_NEW_VERDICTS_PER_TURN));
   for (const candidate of overflow) ratchetSet(ratchetKey(sessionId, candidate.toolCallId), false);
-  if (toAsk.length === 0) return rescued;
+  if (toAsk.length === 0) return { rescued, outcome: "nothing-to-ask", asked: 0 };
 
   // allToolResultSlots — the FULL tool-result image slot list, used only to
   // compute each candidate's "images since" line in `state` (see
@@ -426,7 +461,7 @@ export async function resolveImageRescues(
     // What the free retry really buys is the slots that were NOT elided —
     // the ones a multi-image result stopped the walk short of.
     console.warn("[imageRelevance] evaluate failed, falling back to pure recency:", err);
-    return rescued;
+    return { rescued, outcome: "failed", asked: 0 };
   }
 
   // Newest-first when handing out the remaining rescue budget: `toAsk` is
@@ -450,5 +485,5 @@ export async function resolveImageRescues(
     ratchetSet(ratchetKey(sessionId, candidate.toolCallId), granted);
   }
 
-  return rescued;
+  return { rescued, outcome: "asked", asked: toAsk.length };
 }

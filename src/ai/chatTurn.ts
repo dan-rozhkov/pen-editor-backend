@@ -843,7 +843,8 @@ export async function prepareChatTurn(
           // config.IMAGE_RELEVANCE_TIMEOUT_MS inside resolveImageRescues,
           // the same TTFT-shaped budget skillRouting.ts's enforce path
           // uses for the same reason.
-          rescuedToolCallIds = await resolveImageRescues(systemOneForImages, resolveOpts);
+          const result = await resolveImageRescues(systemOneForImages, resolveOpts);
+          rescuedToolCallIds = result.rescued;
           // Freeze everything this turn ACTUALLY elides — the applied plan,
           // not the candidate list and not just the shift victims.
           //
@@ -868,8 +869,17 @@ export async function prepareChatTurn(
             input.chatSessionId,
             planImageElision(convertedMessages, rescuedToolCallIds).map((slot) => slot.toolCallId),
           );
+          // `outcome` is not decoration: a bare "0 rescued" reads identically
+          // whether Jev declined every candidate or never answered at all, and
+          // those have opposite fixes. See ImageRescueOutcome.
           console.log(
-            `[imageRelevance] enforce: rescued ${rescuedToolCallIds.size}/${candidates.length} candidate(s)`,
+            `[imageRelevance] ${JSON.stringify({
+              mode: "enforce",
+              rescued: result.rescued.size,
+              candidates: candidates.length,
+              asked: result.asked,
+              outcome: result.outcome,
+            })}`,
           );
         } else {
           // Shadow must be a faithful DRY RUN of enforce, not just a
@@ -887,16 +897,27 @@ export async function prepareChatTurn(
             ...resolveOpts,
             timeoutMs: config.IMAGE_RELEVANCE_SHADOW_TIMEOUT_MS,
           })
-            .then((verdicts) => {
+            .then((result) => {
               // Shadow keeps the ratchet enforce would keep, over the plan
               // enforce would have applied — that is what makes its numbers
               // an estimate of enforce rather than of itself.
               freezeElidedSlots(
                 input.chatSessionId,
-                planImageElision(convertedMessages, verdicts).map((slot) => slot.toolCallId),
+                planImageElision(convertedMessages, result.rescued).map((slot) => slot.toolCallId),
               );
+              // Shadow exists to be MEASURED, so it must never report a zero
+              // that can't be read. `would rescue 0/6` said the same thing on
+              // a healthy conservative model and on a TypeSafe account out of
+              // credits — one calls for moving the threshold, the other for
+              // paying a bill.
               console.log(
-                `[imageRelevance] shadow: would rescue ${verdicts.size}/${candidates.length} candidate(s)`,
+                `[imageRelevance] ${JSON.stringify({
+                  mode: "shadow",
+                  wouldRescue: result.rescued.size,
+                  candidates: candidates.length,
+                  asked: result.asked,
+                  outcome: result.outcome,
+                })}`,
               );
             })
             .catch((err) => {

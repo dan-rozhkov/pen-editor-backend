@@ -103,10 +103,10 @@ describe("ratchet across the recency shift", () => {
     const rescuedFirst = turn1Candidates[0].toolCallId as string;
     const shiftVictim = turn1Candidates[turn1Candidates.length - 1].toolCallId as string;
 
-    const turn1Rescued = await resolveImageRescues(
+    const turn1Rescued = (await resolveImageRescues(
       nounResponder((key) => (key === rescuedFirst ? 0.99 : 0.0)),
       { config, sessionId, candidates: turn1Candidates, messages: turn1Messages },
-    );
+    )).rescued;
     expect(turn1Rescued.has(rescuedFirst)).toBe(true);
 
     // The three steps chatTurn's enforce path runs, in the same order:
@@ -130,10 +130,10 @@ describe("ratchet across the recency shift", () => {
       MAX_LIVE_TOOL_RESULT_IMAGES + TOOL_RESULT_ELISION_STEP * 2,
     );
     const turn2Candidates = planImageElision(turn2Messages);
-    const turn2Rescued = await resolveImageRescues(
+    const turn2Rescued = (await resolveImageRescues(
       nounResponder((key) => (key === `call-${Number(shiftVictim.replace("call-", "")) + 1}` ? 0.99 : 0.0)),
       { config, sessionId, candidates: turn2Candidates, messages: turn2Messages },
-    );
+    )).rescued;
 
     const turn2Body = JSON.stringify(applyImageBudget(turn2Messages, { rescued: turn2Rescued }));
     expect(turn2Body).not.toContain(`"${shiftedOnto}"`); // must STAY dead
@@ -152,12 +152,12 @@ describe("resolveImageRescues", () => {
       return 0.9;
     });
 
-    const result = await resolveImageRescues(client, {
+    const result = (await resolveImageRescues(client, {
       config: makeConfig(),
       sessionId: undefined,
       candidates,
       messages,
-    });
+    })).rescued;
 
     expect(result.size).toBe(0);
     expect(calls).toBe(0);
@@ -166,12 +166,12 @@ describe("resolveImageRescues", () => {
   it("returns empty without throwing when there is no client", async () => {
     const messages = buildHistory(MAX_LIVE_TOOL_RESULT_IMAGES + TOOL_RESULT_ELISION_STEP);
     const candidates = planImageElision(messages);
-    const result = await resolveImageRescues(null, {
+    const result = (await resolveImageRescues(null, {
       config: makeConfig(),
       sessionId: "sess-no-client",
       candidates,
       messages,
-    });
+    })).rescued;
     expect(result.size).toBe(0);
   });
 
@@ -199,21 +199,21 @@ describe("resolveImageRescues", () => {
         },
       };
 
-      const turn1 = await resolveImageRescues(countingClient, {
+      const turn1 = (await resolveImageRescues(countingClient, {
         config: makeConfig(),
         sessionId: "sess-ratchet",
         candidates,
         messages,
-      });
+      })).rescued;
       expect(turn1.has(targetId)).toBe(true);
       expect(callCount).toBe(1);
 
-      const turn2 = await resolveImageRescues(countingClient, {
+      const turn2 = (await resolveImageRescues(countingClient, {
         config: makeConfig(),
         sessionId: "sess-ratchet",
         candidates,
         messages,
-      });
+      })).rescued;
       // Still rescued — the ratchet, not a re-ask, is what decided this.
       expect(turn2.has(targetId)).toBe(true);
       // And every OTHER candidate that was decided "no" on turn 1 must not
@@ -233,21 +233,21 @@ describe("resolveImageRescues", () => {
       const targetId = candidates[0].toolCallId as string;
 
       const neverRescue = nounResponder(() => 0.0);
-      const turn1 = await resolveImageRescues(neverRescue, {
+      const turn1 = (await resolveImageRescues(neverRescue, {
         config: makeConfig(),
         sessionId: "sess-frozen",
         candidates,
         messages,
-      });
+      })).rescued;
       expect(turn1.has(targetId)).toBe(false);
 
       const alwaysRescue = nounResponder(() => 0.99);
-      const turn2 = await resolveImageRescues(alwaysRescue, {
+      const turn2 = (await resolveImageRescues(alwaysRescue, {
         config: makeConfig(),
         sessionId: "sess-frozen",
         candidates,
         messages,
-      });
+      })).rescued;
       expect(turn2.has(targetId)).toBe(false);
     });
   });
@@ -285,12 +285,12 @@ describe("resolveImageRescues", () => {
       // The overflow candidates (never asked) are frozen as "not rescued":
       // a second call, even with the full candidate set again, must not
       // trigger any new evaluate() call — everything is now decided.
-      const result2 = await resolveImageRescues(client, {
+      const result2 = (await resolveImageRescues(client, {
         config: makeConfig(),
         sessionId: "sess-budget",
         candidates,
         messages,
-      });
+      })).rescued;
       expect(result2.size).toBe(0);
       expect(askedKeysByCall.length).toBe(1);
     });
@@ -306,12 +306,12 @@ describe("resolveImageRescues", () => {
       expect(candidates.length).toBeGreaterThan(MAX_RESCUED_IMAGES);
 
       const alwaysRescue = nounResponder(() => 0.99);
-      const result = await resolveImageRescues(alwaysRescue, {
+      const result = (await resolveImageRescues(alwaysRescue, {
         config: makeConfig(),
         sessionId: "sess-concurrency",
         candidates,
         messages,
-      });
+      })).rescued;
 
       expect(result.size).toBe(MAX_RESCUED_IMAGES);
     });
@@ -324,12 +324,12 @@ describe("resolveImageRescues", () => {
       expect(candidates.length).toBeGreaterThan(MAX_RESCUED_IMAGES);
 
       const alwaysRescue = nounResponder(() => 0.99);
-      const first = await resolveImageRescues(alwaysRescue, {
+      const first = (await resolveImageRescues(alwaysRescue, {
         config: makeConfig(),
         sessionId: "sess-two-call",
         candidates: candidates.slice(0, MAX_RESCUED_IMAGES),
         messages,
-      });
+      })).rescued;
       expect(first.size).toBe(MAX_RESCUED_IMAGES);
 
       let calls = 0;
@@ -339,12 +339,12 @@ describe("resolveImageRescues", () => {
           return alwaysRescue.evaluate(params);
         },
       };
-      const second = await resolveImageRescues(countingClient, {
+      const second = (await resolveImageRescues(countingClient, {
         config: makeConfig(),
         sessionId: "sess-two-call",
         candidates, // full set, including the still-undecided ones
         messages,
-      });
+      })).rescued;
 
       expect(second.size).toBe(MAX_RESCUED_IMAGES); // still capped
       expect(calls).toBe(0); // the cap was already full — never even asked
@@ -405,12 +405,12 @@ describe("resolveImageRescues", () => {
           throw new Error("boom");
         },
       };
-      const result = await resolveImageRescues(client, {
+      const result = (await resolveImageRescues(client, {
         config: makeConfig(),
         sessionId: "sess-throw",
         candidates,
         messages,
-      });
+      })).rescued;
       expect(result.size).toBe(0);
     });
 
@@ -425,12 +425,12 @@ describe("resolveImageRescues", () => {
           });
         },
       };
-      const result = await resolveImageRescues(hangingClient, {
+      const result = (await resolveImageRescues(hangingClient, {
         config: makeConfig({ IMAGE_RELEVANCE_TIMEOUT_MS: 20 }),
         sessionId: "sess-timeout",
         candidates,
         messages,
-      });
+      })).rescued;
       expect(result.size).toBe(0);
     });
 
@@ -453,12 +453,12 @@ describe("resolveImageRescues", () => {
           return { model: "jev-latest", answers, usage: { input_tokens: 1, output_tokens: 1 } };
         },
       };
-      const result = await resolveImageRescues(client, {
+      const result = (await resolveImageRescues(client, {
         config: makeConfig(),
         sessionId: "sess-garbage",
         candidates,
         messages,
-      });
+      })).rescued;
       expect(result.size).toBe(0);
     });
   });
@@ -698,5 +698,57 @@ describe("prepareChatTurn — Jev image relevance", () => {
     expect(JSON.stringify(laterTurn.modelMessages)).not.toContain(
       `SCREEN${MAX_LIVE_TOOL_RESULT_IMAGES - 1}AAAA`,
     );
+  });
+
+  it("reports WHY the rescue count is zero, so a failure can't read as a considered decline", async () => {
+    // The live lesson: a TypeSafe account out of credits made every call 402,
+    // and the summary printed `would rescue 0/6` four runs in a row — exactly
+    // what a healthy, conservative model looks like. Shadow mode exists to be
+    // measured, so a zero that cannot be read is a broken measurement. The two
+    // zeros below must be distinguishable.
+    resetImageRelevanceCacheForTests();
+    const messages = buildHistory(MAX_LIVE_TOOL_RESULT_IMAGES + TOOL_RESULT_ELISION_STEP);
+    const candidates = planImageElision(messages);
+
+    const declined = await resolveImageRescues(nounResponder(() => 0.0), {
+      config: makeConfig(),
+      sessionId: "sess-outcome-declined",
+      candidates,
+      messages,
+    });
+    expect(declined.rescued.size).toBe(0);
+    expect(declined.outcome).toBe("asked");
+    expect(declined.asked).toBeGreaterThan(0);
+
+    const broken: SystemOneClient = {
+      async evaluate() {
+        throw new Error("402 no credits");
+      },
+    };
+    const failed = await resolveImageRescues(broken, {
+      config: makeConfig(),
+      sessionId: "sess-outcome-failed",
+      candidates,
+      messages,
+    });
+    expect(failed.rescued.size).toBe(0); // same count...
+    expect(failed.outcome).toBe("failed"); // ...different, readable reason
+    expect(failed.asked).toBe(0);
+
+    const noClient = await resolveImageRescues(null, {
+      config: makeConfig(),
+      sessionId: "sess-outcome-noclient",
+      candidates,
+      messages,
+    });
+    expect(noClient.outcome).toBe("no-client");
+
+    const noSession = await resolveImageRescues(nounResponder(() => 0.9), {
+      config: makeConfig(),
+      sessionId: undefined,
+      candidates,
+      messages,
+    });
+    expect(noSession.outcome).toBe("no-session");
   });
 });
