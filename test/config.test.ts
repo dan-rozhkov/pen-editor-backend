@@ -85,6 +85,11 @@ describe("DEFAULT_MODELS", () => {
       },
       { id: "z-ai/glm-5.2", label: "GLM 5.2", supportsVision: false },
       {
+        id: "minimax/minimax-m3",
+        label: "MiniMax M3",
+        supportsVision: true,
+      },
+      {
         id: "opencode-go/deepseek-v4.1-flash",
         label: "DeepSeek V4.1 Flash · Go",
         supportsVision: true,
@@ -132,6 +137,12 @@ describe("DEFAULT_MODELS", () => {
         supportsVision: true,
         requiresUserKey: true,
       },
+      {
+        id: "opencode/minimax-m3",
+        label: "MiniMax M3 · Zen",
+        supportsVision: false,
+        requiresUserKey: true,
+      },
     ]);
   });
 
@@ -139,8 +150,8 @@ describe("DEFAULT_MODELS", () => {
     ["opencode", "opencode-go"].includes(parseModelRef(model.id).provider),
   );
 
-  it("has at least the eight OpenCode BYOK entries this task added", () => {
-    expect(openCodeModels.length).toBeGreaterThanOrEqual(8);
+  it("has at least the nine OpenCode BYOK entries this task added", () => {
+    expect(openCodeModels.length).toBeGreaterThanOrEqual(9);
   });
 
   it("marks every OpenCode entry requiresUserKey: true", () => {
@@ -200,12 +211,17 @@ describe("DEFAULT_MODELS", () => {
   // These three answered an image with an EMPTY completion 3/3 — no error, no
   // refusal. A `true` here would read as a working model gone quiet; `false`
   // routes the image through VISION_MODEL's text description instead.
-  it("pins which OpenCode entries answered images with silence", () => {
+  // opencode/minimax-m3 is a fourth `false` entry, but for a different
+  // reason: it has never been measured at all (see the comment above its
+  // DEFAULT_MODELS entry in src/config.ts) — `false` is the conservative
+  // default pending measurement, not a recorded silent failure.
+  it("pins which OpenCode entries answered images with silence or are unmeasured", () => {
     const textOnly = openCodeModels.filter((m) => !m.supportsVision).map((m) => m.id);
     expect(textOnly).toEqual([
       "opencode-go/glm-5.3",
       "opencode-go/glm-5.2",
       "opencode/deepseek-v4-flash",
+      "opencode/minimax-m3",
     ]);
   });
 });

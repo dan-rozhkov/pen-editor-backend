@@ -41,6 +41,11 @@ export const OPENCODE_BASE_URLS: Record<OpenCodeProviderId, string> = {
 // Data snapshot taken from opencode.ai/docs/go/ and opencode.ai/docs/zen/ on
 // 2026-09-18 — re-verify against the live docs before extending this table,
 // don't extrapolate from naming patterns.
+//
+// Re-verified 2026-09-21: minimax-m3/m2.7/m2.5 also exist on Go, but on the
+// /messages family (@ai-sdk/anthropic), not /chat/completions — exactly the
+// mis-family case this allowlist exists to prevent (see the block comment
+// above). They are intentionally absent from "opencode-go" below.
 export const OPENCODE_CHAT_COMPLETIONS_MODELS: Record<
   OpenCodeProviderId,
   readonly string[]

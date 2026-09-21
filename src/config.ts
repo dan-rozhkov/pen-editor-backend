@@ -578,8 +578,8 @@ export interface ModelOption {
 }
 
 // The models a user may pick in the composer, with UI metadata. The first
-// ten ids are bare OpenRouter ids; the eight OpenCode BYOK entries below them
-// are bare in their OWN sense too (see the central invariant in
+// ten ids are bare OpenRouter ids; the nine OpenCode BYOK entries below
+// them are bare in their OWN sense too (see the central invariant in
 // src/ai/modelRef.ts: bareModelId — GET /api/models, raw_traces and the
 // showcase gallery's `model` column must only ever see the bare id, never an
 // "openrouter:" prefix). This list powers GET /api/models (the frontend
@@ -590,11 +590,11 @@ export interface ModelOption {
 //
 // `supportsVision` was read off openrouter.ai/api/v1/models'
 // `architecture.input_modalities` (2026-09-14 for the first four, 2026-09-17
-// for the six added since): tencent/hy4-preview, z-ai/glm-5.3 and
-// z-ai/glm-5.2 are text-only, every other id lists "image". An
-// operator who points CHAT_MODEL at an id that is NOT in this list can still
-// do so (getModels appends it) and should set CHAT_MODEL_SUPPORTS_VISION if
-// that model is text-only.
+// for the five added since, 2026-09-21 for minimax/minimax-m3):
+// tencent/hy4-preview, z-ai/glm-5.3 and z-ai/glm-5.2 are text-only, every
+// other id lists "image". An operator who points CHAT_MODEL at an id that is
+// NOT in this list can still do so (getModels appends it) and should set
+// CHAT_MODEL_SUPPORTS_VISION if that model is text-only.
 export const DEFAULT_MODELS: ModelOption[] = [
   {
     id: "meta/muse-spark-1.3-contributor",
@@ -641,14 +641,27 @@ export const DEFAULT_MODELS: ModelOption[] = [
     label: "GLM 5.2",
     supportsVision: false,
   },
+  // Ships in the picker on request, with a known caveat: on the design-agent
+  // prompt this model fairly often ends a turn with reasoning only —
+  // finishReason "other", zero tool calls, no visible answer. That is why
+  // src/showcase/runner.ts carries an explicit EmptyHarvestError retry for it
+  // and why SHOWCASE_MODEL_ID was kept off it. streamWithRetry cannot cover
+  // this: it only retries BEFORE the first content chunk, and the reasoning
+  // deltas are content. So a user who picks MiniMax M3 may see a turn simply
+  // end with nothing — that is the model, not a broken pipeline.
+  {
+    id: "minimax/minimax-m3",
+    label: "MiniMax M3",
+    supportsVision: true,
+  },
   // --- OpenCode BYOK (docs/specs/2026-09-18-opencode-byok-design.md) ---
-  // Eight entries, five on Go ($10/mo flat subscription) and three on Zen
+  // Nine entries, five on Go ($10/mo flat subscription) and four on Zen
   // (pay-as-you-go) — every id here is the SLASH-prefixed form
   // ("opencode-go/<id>" / "opencode/<id>") parseModelRef recognizes, kept
   // verbatim by bareModelId (see the central invariant in
   // src/ai/modelRef.ts): for these two providers "bare" and
   // "provider-qualified" are the same string, unlike the legacy
-  // "openrouter:" colon form. All eight carry `requiresUserKey: true` — see
+  // "openrouter:" colon form. All nine carry `requiresUserKey: true` — see
   // getModels()/ModelOption above for what that means: there is no server
   // key, so nothing here is ever filtered by config, only by whether the
   // requesting browser has stored its own OpenCode key.
@@ -725,6 +738,25 @@ export const DEFAULT_MODELS: ModelOption[] = [
     id: "opencode/kimi-k2.7-code",
     label: "Kimi K2.7 Code · Zen",
     supportsVision: true,
+    requiresUserKey: true,
+  },
+  // Unlike every other OpenCode entry above, this `supportsVision` was NOT
+  // measured live against a real key — nobody has run the blue/yellow-PNG
+  // smoke (see the block comment above) against Zen's minimax-m3 yet. Left
+  // conservatively `false`: the cost of a wrong `false` is just a
+  // VISION_MODEL text description of the image (visionFallback still
+  // answers), while a wrong `true` would silently return an empty
+  // completion the way glm-5.3/glm-5.2/Zen's deepseek-v4-flash did before
+  // they were measured. Do NOT flip this on the evidence of the OpenRouter
+  // twin "minimax/minimax-m3" above: per the block comment, vision here is a
+  // property of the OpenCode ENDPOINT, not of the model family, and those
+  // three silent failures are all models whose OpenRouter twins read as
+  // vision-capable. Only the blue/yellow-PNG smoke against a real Zen key
+  // may raise this to `true`.
+  {
+    id: "opencode/minimax-m3",
+    label: "MiniMax M3 · Zen",
+    supportsVision: false,
     requiresUserKey: true,
   },
 ];
