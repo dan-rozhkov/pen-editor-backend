@@ -29,6 +29,7 @@ import {
   createRetriedUIMessageStream,
   pipeRetriedUIMessageStreamToResponse,
   type AttemptState,
+  type StreamAttempt,
 } from "../ai/streamWithRetry.js";
 import { DEFAULT_AGENT_RETRY, type AgentRetryPolicy } from "../ai/retry.js";
 import type { MemoryStore } from "../ai/memory/store.js";
@@ -469,8 +470,22 @@ export async function chatRoutes(
     // onFinish/onAbort for a discarded attempt (see ai/streamWithRetry.ts's
     // doc comment), so without it a retried turn would write an extra
     // `raw_traces` row and fire a false `agent_turn_completed`/`_failed`.
-    const buildAttempt = (_attempt: number, attemptState: AttemptState) =>
-      streamText({
+    const buildAttempt = (
+      _attempt: number,
+      attemptState: AttemptState,
+    ): StreamAttempt => {
+      // Input tokens of the LAST step only (not `onFinish`'s `usage`, which
+      // is `totalUsage` summed across every step of a multi-step tool
+      // loop). The last step's prompt IS the model's actual context size at
+      // the end of the turn — earlier steps' input tokens are history that
+      // was already counted in a prior request's total, so summing them
+      // double-counts and is useless for a "how full is the context window"
+      // meter. Reset per attempt (declared inside buildAttempt) so a retried
+      // attempt doesn't inherit a discarded attempt's step usage.
+      let lastStepInputTokens = 0;
+      let lastStepOutputTokens = 0;
+
+      const result = streamText({
       model,
       system,
       messages: modelMessages,
@@ -482,6 +497,14 @@ export async function chatRoutes(
       // default (2 internal retries with its own backoff) would otherwise
       // stack on top of ours, multiplying provider calls and time-to-error.
       maxRetries: 0,
+      onStepFinish({ usage }) {
+        // `?? lastStep...` rather than `?? 0`: a provider that reports usage
+        // on an early step but omits it on the final one would otherwise
+        // destroy a measurement we already had in hand, and the `<= 0` guard
+        // below would then suppress the meter entirely for that provider.
+        lastStepInputTokens = usage.inputTokens ?? lastStepInputTokens;
+        lastStepOutputTokens = usage.outputTokens ?? lastStepOutputTokens;
+      },
       onAbort({ steps }) {
         if (attemptState.discarded) return;
         console.log(
@@ -606,6 +629,53 @@ export async function chatRoutes(
         }
       },
       });
+
+      return {
+        // Wrap `toUIMessageStream` so we can attach a context-window meter
+        // value to the `finish` chunk WITHOUT emitting a separate
+        // `message-metadata` chunk anywhere else in the stream.
+        //
+        // AI SDK v6 calls `messageMetadata` on both the `start` AND
+        // `finish` TextStreamParts. Returning a value on any part other
+        // than `finish` makes `toUIMessageStream` emit a standalone
+        // `message-metadata` UI chunk right there — and streamWithRetry.ts's
+        // `BOOKKEEPING_CHUNK_TYPES` does NOT include `message-metadata`, so
+        // that chunk counts as real CONTENT and would prematurely flush/
+        // commit the retry buffer before this attempt is known to succeed
+        // (see the module doc comment on streamWithRetry.ts). Metadata
+        // returned only from the `finish` part instead rides inside the
+        // `finish` chunk itself, which IS bookkeeping — so it stays
+        // invisible to the retry buffer exactly like the rest of `finish`.
+        // This is an invariant, not a style choice: do not widen this past
+        // `finish`.
+        toUIMessageStream: (opts) =>
+          result.toUIMessageStream({
+            ...opts,
+            messageMetadata: ({ part }) => {
+              if (part.type !== "finish") return undefined;
+              // 0 means the model/provider never reported usage for ANY step
+              // of this turn (see onStepFinish, which keeps the last known
+              // value) — send nothing rather than a misleading "0 tokens
+              // used" the frontend would render as an empty meter.
+              if (lastStepInputTokens <= 0) return undefined;
+              // The LAST step's prompt plus what the model wrote on top of
+              // it, NOT the summed usage of every step (each step re-sends
+              // the whole prompt, so a sum wildly overstates the context).
+              // Adding the output makes this the size of the conversation
+              // as it now stands rather than as it was when the last step
+              // started — the browser replays all of it on the next request.
+              // Known understatement: client-executed tool results produced
+              // after this turn (a batch_design HTML payload, a screenshot
+              // description) are not in either number and only show up in
+              // the NEXT turn's reading. So this is a measurement of what
+              // has been sent, not a forecast of the next request.
+              return {
+                contextTokens: lastStepInputTokens + lastStepOutputTokens,
+              };
+            },
+          }),
+      };
+    };
 
     // Set CORS headers manually since reply.hijack() bypasses Fastify plugins.
     // Only reflect origins from the allowlist (empty allowlist = dev mode, allow any).

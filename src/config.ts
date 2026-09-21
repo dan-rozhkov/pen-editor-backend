@@ -575,6 +575,16 @@ export interface ModelOption {
    * whether the browser has a key stored.
    */
   requiresUserKey?: boolean;
+  /**
+   * The model's context window, in tokens — read off
+   * `openrouter.ai/api/v1/models`'s `context_length` on 2026-09-21. Optional
+   * because `getModels()` can append a synthesized entry for `CHAT_MODEL`
+   * when an operator points it at an id outside `DEFAULT_MODELS` (see the
+   * `else` branch below); that entry has no known window, and the frontend
+   * simply skips rendering the context-usage meter when this is absent
+   * rather than guessing.
+   */
+  contextWindow?: number;
 }
 
 // The models a user may pick in the composer, with UI metadata. The first
@@ -595,51 +605,66 @@ export interface ModelOption {
 // other id lists "image". An operator who points CHAT_MODEL at an id that is
 // NOT in this list can still do so (getModels appends it) and should set
 // CHAT_MODEL_SUPPORTS_VISION if that model is text-only.
+//
+// `contextWindow` was read off the same openrouter.ai/api/v1/models listing
+// (`context_length`) on 2026-09-21, for every entry including the eight
+// OpenCode BYOK ones below (see the note above them for how those map to an
+// OpenRouter id). It powers the frontend's context-usage meter and is
+// otherwise inert here — nothing in this file reads it back.
 export const DEFAULT_MODELS: ModelOption[] = [
   {
     id: "meta/muse-spark-1.3-contributor",
     label: "Muse Spark 1.3",
     supportsVision: true,
+    contextWindow: 1_048_576,
   },
   {
     id: "qwen/qwen3.8-flash",
     label: "Qwen3.8 Flash",
     supportsVision: true,
+    contextWindow: 1_000_000,
   },
   {
     id: "z-ai/glm-5.3-flash",
     label: "GLM 5.3 Flash",
     supportsVision: true,
+    contextWindow: 1_310_720,
   },
   {
     id: "deepseek/deepseek-v4.1-flash",
     label: "DeepSeek V4.1 Flash",
     supportsVision: true,
+    contextWindow: 1_048_576,
   },
   {
     id: "google/gemini-3.8-flash",
     label: "Gemini 3.8 Flash",
     supportsVision: true,
+    contextWindow: 1_048_576,
   },
   {
     id: "tencent/hy4-preview",
     label: "Hy4 Preview",
     supportsVision: false,
+    contextWindow: 1_048_576,
   },
   {
     id: "z-ai/glm-5.3",
     label: "GLM 5.3",
     supportsVision: false,
+    contextWindow: 1_310_720,
   },
   {
     id: "openai/gpt-5.6-luna",
     label: "GPT-5.6 Luna",
     supportsVision: true,
+    contextWindow: 1_050_000,
   },
   {
     id: "z-ai/glm-5.2",
     label: "GLM 5.2",
     supportsVision: false,
+    contextWindow: 1_048_576,
   },
   // Ships in the picker on request, with a known caveat: on the design-agent
   // prompt this model fairly often ends a turn with reasoning only —
@@ -653,6 +678,7 @@ export const DEFAULT_MODELS: ModelOption[] = [
     id: "minimax/minimax-m3",
     label: "MiniMax M3",
     supportsVision: true,
+    contextWindow: 1_048_576,
   },
   // --- OpenCode BYOK (docs/specs/2026-09-18-opencode-byok-design.md) ---
   // Nine entries, five on Go ($10/mo flat subscription) and four on Zen
@@ -692,53 +718,68 @@ export const DEFAULT_MODELS: ModelOption[] = [
   // @ai-sdk/openai-compatible integration carries a USER-attached image
   // natively but stringifies an image inside a TOOL RESULT. Both measurements
   // hold at once, and the smoke above confirms the user-attachment half.
+  //
+  // `contextWindow` for these eight: OpenCode has no OpenRouter listing of
+  // its own (it isn't an OpenRouter id at all — see the slash-prefix note
+  // above), so each value is the underlying model's window read off its
+  // OpenRouter twin instead — e.g. "opencode/kimi-k2.7-code" takes
+  // moonshotai/kimi-k2.7-code's context_length, since OpenCode is just a
+  // different endpoint onto the same base model, not a different model.
   {
     id: "opencode-go/deepseek-v4.1-flash",
     label: "DeepSeek V4.1 Flash · Go",
     supportsVision: true,
     requiresUserKey: true,
+    contextWindow: 1_048_576,
   },
   {
     id: "opencode-go/deepseek-v4-flash-vision-exp",
     label: "DeepSeek V4 Flash Vision · Go",
     supportsVision: true,
     requiresUserKey: true,
+    contextWindow: 1_048_576,
   },
   {
     id: "opencode-go/glm-5.3-flash",
     label: "GLM 5.3 Flash · Go",
     supportsVision: true,
     requiresUserKey: true,
+    contextWindow: 1_310_720,
   },
   {
     id: "opencode-go/glm-5.3",
     label: "GLM 5.3 · Go",
     supportsVision: false,
     requiresUserKey: true,
+    contextWindow: 1_310_720,
   },
   {
     id: "opencode-go/glm-5.2",
     label: "GLM 5.2 · Go",
     supportsVision: false,
     requiresUserKey: true,
+    contextWindow: 1_048_576,
   },
   {
     id: "opencode/deepseek-v4-flash",
     label: "DeepSeek V4 Flash · Zen",
     supportsVision: false,
     requiresUserKey: true,
+    contextWindow: 1_048_576,
   },
   {
     id: "opencode/glm-5.3-flash",
     label: "GLM 5.3 Flash · Zen",
     supportsVision: true,
     requiresUserKey: true,
+    contextWindow: 1_310_720,
   },
   {
     id: "opencode/kimi-k2.7-code",
     label: "Kimi K2.7 Code · Zen",
     supportsVision: true,
     requiresUserKey: true,
+    contextWindow: 262_144,
   },
   // Unlike every other OpenCode entry above, this `supportsVision` was NOT
   // measured live against a real key — nobody has run the blue/yellow-PNG
@@ -758,6 +799,7 @@ export const DEFAULT_MODELS: ModelOption[] = [
     label: "MiniMax M3 · Zen",
     supportsVision: false,
     requiresUserKey: true,
+    contextWindow: 1_048_576,
   },
 ];
 

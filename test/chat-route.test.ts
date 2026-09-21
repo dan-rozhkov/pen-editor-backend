@@ -245,6 +245,188 @@ describe("POST /api/chat — streaming happy paths", () => {
   });
 });
 
+describe("POST /api/chat — context window meter (finish messageMetadata)", () => {
+  it("carries the LAST step's input+output tokens on the finish chunk, not the turn's summed total", async () => {
+    // Step 1: a server-executed tool call (get_guidelines) that resolves and
+    // triggers a second model turn automatically inside this one
+    // streamText() call — same shape as chat-trace.test.ts's multi-step
+    // test. Step 1's usage carries a small inputTokens; step 2's (the real
+    // end-of-turn prompt size) is deliberately much larger, so a test
+    // asserting on the SUMMED totalUsage (60 in + 10 out) instead of the
+    // last step's own value (50 in + 5 out = 55) would fail.
+    let call = 0;
+    holders.model = new MockLanguageModelV3({
+      doStream: async () => {
+        call += 1;
+        if (call === 1) {
+          return {
+            stream: simulateReadableStream({
+              chunks: [
+                { type: "stream-start", warnings: [] },
+                {
+                  type: "tool-call",
+                  toolCallId: "call-1",
+                  toolName: "get_guidelines",
+                  input: JSON.stringify({ topic: "table" }),
+                },
+                {
+                  type: "finish",
+                  finishReason: { unified: "tool-calls", raw: "tool_calls" },
+                  usage: {
+                    inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
+                    outputTokens: { total: 5, text: 5, reasoning: 0 },
+                  },
+                },
+              ],
+              chunkDelayInMs: null,
+            }),
+          };
+        }
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: "stream-start", warnings: [] },
+              { type: "text-start", id: "t1" },
+              { type: "text-delta", id: "t1", delta: "done" },
+              { type: "text-end", id: "t1" },
+              {
+                type: "finish",
+                finishReason: { unified: "stop", raw: "stop" },
+                usage: {
+                  inputTokens: { total: 50, noCache: 50, cacheRead: 0, cacheWrite: 0 },
+                  outputTokens: { total: 5, text: 5, reasoning: 0 },
+                },
+              },
+            ],
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+
+    const res = await postChat(server.url, {
+      messages: [userMessage("what's the table guideline?")],
+    });
+    expect(res.status).toBe(200);
+    const body = await res.text();
+
+    const finishLine = body
+      .split("\n")
+      .find((line) => line.startsWith("data:") && line.includes('"type":"finish"'));
+    expect(finishLine).toBeDefined();
+    const finishChunk = JSON.parse(finishLine!.slice("data:".length)) as {
+      type: string;
+      messageMetadata?: { contextTokens?: number };
+    };
+    expect(finishChunk.messageMetadata).toEqual({ contextTokens: 55 });
+
+    // No separate `message-metadata` chunk anywhere: metadata must ride
+    // inside `finish` (bookkeeping) only, or a real streamWithRetry.ts
+    // attempt would treat it as content and flush the retry buffer early
+    // — see the doc comment in src/routes/chat.ts's buildAttempt.
+    expect(body).not.toContain('"type":"message-metadata"');
+  });
+
+  it("keeps an earlier step's usage when the final step reports none", async () => {
+    // A provider that reports usage on the first step but omits it on the
+    // last one must not wipe the measurement we already have — otherwise the
+    // `<= 0` guard suppresses the meter entirely for that provider.
+    let call = 0;
+    holders.model = new MockLanguageModelV3({
+      doStream: async () => {
+        call += 1;
+        if (call === 1) {
+          return {
+            stream: simulateReadableStream({
+              chunks: [
+                { type: "stream-start", warnings: [] },
+                {
+                  type: "tool-call",
+                  toolCallId: "call-1",
+                  toolName: "get_guidelines",
+                  input: JSON.stringify({ topic: "table" }),
+                },
+                {
+                  type: "finish",
+                  finishReason: { unified: "tool-calls", raw: "tool_calls" },
+                  usage: {
+                    inputTokens: { total: 40, noCache: 40, cacheRead: 0, cacheWrite: 0 },
+                    outputTokens: { total: 5, text: 5, reasoning: 0 },
+                  },
+                },
+              ],
+              chunkDelayInMs: null,
+            }),
+          };
+        }
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: "stream-start", warnings: [] },
+              { type: "text-start", id: "t1" },
+              { type: "text-delta", id: "t1", delta: "done" },
+              { type: "text-end", id: "t1" },
+              {
+                type: "finish",
+                finishReason: { unified: "stop", raw: "stop" },
+                usage: {
+                  inputTokens: {
+                    total: undefined,
+                    noCache: undefined,
+                    cacheRead: 0,
+                    cacheWrite: 0,
+                  },
+                  outputTokens: { total: undefined, text: undefined, reasoning: 0 },
+                },
+              },
+            ],
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+
+    const res = await postChat(server.url, {
+      messages: [userMessage("what's the table guideline?")],
+    });
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    const finishLine = body
+      .split("\n")
+      .find((line) => line.startsWith("data:") && line.includes('"type":"finish"'));
+    expect(finishLine).toBeDefined();
+    const finishChunk = JSON.parse(finishLine!.slice("data:".length)) as {
+      messageMetadata?: { contextTokens?: number };
+    };
+    expect(finishChunk.messageMetadata).toEqual({ contextTokens: 45 });
+  });
+
+  it("omits messageMetadata when no step of the turn reported usable inputTokens", async () => {
+    holders.model = mockModel([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "t1" },
+      { type: "text-delta", id: "t1", delta: "ok" },
+      { type: "text-end", id: "t1" },
+      {
+        type: "finish",
+        finishReason: { unified: "stop", raw: "stop" },
+        usage: {
+          inputTokens: { total: undefined, noCache: undefined, cacheRead: 0, cacheWrite: 0 },
+          outputTokens: { total: 5, text: 5, reasoning: 0 },
+        },
+      },
+    ]);
+
+    const res = await postChat(server.url, { messages: [userMessage("hi")] });
+    const body = await res.text();
+    const finishLine = body
+      .split("\n")
+      .find((line) => line.startsWith("data:") && line.includes('"type":"finish"'));
+    expect(finishLine).toBeDefined();
+    expect(finishLine).not.toContain("messageMetadata");
+  });
+});
+
 describe("POST /api/chat — validation errors", () => {
   it("returns 400 for empty messages", async () => {
     const res = await postChat(server.url, { messages: [] });

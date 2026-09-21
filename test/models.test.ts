@@ -87,6 +87,21 @@ describe("getModels", () => {
     const openrouter = models.find((m) => m.id === DEFAULT_MODELS[0].id);
     expect(openrouter?.requiresUserKey).toBeUndefined();
   });
+
+  // Powers the frontend's context-usage meter (GET /api/models is a
+  // pass-through, see src/routes/models.ts): every built-in model must
+  // carry a real, positive token count, not just an optional field that
+  // happens to be present on some entries. A synthesized (operator-pointed)
+  // entry is exempt — see the "appends an operator-pointed CHAT_MODEL" test
+  // above, which already pins that one down to `contextWindow: undefined`.
+  it("gives every DEFAULT_MODELS entry a numeric contextWindow", () => {
+    for (const model of DEFAULT_MODELS) {
+      expect(model.contextWindow, `${model.id} contextWindow`).toEqual(
+        expect.any(Number),
+      );
+      expect(model.contextWindow ?? 0, `${model.id} contextWindow`).toBeGreaterThan(0);
+    }
+  });
 });
 
 describe("GET /api/models", () => {
@@ -137,6 +152,19 @@ describe("GET /api/models", () => {
       (m) => m.id === "opencode-go/glm-5.3-flash",
     );
     expect(openCodeEntry?.requiresUserKey).toBe(true);
+  });
+
+  it("serves a numeric contextWindow on every DEFAULT_MODELS entry", async () => {
+    const base = await start(makeConfig({ CHAT_MODEL: DEFAULT_MODELS[0].id }));
+    const res = await fetch(`${base}/api/models`);
+    const body = (await res.json()) as { models: ModelOption[] };
+
+    for (const model of DEFAULT_MODELS) {
+      const served = body.models.find((m) => m.id === model.id);
+      expect(served?.contextWindow, `${model.id} contextWindow`).toEqual(
+        expect.any(Number),
+      );
+    }
   });
 
   it("reports visionFallback: false when VISION_MODEL is empty", async () => {

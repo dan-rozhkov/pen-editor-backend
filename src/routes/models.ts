@@ -12,6 +12,12 @@ import { isVisionConfigured } from "../services/vision.js";
 // ModelOption never sets the field for those and JSON.stringify drops an
 // undefined property. The frontend's picker treats "absent" and "false" the
 // same way (no lock icon, no key required) — see chatModels.ts.
+//
+// `contextWindow` flows through the same way: present (a token count) for
+// every DEFAULT_MODELS entry, and simply ABSENT for a synthesized entry
+// getModels() appends for a CHAT_MODEL outside that list (see ModelOption's
+// doc comment in config.ts) — the frontend's context-usage meter treats a
+// missing `contextWindow` as "don't render the meter for this model."
 export async function modelsRoutes(app: FastifyInstance, config: Config) {
   const models = getModels(config);
   const defaultModel = getDefaultModel(config);
