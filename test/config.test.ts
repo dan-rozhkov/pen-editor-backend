@@ -116,6 +116,18 @@ describe("DEFAULT_MODELS", () => {
         contextWindow: 1_048_576,
       },
       {
+        id: "xiaomi/mimo-v2.6-pro",
+        label: "MiMo V2.6 Pro",
+        supportsVision: true,
+        contextWindow: 1_048_576,
+      },
+      {
+        id: "xiaomi/mimo-v2.6-flash",
+        label: "MiMo V2.6 Flash",
+        supportsVision: true,
+        contextWindow: 1_048_576,
+      },
+      {
         id: "opencode-go/deepseek-v4.1-flash",
         label: "DeepSeek V4.1 Flash · Go",
         supportsVision: true,

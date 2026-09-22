@@ -588,7 +588,7 @@ export interface ModelOption {
 }
 
 // The models a user may pick in the composer, with UI metadata. The first
-// ten ids are bare OpenRouter ids; the nine OpenCode BYOK entries below
+// twelve ids are bare OpenRouter ids; the nine OpenCode BYOK entries below
 // them are bare in their OWN sense too (see the central invariant in
 // src/ai/modelRef.ts: bareModelId — GET /api/models, raw_traces and the
 // showcase gallery's `model` column must only ever see the bare id, never an
@@ -600,17 +600,19 @@ export interface ModelOption {
 //
 // `supportsVision` was read off openrouter.ai/api/v1/models'
 // `architecture.input_modalities` (2026-09-14 for the first four, 2026-09-17
-// for the five added since, 2026-09-21 for minimax/minimax-m3):
+// for the five added since, 2026-09-21 for minimax/minimax-m3, 2026-09-22 for
+// xiaomi/mimo-v2.6-pro and xiaomi/mimo-v2.6-flash):
 // tencent/hy4-preview, z-ai/glm-5.3 and z-ai/glm-5.2 are text-only, every
 // other id lists "image". An operator who points CHAT_MODEL at an id that is
 // NOT in this list can still do so (getModels appends it) and should set
 // CHAT_MODEL_SUPPORTS_VISION if that model is text-only.
 //
 // `contextWindow` was read off the same openrouter.ai/api/v1/models listing
-// (`context_length`) on 2026-09-21, for every entry including the eight
-// OpenCode BYOK ones below (see the note above them for how those map to an
-// OpenRouter id). It powers the frontend's context-usage meter and is
-// otherwise inert here — nothing in this file reads it back.
+// (`context_length`) on 2026-09-21 (2026-09-22 for the two xiaomi ids), for
+// every entry including the eight OpenCode BYOK ones below (see the note
+// above them for how those map to an OpenRouter id). It powers the
+// frontend's context-usage meter and is otherwise inert here — nothing in
+// this file reads it back.
 export const DEFAULT_MODELS: ModelOption[] = [
   {
     id: "meta/muse-spark-1.3-contributor",
@@ -677,6 +679,18 @@ export const DEFAULT_MODELS: ModelOption[] = [
   {
     id: "minimax/minimax-m3",
     label: "MiniMax M3",
+    supportsVision: true,
+    contextWindow: 1_048_576,
+  },
+  {
+    id: "xiaomi/mimo-v2.6-pro",
+    label: "MiMo V2.6 Pro",
+    supportsVision: true,
+    contextWindow: 1_048_576,
+  },
+  {
+    id: "xiaomi/mimo-v2.6-flash",
+    label: "MiMo V2.6 Flash",
     supportsVision: true,
     contextWindow: 1_048_576,
   },
