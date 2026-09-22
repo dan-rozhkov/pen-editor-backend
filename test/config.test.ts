@@ -98,8 +98,8 @@ describe("DEFAULT_MODELS", () => {
         contextWindow: 1_310_720,
       },
       {
-        id: "openai/gpt-5.6-luna",
-        label: "GPT-5.6 Luna",
+        id: "openai/gpt-6-luna",
+        label: "GPT-6 Luna",
         supportsVision: true,
         contextWindow: 1_050_000,
       },

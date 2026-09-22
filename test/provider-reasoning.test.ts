@@ -46,7 +46,7 @@ describe("supportsReasoningControl", () => {
       "stealth/union-alpha",
       "google/gemini-3.8-flash",
       "tencent/hy4-preview",
-      "openai/gpt-5.6-luna",
+      "openai/gpt-6-luna",
     ]) {
       expect(supportsReasoningControl(modelId)).toBe(true);
     }

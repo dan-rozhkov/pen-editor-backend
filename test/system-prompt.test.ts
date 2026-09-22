@@ -35,6 +35,16 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("polish");
   });
 
+  it("directs one-screen-at-a-time reasoning for multi-screen work", () => {
+    // Regression guard: the agent used to plan every screen's layout in one
+    // long reasoning pass before the first batch_design call. The system
+    // prompt must state the general principle (skill files carry the
+    // screen-by-screen mechanics).
+    const prompt = buildSystemPrompt();
+    expect(prompt).toContain("Reasoning discipline");
+    expect(prompt.toLowerCase()).toContain("reason about one at a time");
+  });
+
   it("includes the prototype routing rule", () => {
     const prompt = buildSystemPrompt();
     expect(prompt).toContain('type: "embed"');

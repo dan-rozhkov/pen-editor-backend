@@ -29,9 +29,17 @@ export const MAX_SHOWCASE_SCREENS = 5;
 // is set to — see src/ai/provider.ts's parseModelRef.
 export const SHOWCASE_MODEL_ID = "openrouter:google/gemini-3.7-flash";
 
-// Generous but bounded step budget: ask_user -> get_editor_state ->
-// get_guidelines -> batch_design (+ a retry or two) comfortably fits.
-export const SHOWCASE_MAX_STEPS = 16;
+// Generous but bounded step budget. Since the prototype skill now works
+// screen-by-screen (one batch_design call per screen instead of planning
+// every screen's layout in one reasoning pass, then emitting them together),
+// a 5-screen run can spend ~13 steps before its first screen: the ask_user
+// stub, get_editor_state, get_guidelines, load_skill for research plus its
+// 1-2 queries and screen inspections, generate_image, and the
+// find_empty_space_on_canvas stub the skill asks for. Then five separate
+// batch_design calls, plus room for retries. Running out is NOT an error:
+// stepCountIs just ends the turn and the screens made so far get published
+// short (3/5, say), so err on the generous side.
+export const SHOWCASE_MAX_STEPS = 28;
 
 
 export interface ShowcaseScreenDraft {

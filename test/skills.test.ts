@@ -336,6 +336,17 @@ describe("loadSkills / getSkill", () => {
     expect(proto.content).toContain("`slides` skill");
   });
 
+  it("pins the screen-by-screen reasoning rule in the prototype skill", () => {
+    // Regression guard: models used to think through every screen's layout
+    // in one long reasoning pass before the first batch_design call. The
+    // skill must direct one screen of reasoning + one batch_design call at a
+    // time, reusing the first screen's tokens/styles verbatim.
+    const proto = getSkill("prototype")!;
+    expect(proto.content).toContain("Work screen-by-screen, not all-at-once");
+    expect(proto.content).toContain("one screen per `batch_design` call");
+    expect(proto.content).toContain("byte-for-byte");
+  });
+
   it("pins the fit-to-canvas rules in the prototype skill", () => {
     const proto = getSkill("prototype")!;
     expect(proto.content).toContain("Fit to canvas");
