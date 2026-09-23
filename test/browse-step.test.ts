@@ -216,6 +216,16 @@ describe("buildBrowseStepQuestions", () => {
     expect((questions.target_type as { criteria: Record<string, unknown> }).criteria).toHaveProperty("5");
   });
 
+  it("tells Jev whether a checkbox/radio is checked, in both the target criteria and the state digest", () => {
+    const standard: BrowseStepElement = { index: 7, tag: "input", label: "Standard Shipping (5-7 days)", ops: ["CLICK"], checked: false };
+    const express: BrowseStepElement = { index: 8, tag: "input", label: "Express Shipping (1-2 days)", ops: ["CLICK"], checked: true };
+    const questions = buildBrowseStepQuestions([standard, express]);
+    const criteria = (questions.target_click as { criteria: Record<string, string> }).criteria;
+    expect(criteria["7"]).toContain("Standard Shipping");
+    expect(criteria["7"]).toContain("(unchecked)");
+    expect(criteria["8"]).toContain("(checked)");
+  });
+
   it("does not offer DONE or BLOCKED as operation choice options", () => {
     // Both are decided by the goal_met/dead_end nouls now, not by the
     // operation Choice — an absolute judgment forced to compete against

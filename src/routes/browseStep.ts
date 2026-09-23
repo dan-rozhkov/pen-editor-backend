@@ -36,6 +36,7 @@ export const elementSchema = z.object({
   // the key silently and Jev would lose the only remaining signal that the
   // field is already filled, which is the whole reason `value` was dropped.
   hasValue: z.boolean().optional(),
+  checked: z.boolean().optional(),
   isPassword: z.boolean().optional(),
   ops: z.array(z.enum(["CLICK", "TYPE_TEXT", "SELECT"])).min(1),
   options: z.array(z.string().max(2_000)).max(1_000).optional(),

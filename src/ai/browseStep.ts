@@ -397,6 +397,9 @@ export interface BrowseStepElement {
    * Jev needs to avoid retyping into a populated field, so it is rendered
    * into the element table while the content itself never is. */
   hasValue?: boolean;
+  /** Checkbox/radio state from the desktop snapshot. Without it a filter
+   * that is already on reads exactly like one that is off. */
+  checked?: boolean;
   ops: Array<"CLICK" | "TYPE_TEXT" | "SELECT">;
   options?: string[];
 }
@@ -477,7 +480,11 @@ export function truncateLabel(label: string, max = 120): string {
  * this digest only needs to say "there is a search box here," not fully
  * describe it. */
 function elementDigestLine(el: BrowseStepElement): string {
-  const flags = [el.isPassword ? "password" : null, el.hasValue ? "filled" : null]
+  const flags = [
+    el.isPassword ? "password" : null,
+    el.hasValue ? "filled" : null,
+    el.checked ? "checked" : null,
+  ]
     .filter((f): f is string => f !== null)
     .join(",");
   return `[${el.index}] <${el.tag}> ${truncateLabel(el.label, 80)} — ${el.ops.join("/")}${
@@ -552,7 +559,7 @@ export function elementCriterionLabel(el: BrowseStepElement): string {
         : el.hasValue
           ? " (already filled)"
           : ""
-    }`,
+    }${el.checked === undefined ? "" : el.checked ? " (checked)" : " (unchecked)"}`,
     160,
   );
 }
