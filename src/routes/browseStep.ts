@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { Config } from "../config.js";
-import { createSystemOne } from "../services/systemone.js";
+import { createSystemOne, type SystemOneClient } from "../services/systemone.js";
 import {
   decideBrowseStep,
   MAX_SNAPSHOT_ELEMENTS,
@@ -58,20 +58,35 @@ const bodySchema = z.object({
   history: z.array(historyEntrySchema).max(50),
 });
 
-export async function browseStepRoutes(
+/**
+ * Registers one stateless Jev-backed browse route — shared by
+ * /api/browse/step and /api/browse/locate so the TYPESAFE_API_KEY gate
+ * (503), body validation (400) and the last-resort catch (502) can't drift
+ * between them. Both `decide` functions are themselves designed never to
+ * throw (they fail open to a BLOCKED/retry result); the catch is only a net
+ * so a genuinely unexpected error still answers something machine-readable
+ * rather than tearing down the frontend loop.
+ */
+export function registerJevBrowseRoute<Body>(
   app: FastifyInstance,
   config: Config,
-): Promise<void> {
+  route: {
+    path: string;
+    bodySchema: z.ZodType<Body>;
+    decide: (client: SystemOneClient, body: Body) => Promise<unknown>;
+    failureMessage: string;
+  },
+): void {
   app.post(
-    "/api/browse/step",
+    route.path,
     {
       config: {
-        // Each request is one Jev call, PLUS either a small STRUCTURED_MODEL
-        // call (TYPE_TEXT) or a second, small Jev call (SELECT — see
-        // chooseSelectOption in browseStep.ts) — cheap individually, but this
-        // fires once per loop iteration of browse_task (up to 25), so a
-        // per-IP cap well above a single legitimate task's step rate still
-        // bounds a script hammering this endpoint directly.
+        // One Jev call per request (plus, for /api/browse/step, a small
+        // STRUCTURED_MODEL call for TYPE_TEXT or a second small Jev call for
+        // SELECT — see chooseSelectOption in browseStep.ts). Cheap
+        // individually, but browse_task fires one per loop iteration (up to
+        // 25), so a per-IP cap well above a legitimate task's step rate still
+        // bounds a script hammering these endpoints directly.
         rateLimit: { max: 60, timeWindow: "1 minute" },
       },
     },
@@ -83,34 +98,40 @@ export async function browseStepRoutes(
           .send({ error: "Browsing is not configured (TYPESAFE_API_KEY unset)." });
       }
 
-      const parsed = bodySchema.safeParse(request.body);
+      const parsed = route.bodySchema.safeParse(request.body);
       if (!parsed.success) {
         return reply
           .status(400)
           .send({ error: parsed.error.issues[0]?.message ?? "invalid body" });
       }
 
-      const input: BrowseStepInput = {
-        goal: parsed.data.goal,
-        url: parsed.data.url,
-        title: parsed.data.title,
-        elements: parsed.data.elements.slice(0, MAX_SNAPSHOT_ELEMENTS),
-        history: parsed.data.history,
-      };
-
       try {
-        const result = await decideBrowseStep(client, config, input);
-        return reply.send(result);
+        return reply.send(await route.decide(client, parsed.data));
       } catch (err) {
-        // decideBrowseStep is itself designed to never throw (it fails open
-        // to a BLOCKED result) — this is a last-resort net so a genuinely
-        // unexpected error still answers something machine-readable rather
-        // than tearing down the frontend loop.
-        app.log.error({ err }, "browse step failed unexpectedly");
-        return reply
-          .status(502)
-          .send({ error: "failed to evaluate the next browsing step" });
+        app.log.error({ err, path: route.path }, "browse route failed unexpectedly");
+        return reply.status(502).send({ error: route.failureMessage });
       }
     },
   );
+}
+
+export async function browseStepRoutes(
+  app: FastifyInstance,
+  config: Config,
+): Promise<void> {
+  registerJevBrowseRoute(app, config, {
+    path: "/api/browse/step",
+    bodySchema,
+    decide: (client, body) => {
+      const input: BrowseStepInput = {
+        goal: body.goal,
+        url: body.url,
+        title: body.title,
+        elements: body.elements.slice(0, MAX_SNAPSHOT_ELEMENTS),
+        history: body.history,
+      };
+      return decideBrowseStep(client, config, input);
+    },
+    failureMessage: "failed to evaluate the next browsing step",
+  });
 }
