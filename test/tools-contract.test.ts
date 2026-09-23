@@ -62,7 +62,10 @@ describe("penTools registry", () => {
         "read_repo_files",
         "attach_local_repo",
         "browse_open",
+        "browse_snapshot",
+        "browse_screenshot",
         "browse_act",
+        "browse_tabs",
         "browse_find_images",
         "browse_task",
         "browse_read",
@@ -118,7 +121,10 @@ describe("penTools registry", () => {
       "read_repo_files",
       "attach_local_repo",
       "browse_open",
+      "browse_snapshot",
+      "browse_screenshot",
       "browse_act",
+      "browse_tabs",
       "browse_find_images",
       "browse_task",
       "browse_read",
@@ -1187,6 +1193,137 @@ describe("read_design_repo / read_repo_files schema: repo is optional", () => {
   it("read_repo_files accepts a call with no repo argument, only paths", () => {
     const schema = schemaOf("read_repo_files");
     expect(() => schema.parse({ paths: ["src/App.tsx"] })).not.toThrow();
+  });
+});
+
+describe("browse_snapshot schema", () => {
+  const schema = schemaOf("browse_snapshot");
+
+  it("accepts a call with no arguments", () => {
+    expect(schema.safeParse({}).success).toBe(true);
+  });
+});
+
+describe("browse_screenshot schema", () => {
+  const schema = schemaOf("browse_screenshot");
+
+  it("accepts a call with no arguments", () => {
+    expect(schema.safeParse({}).success).toBe(true);
+  });
+
+  it("accepts annotate: true and annotate: false", () => {
+    expect(schema.safeParse({ annotate: true }).success).toBe(true);
+    expect(schema.safeParse({ annotate: false }).success).toBe(true);
+  });
+
+  it("rejects a non-boolean annotate", () => {
+    expect(schema.safeParse({ annotate: "yes" }).success).toBe(false);
+  });
+
+  it("toModelOutput promotes a data URL to a content part with text (minus imageData) + image-data", () => {
+    const tool = penTools.browse_screenshot as {
+      toModelOutput?: (args: { output: unknown }) => unknown;
+    };
+    expect(tool.toModelOutput).toBeTypeOf("function");
+    const output = JSON.stringify({
+      imageData: "data:image/jpeg;base64,QUJD",
+      url: "https://example.com",
+      title: "Example",
+      width: 390,
+      height: 844,
+      snapshotId: "snap-1",
+      elements: [{ index: 0, tag: "button", label: "Submit", ops: ["click"] }],
+    });
+    const result = tool.toModelOutput!({ output }) as {
+      type: string;
+      value: Array<{ type: string; text?: string; data?: string; mediaType?: string }>;
+    };
+    expect(result.type).toBe("content");
+    expect(result.value).toHaveLength(2);
+    const [textPart, imagePart] = result.value;
+    expect(textPart.type).toBe("text");
+    const parsedText = JSON.parse(textPart.text!) as Record<string, unknown>;
+    expect(parsedText.imageData).toBeUndefined();
+    expect(parsedText.url).toBe("https://example.com");
+    expect(parsedText.snapshotId).toBe("snap-1");
+    expect(parsedText.elements).toEqual([{ index: 0, tag: "button", label: "Submit", ops: ["click"] }]);
+    expect(imagePart.type).toBe("image-data");
+    expect(imagePart.data).toBe("QUJD");
+    expect(imagePart.mediaType).toBe("image/jpeg");
+  });
+
+  it("toModelOutput falls back to text when there is no image (e.g. an error result)", () => {
+    const tool = penTools.browse_screenshot as {
+      toModelOutput?: (args: { output: unknown }) => unknown;
+    };
+    const output = JSON.stringify({ error: "no browser tab open" });
+    const result = tool.toModelOutput!({ output }) as { type: string; value: string };
+    expect(result.type).toBe("text");
+    expect(result.value).toBe(output);
+  });
+});
+
+describe("browse_tabs schema", () => {
+  const schema = schemaOf("browse_tabs");
+
+  it("accepts list with no other fields", () => {
+    expect(schema.safeParse({ action: "list" }).success).toBe(true);
+  });
+
+  it("accepts switch/close with a tabId", () => {
+    expect(schema.safeParse({ action: "switch", tabId: 3 }).success).toBe(true);
+    expect(schema.safeParse({ action: "close", tabId: 3 }).success).toBe(true);
+  });
+
+  it("accepts new with an optional url", () => {
+    expect(schema.safeParse({ action: "new" }).success).toBe(true);
+    expect(schema.safeParse({ action: "new", url: "https://example.com" }).success).toBe(true);
+  });
+
+  it("rejects an unknown action", () => {
+    expect(schema.safeParse({ action: "refresh" }).success).toBe(false);
+  });
+});
+
+describe("browse_act schema (widened)", () => {
+  const schema = schemaOf("browse_act");
+
+  it("still accepts the original actions", () => {
+    expect(schema.safeParse({ action: "click", target: "Submit" }).success).toBe(true);
+    expect(schema.safeParse({ action: "type", target: "#email", text: "a@b.com" }).success).toBe(true);
+    expect(schema.safeParse({ action: "scroll", amount: 2 }).success).toBe(true);
+    expect(schema.safeParse({ action: "back" }).success).toBe(true);
+    expect(schema.safeParse({ action: "forward" }).success).toBe(true);
+  });
+
+  it("accepts the new actions", () => {
+    expect(schema.safeParse({ action: "press", key: "Enter" }).success).toBe(true);
+    expect(schema.safeParse({ action: "hover", target: "Menu" }).success).toBe(true);
+    expect(
+      schema.safeParse({ action: "select", index: 2, snapshotId: "snap-1", text: "Option B" }).success,
+    ).toBe(true);
+    expect(schema.safeParse({ action: "reload" }).success).toBe(true);
+    expect(schema.safeParse({ action: "wait", text: "Loaded", ms: 5000 }).success).toBe(true);
+    expect(schema.safeParse({ action: "wait" }).success).toBe(true);
+  });
+
+  it("accepts index+snapshotId targeting for click/type", () => {
+    expect(
+      schema.safeParse({ action: "click", index: 0, snapshotId: "snap-1" }).success,
+    ).toBe(true);
+  });
+
+  it("rejects a negative or non-integer index", () => {
+    expect(schema.safeParse({ action: "click", index: -1, snapshotId: "snap-1" }).success).toBe(false);
+    expect(schema.safeParse({ action: "click", index: 1.5, snapshotId: "snap-1" }).success).toBe(false);
+  });
+
+  it("rejects ms above the hard cap", () => {
+    expect(schema.safeParse({ action: "wait", ms: 15001 }).success).toBe(false);
+  });
+
+  it("rejects an unknown action", () => {
+    expect(schema.safeParse({ action: "double-click" }).success).toBe(false);
   });
 });
 

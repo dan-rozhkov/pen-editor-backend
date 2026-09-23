@@ -213,6 +213,58 @@ describe("applyVisionPreprocessing", () => {
     expect(JSON.stringify(result)).not.toContain("AAAA");
   });
 
+  it("converts browse_screenshot's image while preserving its sibling text (elements) part for a blind model", async () => {
+    // browse_screenshot's toModelOutput (src/ai/tools.ts) produces a
+    // `content` output with a text part (JSON minus imageData: url/title/
+    // snapshotId/elements) NEXT TO the image-data part, unlike
+    // get_screenshot which is image-only. A blind model must still get the
+    // element table — only the image part may be rewritten.
+    vi.mocked(describeImage).mockResolvedValue({ ok: true, text: "A login form with two fields." });
+    const config = makeConfig();
+    const elementsJson = JSON.stringify({
+      url: "https://example.com",
+      title: "Example",
+      width: 390,
+      height: 844,
+      snapshotId: "snap-1",
+      elements: [{ index: 0, tag: "button", label: "Sign in", ops: ["click"] }],
+    });
+    const messages: ModelMessage[] = [
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "call-browse-1",
+            toolName: "browse_screenshot",
+            output: {
+              type: "content",
+              value: [
+                { type: "text", text: elementsJson },
+                { type: "image-data", data: "AAAA", mediaType: "image/jpeg" },
+              ],
+            },
+          },
+        ],
+      },
+    ];
+
+    const result = await applyVisionPreprocessing(messages, { config, modelId: BLIND_MODEL });
+
+    const value = (
+      result[0] as { content: { output: { value: { type: string; text?: string }[] } }[] }
+    ).content[0].output.value;
+    // The sibling text (elements table) survives verbatim.
+    expect(value[0]).toEqual({ type: "text", text: elementsJson });
+    // The image part is replaced with a "Screenshot"-labeled description —
+    // browse_screenshot is in SCREENSHOT_TOOL_NAMES alongside get_screenshot.
+    expect(value[1].type).toBe("text");
+    expect(value[1].text).toContain("[Screenshot: visual description]");
+    expect(value[1].text).toContain("A login form with two fields.");
+    expect(JSON.stringify(result)).not.toContain("image-data");
+    expect(JSON.stringify(result)).not.toContain("AAAA");
+  });
+
   it("replaces a tool-result image from a tool OTHER than get_screenshot", async () => {
     // Regression test for the bug this module's own INVARIANT comment warns
     // about: the tool-result scan used to hardcode `toolName === "get_screenshot"`,

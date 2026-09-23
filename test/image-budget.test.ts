@@ -98,6 +98,43 @@ describe("applyImageBudget", () => {
     expect(applyImageBudget(messages)).toBe(messages);
   });
 
+  it("elides a browse_screenshot result the same as a get_screenshot one — the pass is tool-agnostic", () => {
+    // extractToolResultImages' structured `content`-shaped path (the one
+    // toModelOutput promotions produce) never checked toolName, so
+    // browse_screenshot's toModelOutput output (also `{type:"content",
+    // value:[...]}`, just with an extra text sibling part) should budget
+    // identically to get_screenshot's image-only shape.
+    const browseShot: ModelMessage = {
+      role: "tool",
+      content: [
+        {
+          type: "tool-result",
+          toolCallId: "call-browse",
+          toolName: "browse_screenshot",
+          output: {
+            type: "content",
+            value: [
+              { type: "text", text: JSON.stringify({ url: "https://x", elements: [] }) },
+              { type: "image-data", data: "b0", mediaType: "image/jpeg" },
+            ],
+          },
+        },
+      ],
+    } as ModelMessage;
+
+    const tags = tagsOf(MAX_LIVE_TOOL_RESULT_IMAGES + TOOL_RESULT_ELISION_STEP, "s");
+    const messages = [...history([], tags), browseShot];
+    const result = applyImageBudget(messages);
+
+    // browse_screenshot's slot is the newest, so it must stay live even
+    // though older get_screenshot slots get elided by the step-wise cutoff.
+    const browseResult = result[result.length - 1] as {
+      content: { output: { value: unknown[] } }[];
+    };
+    const value = browseResult.content[0].output.value as Array<{ type: string; data?: string }>;
+    expect(value.some((part) => part.type === "image-data" && part.data === "b0")).toBe(true);
+  });
+
   it("does not crash on a message with non-array content", () => {
     const messages: ModelMessage[] = [
       { role: "user", content: "plain string content, no parts" } as ModelMessage,

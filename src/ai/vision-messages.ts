@@ -14,7 +14,7 @@ import {
   peekCachedFailureByKey,
   visionCacheKey,
 } from "../services/vision.js";
-import { parseScreenshotDataUrl } from "./screenshotOutput.js";
+import { parseScreenshotDataUrl, SCREENSHOT_TOOL_NAMES } from "./screenshotOutput.js";
 import { parseModelRef, providerHandlesToolResultImages } from "./modelRef.js";
 
 // Budget for ONE turn — but of NEW vision calls, not of images total. The
@@ -291,12 +291,13 @@ function extractToolResultImages(
   // output get replaced by an image caption the moment it merely contains
   // one inline `data:image/svg+xml;base64,...` icon — the model loses the
   // markup it needs to edit and a describeImage budget unit is burned for
-  // nothing. get_screenshot is the one tool whose whole string payload is
-  // KNOWN to be `JSON.stringify({imageData: "<data url>"})` or an error
-  // object (see screenshotOutput.ts's own doc comment) — never prose that
+  // nothing. get_screenshot and browse_screenshot (SCREENSHOT_TOOL_NAMES,
+  // screenshotOutput.ts) are the only tools whose whole string payload is
+  // KNOWN to be `JSON.stringify({imageData: "<data url>", ...})` or an error
+  // object (see that module's own doc comment) — never prose that
   // might innocently contain a data: URL — so this fallback stays gated to
-  // it specifically.
-  if (toolName !== "get_screenshot") return NO_IMAGES;
+  // them specifically.
+  if (!SCREENSHOT_TOOL_NAMES.has(toolName)) return NO_IMAGES;
   const raw = "value" in output ? output.value : undefined;
   // The probe is the cheap half: parseScreenshotDataUrl() JSON.parse()s a
   // string output, and a get_screenshot payload is ~1MB of base64, so the
@@ -561,17 +562,17 @@ function computeImageSlots(messages: ModelMessage[]): ImageSlot[] {
         // reason to gate that half on one tool's name. But the LOOSE fallback
         // inside extractToolResultImages is a different, riskier
         // extraction (an unanchored regex over a tool's whole string output)
-        // that is only safe for get_screenshot specifically — see that
-        // function's own comment — so only the structured branch is widened;
-        // extractToolResultImages re-gates the loose branch on
-        // toolName itself. The label distinguishes get_screenshot
-        // ("Screenshot") from everything else ("Image") purely for
-        // readability in the rendered description — it changes no
+        // that is only safe for the SCREENSHOT_TOOL_NAMES tools specifically
+        // — see that function's own comment — so only the structured branch
+        // is widened to every tool; extractToolResultImages re-gates the
+        // loose branch on toolName itself. The label distinguishes a
+        // screenshot tool ("Screenshot") from everything else ("Image")
+        // purely for readability in the rendered description — it changes no
         // budget/cache/placeholder behavior below, all of which key off
         // `kind: "tool-result"`, not toolName.
         const images = extractToolResultImages(typed.output, typed.toolName);
         if (images.count === 0) return; // an error result is already plain text
-        const label = typed.toolName === "get_screenshot" ? "Screenshot" : "Image";
+        const label = SCREENSHOT_TOOL_NAMES.has(typed.toolName) ? "Screenshot" : "Image";
         slots.push(
           makeSlot(messageIndex, partIndex, images, label, "tool-result", typed.toolCallId),
         );

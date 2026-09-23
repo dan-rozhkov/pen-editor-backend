@@ -2,7 +2,7 @@ import { tool } from "ai";
 import { z } from "zod";
 import type { Config } from "../config.js";
 import { describeImage } from "../services/vision.js";
-import { parseScreenshotDataUrl } from "./screenshotOutput.js";
+import { screenshotOutputToContent } from "./screenshotOutput.js";
 
 const MAX_BATCH_DESIGN_OPERATIONS = 25;
 
@@ -1202,15 +1202,16 @@ export const penTools = {
     // Promote it to a real image part instead; applyVisionPreprocessing
     // (src/ai/vision-messages.ts) then swaps that part for a text description
     // if the model turns out to be vision-less, so both paths work.
+    //
+    // NOTE: this callback only actually runs when convertToModelMessages is
+    // called with `{ tools }`, which prepareChatTurn's real call site does
+    // NOT do — see screenshotOutput.ts's promoteScreenshotToolOutputs for
+    // the pass that does the equivalent promotion in production. Both this
+    // and that pass call screenshotOutputToContent so the shape can't drift.
     toModelOutput: ({ output }) => {
-      const image = parseScreenshotDataUrl(output);
-      if (!image) {
-        return { type: "text", value: typeof output === "string" ? output : JSON.stringify(output) };
-      }
-      return {
-        type: "content",
-        value: [{ type: "image-data", data: image.base64, mediaType: image.mediaType }],
-      };
+      const content = screenshotOutputToContent("get_screenshot", output);
+      if (content) return content;
+      return { type: "text", value: typeof output === "string" ? output : JSON.stringify(output) };
     },
   }),
 
@@ -1868,28 +1869,112 @@ Returns the created/updated style ids and names (with a created|updated status) 
   browse_open: tool({
     description:
       "Open the built-in browser tab (a REAL browser tab in the desktop app, running on the user's OWN logged-in session — cookies and all) and navigate it to `url`, waiting for the page to finish loading. Returns `{ url, title }` with the FINAL url after any redirects. This is how you reach outside references the canvas can't otherwise see: a Pinterest search URL " +
-      '(e.g. "https://www.pinterest.com/search/pins/?q=minimal%20fintech%20app%20ui") is the worked example — search results load as an infinite-scroll image grid you then read with browse_find_images. Use browse_act to click into the page, scroll for more results, or navigate back/forward once open.',
+      '(e.g. "https://www.pinterest.com/search/pins/?q=minimal%20fintech%20app%20ui") is the worked example — search results load as an infinite-scroll image grid you then read with browse_find_images. Once open, drive the page with browse_snapshot/browse_screenshot (to see what\'s there and get element indices) and browse_act (to click/type/scroll/etc by index or selector).',
     inputSchema: z.object({
       url: z.string().describe("The URL to navigate the browser tab to."),
     }),
   }),
 
+  browse_snapshot: tool({
+    description:
+      "Get an indexed table of every interactive element on the currently open browser tab's page — buttons, links, inputs, selects — without any pixels. Returns `{ snapshotId, url, title, elements: [{ index, tag, label, ops, role?, options?, value?, hasValue?, isPassword? }], scroll: { y, height, atBottom } }`. `ops` lists which browse_act actions apply to that element (e.g. an `<input>` supports `type`/`press`/`hover`, a `<select>` supports `select`). Pass an element's `index` together with THIS `snapshotId` to browse_act — the indices are only valid for that snapshotId and go stale the moment you call browse_snapshot, browse_screenshot with annotate, or browse_task again, so take a fresh one before acting if you're not sure yours is still current. Prefer this over browse_screenshot when you just need to know what's clickable and don't need to actually see the page (cheaper, no image tokens); use browse_screenshot when the layout itself matters or the snapshot's labels are ambiguous.",
+    inputSchema: z.object({}),
+  }),
+
+  // Client-executed, same reasoning as get_screenshot above: it returns an
+  // image, so it is only useful when that image can actually reach the model
+  // as something readable. Gated in prepareChatTurn (src/ai/chatTurn.ts) by
+  // BOTH the desktopBrowser structural gate (no bridge, no browser tab) and
+  // get_screenshot's own vision gate (SCREENSHOT_TOOL_NAMES loop).
+  browse_screenshot: tool({
+    description:
+      "Take a screenshot of the browser tab's current viewport (not the whole page) for visual verification — use this when the layout itself matters (does a modal actually cover the CTA, is a canvas-rendered widget visible, does this look broken) rather than just \"what's clickable\", which browse_snapshot answers more cheaply. Returns `{ url, title, width, height }` plus the image; on a text-only model this costs a second vision-model call that returns a description rather than the image itself, same as get_screenshot. Pass `annotate: true` to additionally get numbered labels drawn over every interactive element PLUS `snapshotId` and `elements` (the same shape as browse_snapshot) in the same call — use this set-of-marks mode when you want to both see the page and act on it by index in one round trip, instead of calling browse_snapshot separately first.",
+    inputSchema: z.object({
+      annotate: z
+        .boolean()
+        .optional()
+        .describe(
+          "If true, overlays numbered labels on interactive elements and also returns snapshotId + elements for acting by index. Default false (plain screenshot).",
+        ),
+    }),
+    // Same reasoning as get_screenshot's toModelOutput, but this tool also
+    // carries structured data (url/title/size/snapshotId/elements) alongside
+    // the pixels, so it must promote to a "content" part with BOTH a text
+    // part (the JSON, minus the ~1MB imageData string) and an image-data
+    // part — losing either would either blind the model or drop the element
+    // table annotate mode exists to provide. applyVisionPreprocessing
+    // (src/ai/vision-messages.ts) rewrites only the image part for a
+    // vision-less model, leaving the text (and thus the elements) intact.
+    //
+    // NOTE: same caveat as get_screenshot's toModelOutput above — this only
+    // runs when convertToModelMessages gets `{ tools }`, which prepareChatTurn
+    // does not do. screenshotOutput.ts's promoteScreenshotToolOutputs does
+    // the equivalent promotion on the real path; both call
+    // screenshotOutputToContent so the shape is defined exactly once.
+    toModelOutput: ({ output }) => {
+      const content = screenshotOutputToContent("browse_screenshot", output);
+      if (content) return content;
+      return { type: "text", value: typeof output === "string" ? output : JSON.stringify(output) };
+    },
+  }),
+
   browse_act: tool({
     description:
-      "Act on the currently open browser tab: click something, type into a field, scroll, or go back/forward in history. `target` (for click/type) is matched first as a CSS selector, then as visible text (case-insensitive, trimmed, first match in document order) — so you can pass either a selector or just the text you see on the page. Scrolling is what makes an infinite-scroll grid like Pinterest's usable: call `scroll` to load more results, then call browse_find_images again to read the newly loaded images — that scroll-then-find loop is how you gather more than one screenful of references. Returns `{ url, title, matched }` on success or `{ error }` naming what wasn't found.",
+      "Act on the currently open browser tab: click, type, scroll, go back/forward, press a key, hover, pick a `<select>` option, reload, or wait. `target` (for click/type) is matched first as a CSS selector, then as visible text (case-insensitive, trimmed, first match in document order); alternatively pass `index` (from browse_snapshot or an annotated browse_screenshot) together with that call's `snapshotId` to act on a specific element by its number — more reliable than text matching once you have a snapshot. Scrolling is what makes an infinite-scroll grid like Pinterest's usable: call `scroll` to load more results, then call browse_find_images (or browse_snapshot) again. `press` sends a real key event (`key`: \"Enter\", \"Escape\", \"Tab\", \"ArrowDown\", \"Meta+a\", …), optionally focusing `target`/`index` first — this is how you submit a form with Enter or close a modal with Escape. `hover` moves the pointer over `target`/`index` without clicking, for hover-revealed menus. `select` needs `index`+`snapshotId` and `text` = the option's label or value. `reload` takes no fields. `wait` polls for `text` to appear (or just sleeps `ms`, default 3000, hard cap 15000) — use it after an action that triggers an async page update before your next snapshot/screenshot. Returns `{ url, title, matched }` on success or `{ error }` naming what wasn't found; a click/type/press result may also carry `openedTab: { tabId, url, title }` when the action opened a new browser tab (your next browse_* call already acts on that new tab; use browse_tabs to go back to the old one), and `dialogs: [{ type, message }]` listing any JS alert/confirm/prompt the browser auto-handled since your last command. `changed` (with `changes`, when present) tells you whether the action actually altered the page — check it instead of assuming success.",
     inputSchema: z.object({
       action: z
-        .enum(["click", "type", "scroll", "back", "forward"])
+        .enum(["click", "type", "scroll", "back", "forward", "press", "hover", "select", "reload", "wait"])
         .describe("Which action to perform."),
       target: z
         .string()
         .optional()
-        .describe("CSS selector or visible text to act on. Used by click/type."),
-      text: z.string().optional().describe("Text to type. Used by type."),
+        .describe("CSS selector or visible text to act on. Used by click/type/press (to focus first)/hover."),
+      index: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe(
+          "Element index from a browse_snapshot or annotated browse_screenshot call, used instead of `target`. Requires `snapshotId` from that same call.",
+        ),
+      snapshotId: z
+        .string()
+        .optional()
+        .describe("The snapshotId that `index` refers to — from the browse_snapshot/browse_screenshot call that produced it. Stale once a newer snapshot has been taken."),
+      text: z
+        .string()
+        .optional()
+        .describe("Text to type (action: type), or the option label/value to choose (action: select)."),
       amount: z
         .number()
         .optional()
         .describe("Scroll distance in viewport heights. Used by scroll, default 1."),
+      key: z
+        .string()
+        .optional()
+        .describe('Key to press, e.g. "Enter", "Escape", "Tab", "ArrowDown", "Meta+a". Used by press.'),
+      ms: z
+        .number()
+        .max(15000)
+        .optional()
+        .describe("Milliseconds to wait. Used by wait, default 3000, hard cap 15000."),
+    }),
+  }),
+
+  browse_tabs: tool({
+    description:
+      "List, switch, close, or open browser tabs in the desktop app's browser strip. `action: \"list\"` returns every open browser tab; `\"switch\"` (needs `tabId`) makes that tab your current one for browse_act/browse_snapshot/browse_screenshot/browse_read; `\"close\"` (needs `tabId`) closes a browser tab (not the app itself); `\"new\"` opens a fresh browser tab, optionally navigating it to `url`, and makes it current. Returns `{ tabs: [{ tabId, url, title, current }], current }`. Call this right after a browse_act result carries `openedTab` — a click that opens a popup does NOT automatically make it your current tab.",
+    inputSchema: z.object({
+      action: z.enum(["list", "switch", "close", "new"]).describe("Which tab operation to perform."),
+      tabId: z
+        .number()
+        .int()
+        .optional()
+        .describe("Target tab id. Required for switch/close; ignored for list; optional for new (rare)."),
+      url: z
+        .string()
+        .optional()
+        .describe("URL to load in the newly created tab. Used only by action: new."),
     }),
   }),
 
@@ -1905,7 +1990,7 @@ Returns the created/updated style ids and names (with a created|updated status) 
 
   browse_task: tool({
     description:
-      "Run a WHOLE multi-step browsing task in the built-in browser tab in ONE call — navigate, click through a cookie banner or login wall, fill a search box, select a facet — without spending a chat turn per step. Internally this repeats snapshot -> a cheap decision model -> act, driven by Jev (not the design model), until the goal is reached, nothing more can be done, or the step/time budget runs out. Use this instead of browse_open/browse_act when there is no single clean URL to open directly — e.g. \"search this site for X and open the first result\", or \"dismiss the cookie banner and get to the pricing page\". Prefer browse_open when you already know the exact URL and just need to land on it; prefer browse_find_images once you're on a page and want its images. Returns a transcript: `{ status: \"done\" | \"blocked\" | \"budget\" | \"stalled\", steps: [{ operation, label, ok }], url, title, reason? }` — `stalled` means three steps in a row landed nothing (a target that keeps going stale), so the page, not the budget, is what stopped it. Never types into a password field — the user logs in themselves in the visible tab.",
+      "Run a WHOLE multi-step browsing task in the built-in browser tab in ONE call — navigate, click through a cookie banner or login wall, fill a search box, select a facet — without spending a chat turn per step. Internally this repeats snapshot -> a cheap decision model -> act, driven by Jev (not the design model), until the goal is reached, nothing more can be done, or the step/time budget runs out. Use this instead of driving browse_snapshot/browse_screenshot/browse_act yourself step by step when there is no single clean URL to open directly — e.g. \"search this site for X and open the first result\", or \"dismiss the cookie banner and get to the pricing page\" — and reach for the manual tools instead when you want to see each step, need `press`/`hover`/`select`, or the goal is simple enough that one or two of your own actions get there faster. Prefer browse_open when you already know the exact URL and just need to land on it; prefer browse_find_images once you're on a page and want its images. Returns a transcript: `{ status: \"done\" | \"blocked\" | \"budget\" | \"stalled\", steps: [{ operation, label, ok }], url, title, reason? }` — `stalled` means three steps in a row landed nothing (a target that keeps going stale), so the page, not the budget, is what stopped it. Never types into a password field — the user logs in themselves in the visible tab.",
     inputSchema: z.object({
       goal: z.string().min(1).describe("Plain-language description of what to accomplish in the browser, e.g. \"search this site for wireless headphones and open the first result\"."),
       maxSteps: z
@@ -1920,7 +2005,7 @@ Returns the created/updated style ids and names (with a created|updated status) 
 
   browse_read: tool({
     description:
-      "Read the TEXT of the page currently open in the built-in browser tab — headings, visible body text, and links — with scripts, styles, and nav chrome already stripped out. Returns `{ url, title, headings: string[], text: string, links: [{ label, href }], truncated: boolean }`. This is how you read a page you've already navigated to with browse_open/browse_task: once the browser is sitting on the page you need, call this INSTEAD OF falling back to web_search for the same information — web_search only re-finds pages you can already see, and cannot read this one's actual current content (a search result, a filtered listing, anything behind a click). Prefer browse_find_images when you want images rather than text. `maxChars` bounds the returned text (default 6000, hard cap 20000); `selector` narrows the read to one subtree of the page (e.g. \"main\", \"article\") — an unmatched selector is an error, not a silent whole-page read.",
+      "Read the TEXT of the page currently open in the built-in browser tab — headings, visible body text, and links — with scripts, styles, and nav chrome already stripped out. Returns `{ url, title, headings: string[], text: string, links: [{ label, href }], truncated: boolean }`. This is how you read a page you've already navigated to with browse_open/browse_task: once the browser is sitting on the page you need, call this INSTEAD OF falling back to web_search for the same information — web_search only re-finds pages you can already see, and cannot read this one's actual current content (a search result, a filtered listing, anything behind a click). Prefer browse_find_images when you want images rather than text, and browse_snapshot/browse_screenshot when you need to see or act on the page rather than read its content. `maxChars` bounds the returned text (default 6000, hard cap 20000); `selector` narrows the read to one subtree of the page (e.g. \"main\", \"article\") — an unmatched selector is an error, not a silent whole-page read.",
     inputSchema: z.object({
       maxChars: z
         .number()

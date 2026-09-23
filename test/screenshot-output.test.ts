@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { parseScreenshotDataUrl } from "../src/ai/screenshotOutput.js";
+import { parseScreenshotDataUrl, SCREENSHOT_TOOL_NAMES } from "../src/ai/screenshotOutput.js";
 import { penTools } from "../src/ai/tools.js";
 
 const DATA_URL = "data:image/png;base64,iVBORw0KGgo=";
+
+describe("SCREENSHOT_TOOL_NAMES", () => {
+  it("contains exactly get_screenshot and browse_screenshot", () => {
+    expect([...SCREENSHOT_TOOL_NAMES].sort()).toEqual(["browse_screenshot", "get_screenshot"]);
+  });
+});
 
 describe("parseScreenshotDataUrl", () => {
   it("reads the handler's JSON string", () => {

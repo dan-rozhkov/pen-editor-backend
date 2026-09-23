@@ -361,7 +361,10 @@ describe("prepareChatTurn", () => {
       const { penTools } = await import("../src/ai/tools.js");
 
       expect(penTools.browse_open).toBeDefined();
+      expect(penTools.browse_snapshot).toBeDefined();
+      expect(penTools.browse_screenshot).toBeDefined();
       expect(penTools.browse_act).toBeDefined();
+      expect(penTools.browse_tabs).toBeDefined();
       expect(penTools.browse_find_images).toBeDefined();
       expect(penTools.browse_read).toBeDefined();
 
@@ -369,7 +372,10 @@ describe("prepareChatTurn", () => {
       const turn = await prepareChatTurn({ config: makeConfig(), messages });
 
       expect(turn.tools.browse_open).toBeUndefined();
+      expect(turn.tools.browse_snapshot).toBeUndefined();
+      expect(turn.tools.browse_screenshot).toBeUndefined();
       expect(turn.tools.browse_act).toBeUndefined();
+      expect(turn.tools.browse_tabs).toBeUndefined();
       expect(turn.tools.browse_find_images).toBeUndefined();
       expect(turn.tools.browse_read).toBeUndefined();
     });
@@ -385,7 +391,10 @@ describe("prepareChatTurn", () => {
       });
 
       expect(turn.tools.browse_open).toBeUndefined();
+      expect(turn.tools.browse_snapshot).toBeUndefined();
+      expect(turn.tools.browse_screenshot).toBeUndefined();
       expect(turn.tools.browse_act).toBeUndefined();
+      expect(turn.tools.browse_tabs).toBeUndefined();
       expect(turn.tools.browse_find_images).toBeUndefined();
       expect(turn.tools.browse_read).toBeUndefined();
     });
@@ -398,12 +407,80 @@ describe("prepareChatTurn", () => {
         config: makeConfig(),
         messages,
         clientCapabilities: { desktopBrowser: true },
+        modelOverride: "google/gemini-2.5-flash",
       });
 
       expect(turn.tools.browse_open).toBeDefined();
+      expect(turn.tools.browse_snapshot).toBeDefined();
+      // browse_screenshot additionally needs the vision gate — satisfied
+      // here via a vision-capable modelOverride, see the dedicated
+      // describe block below for the vision-gate-specific cases.
+      expect(turn.tools.browse_screenshot).toBeDefined();
       expect(turn.tools.browse_act).toBeDefined();
+      expect(turn.tools.browse_tabs).toBeDefined();
       expect(turn.tools.browse_find_images).toBeDefined();
       expect(turn.tools.browse_read).toBeDefined();
+    });
+  });
+
+  describe("browse_screenshot vision gate", () => {
+    // browse_screenshot joins get_screenshot's own vision gate (both are in
+    // SCREENSHOT_TOOL_NAMES) ON TOP OF the desktopBrowser structural gate
+    // above — either gate deleting it is sufficient.
+    it("is absent with desktopBrowser true but no vision path and no VISION_MODEL", async () => {
+      const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+
+      const config = makeConfig({
+        VISION_MODEL: "",
+        CHAT_MODEL: "vendor/text-only-model",
+        CHAT_MODEL_SUPPORTS_VISION: false,
+      });
+      const messages = [userMessage("check the page")];
+
+      const turn = await prepareChatTurn({
+        config,
+        messages,
+        clientCapabilities: { desktopBrowser: true },
+      });
+
+      expect(turn.tools.browse_screenshot).toBeUndefined();
+      // Its siblings are unaffected by the vision gate.
+      expect(turn.tools.browse_open).toBeDefined();
+    });
+
+    it("is present with desktopBrowser true and a VISION_MODEL configured", async () => {
+      const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+
+      const config = makeConfig({
+        VISION_MODEL: "google/gemini-2.5-flash",
+        CHAT_MODEL: "vendor/text-only-model",
+        CHAT_MODEL_SUPPORTS_VISION: false,
+      });
+      const messages = [userMessage("check the page")];
+
+      const turn = await prepareChatTurn({
+        config,
+        messages,
+        clientCapabilities: { desktopBrowser: true },
+      });
+
+      expect(turn.tools.browse_screenshot).toBeDefined();
+    });
+
+    it("is present with desktopBrowser true and a vision-capable model, even with vision unconfigured", async () => {
+      const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+
+      const config = makeConfig({ VISION_MODEL: "" });
+      const messages = [userMessage("check the page")];
+
+      const turn = await prepareChatTurn({
+        config,
+        messages,
+        clientCapabilities: { desktopBrowser: true },
+        modelOverride: "google/gemini-2.5-flash",
+      });
+
+      expect(turn.tools.browse_screenshot).toBeDefined();
     });
   });
 
@@ -554,6 +631,131 @@ describe("prepareChatTurn", () => {
       // any shape (raw text, JSON-stringified content part).
       expect(bodyText).not.toContain("iVBORw0KGgoAAAANSUhEUg");
       expect(bodyText).toContain("A header with a logo and three nav links.");
+    });
+
+    // Regression test for the bug fixed 2026-09-23: convertToModelMessages
+    // (chatTurn.ts) is called without `{ tools }`, so toModelOutput never ran
+    // and this whole screenshot promotion used to be dead code in
+    // production — vision-messages.test.ts/image-budget.test.ts's coverage
+    // of the "content" shape only ever exercised a shape hand-built in the
+    // test, never one that came out of the real conversion. These two tests
+    // go through the REAL prepareChatTurn (real convertToModelMessages, the
+    // new promoteScreenshotToolOutputs pass, and real applyVisionPreprocessing)
+    // end to end, so they would have failed before the fix.
+    it("promotes the get_screenshot text output to a real image-data part, not base64 inside a JSON string", async () => {
+      const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+      const config = makeConfig(); // shipped default: vision-capable, native tool-result images
+
+      const turn = await prepareChatTurn({ config, messages: screenshotHistory() });
+
+      const toolMessage = turn.modelMessages.find(
+        (m) => m.role === "tool",
+      ) as unknown as {
+        content: Array<{ output: { type: string; value: unknown } }>;
+      };
+      const output = toolMessage.content[0].output;
+      expect(output.type).toBe("content");
+      const parts = output.value as Array<{ type: string; data?: string }>;
+      expect(parts).toEqual([
+        { type: "image-data", data: "iVBORw0KGgoAAAANSUhEUg", mediaType: "image/png" },
+      ]);
+      // The bug's failure mode: the base64 sitting inside a plain text/JSON
+      // output instead of a real image-data part. Assert the negative too.
+      expect(
+        toolMessage.content.some(
+          (c) => c.output.type === "text" || c.output.type === "json",
+        ),
+      ).toBe(false);
+    });
+  });
+
+  describe("browse_screenshot vision preprocessing", () => {
+    const DATA_URL = "data:image/jpeg;base64,QUJDRUxFTUVOVFM";
+
+    function browseScreenshotHistory(): Record<string, unknown>[] {
+      return [
+        userMessage("check the signup page"),
+        {
+          id: "b1",
+          role: "assistant",
+          parts: [
+            {
+              type: "tool-browse_screenshot",
+              toolCallId: "call-b1",
+              state: "output-available",
+              input: { annotate: true },
+              output: JSON.stringify({
+                imageData: DATA_URL,
+                url: "https://example.com/signup",
+                title: "Sign up",
+                width: 390,
+                height: 844,
+                snapshotId: "snap-42",
+                elements: [{ index: 0, tag: "button", label: "Continue", ops: ["click"] }],
+              }),
+            },
+          ],
+        },
+      ];
+    }
+
+    it("carries a real image-data part on the native vision path, not a base64 JSON string", async () => {
+      const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+      const config = makeConfig(); // shipped default: vision-capable, native tool-result images
+
+      const turn = await prepareChatTurn({ config, messages: browseScreenshotHistory() });
+
+      const toolMessage = turn.modelMessages.find(
+        (m) => m.role === "tool",
+      ) as unknown as {
+        content: Array<{ output: { type: string; value: unknown } }>;
+      };
+      const output = toolMessage.content[0].output;
+      expect(output.type).toBe("content");
+      const parts = output.value as Array<{
+        type: string;
+        text?: string;
+        data?: string;
+        mediaType?: string;
+      }>;
+      const imagePart = parts.find((p) => p.type === "image-data");
+      expect(imagePart).toEqual({
+        type: "image-data",
+        data: "QUJDRUxFTUVOVFM",
+        mediaType: "image/jpeg",
+      });
+      // The url/title/snapshotId/elements table survives as a sibling text
+      // part rather than being flattened into (or dropped from) the image.
+      const textPart = parts.find((p) => p.type === "text");
+      const parsed = JSON.parse(textPart!.text!) as Record<string, unknown>;
+      expect(parsed.snapshotId).toBe("snap-42");
+      expect(parsed.elements).toEqual([{ index: 0, tag: "button", label: "Continue", ops: ["click"] }]);
+      expect(parsed.imageData).toBeUndefined();
+    });
+
+    it("describes the image for a vision-less model while keeping the element table intact", async () => {
+      const { describeImage } = await import("../src/services/vision.js");
+      vi.mocked(describeImage).mockResolvedValue({
+        ok: true,
+        text: "A signup form with a Continue button.",
+      });
+      const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+
+      const config = makeConfig({
+        CHAT_MODEL: "vendor/text-only-model",
+        CHAT_MODEL_SUPPORTS_VISION: false,
+      });
+      const turn = await prepareChatTurn({ config, messages: browseScreenshotHistory() });
+
+      const bodyText = JSON.stringify(turn.modelMessages);
+      // The raw base64 must never reach the model.
+      expect(bodyText).not.toContain("QUJDRUxFTUVOVFM");
+      // The description replaces only the image...
+      expect(bodyText).toContain("A signup form with a Continue button.");
+      // ...while the structured element table (this is the whole point of
+      // browse_screenshot's richer shape over get_screenshot's) survives.
+      expect(bodyText).toContain("snap-42");
+      expect(bodyText).toContain("Continue");
     });
   });
 

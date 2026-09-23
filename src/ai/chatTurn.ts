@@ -15,6 +15,7 @@ import { resolveTaskPolicy, type TaskPolicy } from "./taskPolicy.js";
 import { applyImageBudget, planImageElision } from "./image-budget.js";
 import { freezeElidedSlots, resolveImageRescues } from "./imageRelevance.js";
 import { applyVisionPreprocessing, modelSupportsVision } from "./vision-messages.js";
+import { SCREENSHOT_TOOL_NAMES, promoteScreenshotToolOutputs } from "./screenshotOutput.js";
 import { isVisionConfigured } from "../services/vision.js";
 import { isQuiverConfigured } from "../services/quiver.js";
 import { attachMobbinRelease, getMCPTools, releaseMCPTools } from "./mcp.js";
@@ -786,9 +787,27 @@ export async function prepareChatTurn(
     return sanitized.messages;
   })();
 
-  const convertedMessages = await convertToModelMessages(
+  const convertedMessagesRaw = await convertToModelMessages(
     normalizedMessages as unknown as UIMessage[],
   );
+
+  // BUG FIX (2026-09-23): convertToModelMessages above is called WITHOUT
+  // `{ tools }` (see promoteScreenshotToolOutputs' own comment for why that
+  // isn't simply added), so get_screenshot's and browse_screenshot's
+  // `toModelOutput` (src/ai/tools.ts) never run in production — every
+  // screenshot tool result instead lands here as the AI SDK's untouched
+  // default: `{ type: "text", value: "<the handler's raw JSON string>" }`.
+  // Downstream code (vision-messages.ts, image-budget.ts) needs the SAME
+  // `content` shape `toModelOutput` would have produced — a structured image
+  // part it can find and swap for a description, plus (for browse_screenshot)
+  // a sibling text part carrying url/title/snapshotId/elements that must
+  // survive that swap. Without this pass, vision-less/VISION_MODEL paths fell
+  // back to replacing the WHOLE text output with the image description,
+  // silently dropping browse_screenshot's element table, and native-vision
+  // paths sent the raw base64 JSON string to the model as text instead of an
+  // image. This promotes both tools' outputs into that shape right here, so
+  // every pass below it sees exactly what it already assumed.
+  const convertedMessages = promoteScreenshotToolOutputs(convertedMessagesRaw);
 
   // Bounds the number of LIVE images in history, but ONLY on the path where
   // images actually survive as images: a vision model on a provider that can
@@ -1100,11 +1119,12 @@ export async function prepareChatTurn(
       delete tools.analyze_image;
     }
 
-    // Structural gate (mirrors the embed-only guard above): get_screenshot is
-    // client-executed and returns an image, so it is only useful when that
-    // image can actually reach the model as something readable. That is
-    // TWO independent axes (see vision-messages.ts's doc comment on
-    // applyVisionPreprocessing), not one:
+    // Structural gate (mirrors the embed-only guard above): get_screenshot
+    // (and browse_screenshot, SCREENSHOT_TOOL_NAMES) is client-executed and
+    // returns an image, so it is only useful when that image can actually
+    // reach the model as something readable. That is TWO independent axes
+    // (see vision-messages.ts's doc comment on applyVisionPreprocessing),
+    // not one:
     //   1. Can the model see at all (modelSupportsVision)?
     //   2. Can THIS PROVIDER'S AI SDK integration carry an image found inside
     //      a tool result through to the model natively
@@ -1128,7 +1148,9 @@ export async function prepareChatTurn(
     const nativeVisionPath =
       modelSupportsVision(config, selectedModelId) && toolResultImagesNative;
     if (!nativeVisionPath && !isVisionConfigured(config)) {
-      delete tools.get_screenshot;
+      for (const name of SCREENSHOT_TOOL_NAMES) {
+        delete tools[name];
+      }
     }
 
     // Structural gate, unconditional (unlike the ones above): attach_local_repo
@@ -1140,9 +1162,10 @@ export async function prepareChatTurn(
     // it before the request goes out.
     delete tools.attach_local_repo;
 
-    // Structural gate: browse_open/browse_act/browse_find_images/browse_task/
-    // browse_read are client-executed against a browser tab that only exists inside the
-    // Electron shell (pen-editor-desktop's BrowserController, driven over
+    // Structural gate: browse_open/browse_snapshot/browse_screenshot/browse_act/
+    // browse_tabs/browse_find_images/browse_task/browse_read are client-executed
+    // against a browser tab that only exists inside the Electron shell
+    // (pen-editor-desktop's BrowserController, driven over
     // window.penDesktop.browser) — a browser-hosted session has no such
     // bridge, so offering these there could only waste a tool-call step,
     // the same reasoning as the attach_local_repo gate just above. The flag
@@ -1151,9 +1174,16 @@ export async function prepareChatTurn(
     // browse_task additionally drives POST /api/browse/step (Jev) from the
     // frontend's own loop, but that's a frontend/backend detail — the gate
     // here is purely about whether the desktop browser bridge exists.
+    // browse_screenshot ALSO needs the vision gate below (it is deleted
+    // there too when this flag is true but the model/provider/VISION_MODEL
+    // combination can't carry the image) — the two gates are independent
+    // and either one deleting it is sufficient.
     if (!input.clientCapabilities?.desktopBrowser) {
       delete tools.browse_open;
+      delete tools.browse_snapshot;
+      delete tools.browse_screenshot;
       delete tools.browse_act;
+      delete tools.browse_tabs;
       delete tools.browse_find_images;
       delete tools.browse_task;
       delete tools.browse_read;
