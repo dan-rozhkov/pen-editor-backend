@@ -4,9 +4,22 @@ import { prepareChatTurn } from "../ai/chatTurn.js";
 import { bareModelId } from "../ai/provider.js";
 import { withAgentRetry } from "../ai/retry.js";
 import { generateImage } from "../services/imageGen.js";
-import { extractEmbedScreens } from "./extractEmbeds.js";
+import { createSystemOne } from "../services/systemone.js";
+import {
+  MAX_TASTE_CHECK_ROUNDS,
+  runTasteCheck,
+  type TasteCheckScreenInput,
+} from "../ai/tasteCheck.js";
+import { DEFAULT_SCREEN_NAME, extractEmbedScreens } from "./extractEmbeds.js";
 import { repairGeneratedImageUrls } from "./repairImageUrls.js";
 import { DEFAULT_SHOWCASE_PLATFORM, type ShowcasePlatform } from "./platform.js";
+
+// Taste-check screens are still corrected "by re-emitting the corrected
+// screen with batch_design (same screen name)" — the runner has no
+// edit_embed_html equivalent of its own, so this is the one fix path that
+// actually works headless.
+const TASTE_CHECK_FIX_HINT =
+  "by re-emitting the corrected screen with batch_design (same screen name)";
 
 // Hard cap on screens kept per run — matches the showcase's product shape
 // (a short flow, not a whole app). Anything beyond this is dropped and
@@ -225,7 +238,12 @@ function makeGenerateImageTool(
 function instrumentTools(
   config: Config,
   tools: ToolSet,
-  onScreens: (screens: ShowcaseScreenDraft[]) => Array<{ id: string; name: string }>,
+  // Returns one entry per input screen, in the same order — `null` for a
+  // screen that was dropped (beyond MAX_SHOWCASE_SCREENS) rather than
+  // recorded, so callers (the taste-check wiring below) can tell "dropped"
+  // apart from "recorded" instead of matching by array position across two
+  // differently-filtered arrays.
+  onScreens: (screens: ShowcaseScreenDraft[]) => Array<{ id: string; name: string } | null>,
   // Shared across every attempt of one run — see runShowcaseGeneration's
   // doc comment on why these two must be created ONCE, outside the retry
   // closure, and threaded through here rather than allocated fresh per call
@@ -233,6 +251,26 @@ function instrumentTools(
   // prompt promises the model a hard per-run cap.
   imageBudget: { generated: number },
   issuedImageUrls: string[],
+  // Taste-check wiring. `systemOne`/`config`/`brief` persist across every
+  // attempt of one run, same reasoning as imageBudget/issuedImageUrls above.
+  // `roundsByName`, unlike those, is scoped to ONE attempt — a retried
+  // attempt is a fresh conversation whose screens (attemptScreens) are
+  // discarded entirely, so a round counter that survived the retry would be
+  // counting rounds against screens the model can no longer see or
+  // reference; the caller builds a fresh Map per attempt and passes it in
+  // here. `systemOne` is null only when TYPESAFE_API_KEY is unset —
+  // createSystemOne doesn't look at TASTE_CHECK_MODE at all (see
+  // src/services/systemone.ts). The "off" mode check below is therefore this
+  // function's own responsibility: it skips calling runTasteCheck entirely in
+  // that case, rather than relying on runTasteCheck's internal off-mode
+  // short-circuit, so an "off" run produces no taste-check call and no log
+  // line at all.
+  taste: {
+    systemOne: ReturnType<typeof createSystemOne>;
+    config: Config;
+    brief: string;
+    roundsByName: Map<string, number>;
+  },
 ): ToolSet {
   const instrumented: ToolSet = { ...tools };
   const generateImageExecute = makeGenerateImageTool(config, imageBudget, (url) =>
@@ -294,14 +332,93 @@ function instrumentTools(
             return { ...screen, htmlContent: html };
           });
           const created = onScreens(extracted);
+          const recorded = created.filter(
+            (entry): entry is { id: string; name: string } => entry !== null,
+          );
+
+          // Taste-check the screens THIS call just (re-)recorded — never a
+          // screen `onScreens` dropped (beyond MAX_SHOWCASE_SCREENS): those
+          // were never accepted into the run, so there is nothing published
+          // to give feedback about. Skipped whose already used up
+          // MAX_TASTE_CHECK_ROUNDS. Grouped by round number so the feedback
+          // text's own "(round X/MAX_TASTE_CHECK_ROUNDS)" wording stays
+          // correct even when one batch_design call mixes a brand-new screen
+          // with a screen being re-checked after a fix.
+          //
+          // Unnamed screens (DEFAULT_SCREEN_NAME, "Untitled") are never
+          // taste-checked at all: TASTE_CHECK_FIX_HINT tells the model to fix
+          // a flagged screen "by re-emitting it with batch_design (same
+          // screen name)", but replace-by-name above only replaces screens
+          // with an explicit name — an unnamed re-emission is always
+          // APPENDED, so feedback on an unnamed screen would just publish a
+          // second, unfixed copy alongside the fix. Since only explicitly-
+          // named screens ever reach this point, the round-tracking key is
+          // always the screen's own name — computed once below and reused by
+          // id (via `keyById`) everywhere else, instead of re-deriving it
+          // with a duplicated name/id ternary in two separate places.
+          let tasteFeedback: string | null = null;
+          if (taste.systemOne && taste.config.TASTE_CHECK_MODE !== "off") {
+            const keyById = new Map<string, string>();
+            const toCheck: TasteCheckScreenInput[] = [];
+            for (let i = 0; i < extracted.length; i++) {
+              const screen = extracted[i];
+              const createdEntry = created[i];
+              if (!createdEntry) continue; // dropped beyond the screen cap — never checked
+              if (screen.name === DEFAULT_SCREEN_NAME) continue; // no stable handle to fix by — see comment above
+              if ((taste.roundsByName.get(screen.name) ?? 0) >= MAX_TASTE_CHECK_ROUNDS) continue;
+              keyById.set(createdEntry.id, screen.name);
+              toCheck.push({ id: createdEntry.id, name: screen.name, html: screen.htmlContent });
+            }
+            // Two screens sharing one explicit name within a SINGLE
+            // batch_design call are already collapsed to one stored screen
+            // upstream (last-wins — see the replace-by-name comment in
+            // runShowcaseGeneration), sharing one id. Dedupe by that id here
+            // too, so Jev is asked about the final HTML once, not once per
+            // duplicate, and the round counter for that name advances by
+            // one, not by the duplicate count. `Map` keyed by id naturally
+            // keeps the LAST entry for a repeated id, matching "last wins".
+            const deduped = [...new Map(toCheck.map((s) => [s.id, s])).values()];
+
+            const byRound = new Map<number, TasteCheckScreenInput[]>();
+            for (const input of deduped) {
+              const key = keyById.get(input.id)!;
+              const round = (taste.roundsByName.get(key) ?? 0) + 1;
+              const list = byRound.get(round) ?? [];
+              list.push(input);
+              byRound.set(round, list);
+            }
+            const feedbackParts: string[] = [];
+            for (const [round, screensForRound] of byRound) {
+              const result = await runTasteCheck(taste.systemOne, taste.config, {
+                screens: screensForRound,
+                brief: taste.brief,
+                round,
+                fixHint: TASTE_CHECK_FIX_HINT,
+              });
+              if (result.outcome === "checked") {
+                // Only screens that actually GOT a verdict this call count
+                // against the round cap — a screen that failed/timed out
+                // within an otherwise-successful call is fail-open and
+                // stays eligible for a future check.
+                for (const checkedScreen of result.screens) {
+                  const key = keyById.get(checkedScreen.id)!;
+                  taste.roundsByName.set(key, (taste.roundsByName.get(key) ?? 0) + 1);
+                }
+              }
+              if (result.feedback) feedbackParts.push(result.feedback);
+            }
+            if (feedbackParts.length > 0) tasteFeedback = feedbackParts.join("\n\n");
+          }
+
           return JSON.stringify({
             success: true,
             operationsExecuted: extracted.length,
-            createdNodes: created,
+            createdNodes: recorded,
             note:
-              created.length > 0
-                ? `Recorded ${created.length} embed screen(s) for the showcase run.`
+              recorded.length > 0
+                ? `Recorded ${recorded.length} embed screen(s) for the showcase run.`
                 : 'No embed screens found in this batch — only type: "embed" I()/R() operations are captured.',
+            ...(tasteFeedback ? { tasteCheck: tasteFeedback } : {}),
           });
         },
       };
@@ -373,6 +490,19 @@ export async function runShowcaseGeneration(
   const imageBudget = { generated: 0 };
   const issuedImageUrls: string[] = [];
 
+  // Taste-check client/config/brief — created once here (not per attempt),
+  // same reason as imageBudget/issuedImageUrls above: there's exactly one
+  // SystemOne client and brief for the whole run. createSystemOne returns
+  // null when TYPESAFE_API_KEY is unset — the runner keeps working unchanged
+  // in that case, same as every other optional-integration gate in this
+  // file. `roundsByName` is deliberately NOT part of this shared object — see
+  // the per-attempt taste state built inside the retry closure below.
+  const tasteBase = {
+    systemOne: createSystemOne(config),
+    config,
+    brief: theme,
+  };
+
   // minimax and other flaky models often abort the whole turn before ever
   // reaching batch_design (see selfimprove/showcase notes on minimax-m3) —
   // retry the turn itself rather than losing the whole generation run.
@@ -386,28 +516,67 @@ export async function runShowcaseGeneration(
   try {
     screens = await withAgentRetry(
       async () => {
-        const attemptScreens: ShowcaseScreenDraft[] = [];
+        // Each entry carries its own assigned id alongside the draft, so
+        // replace-by-name (below) can update a screen in place without
+        // needing a separate name-keyed id lookup — which is exactly what
+        // broke unnamed screens before: every screen left at
+        // extractEmbedScreens' DEFAULT_SCREEN_NAME ("Untitled") shared one
+        // key, so a second unnamed screen would "replace" the first one
+        // instead of being appended, and both would fight over one id.
+        const attemptScreens: Array<{ id: string; name: string; htmlContent: string }> = [];
+        let nextScreenNumber = 1;
+
+        // Taste-check round tracking is scoped to THIS attempt, not the
+        // whole run: a retried attempt is a fresh conversation whose screens
+        // (attemptScreens above) are discarded entirely, so a round counter
+        // carried over from a failed attempt would count rounds against
+        // screens the model can no longer see, act on, or re-emit — and
+        // could exhaust MAX_TASTE_CHECK_ROUNDS for a screen name before the
+        // surviving attempt ever got a real check. Contrast with
+        // imageBudget/issuedImageUrls above, which are genuinely per-RUN.
+        const taste = { ...tasteBase, roundsByName: new Map<string, number>() };
 
         const tools = instrumentTools(
           config,
           prepared.tools,
           (extracted) => {
-            const created: Array<{ id: string; name: string }> = [];
+            const created: Array<{ id: string; name: string } | null> = [];
             for (const screen of extracted) {
+              // Replace-by-name applies ONLY to screens with an explicit,
+              // non-default name — the model re-emitting one to fix a
+              // taste-check finding must REPLACE that screen in place, not
+              // add a duplicate. A screen left at the default name has no
+              // such identity to replace by, so it is always appended
+              // (subject to the cap below), same as a brand-new screen.
+              // Within one batch_design call, two screens sharing the same
+              // explicit name: last one wins — the same way a later create
+              // op targeting the same name would look to the model itself.
+              const hasExplicitName = screen.name !== DEFAULT_SCREEN_NAME;
+              if (hasExplicitName) {
+                const existingIndex = attemptScreens.findIndex((s) => s.name === screen.name);
+                if (existingIndex >= 0) {
+                  const { id } = attemptScreens[existingIndex];
+                  attemptScreens[existingIndex] = { id, name: screen.name, htmlContent: screen.htmlContent };
+                  created.push({ id, name: screen.name });
+                  continue;
+                }
+              }
               if (attemptScreens.length >= MAX_SHOWCASE_SCREENS) {
                 console.warn(
                   `[showcase] dropping extra screen "${screen.name}" beyond the ${MAX_SHOWCASE_SCREENS}-screen cap`,
                 );
+                created.push(null);
                 continue;
               }
-              const id = `screen-${attemptScreens.length + 1}`;
-              attemptScreens.push(screen);
+              const id = `screen-${nextScreenNumber++}`;
+              attemptScreens.push({ id, name: screen.name, htmlContent: screen.htmlContent });
               created.push({ id, name: screen.name });
             }
             return created;
           },
           imageBudget,
           issuedImageUrls,
+          taste,
         );
 
         await generateText({
@@ -429,7 +598,9 @@ export async function runShowcaseGeneration(
           throw new EmptyHarvestError();
         }
 
-        return attemptScreens;
+        // Strip the internal `id` before returning — ShowcaseScreenDraft
+        // (the run's public result type) only ever carried name/htmlContent.
+        return attemptScreens.map(({ name, htmlContent }) => ({ name, htmlContent }));
       },
       {
         // Retry an EmptyHarvestError like any other transient failure;

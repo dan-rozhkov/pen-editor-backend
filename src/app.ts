@@ -23,6 +23,7 @@ import { modelsRoutes } from "./routes/models.js";
 import { opencodeRoutes } from "./routes/opencode.js";
 import { prototypeLinkRoutes } from "./routes/prototype-link.js";
 import { browseStepRoutes } from "./routes/browseStep.js";
+import { tasteCheckRoutes } from "./routes/tasteCheck.js";
 import { showcaseRoutes } from "./routes/showcase.js";
 import { showcasePublishRoutes } from "./routes/showcasePublish.js";
 import { uploadRoutes } from "./routes/upload.js";
@@ -357,6 +358,7 @@ export async function buildApp(
   await vectorRoutes(app, config, analytics);
   await prototypeLinkRoutes(app, config);
   await browseStepRoutes(app, config);
+  await tasteCheckRoutes(app, config);
   await repoRoutes(app, config);
   await mobbinAuthRoutes(app, config);
   const showcaseStore = await showcaseRoutes(app, config, options.showcaseStore);

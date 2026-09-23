@@ -85,6 +85,9 @@ export function makeConfig(overrides: Partial<Config> = {}): Config {
     QUIVER_MODEL: "arrow-2",
     QUIVER_BASE_URL: "https://api.quiver.ai/v1",
     QUIVER_TIMEOUT_MS: 180_000,
+    TASTE_CHECK_MODE: envSchema.shape.TASTE_CHECK_MODE.parse(undefined),
+    TASTE_CHECK_MIN_NOUL: envSchema.shape.TASTE_CHECK_MIN_NOUL.parse(undefined),
+    TASTE_CHECK_TIMEOUT_MS: envSchema.shape.TASTE_CHECK_TIMEOUT_MS.parse(undefined),
     ...overrides,
   };
 }

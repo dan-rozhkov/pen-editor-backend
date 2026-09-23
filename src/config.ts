@@ -429,6 +429,28 @@ export const envSchema = z.object({
   // 30-90s, not a request a human is staring at, so erring long costs
   // nothing but ties up one client connection.
   QUIVER_TIMEOUT_MS: z.coerce.number().default(180_000),
+  // --- Jev taste checks (generated prototype screens) ---
+  // src/ai/tasteCheck.ts asks Jev whether a freshly-generated embed screen
+  // (batch_design, prototype mode) exhibits one of the recognizable "AI
+  // slop" patterns src/skills/frontend-design.md already tells the model not
+  // to produce (gradient text, nested cards, the AI palette, ...). Same
+  // off/shadow/enforce shape and reasoning as SKILL_ROUTING_MODE/
+  // IMAGE_RELEVANCE_MODE above: this is a per-screen Jev round trip, so
+  // TYPESAFE_API_KEY alone must not silently add it to every generation.
+  // "off" never calls Jev; "shadow" calls it and logs findings without
+  // feeding them back to the model; "enforce" turns findings into feedback
+  // text the agent is told to act on.
+  TASTE_CHECK_MODE: z.enum(["off", "shadow", "enforce"]).default("off"),
+  // Noul probability bar, per screen per rule: at or above this, the pattern
+  // counts as present. Same default as SKILL_ROUTING_MIN_CONFIDENCE/
+  // IMAGE_RELEVANCE_MIN_NOUL's shared prior for "confident enough to act on"
+  // on a single Noul question, not independently tuned.
+  TASTE_CHECK_MIN_NOUL: z.coerce.number().min(0).max(1).default(0.7),
+  // Total wall-clock budget for one runTasteCheck() call (all screens, all
+  // rules, run in parallel/batched) — same TTFT-adjacent reasoning as
+  // IMAGE_RELEVANCE_TIMEOUT_MS: a caller on the request/tool-result path
+  // must not be held open indefinitely by a slow or hung vendor.
+  TASTE_CHECK_TIMEOUT_MS: z.coerce.number().positive().default(6_000),
 });
 
 export type Config = z.infer<typeof envSchema>;

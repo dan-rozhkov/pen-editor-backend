@@ -1,10 +1,12 @@
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { MockLanguageModelV3 } from "ai/test";
 import type { LanguageModelV3GenerateResult } from "@ai-sdk/provider";
 import { loadSkills } from "../src/ai/skills.js";
 import { makeConfig } from "./helpers.js";
 import { pickTheme } from "../src/showcase/themes.js";
 import { bareModelId } from "../src/ai/provider.js";
+import { TASTE_RULES } from "../src/ai/tasteCheck.js";
+import type { ModelMessage } from "ai";
 
 // ---------------------------------------------------------------------------
 // Mocks: same seam as test/chat-route.test.ts — the provider and MCP layer
@@ -237,6 +239,28 @@ describe("runShowcaseGeneration", () => {
   });
 
 
+  it("keeps every unnamed embed screen instead of clobbering them via replace-by-name", async () => {
+    // extractEmbedScreens defaults an unnamed embed's name to "Untitled"
+    // (src/showcase/extractEmbeds.ts, DEFAULT_SCREEN_NAME). Replace-by-name
+    // must never treat that filler as a real identity — otherwise every
+    // unnamed screen after the first looks like a re-emission of the same
+    // "Untitled" screen and clobbers it instead of being appended.
+    const operations = Array.from(
+      { length: 5 },
+      (_, i) => `s${i}=I(document, {type: "embed", htmlContent: "<div>${i}</div>"})`,
+    ).join("\n");
+
+    holders.model = mockModel([
+      toolCallResult("batch_design", { operations }),
+      textResult("done"),
+    ]);
+
+    const result = await runShowcaseGeneration(makeConfig(), "каршеринг");
+
+    expect(result.screens).toHaveLength(5);
+    expect(result.screens.every((s) => s.name === "Untitled")).toBe(true);
+  });
+
   it("puts a generated image URL in front of the model instead of a placeholder", async () => {
     imageGenMock.generateImage.mockResolvedValue({
       url: "https://s3.test/generated.png",
@@ -379,6 +403,321 @@ describe("runShowcaseGeneration", () => {
     await runShowcaseGeneration(makeConfig(), "fitness tracker");
 
     expect(imageGenMock.generateImage.mock.calls.length).toBe(MAX_GENERATED_IMAGES);
+  });
+
+  // -------------------------------------------------------------------------
+  // Taste-check integration (src/ai/tasteCheck.ts wired into batch_design's
+  // execute — see the module's own header comment in runner.ts).
+  // -------------------------------------------------------------------------
+  describe("taste-check integration", () => {
+    function jevResponse(overrides: Record<string, number> = {}) {
+      const answers: Record<string, unknown> = {};
+      for (const rule of TASTE_RULES) {
+        answers[rule.id] = { type: "noul", noul: overrides[rule.id] ?? 0 };
+      }
+      return new Response(
+        JSON.stringify({ model: "jev-latest", answers, usage: { input_tokens: 1, output_tokens: 1 } }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+
+    /** Extracts the JSON-parsed batch_design tool result from the prompt
+     * fed into the model's NEXT step (the tool-result message the runner's
+     * batch_design execute() just produced). */
+    function batchDesignResult(prompt: unknown): Record<string, unknown> {
+      const messages = prompt as ModelMessage[];
+      const toolMessage = [...messages].reverse().find((m) => m.role === "tool");
+      const part = (toolMessage!.content as Array<{ toolName: string; output: { value: string } }>).find(
+        (p) => p.toolName === "batch_design",
+      );
+      return JSON.parse(part!.output.value) as Record<string, unknown>;
+    }
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it("replaces a screen in place when the model re-emits it with the same name, instead of duplicating it", async () => {
+      holders.model = mockModel([
+        toolCallResult("batch_design", {
+          operations: 's1=I(document, {type: "embed", name: "Home", htmlContent: "<div>A</div>"})',
+        }),
+        toolCallResult("batch_design", {
+          operations: 's1=I(document, {type: "embed", name: "Home", htmlContent: "<div>B (fixed)</div>"})',
+        }),
+        textResult("done"),
+      ]);
+
+      const result = await runShowcaseGeneration(makeConfig(), "fitness tracker");
+
+      expect(result.screens).toEqual([{ name: "Home", htmlContent: "<div>B (fixed)</div>" }]);
+    });
+
+    it("does not call Jev at all when TASTE_CHECK_MODE is off (default)", async () => {
+      const fetchSpy = vi.fn();
+      vi.stubGlobal("fetch", fetchSpy);
+      const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+      holders.model = mockModel([
+        toolCallResult("batch_design", {
+          operations: 's1=I(document, {type: "embed", name: "Home", htmlContent: "<div>x</div>"})',
+        }),
+        textResult("done"),
+      ]);
+
+      await runShowcaseGeneration(makeConfig({ TYPESAFE_API_KEY: "key" }), "fitness tracker");
+
+      expect(fetchSpy).not.toHaveBeenCalled();
+      // Off mode must skip runTasteCheck entirely — not just fail-open inside
+      // it — so there is no "[tasteCheck] ..." log line at all in that case.
+      const tasteCheckLogs = logSpy.mock.calls.filter((call) =>
+        String(call[0]).startsWith("[tasteCheck]"),
+      );
+      expect(tasteCheckLogs).toHaveLength(0);
+      logSpy.mockRestore();
+    });
+
+    it("never taste-checks a screen that was dropped beyond the screen cap", async () => {
+      // 7 screens in one batch_design call: only the first MAX_SHOWCASE_SCREENS
+      // (5) are recorded, the rest are dropped. Jev must only be asked about
+      // the 5 that were actually kept.
+      const fetchMock = vi.fn(async () => jevResponse());
+      vi.stubGlobal("fetch", fetchMock);
+      const operations = Array.from(
+        { length: 7 },
+        (_, i) => `s${i}=I(document, {type: "embed", name: "Screen ${i}", htmlContent: "<div>${i}</div>"})`,
+      ).join("\n");
+      const prompts: unknown[] = [];
+      let call = 0;
+      const results = [toolCallResult("batch_design", { operations }), textResult("done")];
+      holders.model = new MockLanguageModelV3({
+        doGenerate: async (options) => {
+          prompts.push(options.prompt);
+          const result = results[Math.min(call, results.length - 1)];
+          call++;
+          return result;
+        },
+      });
+
+      await runShowcaseGeneration(
+        makeConfig({ TYPESAFE_API_KEY: "key", TASTE_CHECK_MODE: "shadow" }),
+        "каршеринг",
+      );
+
+      // checkOneScreen (src/ai/tasteCheck.ts) issues one evaluate() call per
+      // screen — 5 kept screens -> 5 calls, none of them for the 2 dropped.
+      expect(fetchMock).toHaveBeenCalledTimes(5);
+      const sentNames = fetchMock.mock.calls.map((call) => {
+        const body = JSON.parse((call[1] as { body: string }).body) as {
+          state: { screen?: { name?: string } };
+        };
+        return body.state.screen?.name;
+      });
+      expect(sentNames.sort()).toEqual(
+        ["Screen 0", "Screen 1", "Screen 2", "Screen 3", "Screen 4"].sort(),
+      );
+    });
+
+    it("appends tasteCheck feedback to the batch_design result in enforce mode when Jev finds an issue", async () => {
+      vi.stubGlobal("fetch", vi.fn(async () => jevResponse({ gradient_text: 0.9 })));
+      const prompts: unknown[] = [];
+      let call = 0;
+      const results = [
+        toolCallResult("batch_design", {
+          operations: 's1=I(document, {type: "embed", name: "Home", htmlContent: "<div>x</div>"})',
+        }),
+        textResult("done"),
+      ];
+      holders.model = new MockLanguageModelV3({
+        doGenerate: async (options) => {
+          prompts.push(options.prompt);
+          const result = results[Math.min(call, results.length - 1)];
+          call++;
+          return result;
+        },
+      });
+
+      await runShowcaseGeneration(
+        makeConfig({ TYPESAFE_API_KEY: "key", TASTE_CHECK_MODE: "enforce" }),
+        "fitness tracker",
+      );
+
+      const secondStepResult = batchDesignResult(prompts[1]);
+      expect(secondStepResult.tasteCheck).toContain("Home");
+      expect(secondStepResult.tasteCheck).toContain("round 1/2");
+    });
+
+    it("stops checking a screen name after MAX_TASTE_CHECK_ROUNDS (2) even if the model keeps re-emitting it", async () => {
+      const fetchMock = vi.fn(async () => jevResponse({ emoji_icons: 0.9 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const prompts: unknown[] = [];
+      let call = 0;
+      const results = [
+        toolCallResult("batch_design", {
+          operations: 's1=I(document, {type: "embed", name: "Home", htmlContent: "<div>v1</div>"})',
+        }),
+        toolCallResult("batch_design", {
+          operations: 's1=I(document, {type: "embed", name: "Home", htmlContent: "<div>v2</div>"})',
+        }),
+        toolCallResult("batch_design", {
+          operations: 's1=I(document, {type: "embed", name: "Home", htmlContent: "<div>v3</div>"})',
+        }),
+        textResult("done"),
+      ];
+      holders.model = new MockLanguageModelV3({
+        doGenerate: async (options) => {
+          prompts.push(options.prompt);
+          const result = results[Math.min(call, results.length - 1)];
+          call++;
+          return result;
+        },
+      });
+
+      await runShowcaseGeneration(
+        makeConfig({ TYPESAFE_API_KEY: "key", TASTE_CHECK_MODE: "enforce" }),
+        "fitness tracker",
+      );
+
+      // Round 1 (after v1) and round 2 (after v2) both check; the third
+      // re-emission (v3) has already used up its 2 rounds and must not
+      // trigger a THIRD Jev call.
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      const thirdStepResult = batchDesignResult(prompts[3]);
+      expect(thirdStepResult.tasteCheck).toBeUndefined();
+    });
+
+    it("keeps working unchanged when TYPESAFE_API_KEY is unset, even with TASTE_CHECK_MODE=enforce", async () => {
+      const fetchSpy = vi.fn();
+      vi.stubGlobal("fetch", fetchSpy);
+      holders.model = mockModel([
+        toolCallResult("batch_design", {
+          operations: 's1=I(document, {type: "embed", name: "Home", htmlContent: "<div>x</div>"})',
+        }),
+        textResult("done"),
+      ]);
+
+      const result = await runShowcaseGeneration(
+        makeConfig({ TYPESAFE_API_KEY: undefined, TASTE_CHECK_MODE: "enforce" }),
+        "fitness tracker",
+      );
+
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(result.screens).toEqual([{ name: "Home", htmlContent: "<div>x</div>" }]);
+    });
+
+    it("never taste-checks an unnamed (default-name) screen", async () => {
+      // TASTE_CHECK_FIX_HINT tells the model to fix a flagged screen "by
+      // re-emitting it with batch_design (same screen name)" — but an
+      // unnamed screen is always APPENDED, never replaced (see the
+      // replace-by-name comment in runner.ts), so a re-emission would just
+      // publish a second, unfixed copy. Unnamed screens must therefore never
+      // reach Jev at all.
+      const fetchMock = vi.fn(async () => jevResponse());
+      vi.stubGlobal("fetch", fetchMock);
+      holders.model = mockModel([
+        toolCallResult("batch_design", {
+          operations: 's1=I(document, {type: "embed", htmlContent: "<div>x</div>"})',
+        }),
+        textResult("done"),
+      ]);
+
+      const result = await runShowcaseGeneration(
+        makeConfig({ TYPESAFE_API_KEY: "key", TASTE_CHECK_MODE: "enforce" }),
+        "fitness tracker",
+      );
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(result.screens).toEqual([{ name: "Untitled", htmlContent: "<div>x</div>" }]);
+    });
+
+    it("collapses duplicate explicit names within ONE batch_design call to a single Jev check and a single round", async () => {
+      const fetchMock = vi.fn(async () => jevResponse());
+      vi.stubGlobal("fetch", fetchMock);
+      const prompts: unknown[] = [];
+      let call = 0;
+      const results = [
+        toolCallResult("batch_design", {
+          operations: [
+            's1=I(document, {type: "embed", name: "Home", htmlContent: "<div>v1</div>"})',
+            's2=I(document, {type: "embed", name: "Home", htmlContent: "<div>v2 (final)</div>"})',
+          ].join("\n"),
+        }),
+        textResult("done"),
+      ];
+      holders.model = new MockLanguageModelV3({
+        doGenerate: async (options) => {
+          prompts.push(options.prompt);
+          const result = results[Math.min(call, results.length - 1)];
+          call++;
+          return result;
+        },
+      });
+
+      const result = await runShowcaseGeneration(
+        makeConfig({ TYPESAFE_API_KEY: "key", TASTE_CHECK_MODE: "enforce" }),
+        "fitness tracker",
+      );
+
+      // Storage itself already collapses the duplicate to one stored screen
+      // (last-wins).
+      expect(result.screens).toEqual([{ name: "Home", htmlContent: "<div>v2 (final)</div>" }]);
+      // Exactly one Jev evaluate() call for the pair, not two.
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const sentHtml = JSON.parse((fetchMock.mock.calls[0][1] as { body: string }).body) as {
+        state: { screen?: { html?: string } };
+      };
+      expect(sentHtml.state.screen?.html).toContain("v2 (final)");
+      // One round spent, not two — round label on the returned feedback says
+      // "1", and it must still be eligible for one more automated round.
+      const secondStepResult = batchDesignResult(prompts[1]);
+      expect(secondStepResult.tasteCheck).toBeUndefined(); // no findings from the clean jevResponse()
+    });
+
+    it("resets taste-check rounds for a retried attempt instead of carrying them over from the discarded one", async () => {
+      // Attempt 1 gets its screen checked (spending round 1 of
+      // MAX_TASTE_CHECK_ROUNDS), then the turn fails with a retryable error.
+      // Attempt 2 is a fresh conversation — the model re-emits "Home" again,
+      // and that check must ALSO land as round 1, not round 2, because the
+      // whole attempt (and its round counter) was discarded, not resumed.
+      const fetchMock = vi.fn(async () => jevResponse({ emoji_icons: 0.9 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const prompts: unknown[] = [];
+      let call = 0;
+      const results: Array<LanguageModelV3GenerateResult | Error> = [
+        toolCallResult("batch_design", {
+          operations: 's1=I(document, {type: "embed", name: "Home", htmlContent: "<div>attempt1</div>"})',
+        }),
+        new Error("503 Service Unavailable"),
+        toolCallResult("batch_design", {
+          operations: 's1=I(document, {type: "embed", name: "Home", htmlContent: "<div>attempt2</div>"})',
+        }),
+        textResult("done"),
+      ];
+      holders.model = new MockLanguageModelV3({
+        doGenerate: async (options) => {
+          prompts.push(options.prompt);
+          const result = results[Math.min(call, results.length - 1)];
+          call++;
+          if (result instanceof Error) throw result;
+          return result;
+        },
+      });
+
+      const result = await runShowcaseGeneration(
+        makeConfig({ TYPESAFE_API_KEY: "key", TASTE_CHECK_MODE: "enforce" }),
+        "fitness tracker",
+      );
+
+      expect(result.screens).toEqual([{ name: "Home", htmlContent: "<div>attempt2</div>" }]);
+      // Both attempts' checks happened — attempt 1's before it failed,
+      // attempt 2's after the retry.
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      // Attempt 2's own batch_design result (the tool result fed into its
+      // very next step, the LAST prompt the model saw) must say "round 1",
+      // proving its round counter was NOT carried over from attempt 1 as
+      // "round 2".
+      const attempt2Result = batchDesignResult(prompts[prompts.length - 1]);
+      expect(attempt2Result.tasteCheck).toContain("round 1/2");
+    });
   });
 });
 

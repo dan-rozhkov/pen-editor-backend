@@ -316,7 +316,7 @@ function readEmbedFields(
 
   if (htmlContent !== undefined && looksTruncated(htmlContent)) {
     console.warn(
-      `[extractEmbeds] htmlContent for screen "${name ?? "Untitled"}" looks ` +
+      `[extractEmbeds] htmlContent for screen "${name ?? DEFAULT_SCREEN_NAME}" looks ` +
         `truncated mid-tag (ends with "${htmlContent.slice(-60)}") — this is ` +
         "the signature of an unescaped quote inside the model's HTML cutting " +
         "the value short. The screen will still be published; verify it " +
@@ -326,6 +326,11 @@ function readEmbedFields(
 
   return { name, htmlContent };
 }
+
+// The name a screen gets when the model's batch_design op doesn't set one.
+// Exported so callers (e.g. runner.ts's replace-by-name logic) can tell an
+// explicit name apart from this filler without hardcoding the string twice.
+export const DEFAULT_SCREEN_NAME = "Untitled";
 
 // Extracts every `type: "embed"` screen (I()/R() create ops) from a
 // batch_design `operations` script, in document order. Statements that
@@ -347,7 +352,7 @@ export function extractEmbedScreens(
     const { name, htmlContent } = readEmbedFields(statement);
     if (!htmlContent) continue;
 
-    screens.push({ name: name ?? "Untitled", htmlContent });
+    screens.push({ name: name ?? DEFAULT_SCREEN_NAME, htmlContent });
   }
 
   return screens;
