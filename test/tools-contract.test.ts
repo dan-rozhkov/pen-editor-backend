@@ -1313,6 +1313,28 @@ describe("browse_act schema (widened)", () => {
     ).toBe(true);
   });
 
+  // `element` (2026-09-23): a plain-language element description, resolved
+  // client-side by browse_act instead of a snapshot index — see
+  // src/ai/browseLocate.ts / POST /api/browse/locate.
+  it("accepts `element` as an alternative to target/index", () => {
+    expect(
+      schema.safeParse({ action: "click", element: "the Continue button in the cookie banner" })
+        .success,
+    ).toBe(true);
+    expect(
+      schema.safeParse({ action: "hover", element: "the account menu" }).success,
+    ).toBe(true);
+  });
+
+  it("rejects an `element` description over 300 characters", () => {
+    expect(
+      schema.safeParse({ action: "click", element: "a".repeat(301) }).success,
+    ).toBe(false);
+    expect(
+      schema.safeParse({ action: "click", element: "a".repeat(300) }).success,
+    ).toBe(true);
+  });
+
   it("rejects a negative or non-integer index", () => {
     expect(schema.safeParse({ action: "click", index: -1, snapshotId: "snap-1" }).success).toBe(false);
     expect(schema.safeParse({ action: "click", index: 1.5, snapshotId: "snap-1" }).success).toBe(false);

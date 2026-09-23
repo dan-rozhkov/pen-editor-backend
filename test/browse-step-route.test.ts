@@ -191,4 +191,95 @@ describe("POST /api/browse/step", () => {
     expect(json.outcome).toBe("retry");
     await app.close();
   });
+
+  // New ops (2026-09-23), end to end through the real route.
+  it("resolves HOVER against target_click's index end to end", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jevResponse({
+          model: "jev-latest",
+          answers: {
+            goal_met: { type: "noul", noul: 0.1 },
+            dead_end: { type: "noul", noul: 0.1 },
+            op: { type: "choice", choice: "HOVER", probabilities: { HOVER: 0.9 }, confidence: 0.9 },
+            target_click: { type: "choice", choice: "3", probabilities: { "3": 0.9 }, confidence: 0.9 },
+          },
+          usage: { input_tokens: 10, output_tokens: 5 },
+        }),
+      ),
+    );
+    const app = await buildApp(makeConfig({ TYPESAFE_API_KEY: "key" }), { logger: false });
+    const res = await app.inject({ method: "POST", url: "/api/browse/step", payload: validBody });
+    expect(res.statusCode).toBe(200);
+    const json = res.json();
+    expect(json.outcome).toBe("act");
+    expect(json.operation).toBe("HOVER");
+    expect(json.index).toBe(3);
+    await app.close();
+  });
+
+  it("resolves PRESS_ENTER with no index end to end", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jevResponse({
+          model: "jev-latest",
+          answers: {
+            goal_met: { type: "noul", noul: 0.1 },
+            dead_end: { type: "noul", noul: 0.1 },
+            op: {
+              type: "choice",
+              choice: "PRESS_ENTER",
+              probabilities: { PRESS_ENTER: 0.9 },
+              confidence: 0.9,
+            },
+            // validBody's one element supports CLICK, so the fan-out also
+            // asks target_click — the response schema requires an answer
+            // for every question id sent, even one PRESS_ENTER never reads.
+            target_click: { type: "choice", choice: "3", probabilities: { "3": 0.9 }, confidence: 0.9 },
+          },
+          usage: { input_tokens: 10, output_tokens: 5 },
+        }),
+      ),
+    );
+    const app = await buildApp(makeConfig({ TYPESAFE_API_KEY: "key" }), { logger: false });
+    const res = await app.inject({ method: "POST", url: "/api/browse/step", payload: validBody });
+    expect(res.statusCode).toBe(200);
+    const json = res.json();
+    expect(json.outcome).toBe("act");
+    expect(json.operation).toBe("PRESS_ENTER");
+    expect(json.index).toBeUndefined();
+    await app.close();
+  });
+
+  it("resolves PRESS_ESCAPE at a peak too low for the acting tier but high enough for the passive one", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jevResponse({
+          model: "jev-latest",
+          answers: {
+            goal_met: { type: "noul", noul: 0.1 },
+            dead_end: { type: "noul", noul: 0.1 },
+            op: {
+              type: "choice",
+              choice: "PRESS_ESCAPE",
+              probabilities: { PRESS_ESCAPE: 0.5 },
+              confidence: 0.5,
+            },
+            target_click: { type: "choice", choice: "3", probabilities: { "3": 0.9 }, confidence: 0.9 },
+          },
+          usage: { input_tokens: 10, output_tokens: 5 },
+        }),
+      ),
+    );
+    const app = await buildApp(makeConfig({ TYPESAFE_API_KEY: "key" }), { logger: false });
+    const res = await app.inject({ method: "POST", url: "/api/browse/step", payload: validBody });
+    expect(res.statusCode).toBe(200);
+    const json = res.json();
+    expect(json.outcome).toBe("act");
+    expect(json.operation).toBe("PRESS_ESCAPE");
+    await app.close();
+  });
 });

@@ -22,7 +22,9 @@ import {
 // burns the client loop's budget on identical failures. decideBrowseStep
 // truncates these down to the real limits unconditionally, the same way it
 // already re-caps `elements` regardless of what the client sent.
-const elementSchema = z.object({
+// Exported so routes/browseLocate.ts (same element shape, same truncation
+// rules) doesn't redeclare this schema.
+export const elementSchema = z.object({
   index: z.number().int().nonnegative(),
   tag: z.string().min(1).max(40),
   role: z.string().max(60).optional(),

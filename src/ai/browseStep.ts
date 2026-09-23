@@ -83,7 +83,7 @@ export const MAX_OPTION_CHARS = 200;
  * still computed and returned in the HTTP result (unchanged contract), and
  * is still the weaker-of-two-heads number reported there; it is simply no
  * longer what gates the decision. */
-function peakProbability(answer: SystemOneChoiceAnswer): number {
+export function peakProbability(answer: SystemOneChoiceAnswer): number {
   const values = Object.values(answer.probabilities);
   return values.length > 0 ? Math.max(...values) : 0;
 }
@@ -105,13 +105,13 @@ function peakProbability(answer: SystemOneChoiceAnswer): number {
  *
  * Three separate thresholds, not one, because option count and stakes both
  * vary by head:
- *  - the operation head (PEAK_THRESHOLD_OP) is always a 6-option Choice
- *    deciding WHAT CLASS of thing happens next — CLICK/TYPE_TEXT/SELECT is
+ *  - the operation head (PEAK_THRESHOLD_OP) is a Choice deciding WHAT CLASS
+ *    of thing happens next — CLICK/TYPE_TEXT/SELECT/HOVER/PRESS_ENTER is
  *    the acting case; and
  *  - the passive case (PEAK_THRESHOLD_PASSIVE) covers the same head when it
- *    lands on SCROLL_UP/SCROLL_DOWN/WAIT — a wrong scroll costs nothing, so
- *    it gets a materially lower bar than an acting pick from that same
- *    6-option space; and
+ *    lands on SCROLL_UP/SCROLL_DOWN/WAIT/PRESS_ESCAPE — a wrong scroll or
+ *    Escape costs nothing, so it gets a materially lower bar than an acting
+ *    pick from that same Choice; and
  *  - the target head and the SELECT-option head (PEAK_THRESHOLD_TARGET) can
  *    each fan out over up to 120 (elements) or 100 (select options)
  *    near-duplicate candidates, and every choice they produce is validated
@@ -129,17 +129,47 @@ function peakProbability(answer: SystemOneChoiceAnswer): number {
  * roughly the WORST-case old value instead of the typical one — the exact
  * opposite of what switching off `confidence` was for. The password rule
  * stays a hard terminal rule regardless of any of these three numbers,
- * never threshold-gated. */
+ * never threshold-gated.
+ *
+ * 2026-09-23: the operation Choice grew from 6 options to 9
+ * (HOVER/PRESS_ENTER/PRESS_ESCAPE added — see BrowseOperation). This did
+ * NOT move the 0.6 bar, and deliberately so: unlike `confidence`, peak
+ * probability has no dependence on option count (see peakProbability's own
+ * comment above — "it is what it says regardless of `n`"), which was the
+ * entire reason this file gates on peak instead of `confidence` in the
+ * first place. A wider Choice does make each individual option's PRIOR
+ * share of probability mass smaller on average, but it does not lower the
+ * peak Jev actually reports for a page where one option is genuinely the
+ * clear answer — three more low-frequency, easily-distinguished options
+ * (a hover menu, Enter-to-submit, Escape-to-close) competing for the
+ * remaining mass is not the same failure mode as the confidence-formula
+ * artifact this threshold was built to avoid. If real traffic later shows
+ * the wider Choice systematically depresses peaks even on unambiguous
+ * pages, that is a reason to re-derive the number from measured peak
+ * distributions — not to adjust it preemptively because the option count
+ * changed. HOVER reuses CLICK's target_click head (no new target head), so
+ * it adds no additional fan-out to size threshold against either. */
 export const PEAK_THRESHOLD_OP = 0.6;
 
 /** See PEAK_THRESHOLD_OP's comment — lower bar for the same operation head
- * when it lands on SCROLL_UP / SCROLL_DOWN / WAIT. Worst case is one wasted
- * step that the loop simply repeats with a different snapshot next time
- * (unlike the removed retry band, an ACTUAL client-driven scroll or wait
- * does change the page) — exactly the vendor's low-stakes guidance ("can
- * proceed at lower thresholds, ~0.5+, since recovery is straightforward").
- * Gating a harmless scroll at the acting bar would make the agent get stuck
- * refusing to scroll on ordinary, only-mildly-ambiguous pages. */
+ * when it lands on SCROLL_UP / SCROLL_DOWN / WAIT / PRESS_ESCAPE. Worst case
+ * is one wasted step that the loop simply repeats with a different snapshot
+ * next time (unlike the removed retry band, an ACTUAL client-driven scroll,
+ * wait, or Escape does change the page) — exactly the vendor's low-stakes
+ * guidance ("can proceed at lower thresholds, ~0.5+, since recovery is
+ * straightforward"). Gating a harmless scroll at the acting bar would make
+ * the agent get stuck refusing to scroll on ordinary, only-mildly-ambiguous
+ * pages.
+ *
+ * PRESS_ESCAPE joins this tier (2026-09-23), not the acting one: pressing
+ * Escape on a page with nothing open to close is a no-op, not a mutation —
+ * there is no equivalent to a wrong CLICK on a logged-in page's "Delete
+ * account" button. PRESS_ENTER stays on the acting tier instead (not here):
+ * Enter submits whatever form field currently has focus, which is exactly
+ * the same class of consequential, hard-to-undo action as CLICK/TYPE_TEXT —
+ * a wrong PRESS_ENTER can place an order or submit a login form, so it gets
+ * the higher bar despite being, like PRESS_ESCAPE, a keypress with no
+ * target lookup. */
 export const PEAK_THRESHOLD_PASSIVE = 0.4;
 
 /** See PEAK_THRESHOLD_OP's comment — shared bar for the target_click /
@@ -270,6 +300,9 @@ export type BrowseOperation =
   | "CLICK"
   | "TYPE_TEXT"
   | "SELECT"
+  | "HOVER"
+  | "PRESS_ENTER"
+  | "PRESS_ESCAPE"
   | "SCROLL_UP"
   | "SCROLL_DOWN"
   | "WAIT"
@@ -288,9 +321,11 @@ type ChoiceOperation = Exclude<BrowseOperation, "DONE" | "BLOCKED">;
  * task, while a plain HTTP error did not — backwards. The frontend loop
  * must branch on THIS field, not on `operation`, to decide whether to stop.
  *  - "act"     — apply `operation` (+ `index`/`text`). Includes WAIT/
- *                SCROLL_UP/SCROLL_DOWN, which the client handles itself
- *                (sleep-and-resnapshot / scroll) rather than calling
- *                `perform` with an index.
+ *                SCROLL_UP/SCROLL_DOWN/PRESS_ENTER/PRESS_ESCAPE, which the
+ *                client handles itself (sleep-and-resnapshot / scroll /
+ *                press the key with no target) rather than calling
+ *                `perform` with an index. HOVER, unlike those, DOES carry
+ *                an `index` — it targets an element just like CLICK.
  *  - "done"    — the goal is met. Terminal.
  *  - "blocked" — a deliberate refusal: peak probability below the relevant
  *                threshold (on any head), a password field, the `dead_end`
@@ -309,9 +344,37 @@ type ChoiceOperation = Exclude<BrowseOperation, "DONE" | "BLOCKED">;
  */
 export type BrowseStepOutcome = "act" | "done" | "blocked" | "retry";
 
+// These are the ops that have their OWN target head, built from the
+// element candidate set (see buildBrowseStepQuestions). HOVER is
+// deliberately NOT in this list even though it targets an element — it
+// reuses CLICK's `target_click` head (same candidate set: any element whose
+// `ops` includes CLICK), so it needs no fourth fan-out head. See
+// targetHeadFor below for where that borrowing happens.
 const TARGETABLE_OPS = ["CLICK", "TYPE_TEXT", "SELECT"] as const;
 type TargetableOp = (typeof TARGETABLE_OPS)[number];
-const ACTING_OPS = new Set<ChoiceOperation>(TARGETABLE_OPS);
+
+/** Per-head instructions for the target Choice questions. CLICK's covers
+ * HOVER too (2026-09-23) — see TARGETABLE_OPS's comment on why HOVER has no
+ * head of its own — worded so Jev knows a HOVER pick also reads this head. */
+const TARGET_HEAD_INSTRUCTIONS: Record<TargetableOp, string> = {
+  CLICK: "If the chosen operation is CLICK or HOVER, which element should it target?",
+  TYPE_TEXT: "If the chosen operation is TYPE_TEXT, which element should it target?",
+  SELECT: "If the chosen operation is SELECT, which element should it target?",
+};
+
+/** Operations gated at the higher, "acting" tier (PEAK_THRESHOLD_OP) rather
+ * than the passive one — see PEAK_THRESHOLD_PASSIVE's comment for why
+ * PRESS_ENTER is here and PRESS_ESCAPE deliberately is not. */
+const ACTING_OPS = new Set<ChoiceOperation>([...TARGETABLE_OPS, "HOVER", "PRESS_ENTER"]);
+
+/** Maps an operation that needs an element target to the TARGETABLE_OP whose
+ * head answers it — identity for CLICK/TYPE_TEXT/SELECT, CLICK for HOVER
+ * (see TARGETABLE_OPS's comment), `undefined` for every targetless op
+ * (SCROLL_UP, SCROLL_DOWN, WAIT, PRESS_ENTER, PRESS_ESCAPE). */
+function targetHeadFor(operation: BrowseOperation): TargetableOp | undefined {
+  if (operation === "HOVER") return "CLICK";
+  return isTargetableOp(operation) ? operation : undefined;
+}
 
 export interface BrowseStepElement {
   index: number;
@@ -381,12 +444,15 @@ const OP_DESCRIPTIONS: Record<ChoiceOperation, string> = {
   CLICK: "Click a button, link, or other clickable element.",
   TYPE_TEXT: "Type text into a text input or textarea.",
   SELECT: "Choose an option in a native <select> dropdown.",
+  HOVER: "Move the pointer over an element (without clicking it) to reveal a hover-triggered menu, submenu, or tooltip that isn't visible until hovered.",
+  PRESS_ENTER: "Press Enter in the field that was just typed into to submit it. Only ever choose this immediately after TYPE_TEXT filled a search box or a simple single-field form that has no visible submit button to click instead — Enter acts on whatever currently has focus, so it is meaningless (and refused) at any other point in the sequence.",
+  PRESS_ESCAPE: "Press Escape to close whatever is currently open and blocking the page — a modal dialog, a dropdown menu, a popover — when there is no obvious close button to click.",
   SCROLL_UP: "Scroll the page up to reveal earlier content.",
   SCROLL_DOWN: "Scroll the page down to reveal more content (e.g. an infinite-scroll grid, or a control currently off-screen).",
   WAIT: "Wait a short moment for the page to settle (e.g. after a navigation or an animation) before acting again.",
 };
 
-function truncateLabel(label: string, max = 120): string {
+export function truncateLabel(label: string, max = 120): string {
   const trimmed = label.trim();
   return trimmed.length > max ? `${trimmed.slice(0, max - 1)}…` : trimmed;
 }
@@ -460,25 +526,61 @@ export function buildBrowseStepQuestions(
     if (candidates.length === 0) continue;
     const criteria: Record<string, string | null> = {};
     for (const el of candidates) {
-      criteria[String(el.index)] = truncateLabel(
-        `<${el.tag}${el.role ? ` role=${el.role}` : ""}> ${el.label}${
-          el.value
-            ? ` (current value: ${truncateLabel(el.value, 40)})`
-            : el.hasValue
-              ? " (already filled)"
-              : ""
-        }`,
-        160,
-      );
+      criteria[String(el.index)] = elementCriterionLabel(el);
     }
     questions[targetIdFor(op)] = {
       type: "choice",
-      instructions: `If the chosen operation is ${op}, which element should it target?`,
+      instructions: TARGET_HEAD_INSTRUCTIONS[op],
       criteria,
     };
   }
 
   return questions;
+}
+
+/** One target-head criterion entry for a single element — tag(+role), full
+ * (truncated) label, and either its current value or an "already filled"
+ * flag. Shared by buildBrowseStepQuestions' per-op target heads above and
+ * browseLocate.ts's single ad-hoc Choice, so a candidate element reads
+ * identically to Jev whether it arrived via the browse_task loop or a
+ * one-shot browse_act `element` lookup. */
+export function elementCriterionLabel(el: BrowseStepElement): string {
+  return truncateLabel(
+    `<${el.tag}${el.role ? ` role=${el.role}` : ""}> ${el.label}${
+      el.value
+        ? ` (current value: ${truncateLabel(el.value, 40)})`
+        : el.hasValue
+          ? " (already filled)"
+          : ""
+    }`,
+    160,
+  );
+}
+
+/** Caps an element list at MAX_SNAPSHOT_ELEMENTS and its per-element
+ * value/options at their real limits (TRUNCATING, never rejecting — see
+ * MAX_ELEMENT_VALUE_CHARS's comment), then scrubs PII out of every field
+ * that is third-party-vendor-bound text and, here, arbitrary page content:
+ * label, value, and each option. Truncate BEFORE scrubbing, never after —
+ * cutting a scrubbed string could slice a redaction in half and leak the
+ * tail of a match (same ordering rule as skillRouting.ts's
+ * MAX_ROUTED_TEXT_CHARS comment). Shared by decideBrowseStep and
+ * browseLocate.ts — both send an element list to the same vendor under the
+ * same size/PII rules, and this is where that rule lives exactly once. */
+export function capAndScrubElements(elements: BrowseStepElement[]): BrowseStepElement[] {
+  return elements.slice(0, MAX_SNAPSHOT_ELEMENTS).map((el) => {
+    const value =
+      el.value !== undefined ? el.value.slice(0, MAX_ELEMENT_VALUE_CHARS) : undefined;
+    const options = el.options
+      ? el.options.slice(0, MAX_ELEMENT_OPTIONS).map((o) => o.slice(0, MAX_OPTION_CHARS))
+      : undefined;
+    return {
+      ...el,
+      label: scrubPii(el.label),
+      value: value !== undefined ? scrubPii(value) : undefined,
+      options: options ? options.map((o) => scrubPii(o)) : undefined,
+    };
+  });
 }
 
 function isTargetableOp(op: BrowseOperation): op is TargetableOp {
@@ -524,7 +626,7 @@ function noulValue(answer: SystemOneAnswer | undefined): number | undefined {
  * type elsewhere in this file, so callers check this BEFORE gating on peak
  * and treat it as `retry`, matching every other malformed-answer path
  * here. */
-function hasProbabilities(answer: SystemOneChoiceAnswer): boolean {
+export function hasProbabilities(answer: SystemOneChoiceAnswer): boolean {
   return Object.keys(answer.probabilities).length > 0;
 }
 
@@ -672,28 +774,6 @@ export async function decideBrowseStep(
   config: Config,
   input: BrowseStepInput,
 ): Promise<BrowseStepResult> {
-  // Truncate BEFORE scrubbing PII, never after — cutting a scrubbed string
-  // could slice a redaction in half and leak the tail of a match (same
-  // ordering rule as skillRouting.ts's MAX_ROUTED_TEXT_CHARS comment).
-  const elements = input.elements.slice(0, MAX_SNAPSHOT_ELEMENTS).map((el) => ({
-    ...el,
-    value:
-      el.value !== undefined ? el.value.slice(0, MAX_ELEMENT_VALUE_CHARS) : undefined,
-    options: el.options
-      ? el.options
-          .slice(0, MAX_ELEMENT_OPTIONS)
-          .map((o) => o.slice(0, MAX_OPTION_CHARS))
-      : undefined,
-  }));
-
-  // PII: goal, every element label/value/option, url, title and the recent
-  // history's labels are all third-party-vendor-bound text (Jev) and, here,
-  // arbitrary page content — scrub before they ever leave this process,
-  // exactly like skillRouting.ts. `options[]` and `history` used to survive
-  // this pass unscrubbed (finding #5): options are page text (a country
-  // name is not PII, but a free-text "Other: <email>" option is), and
-  // history labels are copies of the very same page-derived labels the
-  // element scrub already covers.
   const scrubbedGoal = scrubPii(input.goal);
   const scrubbedUrl = scrubPii(input.url);
   const scrubbedTitle = scrubPii(input.title);
@@ -701,12 +781,7 @@ export async function decideBrowseStep(
     ...h,
     label: scrubPii(h.label),
   }));
-  const scrubbedElements: BrowseStepElement[] = elements.map((el) => ({
-    ...el,
-    label: scrubPii(el.label),
-    value: el.value !== undefined ? scrubPii(el.value) : undefined,
-    options: el.options ? el.options.map((o) => scrubPii(o)) : undefined,
-  }));
+  const scrubbedElements = capAndScrubElements(input.elements);
 
   const questions = buildBrowseStepQuestions(scrubbedElements);
 
@@ -858,19 +933,45 @@ export async function decideBrowseStep(
     return opGate;
   }
 
-  if (operation === "WAIT" || operation === "SCROLL_UP" || operation === "SCROLL_DOWN") {
-    // These need no target lookup; the frontend loop applies them itself
-    // (WAIT: sleep + resnapshot; SCROLL_*: perform with no index).
+  // Hard rule, not a threshold — same class as the TYPE_TEXT credentials
+  // guard below (and browseLocate.ts's FOCUS guard): Enter submits whatever
+  // field currently has focus, and on a page that has a password field the
+  // agent cannot see what's focused or what typing it. Gate on ANY password
+  // field being present on the page at all, not just the one the target
+  // head would have picked (PRESS_ENTER is targetless — there is no target
+  // head to check).
+  if (operation === "PRESS_ENTER" && scrubbedElements.some((el) => el.isPassword)) {
+    return blocked(
+      "refusing to press Enter while a password field is present on the page — the user must log in themselves",
+      model,
+      opConfidence,
+    );
+  }
+
+  if (
+    operation === "WAIT" ||
+    operation === "SCROLL_UP" ||
+    operation === "SCROLL_DOWN" ||
+    operation === "PRESS_ENTER" ||
+    operation === "PRESS_ESCAPE"
+  ) {
+    // These need no target lookup; the client applies them itself — WAIT:
+    // sleep + resnapshot; SCROLL_*: perform with no index; PRESS_ENTER/
+    // PRESS_ESCAPE: press the key against whatever currently has focus /
+    // is open, no element index involved (contract: both are targetless).
     return { outcome: "act", operation, confidence: opConfidence, model };
   }
 
-  // operation is CLICK / TYPE_TEXT / SELECT from here — read ONLY the
-  // target head matching the chosen operation, per the design doc.
-  if (!isTargetableOp(operation)) {
+  // operation is CLICK / TYPE_TEXT / SELECT / HOVER from here — read ONLY
+  // the target head matching the underlying candidate set. HOVER borrows
+  // CLICK's target_click head rather than having its own (see
+  // targetHeadFor's comment).
+  const headOp = targetHeadFor(operation);
+  if (!headOp) {
     return retry(`operation "${operation}" has no target head`, model, opConfidence);
   }
-  const targetQuestion = questions[targetIdFor(operation)];
-  const targetAnswer = answers[targetIdFor(operation)];
+  const targetQuestion = questions[targetIdFor(headOp)];
+  const targetAnswer = answers[targetIdFor(headOp)];
   if (!targetQuestion || !targetAnswer || targetAnswer.type !== "choice") {
     return retry(
       `no candidate target elements were available for "${operation}"`,
@@ -1003,6 +1104,7 @@ export async function decideBrowseStep(
     };
   }
 
-  // operation === "CLICK"
+  // operation === "CLICK" or "HOVER" — both are a plain index-targeted act,
+  // no operation-specific payload beyond the target.
   return { outcome: "act", operation, index: targetIndex, confidence: combinedConfidence, model };
 }

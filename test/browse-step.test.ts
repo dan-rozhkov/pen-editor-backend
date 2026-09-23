@@ -358,6 +358,84 @@ describe("decideBrowseStep", () => {
     expect(result).toMatchObject({ outcome: "act", operation: "CLICK", index: 3, confidence: 0.9 });
   });
 
+  // New ops (2026-09-23): HOVER, PRESS_ENTER, PRESS_ESCAPE.
+  describe("HOVER / PRESS_ENTER / PRESS_ESCAPE", () => {
+    it("includes the three new ops among the operation Choice's criteria", () => {
+      const questions = buildBrowseStepQuestions([clickable]);
+      const opCriteria = (questions.op as { criteria: Record<string, unknown> }).criteria;
+      expect(opCriteria).toHaveProperty("HOVER");
+      expect(opCriteria).toHaveProperty("PRESS_ENTER");
+      expect(opCriteria).toHaveProperty("PRESS_ESCAPE");
+    });
+
+    it("resolves HOVER against target_click's picked index (same head CLICK uses, no target_hover head)", async () => {
+      const client = fakeClient({ op: choice("HOVER", 0.9), target_click: choice("3", 0.9) });
+      const result = await decideBrowseStep(client, makeConfig(), baseInput([clickable]));
+      expect(result).toMatchObject({ outcome: "act", operation: "HOVER", index: 3, confidence: 0.9 });
+    });
+
+    it("does not build a separate target_hover question — HOVER never appears in an element's ops", () => {
+      const questions = buildBrowseStepQuestions([clickable]);
+      expect(questions.target_hover).toBeUndefined();
+    });
+
+    it("resolves PRESS_ENTER with no index (targetless act)", async () => {
+      const client = fakeClient({ op: choice("PRESS_ENTER", 0.9) });
+      const result = await decideBrowseStep(client, makeConfig(), baseInput([clickable]));
+      expect(result).toMatchObject({ outcome: "act", operation: "PRESS_ENTER" });
+      expect(result.index).toBeUndefined();
+    });
+
+    it("resolves PRESS_ESCAPE with no index (targetless act)", async () => {
+      const client = fakeClient({ op: choice("PRESS_ESCAPE", 0.9) });
+      const result = await decideBrowseStep(client, makeConfig(), baseInput([clickable]));
+      expect(result).toMatchObject({ outcome: "act", operation: "PRESS_ESCAPE" });
+      expect(result.index).toBeUndefined();
+    });
+
+    it("gates PRESS_ENTER at the ACTING tier (PEAK_THRESHOLD_OP), not the passive one", async () => {
+      // Below PEAK_THRESHOLD_OP but above PEAK_THRESHOLD_PASSIVE — blocked
+      // only if PRESS_ENTER is really on the higher bar.
+      const peak = (PEAK_THRESHOLD_OP + PEAK_THRESHOLD_PASSIVE) / 2;
+      expect(peak).toBeLessThan(PEAK_THRESHOLD_OP);
+      expect(peak).toBeGreaterThanOrEqual(PEAK_THRESHOLD_PASSIVE);
+      const client = fakeClient({ op: choice("PRESS_ENTER", peak) });
+      const result = await decideBrowseStep(client, makeConfig(), baseInput([clickable]));
+      expect(result.outcome).toBe("blocked");
+    });
+
+    it("blocks PRESS_ENTER with a credentials reason when a password field is present on the page, even though PRESS_ENTER is targetless", async () => {
+      const client = fakeClient({ op: choice("PRESS_ENTER", 0.9) });
+      const result = await decideBrowseStep(
+        client,
+        makeConfig(),
+        baseInput([clickable, passwordInput]),
+      );
+      expect(result.outcome).toBe("blocked");
+      expect(result.reason).toContain("password");
+    });
+
+    it("allows PRESS_ENTER when no password field is present on the page", async () => {
+      const client = fakeClient({ op: choice("PRESS_ENTER", 0.9) });
+      const result = await decideBrowseStep(client, makeConfig(), baseInput([clickable, typeable]));
+      expect(result).toMatchObject({ outcome: "act", operation: "PRESS_ENTER" });
+    });
+
+    it("gates PRESS_ESCAPE at the PASSIVE tier, tolerating a peak below PEAK_THRESHOLD_OP", async () => {
+      const peak = (PEAK_THRESHOLD_OP + PEAK_THRESHOLD_PASSIVE) / 2;
+      const client = fakeClient({ op: choice("PRESS_ESCAPE", peak) });
+      const result = await decideBrowseStep(client, makeConfig(), baseInput([clickable]));
+      expect(result).toMatchObject({ outcome: "act", operation: "PRESS_ESCAPE" });
+    });
+
+    it("gates HOVER's target head at PEAK_THRESHOLD_TARGET, like CLICK", async () => {
+      const belowTarget = PEAK_THRESHOLD_TARGET - 0.05;
+      const client = fakeClient({ op: choice("HOVER", 0.9), target_click: choice("3", belowTarget) });
+      const result = await decideBrowseStep(client, makeConfig(), baseInput([clickable]));
+      expect(result.outcome).toBe("blocked");
+    });
+  });
+
   it("generates TYPE_TEXT text from goal + field label via STRUCTURED_MODEL", async () => {
     const client = fakeClient({ op: choice("TYPE_TEXT", 0.9), target_type: choice("5", 0.9) });
     const result = await decideBrowseStep(client, makeConfig(), baseInput([typeable]));
