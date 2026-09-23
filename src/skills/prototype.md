@@ -98,9 +98,9 @@ Apply these global dials to every design decision:
 ### Typography rules
 - **ONE font family per design (default):** Pick a SINGLE Google Font family, build hierarchy with **weight, size, and color** — not extra families, and do NOT mix multiple typefaces by default. A second family is the exception: add one ONLY when the user explicitly asks, when the content is literally code/terminal output (then `'JetBrains Mono', ui-monospace, monospace` for that code only), or when the two faces are **split by role and you say so in OWN-WORLD** — a display voice (titles, large numerals, wordmark) against a reading face (running text, meta, captions). Split by ROLE, never by size: a second family that exists only to make a heading bigger is noise. Under a display voice with real character, a neutral reading face such as `Inter` is a legitimate choice — Inter as the ONLY face is the tell, not Inter itself. An alternative to a second family is the **width axis**: a variable face carrying `wdth` (e.g. `Archivo`, `wdth 62..125, wght 100..900`) gives contrast on two axes inside one family — narrow-heavy against wide-ultralight. The Phosphor icon font (see Icon rules) does NOT count toward this one-family limit.
 - **Load fonts via `@import`, NOT `<link>`:** `<link>` tags are stripped on the canvas and never load. Every external font/stylesheet (main family, icon font, optional mono) MUST be loaded via `@import` at the TOP of your first `<style>` block. Do NOT reference fonts that are not available on Google Fonts.
-  - Example: `<style>@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap');  /* ...rest of your CSS... */ </style>`
-- **Good single-family choices (all on Google Fonts — pick ONE):** `Outfit`, `Plus Jakarta Sans`, `Sora`, `Space Grotesk`, `Manrope`, `Rubik`, `Urbanist`, `Nunito Sans`, `Work Sans`, `Archivo`. For editorial/creative designs a serif family such as `Lora`, `Bodoni Moda`, `Newsreader`, or `Petrona` may be the single family. This list is a starting point, not the sanctioned answer — a face from the autopilot set below can still be the right call, but only with the one-clause reason that bullet asks for.
-  - A CSS fallback chain *within one family* is fine (e.g. `font-family: 'Outfit', system-ui, sans-serif;`) — that is one typeface plus system fallbacks, not a second design font.
+  - Example (syntax only — the family comes from your committed world): `<style>@import url('https://fonts.googleapis.com/css2?family=<Family>:wght@400;600;700&display=swap');  /* ...rest of your CSS... */ </style>`
+- **Single-family candidates (all on Google Fonts — pick ONE):** `Sora`, `Manrope`, `Rubik`, `Urbanist`, `Nunito Sans`, `Work Sans`, `Archivo`; for editorial/creative designs a serif such as `Bodoni Moda` or `Petrona`. This list is a starting point, not the sanctioned answer. A face from the autopilot set below, or from `new-work`'s training-data-default list (`Outfit`, `Plus Jakarta Sans`, `Space Grotesk`, `Lora`, `Newsreader` among them), can still be the right call, but only with the one-clause reason that bullet asks for.
+  - A CSS fallback chain *within one family* is fine (e.g. `font-family: '<Family>', system-ui, sans-serif;`) — that is one typeface plus system fallbacks, not a second design font.
 - **A face from the autopilot set needs a reason.** `Inter`, `Geist`, `Roboto` and system defaults on the sans side, and `Playfair Display`, `Fraunces`, `Instrument Serif`, `Cormorant`, `DM Serif`, `DM Sans` on the "tasteful" side, are the two things a model reaches for when nobody chose — the second list only *looks* like taste, which is why it now reads as generated faster than the first. Any of them is fine when you can say in one clause what it does for THIS world; reaching for one because it is what "good" autocompletes to is the tell.
 - **Size scale (use inline CSS, not Tailwind):**
   - Display: `font-size: 2.25rem; letter-spacing: -0.05em; line-height: 1; font-weight: 700;` — for desktop headlines, scale up to `font-size: 3.75rem;` via `@media (min-width: 768px)`
@@ -143,7 +143,7 @@ Apply these global dials to every design decision:
 - **CSS Grid over flexbox math:** Never use `calc(33% - 1rem)`. Use CSS Grid: `display: grid; grid-template-columns: 2fr 1fr;` or fractional units.
 - For DESIGN_VARIANCE 8–10: prefer masonry-style layouts, CSS Grid with mixed fractional columns (`2fr 1fr 1fr`), and generous asymmetric whitespace (`padding-left: 15vw;`).
 - **Responsive:** Use `<style>` blocks with `@media` queries. Asymmetric layouts MUST collapse to single-column (`width: 100%; padding: 0 1rem;`) below 768px.
-- **Viewport:** Use `min-height: 100dvh;` for full-height hero sections — never `height: 100vh;` (breaks on iOS Safari).
+- **Viewport:** The embed is a fixed `width`×`height` viewport (see Fit to canvas), so a full-height section takes its height from the root sized to the embed. Don't use `min-height: 100dvh`/`100vh`: it makes the hero as tall as the whole screen and cuts off everything after it.
 - **Page containers:** Cap content width with `max-width: 1400px; margin: 0 auto;` or equivalent.
 
 
@@ -239,7 +239,7 @@ Load-bearing on every prototype; a pinned brief or the committed visual world ab
 - Declare elevation once (border OR shadow, not both) — a 1px border under a wide soft shadow is the "ghost card." Card radii stay 12–16px; pills are for small controls only.
 - Real illustration or none — sketch-style/"loose-sketch"/doodle SVG scenes and `feTurbulence` grain read as amateur.
 - Backgrounds are surfaces textured only from the subject's world — `repeating-linear-gradient` stripes or two-axis grid overlays need an actual canvas, map, blueprint, or measuring tool under them, not decoration for its own sake.
-- Never animate an image on hover, directly or through its parent — it is not an action target; give the container the feedback instead. (Moot here since this mode is static/no-transition, but keep it in mind if a future request allows motion.)
+- Hover feedback goes on the container, never on an image inside it — the image is not the action target.
 
 **Calibration (self-check against AI-cluster looks)** — name it if you're about to ship it. These are **axes**, not three exact looks: matching the axis is enough, and dropping one trait does not exempt you.
 - **The reassuring-naturals axis (most common failure):** any warm ground — cream, sand, beige, warm off-white, warm taupe, *or* warm-dark brown/espresso — paired with an accent from the naturals band: terracotta / rust / amber / burnt-orange **or** sage / olive / moss / forest green. Either accent lands you in this cluster. It counts **with or without** the serif display, in light **or** dark, on sans type, at any saturation. Cream + a serif + forest green is the same cluster as cream + a serif + terracotta: it is the look the previous round of anti-slop advice produced, which is exactly why it now reads as generated. A dark brown canvas with an amber accent is this cluster too, not an escape from it.
@@ -278,13 +278,13 @@ Do not default to generic UI. Pull from these patterns for visually striking lay
 
 
 ### Content & data realism
-- **Names:** Use diverse, creative, realistic names. Examples: "Margaux Delacroix", "Tomás Herrera", "Priya Anand", "Owen Blackwell".
+- **Names:** Invent names that fit the product's audience and locale, varied in origin and length. Don't carry the same names from one design to the next.
 - **Prices:** Use organic numbers: `$34.50`, `$1,247.83`, `€89.00`. Never round to `.00` or `.99` predictably.
 - **Metrics:** Use specific, messy percentages: `+12.4%`, `73.8%`, `-2.1%`. Include trend direction indicators.
-- **Dates:** Use realistic recent dates: "Mar 12, 2025", "Jan 3", "2 hours ago". Never "Jan 1, 2024".
+- **Dates:** Use dates plausible relative to today, in the product locale's format ("2 hours ago" and short dates both work). Never placeholder dates like Jan 1.
 - **Phone numbers:** Use realistic formatting: `+1 (312) 847-1928`, `+44 20 7946 0958`.
 - **Navigation labels:** Use specific, contextual labels. Not "Product" / "Solutions" / "Resources" — instead "Changelog", "Docs", "Pricing", "Blog".
-- **Brand names:** Invent specific, premium names: "Verdant", "Arclight", "Keystone", "Halcyon". Never "Acme" or "TechCorp".
+- **Brand names:** Invent a specific name that belongs to the committed world from step 1a. Never "Acme" or "TechCorp".
 - **Avatars:** Use `https://picsum.photos/seed/{unique_per_person}/200/200` or colored-initial circles. Never generic silhouettes, and never a generation — avatars are micro imagery.
 
 

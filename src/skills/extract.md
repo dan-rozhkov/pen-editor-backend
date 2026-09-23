@@ -14,7 +14,7 @@ Identify reusable patterns, components, and design tokens, then extract and cons
 
 ## Step 1: Discover the Design System
 
-Find the design system: review the project's design system (design tokens/variables, existing components, and established visual conventions). Understand its structure: component organization, naming conventions, design token structure, import/export conventions.
+Find the design system: read its variables with `get_variables`, its reusable components (frames marked `reusable: true`, used through `ref` instances), and the values that recur across the scene. Note its naming conventions for components and tokens.
 
 **CRITICAL**: If no design system exists, STOP and {{ask_instruction}} to clarify before creating one. Understand the preferred location and structure first.
 
@@ -67,13 +67,11 @@ Update design system documentation:
 - Add new components to the component library
 - Document token usage and values
 - Add examples and guidelines
-- Update any Storybook or component catalog
 
 **NEVER**:
 - Extract one-off, context-specific implementations without generalization
 - Create components so generic they are useless
 - Extract without considering existing design system conventions
-- Skip proper TypeScript types or prop documentation
 - Create tokens for every single value (tokens should have semantic meaning)
 - Extract things that differ in intent (two buttons that look similar but serve different purposes should stay separate)
 

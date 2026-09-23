@@ -111,9 +111,9 @@ Make interactions feel fast. Use optimistic UI—update immediately, sync later.
 
 A distinctive interface should make someone ask "how was this made?" not "which AI made this?"
 
-Review the DON'T guidelines above—they are the fingerprints of AI-generated work from 2024-2025.
+Review the DON'T guidelines above—they are the fingerprints of generated work.
 
-Then run it a second time against this year's answer, not last year's: "would someone believe an AI made this *while trying not to look like an AI*?" A cream ground under a serif display with a sage accent passes the first test and fails the second. Both failures have the same cause — a look nobody chose.
+Then run it a second time: "would someone believe an AI made this *while trying not to look like an AI*?" A cream ground under a serif display with a sage accent passes the first test and fails the second. Both failures have the same cause — a look nobody chose.
 
 ---
 
@@ -121,9 +121,7 @@ Then run it a second time against this year's answer, not last year's: "would so
 
 Match implementation complexity to the aesthetic vision. Maximalist designs need elaborate code with extensive animations and effects. Minimalist or refined designs need restraint, precision, and careful attention to spacing, typography, and subtle details.
 
-Interpret creatively and make unexpected choices that feel genuinely designed for the context. No design should be the same. Vary between light and dark themes, different fonts, different aesthetics. NEVER converge on common choices across generations.
-
-Remember: {{model}} is capable of extraordinary creative work. Don't hold back—show what can truly be created when thinking outside the box and committing fully to a distinctive vision.
+Interpret creatively and make choices that feel designed for this context. Pick theme, typeface, and aesthetic from this brief's use scene and subject, not from habit.
 
 ---
 

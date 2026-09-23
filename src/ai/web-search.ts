@@ -48,15 +48,18 @@ async function tavilyRequest<T>(
 }
 
 const webSearchInput = z.object({
-  query: z.string().min(1, "query is required"),
+  query: z.string().min(1, "query is required").describe("Search query in natural language or keywords."),
   max_results: z
     .number()
     .int()
     .optional()
     .default(5)
-    .transform((n) => Math.min(10, Math.max(1, n))),
-  topic: z.enum(["general", "news"]).optional().default("general"),
-  search_depth: z.enum(["basic", "advanced"]).optional().default("basic"),
+    .transform((n) => Math.min(10, Math.max(1, n)))
+    .describe("Number of results, 1-10 (clamped). Default 5."),
+  topic: z.enum(["general", "news"]).optional().default("general")
+    .describe("\"news\" restricts to recent news sources; default \"general\"."),
+  search_depth: z.enum(["basic", "advanced"]).optional().default("basic")
+    .describe("\"advanced\" returns more relevant snippets but is slower; default \"basic\"."),
 });
 
 const fetchUrlInput = z.object({
@@ -64,7 +67,8 @@ const fetchUrlInput = z.object({
     .array(z.string().url())
     .min(1, "at least one url")
     .max(5, "at most 5 urls"),
-  extract_depth: z.enum(["basic", "advanced"]).optional().default("basic"),
+  extract_depth: z.enum(["basic", "advanced"]).optional().default("basic")
+    .describe("\"advanced\" also extracts tables and embedded content but is slower; default \"basic\". Pages that fail come back in `failed`, not as an error."),
 });
 
 export function getWebTools(config: Config): Record<string, unknown> {

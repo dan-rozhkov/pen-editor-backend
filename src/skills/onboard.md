@@ -203,20 +203,7 @@ Illustration or icon (not just text on blank page)
 
 ## Implementation Patterns
 
-### Technical approaches:
-
-**Tooltip libraries**: Tippy.js, Popper.js
-**Tour libraries**: Intro.js, Shepherd.js, React Joyride
-**Modal patterns**: Focus trap, backdrop, ESC to close
-**Progress tracking**: LocalStorage for "seen" states
-**Analytics**: Track completion, drop-off points
-
-**Storage patterns**:
-```javascript
-// Track which onboarding steps user has seen
-localStorage.setItem('onboarding-completed', 'true');
-localStorage.setItem('feature-tooltip-seen-reports', 'true');
-```
+On the canvas, onboarding is designed, not wired: embeds run no JavaScript. Show each step, tooltip, and empty state as its own screen or state. Where behavior matters (dismissals, "seen" tracking, skip), state it in the direction contract or a short note so an implementer knows what to build.
 
 **IMPORTANT**: Don't show same onboarding twice (annoying). Track completion and respect dismissals.
 

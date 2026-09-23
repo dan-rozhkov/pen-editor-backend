@@ -38,8 +38,6 @@ Identify weaknesses and edge cases:
    - Number formats (1,000 vs 1.000)
    - Currency symbols
 
-**CRITICAL**: Designs that only work with perfect data aren't production-ready. Harden against reality.
-
 ## Hardening Dimensions
 
 Systematically improve resilience:
@@ -299,7 +297,9 @@ const debouncedSearch = debounce(handleSearch, 300);
 const throttledScroll = throttle(handleScroll, 100);
 ```
 
-## Testing Strategies
+## Handoff notes for the shipped code
+
+None of this runs on the canvas — there is no server, network, or browser automation here. Pass these along as follow-ups for whoever implements the design, not steps you perform:
 
 **Manual testing**:
 - Test with extreme data (very long, very short, empty)
@@ -317,7 +317,7 @@ const throttledScroll = throttle(handleScroll, 100);
 - Visual regression tests
 - Accessibility tests (axe, WAVE)
 
-**IMPORTANT**: Hardening is about expecting the unexpected. Real users will do things you never imagined.
+Hardening is about expecting the unexpected. Real users will do things you never imagined.
 
 **NEVER**:
 - Assume perfect input (validate everything)
@@ -331,17 +331,7 @@ const throttledScroll = throttle(handleScroll, 100);
 
 ## Verify Hardening
 
-Test thoroughly with edge cases:
-
-- **Long text**: Try names with 100+ characters
-- **Emoji**: Use emoji in all text fields
-- **RTL**: Test with Arabic or Hebrew
-- **CJK**: Test with Chinese/Japanese/Korean
-- **Network issues**: Disable internet, throttle connection
-- **Large datasets**: Test with 1000+ items
-- **Concurrent actions**: Click submit 10 times rapidly
-- **Errors**: Force API errors, test all error states
-- **Empty**: Remove all data, test empty states
+Verify by putting the edge cases into the design itself and checking the rendered result: a 100+ character name, emoji, an Arabic or Hebrew string, CJK text, a 1000+ count, and the empty, error, offline, and validation-error states each render without overflow or a broken layout. Runtime behavior (network failure, rapid double-submit, automated tests) cannot be exercised on a static canvas; list it as a handoff note instead of claiming it was tested.
 
 When edge cases are covered, hand off to `/polish` for the final pass.
 

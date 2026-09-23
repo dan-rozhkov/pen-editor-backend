@@ -79,12 +79,12 @@ When references are in hand, do not average them: naming their common thread is 
 
 ## 5. Record the decision
 
-Before building, state the chosen direction as a contract in the artifact's opening HTML comment, five short blocks, **150 words at most**:
+Before building, state the chosen direction as a contract in the artifact's opening HTML comment: the four blocks below (the same contract `prototype` checks before emitting), plus an optional FORM line, **150 words at most**:
 - **THESIS** — the one idea this surface owns, and the category-default arrangement it refuses.
 - **OWN-WORLD** — the palette and component language, specific enough to be recognizable with all content removed.
 - **STORY** — what the visitor understands, believes, and does.
 - **FIRST VIEWPORT** — the exact composition: what is where, at what scale, and where the primary action sits.
-- **FORM** — the chosen direction and, if alternates were considered, why this one won.
+- **FORM** (optional, one line) — if alternates were considered, why this one won.
 
 If a block reads like a mood rather than a decision, the direction is not decided yet — do not start writing HTML until it is.
 
@@ -100,7 +100,7 @@ Build the assigned direction, not a safer interpretation of it. The form supplie
 - **Prove, don't claim.** Show the subject doing its job: the interface at work, the mechanism dramatized, specifics a competitor could not copy-paste. Sections that restate a claim in different words add length, not substance. Demonstration data is design material — author it at full fidelity and label it synthetic; never invent prices, customers, benchmarks, or capabilities.
 - **Author the content; never substitute chrome.** Names, entries, copy, and imagery are yours to author at production fidelity in greenfield work. An unanswered commercial claim ships as a clearly marked placeholder. Gradients, glass, and generic icon tiles where authored content belongs are the gap wearing chrome.
 - **Pace the layout like a studio.** Vary density, scale, imagery, motion, and quiet inside one grammar; a dense passage earns a quiet one, and the page ends anchored by a real close. One spacing rhythm throughout, with more space above a heading than below it.
-- **Author motion as material.** The form has native motion — what it does in life between states. Give the page that motion once, orchestrated, rather than scattered hover effects.
+- **Author motion as material, where the output can carry it.** Canvas embeds are static (no transition or animation, per `prototype`'s HTML safety rules), so express the form's native motion as a captured state — the moment mid-action — rather than scattered hover effects.
 
 Preserve semantics, accessibility, responsiveness, and every existing prototype rule (embed-only, device presets, HTML safety).
 

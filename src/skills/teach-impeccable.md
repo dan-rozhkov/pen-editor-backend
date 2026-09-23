@@ -1,6 +1,6 @@
 ---
 name: teach-impeccable
-description: One-time setup that establishes persistent design context for this project — register (brand vs product), users, purpose, brand personality, anti-references, and strategic design principles. Run once so every other design command starts on-brand.
+description: One-time setup that establishes design context for this project — register (brand vs product), users, purpose, brand personality, anti-references, and strategic design principles. Run once so every other design command starts on-brand.
 user-invokable: true
 ---
 
@@ -17,7 +17,7 @@ It closes by pointing you at the best command to run next.
 
 ## Step 1: Load current state
 
-Check what context already exists. Read the project's config file ({{config_file}}) with your file tool if it is present.
+Check what context already exists: an earlier `## Design Context` block in this conversation, or the USER PROFILE memory block if one is present in the system prompt. This editor has no project files, so there is no config file to read.
 
 Decision tree:
 
@@ -112,7 +112,7 @@ Synthesize into this structure:
 [WCAG level, known user needs, considerations]
 ```
 
-Write this to {{config_file}}. If the file exists, merge into the existing Design Context section rather than starting from scratch.
+Present this block in your reply. There is no project file to write it to, so the conversation is where it lives. Tell the user it applies to this session. If an earlier Design Context block exists in the conversation, present a merged version rather than starting from scratch.
 
 ## Step 5: Decide on the visual system
 

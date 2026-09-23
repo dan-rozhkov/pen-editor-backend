@@ -101,7 +101,7 @@ Tag every issue with **P0-P3 severity**:
 
 For each issue, document:
 - **[P?] Issue name**
-- **Location**: Component, file, line
+- **Location**: node name and nodeId
 - **Category**: Accessibility / Performance / Theming / Responsive / Anti-Pattern
 - **Impact**: How it affects users
 - **WCAG/Standard**: Which standard it violates (if applicable)
@@ -133,14 +133,7 @@ After presenting the summary, tell the user:
 >
 > Re-run `/audit` after fixes to see your score improve.
 
-**IMPORTANT**: Be thorough but actionable. Too many P3 issues creates noise. Focus on what actually matters.
-
-**NEVER**:
-- Report issues without explaining impact (why does this matter?)
-- Provide generic recommendations (be specific and actionable)
-- Skip positive findings (celebrate what works)
-- Forget to prioritize (everything can't be P0)
-- Report false positives without verification
+Keep P3 findings few; they bury the issues that matter.
 
 ## Quality floor
 

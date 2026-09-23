@@ -78,7 +78,7 @@ The tool returns a plain error string — read it and act on it:
   second, complete card next to the broken one instead of fixing it. Read
   the `runId` out of the error response and tell the user: publishing failed
   partway (name which screens if known) and the partial app needs an
-  operator to run `npm run showcase:delete --app <runId>` to remove it
+  operator to run `npm run showcase:delete -- --app <runId>` to remove it
   before trying again.
 
 Never retry in a loop.

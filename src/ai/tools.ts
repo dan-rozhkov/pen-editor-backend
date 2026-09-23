@@ -355,7 +355,7 @@ export const BATCH_DESIGN_DESCRIPTION = `Execute batch operations on the .pen no
 - Use \`+\` to build paths: \`U(card+"/title", {content: "Hello"})\`
 - If using existing node IDs from previous tool results, pass them as strings (e.g. \`U("abc123", {...})\`)
 - The "document" binding is predefined and references the document root
-- Insert/Copy/Replace MUST have a binding name
+- A binding name on Insert/Copy/Replace is optional — add one when a later operation in the same call references the new node; every created node (with its real id) is returned in the result either way
 - No "image" node type — use G() on frame/rectangle to apply image fills
 - \`placeholder: true\` marks frames being actively designed
 - Text has no color by default — set \`fill\` property
@@ -471,7 +471,7 @@ export const getEditorStateInputShape = {
   include_schema: z
     .boolean()
     .describe(
-      "Whether to include the .pen file schema in the response. Set true if you need to understand the node format.",
+      "Currently ignored: no schema is returned either way (pass false). Node shapes are documented in batch_design's description.",
     ),
 };
 
@@ -531,7 +531,7 @@ export const batchGetInputShape = {
   includePathGeometry: z
     .boolean()
     .optional()
-    .describe("If true, include full SVG path geometry data."),
+    .describe("Currently ignored: path geometry is always included in returned path nodes."),
 };
 
 export const snapshotLayoutInputShape = {
@@ -584,8 +584,8 @@ export const setVariablesInputShape = {
 const GUIDELINES: Record<string, string> = {
   "design-system":
     "## Sizing & Auto-Layout Rules\n" +
-    "CRITICAL: When creating frames with layout (vertical/horizontal), you MUST explicitly set width and height. " +
-    "Never leave them as default — the default is a fixed pixel size which breaks auto-layout.\n" +
+    "When creating frames with layout (vertical/horizontal), set width and height explicitly: " +
+    "the default is a fixed pixel size, which breaks auto-layout.\n" +
     "- Use `width: \"fill_container\"` for children that should stretch to parent width.\n" +
     "- Use `height: \"fill_container\"` for children that should stretch to parent height.\n" +
     "- Use `width: \"fit_content\"` or `height: \"fit_content\"` for content-sized elements.\n" +
@@ -604,10 +604,8 @@ const GUIDELINES: Record<string, string> = {
     "- Card grids: horizontal frame with `gap: 16-24`, cards with `width: \"fill_container\"`.\n" +
     "- Form fields: vertical frame with `gap: 16`, inputs with `width: \"fill_container\"`.\n\n" +
     "## Design Tokens\n" +
-    "- Always use `$--variable` tokens for colors, never hardcode hex values.\n" +
-    "- Colors: `$--background`, `$--foreground`, `$--muted-foreground`, `$--primary`, `$--border`, `$--card`.\n" +
-    "- Typography: `$--font-primary` (headings), `$--font-secondary` (body).\n" +
-    "- Border radius: `$--radius-none`, `$--radius-m`, `$--radius-pill`.\n\n" +
+    "- Reference colors, fonts and radii through `$--variable` tokens so a theme change propagates, using only names that `get_variables` actually returns.\n" +
+    "- If the document has no suitable tokens yet, create them with `set_variables` (e.g. background/foreground/primary/border colors, heading/body fonts, a radius scale) before referencing them.\n\n" +
     "## Spacing Reference\n" +
     "- Screen sections gap: 24-32. Card grid gap: 16-24. Form fields gap: 16.\n" +
     "- Inside cards padding: 24. Page content padding: 32. Button padding: [10, 16].\n" +
@@ -1154,7 +1152,7 @@ export const findEmptySpaceOnCanvasInputShape = {
   height: z.number().describe("Required height of empty space."),
   padding: z
     .number()
-    .describe("Minimum distance from other elements."),
+    .describe("Gap in px between the reference bounds and the returned region (50 is a sensible value)."),
   nodeId: z
     .string()
     .optional()
@@ -1168,13 +1166,13 @@ export const penTools = {
 
   get_editor_state: tool({
     description:
-      "Get the current editor state including active .pen file, user selection, and top-level nodes.",
+      "Get a lightweight overview of the editor: `fileName` (null until the document is first saved), `pages` [{id, name}] and `activePageId`, `roots` (top-level nodes as {id, type, name} — no children or properties), `selectedIds` plus `selectedNodes` [{id, type, name, x, y, width, height}], and `viewport` {scale, x, y}. It does not return node properties, children, variables, or a file schema — use batch_get to read node contents and get_variables for tokens.",
     inputSchema: z.object(getEditorStateInputShape),
   }),
 
   batch_get: tool({
     description:
-      "Retrieve nodes by searching for matching patterns or by reading specific node IDs. Supports flexible tree traversal with depth control. Use this to inspect node structure before modifying.",
+      "Read nodes as a JSON array of full node objects (every stored property, with width/height/x/y resolved by the layout engine), by search `patterns` and/or explicit `nodeIds`. Patterns are OR'd; within one pattern `type` and `name` must both match. `name` is a JavaScript regex (max 200 chars; nested quantifiers like `(a+)+` are rejected with an error). The search starts at `parentId`'s children, or the document roots. With neither patterns nor nodeIds, returns those top-level children. Children deeper than `readDepth` appear as \"...\". An embed node's full `htmlContent` is included — use read_embed_html to read a large screen partially. `resolveVariables` substitutes the light-theme value of bound fill/stroke variables. Use it to inspect structure before modifying.",
     inputSchema: z.object(batchGetInputShape),
   }),
 
@@ -1217,7 +1215,7 @@ export const penTools = {
 
   get_variables: tool({
     description:
-      "Read all design variables (tokens) and themes defined in the .pen file. Variables can be colors, numbers, strings, or booleans, and may have different values per theme.",
+      "Read all design variables (tokens) and themes defined in the .pen file. Variables are colors, numbers, or strings, and may have different values per theme.",
     inputSchema: z.object(getVariablesInputShape),
   }),
 
@@ -1249,8 +1247,8 @@ export const penTools = {
     description:
       "Apply targeted text edits to an existing embed node's HTML instead of rewriting the whole screen. " +
       "Each edit replaces an exact substring (`oldString`) with `newString`; an empty `newString` deletes the match. " +
-      "ALWAYS use this — never batch_design `U(id, {htmlContent: ...})` — when changing part of a screen that already " +
-      "exists: rewriting a whole screen costs thousands of tokens and silently drifts parts you were not asked to touch. " +
+      "Use this to change part of a screen that already exists; rewriting it via batch_design `U(id, {htmlContent: ...})` costs thousands of tokens " +
+      "and silently drifts parts you were not asked to touch, so reserve that for replacing a screen wholesale with a different concept. " +
       "Read the fragment with read_embed_html first; matching is exact, falling back to a whitespace-tolerant " +
       "match (indentation and line breaks) only when the exact one finds nothing and the tolerant one is unambiguous. " +
       "Each oldString must occur exactly once unless replaceAll is true. Edits apply in order and atomically — if any " +
@@ -1425,7 +1423,7 @@ Returns the created/updated style ids and names (with a created|updated status) 
 
   replace_all_matching_properties: tool({
     description:
-      "Recursively find-and-replace property values across the node tree. Useful for bulk color/font/spacing changes (e.g. rebranding, theme adjustments).",
+      "Recursively find-and-replace property values on native nodes under `parents` (the parents themselves included), in one undoable step — for bulk color/font/spacing changes such as a rebrand. Colors match case-insensitively against the node's solid fill/stroke and every solid paint in its `fills`/`strokes` stacks; `fillColor` applies to all nodes, `textColor` to text nodes only. A `to` color may be a `$--var` reference, which binds the variable. Numeric values given as strings are coerced. Returns `{success, replacements}` (0 means nothing matched). It does not look inside an embed's `htmlContent` — use edit_embed_html with `replaceAll` for HTML screens.",
     inputSchema: z.object({
       parents: z
         .array(z.string())
@@ -1481,7 +1479,7 @@ Returns the created/updated style ids and names (with a created|updated status) 
 
   find_empty_space_on_canvas: tool({
     description:
-      "Find available empty space on the canvas in a given direction with the specified dimensions. Use before inserting new top-level frames to avoid overlapping.",
+      "Return a position for a new width×height region just outside existing content: takes the bounding box of `nodeId` (or of all visible top-level nodes), places the region `padding` px beyond the requested side, centred on the other axis. Returns `{x, y}` (top-left of the region; `{x: 0, y: 0}` on an empty canvas). It does not scan for gaps between existing nodes. Use before inserting a new top-level frame so it does not overlap.",
     inputSchema: z.object(findEmptySpaceOnCanvasInputShape),
   }),
 
@@ -1537,11 +1535,11 @@ Returns the created/updated style ids and names (with a created|updated status) 
       tags: z
         .array(z.string())
         .optional()
-        .describe("5-10 tags to search for a matching style guide."),
+        .describe("Tags from get_style_guide_tags. Only the first recognised `style` tag (minimal/bold/elegant/playful/corporate/modern/retro/brutalist) and the first recognised `color` tag (monochrome/vibrant/pastel/dark/light/warm/cool/earth-tones) change the result; others are echoed in `basedOn` only. With none recognised, falls back to modern + monochrome."),
       name: z
         .string()
         .optional()
-        .describe("Specific style guide name to retrieve."),
+        .describe("Label for the returned guide. Does not select or look up a stored guide; defaults to \"<style>-<color>\"."),
     }),
     execute: async ({ tags, name }) => getStyleGuideImpl({ tags, name }),
   }),
@@ -1635,8 +1633,8 @@ Returns the created/updated style ids and names (with a created|updated status) 
   ask_user: tool({
     description:
       "Ask the user structured clarifying questions and get answers back as an interactive form in the chat, instead of guessing. " +
-      "MANDATORY before you create anything new on the canvas (a new screen/page/mockup/deck/etc.): call ask_user FIRST — before get_editor_state/batch_design — to gather the brief (audience, platform/size, tone/style, scope, brand constraints such as whether to reuse existing variables/fonts). " +
-      "You may also call it mid-task for a genuine fork in direction. Do NOT ask about things you can infer from the Canvas Context. Pack all questions into ONE call. " +
+      "Use it to gather a brief (audience, platform/size, tone/style, scope, brand constraints) or to resolve a genuine fork in direction mid-task; skip questions the canvas context already answers. " +
+      "All questions go in one call (1-8 questions, unique ids). " +
       "Each option-based question may offer a 'Decide for me' choice (the user delegates — its answer value is the string \"__auto__\", meaning YOU pick a sensible default) and an 'Other…' free-text field (returned in the answer's `note`). " +
       "Your turn PAUSES until the user submits; the answers come back as the tool result, then you continue.",
     inputSchema: z.object({

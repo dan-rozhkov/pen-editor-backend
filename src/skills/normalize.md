@@ -14,7 +14,7 @@ Analyze and redesign the feature to perfectly match our design system standards,
 
 Before making changes, deeply understand the context:
 
-1. **Discover the design system**: Search for design system documentation, UI guidelines, component libraries, or style guides (grep for "design system", "ui guide", "style guide", etc.). Study it thoroughly until you understand:
+1. **Discover the design system**: Read what the canvas already establishes: `get_variables`, `get_styles`, `get_text_styles`, `search_all_unique_properties` (the values actually in use), and existing reusable components. Study them until you understand:
    - Core design principles and aesthetic direction
    - Target audience and personas
    - Component patterns and conventions
@@ -57,11 +57,8 @@ This is not an exhaustive list—apply judgment to identify all areas needing no
 
 ## Clean Up
 
-After normalization, ensure code quality:
+After normalization, tidy up:
 
-- **Consolidate reusable components**: If you created new components that should be shared, move them to the design system or shared UI component path.
-- **Remove orphaned code**: Delete unused implementations, styles, or files made obsolete by normalization.
-- **Verify quality**: Lint, type-check, and test according to repository guidelines. Ensure normalization didn't introduce regressions.
-- **Ensure DRYness**: Look for duplication introduced during refactoring and consolidate.
-
-Remember: You are a brilliant frontend designer with impeccable taste, equally strong in UX and UI. Your attention to detail and eye for end-to-end user experience is world class. Execute with precision and thoroughness.
+- **Consolidate**: if you created something that should be shared, make it a reusable component or a variable/style rather than a one-off.
+- **Remove leftovers**: delete nodes, styles, or variables that normalization made obsolete (`replace_all_matching_properties` for repeated literal values).
+- **Verify**: re-read the changed nodes (`batch_get`, or `get_screenshot` when available) and confirm nothing outside scope changed.

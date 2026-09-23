@@ -10,12 +10,14 @@ user-invokable: true
 
 Performance is a feature. Identify the actual bottleneck for THIS interface, fix it, then measure. Don't optimize what isn't slow.
 
+**What applies in this editor:** work lands in canvas `embed` nodes (static HTML/CSS; embeds run no JavaScript), and you have no profiler. The levers you can pull directly are the weight of the HTML itself: image dimensions and `loading`, how many font families and weights you `@import`, DOM size, and expensive paint (large blurs and shadows). Treat the bundle, framework, network, and monitoring sections below as advice to hand the user for their shipped code, not steps to perform.
+
 ## Assess Performance Issues
 
 Understand current performance and identify problems:
 
 1. **Measure current state**:
-   - **Core Web Vitals**: LCP, FID/INP, CLS scores
+   - **Core Web Vitals**: LCP, INP, CLS scores
    - **Load time**: Time to interactive, first contentful paint
    - **Bundle size**: JavaScript, CSS, image sizes
    - **Runtime performance**: Frame rate, memory usage, CPU usage
@@ -206,7 +208,7 @@ const observer = new IntersectionObserver((entries) => {
 - Use CDN
 - Server-side rendering
 
-### First Input Delay (FID < 100ms) / INP (< 200ms)
+### Interaction to Next Paint (INP < 200ms)
 - Break up long tasks
 - Defer non-critical JavaScript
 - Use web workers for heavy computation
@@ -236,7 +238,7 @@ const observer = new IntersectionObserver((entries) => {
 - Performance monitoring (Sentry, DataDog, New Relic)
 
 **Key metrics**:
-- LCP, FID/INP, CLS (Core Web Vitals)
+- LCP, INP, CLS (Core Web Vitals)
 - Time to Interactive (TTI)
 - First Contentful Paint (FCP)
 - Total Blocking Time (TBT)

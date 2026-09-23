@@ -39,8 +39,6 @@ Understand what needs adaptation and why:
    - What won't work? (Hover states on touch, tiny touch targets)
    - What's inappropriate? (Desktop patterns on mobile, mobile patterns on desktop)
 
-**CRITICAL**: Adaptation is rethinking the experience for the new context, not scaling pixels.
-
 ## Plan Adaptation Strategy
 
 Create context-appropriate strategy:
@@ -189,23 +187,13 @@ Choose appropriate breakpoints:
 
 ## Verify Adaptations
 
-Test thoroughly across contexts:
-
-- **Real devices**: Test on actual phones, tablets, desktops
-- **Different orientations**: Portrait and landscape
-- **Different browsers**: Safari, Chrome, Firefox, Edge
-- **Different OS**: iOS, Android, Windows, macOS
-- **Different input methods**: Touch, mouse, keyboard
-- **Edge cases**: Very small screens (320px), very large screens (4K)
-- **Slow connections**: Test on throttled network
+Check each adapted variant as rendered on the canvas (a `get_screenshot` of each device-sized frame, when available): nothing overflows at the narrowest target width (320px for phones), touch targets are at least 44px, hover-only affordances have a touch equivalent, and landscape is covered where the platform needs it. Real-device, cross-browser, and network testing happen after handoff; note them as follow-ups rather than claiming them.
 
 When the adaptation feels native to each context, hand off to the `/polish` skill for the final pass.
 
 ---
 
 ## Reference Material
-
-The sections below were previously `responsive-design.md` and live inline now so the adapt flow has its deep responsive reference in one place.
 
 ### Responsive Design
 

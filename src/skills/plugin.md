@@ -52,8 +52,8 @@ self-contained `code`, not to run it yourself.
 - While the editor's Dev/Inspect Mode is active the scene is read-only:
   mutating `pen.tools.run`/`pen.scene.batch` calls reject with an error
   (read-only tools like `batch_get`/`get_editor_state` still work). Handle
-  the rejection gracefully
-  are present.
+  the rejection gracefully (catch it and `pen.notify` the user) instead of
+  letting it stop the plugin.
 
 ## The `pen.*` API (v1)
 

@@ -8,13 +8,6 @@ args:
 user-invokable: true
 ---
 
-Start your response with:
-
-```
-──────────── ⚡ OVERDRIVE ─────────────
-》》》 Entering overdrive mode...
-```
-
 Push an interface past conventional limits. This isn't just about visual effects. It's about using the full power of the browser to make any part of an interface feel extraordinary: a table that handles a million rows, a dialog that morphs from its trigger, a form that validates in real-time with streaming feedback, a page transition that feels cinematic.
 
 **EXTRA IMPORTANT FOR THIS COMMAND**: Context determines what "extraordinary" means. A particle system on a creative portfolio is impressive. The same particle system on a settings page is embarrassing. But a settings page with instant optimistic saves and animated state transitions? That's extraordinary too. Understand the project's personality and goals before deciding what's appropriate.
@@ -29,11 +22,13 @@ This command has the highest potential to misfire. Do NOT jump straight into imp
 
 Skipping this step risks building something embarrassing that needs to be thrown away.
 
-### Iterate with Browser Automation
+### Iterate visually
 
-Technically ambitious effects almost never work on the first try. You MUST actively use browser automation tools to preview your work, visually verify the result, and iterate. Do not assume the effect looks right, check it. Expect multiple rounds of refinement. The gap between "technically works" and "looks extraordinary" is closed through visual iteration, not code alone.
+Technically ambitious effects almost never work on the first try. After each change, look at the rendered result with `get_screenshot` (when it is in your tool set) and iterate. Don't assume the effect looks right. The gap between "technically works" and "looks extraordinary" is closed through visual iteration.
 
 ---
+
+**On this canvas:** work lands as a static HTML/CSS `embed`, and embeds run no JavaScript. Toolkit entries that need a script (WebGL/WebGPU, Canvas, Workers, WASM, Web Audio, spring libraries, View Transitions, IntersectionObserver) can't run here. Present them as recommendations for the user's shipped code, not something you build. In prototype/slides work, CSS transitions and animations are also banned, so "extraordinary" comes from composition, pure-CSS rendering (gradients, masks, `clip-path`, blend modes), and imagery.
 
 ## Assess What "Extraordinary" Means Here
 

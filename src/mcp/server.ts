@@ -259,7 +259,7 @@ export function buildMcpServer(): McpServer {
     "edit_embed_html",
     {
       description:
-        "Apply targeted text edits to an existing embed node's HTML instead of rewriting the whole screen. Each edit replaces an exact substring (oldString) with newString; an empty newString deletes the match. ALWAYS use this — never rewrite the whole htmlContent — when changing part of a screen that already exists: rewriting a whole screen costs thousands of tokens and silently drifts parts you weren't asked to touch. Read the fragment with read_embed_html first.",
+        "Apply targeted text edits to an existing embed node's HTML instead of rewriting the whole screen. Each edit replaces an exact substring (oldString) with newString; an empty newString deletes the match. Use this to change part of a screen that already exists; rewriting the whole htmlContent costs thousands of tokens and silently drifts parts you weren't asked to touch, so reserve that for replacing a screen wholesale with a different concept. Read the fragment with read_embed_html first.",
       inputSchema: editEmbedHtmlInputShape,
     },
     (args) => callBridged("edit_embed_html", args),

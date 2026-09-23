@@ -98,7 +98,7 @@ Walk the complete path again with mouse, keyboard, and touch where applicable. C
 
 Run any relevant automated QA checks that are available and fix their real defects, but treat a clean scan as a floor, not proof — never cite it as evidence the work is polished. Fix real defects and document only narrow, intentional exceptions.
 
-Finish with a source diff: remove accidental churn, orphaned code, redundant values, and temporary artifacts. Ship only when the feature is functionally complete and consistently finished across the whole path.
+Finish by re-reading what you changed (`read_embed_html`, `batch_get`): remove accidental churn, redundant values, and temporary artifacts. Ship only when the feature is functionally complete and consistently finished across the whole path.
 
 **NEVER**:
 - Polish before it's functionally complete

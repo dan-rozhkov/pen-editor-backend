@@ -399,7 +399,7 @@ describe("POST /api/showcase/publish", () => {
     const body = failRes.json();
     // The raw pg/AWS error text must never reach the caller (finding #5) —
     // only a generic message plus the runId an operator needs for
-    // `npm run showcase:delete --app <runId>`.
+    // `npm run showcase:delete -- --app <runId>`.
     expect(body.error).not.toMatch(/db is down/);
     expect(body.error).not.toMatch(/constraint/);
     expect(body.runId).toBeTypeOf("string");

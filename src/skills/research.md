@@ -11,7 +11,7 @@ Your focus is finding and analyzing real-world references. You normally research
 - Do NOT expose internal tool protocol in user-visible text.
 - Never output raw tags or wrappers like `<function_calls>`, `<function_result>`, `<invoke>`, XML/JSON call payloads, or tool argument dumps.
 - Do NOT paste raw search output lists (IDs + long screen descriptions) into the final response.
-- Run tools silently. Avoid step-by-step chatter like "Step 1/2/3" unless user explicitly asks for process logs.
+- A short plain-language note between searches about what you're checking is fine. Don't format progress as numbered process logs unless the user asks for them.
 - Return one clean, human-readable final report in the required structure.
 
 ## Core Philosophy
@@ -60,7 +60,7 @@ Pinterest search is the worked example for pure image gathering (no interaction 
 
 **Once the browser is on the page you need, `browse_read` is how you actually read its text — use it instead of falling back to `web_search`.** `browse_read({ maxChars?, selector? })` returns `{ url, title, headings, text, links, truncated }`: visible text with scripts/styles/nav chrome stripped, headings in document order, and deduped http(s) links. This matters because `web_search` only re-finds pages you can already see the URL of — it cannot tell you what's actually on a page you already navigated to (a search result, a facet-filtered listing, a product page you clicked into). If the browser is already open on the page that has the answer, read it with `browse_read`; only reach for `web_search` when you need to find a page you haven't opened yet, or the built-in browser isn't available this turn.
 
-**`browse_task` is the "just get me there" path** for a long, multi-step, autonomous goal — it can now press Enter/Escape and hover, not just click/type/select. Reach for `browse_act` with `element` instead when it's really just one action on something you can describe (see "Which browsing tool to reach for" above), and for the fully manual loop (`browse_snapshot`/`browse_screenshot`/`browse_act`) when you already know the exact URL and just need to land on it, want to see each step, or need a key other than Enter/Escape — each manual call is one chat turn. `browse_task({ goal })` runs a WHOLE multi-step task (search, click through a cookie banner or login wall, press Enter to submit a search box, pick a facet) in one call, driven by a cheap decision loop rather than the design model, and is the right choice whenever there is no clean URL to open directly — "search this site for X and open the first result" rather than a URL you can type. It shares the same browser tab, so approaches compose: `browse_open` to land on a site, then `browse_task` to work your way to a specific page on it, then `browse_find_images`/`browse_read` to read what's there.
+**`browse_task` is the "just get me there" path** for a long, multi-step, autonomous goal — it can click, type, select, hover, and press Enter/Escape. Reach for `browse_act` with `element` instead when it's really just one action on something you can describe (see "Which browsing tool to reach for" above), and for the fully manual loop (`browse_snapshot`/`browse_screenshot`/`browse_act`) when you already know the exact URL and just need to land on it, want to see each step, or need a key other than Enter/Escape — each manual call is one chat turn. `browse_task({ goal })` runs a WHOLE multi-step task (search, click through a cookie banner or login wall, press Enter to submit a search box, pick a facet) in one call, driven by a cheap decision loop rather than the design model, and is the right choice whenever there is no clean URL to open directly — "search this site for X and open the first result" rather than a URL you can type. It shares the same browser tab, so approaches compose: `browse_open` to land on a site, then `browse_task` to work your way to a specific page on it, then `browse_find_images`/`browse_read` to read what's there.
 
 Keep Mobbin as the curated-catalogue path whenever its tools are present — it gives you `mobbin_url` citations and vetted, deduplicated screens that a raw web search doesn't. The built-in browser is what to reach for when Mobbin isn't connected, or when the reference you need (a specific live site, a Pinterest board, anything outside Mobbin's catalogue) isn't something Mobbin indexes.
 
@@ -95,7 +95,7 @@ Rules the schemas impose, not suggestions:
   - "pricing toggle", "testimonial carousel", "feature comparison table"
   - "Stripe", "Linear", "Notion" (company names)
   - "dark mode", "minimalist onboarding", "gradient hero" (visual style + subject)
-- Do NOT search for subjective terms like "user-friendly pricing" or industry-only terms like "fintech onboarding" (industry belongs in a follow-up filter, not the query text).
+- Do NOT search for subjective terms like "user-friendly pricing" or industry-only terms like "fintech onboarding". The industry belongs in `task_intent`, not the query text.
 
 ## Before Researching: Discovery
 
@@ -138,12 +138,9 @@ Start by understanding what the user needs. If their request is vague, ask clari
 
 ### Search Loop
 
-1. Start BROAD with `search_screens` — see what exists
-2. Notice interesting patterns — go SPECIFIC
-3. Find a great example — search that COMPANY
-4. Try `search_sections` for individual ELEMENTS
-5. Go CROSS-PLATFORM — designing for iOS? run the same query with `platform: "web"` too
-6. Stop as soon as you have 3-4 strong references
+1. Run one `search_screens` query for what is literally on the screen.
+2. Only if the results are thin, spend the second (last) query on the most useful refinement: a specific element, a leading company, `search_sections` for a component, or the other `platform`.
+3. Stop as soon as you have 3-4 strong references.
 
 ### Tool Selection
 
@@ -185,7 +182,7 @@ Research is done when you can answer YES to ALL:
 
 ## Required Output Format
 
-After completing research, ALWAYS present a structured summary. Every screen/flow/section you name is cited with a markdown link to its `mobbin_url`.
+When research is itself the user's request, present this structured summary. When another skill (`prototype`, `slides`, `new-work`) loaded this one as a step, skip the report: carry the quality you took from each reference into that skill's direction contract and keep building. Every screen/flow/section you name is cited with a markdown link to its `mobbin_url`.
 
 ### Design Brief
 Restate what was researched and for whom.
@@ -217,8 +214,6 @@ What wasn't found or needs further research.
 
 ## Quality Standards
 
-Be specific, not vague:
-- "Linear — 13px/20px body text, -0.01em tracking, 48px section gaps, #5E6AD2 accent at 8% opacity for hover states"
-- NOT "Linear — clean design"
+Be specific, not vague: "dense small UI text, a near-black ground, one desaturated accent used only for the active state, generous gaps between sections" rather than "clean design".
 
-Every finding should be a fact you observed, not an opinion. Include source (company/product name) and its `mobbin_url` link.
+Every finding should be something you observed, not an opinion. Exact copy is quotable. Sizes, spacing, and colors read off a preview are estimates, so label them that way unless the result's own metadata states them. Include the source (company/product name) and its `mobbin_url` link.

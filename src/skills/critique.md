@@ -15,8 +15,7 @@ Resolve one stable target, run two independent assessments, synthesize a design 
 ### Hard Invariants
 
 - Assessment A (design review) and Assessment B (anti-pattern scan + visual evidence) are both required.
-- Assessment A and B MUST run as two isolated sub-agents whenever a sub-agent/Task tool is exposed. Running them inline in this context is "possible" but is NOT permitted; it is a degraded run. Inline is allowed ONLY when no sub-agent tool exists (or the user declined, on harnesses that ask).
-- If you degrade for any reason, the report's first line MUST be a banner: `⚠️ DEGRADED: single-context (<reason>)`. A silent degraded critique is a failed critique.
+- Both assessments run in this context (there is no sub-agent tool): finish and record Assessment A before starting Assessment B.
 - Assessment A must finish before Assessment B's findings enter the parent synthesis context. The anti-pattern scan is systematic, but it still anchors judgment.
 - Skipping the anti-pattern scan is a failed critique run; it is mandatory.
 - Visually inspect the rendered design when possible.
@@ -31,13 +30,7 @@ Resolve one stable target, run two independent assessments, synthesize a design 
 
 ### Assessment Orchestration
 
-Delegate Assessment A and Assessment B to separate sub-agents. They must not see each other's output. Do not show findings to the user until synthesis.
-
-Sub-agent gate (all harnesses):
-- Unless a harness-specific gate below overrides this, spawn A and B as two isolated, parallel sub-agents whenever a sub-agent/Task tool is exposed. This is the default and is mandatory; do not run them inline because it is faster.
-- "Unavailable" means exactly one thing: no sub-agent/Task tool is exposed in this session (or, on harnesses that ask, the user declined). It does not mean inconvenient.
-- If and only if sub-agents are unavailable, fall back sequentially: finish and record Assessment A, then run Assessment B, then synthesize, and emit the degraded banner.
-- Whichever path you take, declare it in the report header (see Report header provenance). Skipping sub-agents without the banner is the most common failure of this command.
+Run Assessment A and record its findings, then run Assessment B, then synthesize. Do not show findings to the user until synthesis.
 
 ### The slop-tell scan (checkable)
 
@@ -96,12 +89,6 @@ Synthesize both assessments into a single report. Do NOT simply concatenate. Wea
 The chat response is the primary user-facing deliverable. Present the full structured critique below in chat; do not replace it with a summary and a link.
 
 Structure your feedback as a design director would:
-
-#### Report header provenance
-
-The report's first line MUST declare how the assessments were run, so a degraded run is never silent:
-- Dual-agent: `Method: dual-agent (A: <agent-id> · B: <agent-id>)`
-- Degraded: `⚠️ DEGRADED: single-context (<reason, e.g. no sub-agent tool exposed>)`
 
 #### Design Health Score
 > *Consult the [Heuristics Scoring Guide](#heuristics-scoring-guide) section below.*
@@ -230,8 +217,6 @@ After presenting the summary, tell the user:
 ---
 
 ## Reference Material
-
-The sections below were previously separate reference files (`cognitive-load.md`, `heuristics-scoring.md`, `personas.md`). They live inline now so the critique flow has all its deep context in one place.
 
 ### Cognitive Load Assessment
 

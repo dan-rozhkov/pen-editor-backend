@@ -14,6 +14,8 @@ Use motion to explain state, relationship, and hierarchy, or to create one autho
 
 ---
 
+**Runtime on this canvas:** embeds are static HTML/CSS and run no JavaScript, and the prototype flow forbids `transition`, `transform`, `animation`, `@keyframes`, `filter`, and `backdrop-filter` inside them. Here the deliverable is a motion specification, not running code: write the focal moment, durations, and easing into the embed's opening comment (or show it as static before/after states), and leave the embed CSS static. The runtime guidance below applies when the user takes the spec into real code.
+
 ## Visitor mode
 
 - **Persuade + Experience:** motion may carry the voice. Prefer one rehearsed focal sequence to repeated section reveals.

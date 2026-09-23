@@ -6,7 +6,7 @@ import {
   type UIMessage,
   type DynamicToolUIPart,
 } from "ai";
-import { randomUUID, createHash } from "node:crypto";
+import { createHash } from "node:crypto";
 import type { Config } from "../config.js";
 import { bareModelId, createModel, parseModelRef, providerHandlesToolResultImages } from "./provider.js";
 import { penTools, makeBatchDesignTool, makeAnalyzeImageTool } from "./tools.js";
@@ -594,7 +594,9 @@ export async function prepareChatTurn(
     const skillToolPart: DynamicToolUIPart = {
       type: "dynamic-tool",
       toolName: "lookup_skill",
-      toolCallId: `skill-${randomUUID()}`,
+      // Deterministic: this pair is rebuilt on every tool-loop request, and a
+      // random id would change the prompt prefix at this position each step.
+      toolCallId: `skill-${createHash("sha256").update(skillContent).digest("hex").slice(0, 16)}`,
       state: "output-available",
       input: {},
       output: `Follow these instructions for the current task:\n\n${skillContent}`,
