@@ -184,6 +184,8 @@ export async function browseStepRoutes(
             cascade: result.cascade === true,
             reason: result.cascade ? undefined : result.reason,
             cascadeNote: result.cascadeNote,
+            timings: result.timings,
+            textSource: result.textSource,
           },
         },
         "browse step decided",

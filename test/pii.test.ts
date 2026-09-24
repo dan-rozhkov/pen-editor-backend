@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { scrubPii, containsPii } from "../src/analysis/pii.js";
+import { scrubPii, containsPii, findPiiSpans } from "../src/analysis/pii.js";
 
 describe("scrubPii", () => {
   it("replaces emails", () => {
@@ -52,5 +52,39 @@ describe("scrubPii", () => {
 describe("containsPii", () => {
   it("detects PII", () => {
     expect(containsPii("mail me at a@b.co")).toBe(true);
+  });
+});
+
+// browseStep.ts's extractTextCandidates (review finding #1) locates PII
+// spans in the RAW goal to drop any candidate that overlaps one without
+// being it — these assert the span itself lands on the exact PII substring,
+// not merely somewhere in the string.
+describe("findPiiSpans", () => {
+  it("locates an email span at its exact offset", () => {
+    const text = "mail me at a@b.co please";
+    const spans = findPiiSpans(text);
+    expect(spans).toHaveLength(1);
+    expect(spans[0]).toMatchObject({ kind: "email" });
+    expect(text.slice(spans[0]!.start, spans[0]!.end)).toBe("a@b.co");
+  });
+
+  it("locates a phone span at its exact offset", () => {
+    const text = "call +7 (912) 345-67-89 now";
+    const spans = findPiiSpans(text);
+    expect(spans).toHaveLength(1);
+    expect(spans[0]!.kind).toBe("phone");
+    expect(text.slice(spans[0]!.start, spans[0]!.end)).toBe("+7 (912) 345-67-89");
+  });
+
+  it("locates a credentials span inside a URL, keyed as 'credentials'", () => {
+    const text = "https://admin:Secret@host/path";
+    const spans = findPiiSpans(text);
+    const credSpan = spans.find((s) => s.kind === "credentials");
+    expect(credSpan).toBeDefined();
+    expect(text.slice(credSpan!.start, credSpan!.end)).toBe("https://admin:Secret@");
+  });
+
+  it("returns no spans for PII-free text", () => {
+    expect(findPiiSpans("open the settings page")).toEqual([]);
   });
 });

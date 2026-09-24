@@ -34,6 +34,15 @@ const {
   CASCADE_DONE_CONFIDENCE_THRESHOLD,
   BROWSE_CASCADE_TIMEOUT_MS,
   resolveSelectOptionText,
+  extractTextCandidates,
+  candidatePiiKind,
+  candidateMatchesField,
+  hasAmbiguousPiiCandidates,
+  MAX_TEXT_CANDIDATES,
+  PEAK_THRESHOLD_TEXT_CANDIDATE,
+  BROWSE_STEP_OVERALL_DEADLINE_MS,
+  buildNumberedPlaceholderGoal,
+  resolvePlaceholderTokens,
 } = await import("../src/ai/browseStep.js");
 type BrowseStepElement = import("../src/ai/browseStep.js").BrowseStepElement;
 type BrowseStepInput = import("../src/ai/browseStep.js").BrowseStepInput;
@@ -128,6 +137,23 @@ function baseInputWithHistory(elements: BrowseStepElement[]): BrowseStepInput {
     ...baseInput(elements),
     history: [{ operation: "CLICK", label: "Accept all", ok: true }],
   };
+}
+
+/** Shared assertion for "the TYPE_TEXT fast path is never attempted for this
+ * goal" — used both when extractTextCandidates finds nothing to offer, and
+ * when it finds candidates but hasAmbiguousPiiCandidates vetoes them (review
+ * finding #2). Only the main fan-out evaluate() call should fire; the result
+ * falls through to generateTypeText ("hello world", per the module-level
+ * createModel.mockImplementation at the top of this file). */
+async function expectFastPathSkipped(goal: string): Promise<void> {
+  const captures: SystemOneEvaluateParams<Record<string, SystemOneQuestion>>[] = [];
+  const client = sequentialClient(
+    [{ op: choice("TYPE_TEXT", 0.9), target_type: choice("5", 0.9) }],
+    { captures },
+  );
+  const result = await decideBrowseStep(client, makeConfig(), { ...baseInput([typeable]), goal });
+  expect(result.textSource).toBe("llm");
+  expect(captures).toHaveLength(1); // only the main fan-out — no text_candidate call
 }
 
 /** Mocks the next createModel() call to return `text` from the small
@@ -305,6 +331,228 @@ describe("resolveSelectOptionText", () => {
   });
 });
 
+// Browse-speed contract: the fast path for TYPE_TEXT's text — extracting the
+// literal value straight out of the (raw, unscrubbed) goal instead of
+// paying for a generative STRUCTURED_MODEL call every time.
+describe("extractTextCandidates", () => {
+  const benchGoal =
+    'Open http://x. Accept cookies, search for headphones, keep only wireless ones from ' +
+    "brand AudioNova under $100, sort by rating, open the top result, add it to the cart " +
+    "and check out as Test User, test@example.com, Germany, standard shipping, accept the terms.";
+
+  it("recovers the real values a checkout-shaped goal names, from a single realistic goal", () => {
+    const candidates = extractTextCandidates(benchGoal);
+    expect(candidates).toContain("headphones");
+    expect(candidates).toContain("AudioNova");
+    expect(candidates).toContain("100");
+    expect(candidates).toContain("Test User");
+    expect(candidates).toContain("test@example.com");
+    expect(candidates).toContain("Germany");
+  });
+
+  it("never returns more than MAX_TEXT_CANDIDATES entries", () => {
+    expect(extractTextCandidates(benchGoal).length).toBeLessThanOrEqual(MAX_TEXT_CANDIDATES);
+  });
+
+  it("extracts a quoted phrase", () => {
+    expect(extractTextCandidates('search for "wireless noise cancelling"')).toContain(
+      "wireless noise cancelling",
+    );
+  });
+
+  it("strips a leading '$' off a price", () => {
+    const candidates = extractTextCandidates("keep it under $42.50");
+    expect(candidates).toContain("42.50");
+    expect(candidates.some((c) => c.startsWith("$"))).toBe(false);
+  });
+
+  it("dedupes case-insensitively", () => {
+    const candidates = extractTextCandidates("search for Headphones, then search for headphones");
+    expect(candidates.filter((c) => c.toLowerCase() === "headphones")).toHaveLength(1);
+  });
+
+  it("returns an empty list for a goal with no extractable value", () => {
+    // No quotes/email/number/keyword phrase/capitalized word, and (unlike a
+    // short goal) too many words for the comma-segment fallback to offer
+    // the whole goal as a single candidate either.
+    expect(
+      extractTextCandidates("please open the settings page and toggle dark mode without typing anything"),
+    ).toEqual([]);
+  });
+
+  it("offers a short, comma-free goal itself as a candidate via the segment fallback", () => {
+    expect(extractTextCandidates("click the button")).toEqual(["click the button"]);
+  });
+});
+
+describe("candidatePiiKind", () => {
+  it("flags an email", () => {
+    expect(candidatePiiKind("test@example.com")).toBe("email");
+  });
+
+  it("returns null for an ordinary, non-sensitive candidate", () => {
+    expect(candidatePiiKind("headphones")).toBeNull();
+    expect(candidatePiiKind("Germany")).toBeNull();
+    expect(candidatePiiKind("100")).toBeNull();
+  });
+});
+
+// Review finding #1: a candidate that merely OVERLAPS a PII/URL span, rather
+// than being the whole thing, must never reach extractTextCandidates' output
+// — a fragment like "555" out of a phone number reads as ordinary text to
+// candidatePiiKind (it isn't itself PII-shaped), so it used to sail straight
+// through unflagged. These three goals are the exact fragment shapes from
+// the review: phone digit-groups, an email's local-part/domain words, and a
+// credentialed URL's username/password/host.
+describe("extractTextCandidates PII/URL fragment exclusion (review finding #1)", () => {
+  it("drops every digit-group fragment of a phone number, offering the whole number only as a placeholder-eligible candidate", () => {
+    const goal = "Call the client at +1 (555) 123-4567 and confirm the order.";
+    const candidates = extractTextCandidates(goal);
+    for (const fragment of ["1", "555", "123", "4567"]) {
+      expect(candidates).not.toContain(fragment);
+    }
+    // If the whole number survived as a candidate (e.g. via the comma/
+    // segment fallback), candidatePiiKind must recognize it as phone so it's
+    // never rendered as raw text either.
+    for (const c of candidates) {
+      if (c.includes("555")) expect(candidatePiiKind(c)).toBe("phone");
+    }
+  });
+
+  it("drops every local-part/domain word fragment of an email, keeping only the whole address as a candidate", () => {
+    const goal = "Send a receipt to Daniil.Rozhkov@Gmail.com after checkout.";
+    const candidates = extractTextCandidates(goal);
+    for (const fragment of ["Daniil", "Rozhkov", "Gmail"]) {
+      expect(candidates).not.toContain(fragment);
+    }
+    expect(candidates).toContain("Daniil.Rozhkov@Gmail.com");
+    expect(candidatePiiKind("Daniil.Rozhkov@Gmail.com")).toBe("email");
+  });
+
+  it("excludes a credentialed URL and every fragment of it — username, password, host — entirely, never even as a placeholder", () => {
+    const goal = "Log in at https://admin:Secret@host and update the profile.";
+    const candidates = extractTextCandidates(goal);
+    for (const fragment of ["admin", "Secret", "host", "https://admin:Secret@host"]) {
+      expect(candidates).not.toContain(fragment);
+    }
+  });
+
+  // Review finding #2 (`some` vs `every`): a candidate must be kept only if
+  // it equals EVERY PII span it overlaps, not just any one of them. A
+  // digit-run-prefixed email ("5551234567@example.com") matches the email
+  // rule exactly (the whole candidate span), but its leading 10 digits
+  // ALSO match the phone rule — a bare `some` check let the exact email
+  // match "vouch" for the candidate even though it doesn't equal the phone
+  // span it also overlaps, i.e. it's a fragment of the phone match. Must be
+  // dropped, not offered whole.
+  it("drops a candidate that exactly matches one PII span but only partially overlaps another (some vs every)", () => {
+    const goal = "account 5551234567@example.com is used for billing";
+    const candidates = extractTextCandidates(goal);
+    expect(candidates).not.toContain("5551234567@example.com");
+  });
+});
+
+// Review finding #2: a fast-path pick can clear its peak-probability gate
+// while still plainly being the wrong KIND of value for the field it would
+// be typed into — the gate only measures confidence among the offered
+// candidates, not fitness for the target field.
+describe("candidateMatchesField (review finding #2)", () => {
+  it("accepts an email-kind candidate into an email-labeled field", () => {
+    expect(candidateMatchesField("test@example.com", "Email")).toBe(true);
+    expect(candidateMatchesField("test@example.com", "E-mail address")).toBe(true);
+  });
+
+  it("rejects an email-kind candidate for a field not labeled as email", () => {
+    expect(candidateMatchesField("test@example.com", "Search")).toBe(false);
+    expect(candidateMatchesField("test@example.com", "Username")).toBe(false);
+  });
+
+  it("rejects a non-email candidate for an email-labeled field", () => {
+    expect(candidateMatchesField("headphones", "Email")).toBe(false);
+  });
+
+  it("accepts a phone-kind candidate into a phone/tel-labeled field", () => {
+    expect(candidateMatchesField("+1 (555) 123-4567", "Phone number")).toBe(true);
+    expect(candidateMatchesField("+1 (555) 123-4567", "Tel")).toBe(true);
+  });
+
+  it("rejects a phone-kind candidate for a field not labeled as phone/tel", () => {
+    expect(candidateMatchesField("+1 (555) 123-4567", "Search")).toBe(false);
+  });
+
+  it("rejects a pure-number candidate for a name field", () => {
+    expect(candidateMatchesField("42", "Full Name")).toBe(false);
+  });
+
+  it("rejects a pure-number candidate for an email field", () => {
+    expect(candidateMatchesField("42", "Email")).toBe(false);
+  });
+
+  it("accepts a pure-number candidate for an ordinary field (e.g. a price/quantity box)", () => {
+    expect(candidateMatchesField("42", "Quantity")).toBe(true);
+  });
+
+  it("accepts an ordinary non-PII candidate into an ordinary field", () => {
+    expect(candidateMatchesField("headphones", "Search")).toBe(true);
+  });
+});
+
+describe("hasAmbiguousPiiCandidates (review finding #2)", () => {
+  it("is false when no candidate is PII", () => {
+    expect(hasAmbiguousPiiCandidates(["headphones", "Germany", "100"])).toBe(false);
+  });
+
+  it("is false with exactly one candidate of a given PII kind", () => {
+    expect(hasAmbiguousPiiCandidates(["test@example.com", "Germany"])).toBe(false);
+  });
+
+  it("is true when two candidates share the same PII kind", () => {
+    expect(hasAmbiguousPiiCandidates(["a@example.com", "b@example.com"])).toBe(true);
+  });
+
+  it("is false when two PII candidates have DIFFERENT kinds", () => {
+    expect(hasAmbiguousPiiCandidates(["a@example.com", "+1 (555) 123-4567"])).toBe(false);
+  });
+});
+
+describe("buildNumberedPlaceholderGoal / resolvePlaceholderTokens", () => {
+  it("numbers each PII span by kind, distinguishing two emails", () => {
+    const { text, tokenMap } = buildNumberedPlaceholderGoal("reply to both a@x.com and b@y.com");
+    expect(text).toBe("reply to both [EMAIL_1] and [EMAIL_2]");
+    expect(tokenMap.get("[EMAIL_1]")).toBe("a@x.com");
+    expect(tokenMap.get("[EMAIL_2]")).toBe("b@y.com");
+  });
+
+  it("never leaks the raw value into the placeholder text itself", () => {
+    const { text } = buildNumberedPlaceholderGoal("call +1 (555) 123-4567 about a@x.com");
+    expect(text).not.toContain("555");
+    expect(text).not.toContain("a@x.com");
+    expect(text).toContain("[PHONE_1]");
+    expect(text).toContain("[EMAIL_1]");
+  });
+
+  it("resolves a mapped token back to its raw value", () => {
+    const { tokenMap } = buildNumberedPlaceholderGoal("email a@x.com");
+    expect(resolvePlaceholderTokens("[EMAIL_1]", tokenMap)).toBe("a@x.com");
+    expect(resolvePlaceholderTokens("Sure, [EMAIL_1] it is", tokenMap)).toBe("Sure, a@x.com it is");
+  });
+
+  it("rejects an unmapped numbered placeholder (hallucinated index)", () => {
+    const { tokenMap } = buildNumberedPlaceholderGoal("email a@x.com");
+    expect(resolvePlaceholderTokens("[EMAIL_9]", tokenMap)).toBeNull();
+  });
+
+  it("rejects a bare, un-numbered placeholder", () => {
+    const { tokenMap } = buildNumberedPlaceholderGoal("email a@x.com");
+    expect(resolvePlaceholderTokens("[EMAIL]", tokenMap)).toBeNull();
+  });
+
+  it("passes plain text through untouched when no placeholder is present", () => {
+    const { tokenMap } = buildNumberedPlaceholderGoal("email a@x.com");
+    expect(resolvePlaceholderTokens("headphones", tokenMap)).toBe("headphones");
+  });
+});
+
 describe("decideBrowseStep", () => {
   it("sends one evaluate() call carrying the full fan-out question set", async () => {
     let captured: SystemOneEvaluateParams<Record<string, SystemOneQuestion>> | undefined;
@@ -354,11 +602,15 @@ describe("decideBrowseStep", () => {
   });
 
   it("never sends an element's value/options in the state.elements digest, only in the target head's criteria", async () => {
+    // capture only the FIRST evaluate() call (the main fan-out this test is
+    // about) — a TYPE_TEXT pick now also fires chooseTypeTextCandidate's
+    // second, small evaluate() call (the fast-path text choice), which
+    // would otherwise overwrite `captured` with its own unrelated params.
     let captured: SystemOneEvaluateParams<Record<string, SystemOneQuestion>> | undefined;
     const withValue: BrowseStepElement = { ...typeable, value: "super-secret-current-value" };
     const client = fakeClient(
       { op: choice("TYPE_TEXT", 0.9), target_type: choice("5", 0.9) },
-      { capture: (p) => (captured = p) },
+      { capture: (p) => (captured ??= p) },
     );
     await decideBrowseStep(client, makeConfig(), baseInput([withValue]));
     const state = captured!.state as { elements: string[] };
@@ -591,13 +843,403 @@ describe("decideBrowseStep", () => {
   });
 
   it("generates TYPE_TEXT text from goal + field label via STRUCTURED_MODEL", async () => {
+    // fakeClient answers every evaluate() call identically, so the fast
+    // candidate call (which also fires here, since baseInput's goal has an
+    // extractable candidate — "headphones") gets an answer with no
+    // `text_candidate` key and falls straight back to the LLM, exactly the
+    // path this test is about.
     const client = fakeClient({ op: choice("TYPE_TEXT", 0.9), target_type: choice("5", 0.9) });
     const result = await decideBrowseStep(client, makeConfig(), baseInput([typeable]));
     expect(result.outcome).toBe("act");
     expect(result.operation).toBe("TYPE_TEXT");
     expect(result.index).toBe(5);
     expect(result.text).toBe("hello world");
+    expect(result.textSource).toBe("llm");
     expect(createModel).toHaveBeenCalled();
+  });
+
+  // Browse-speed contract: chooseTypeTextCandidate's fast path — a second,
+  // small Jev call over the goal's own extracted candidates, tried BEFORE
+  // generateTypeText's slower generative call.
+  describe("TYPE_TEXT fast path (goal-derived candidates)", () => {
+    it("types the goal-derived candidate and skips the LLM call when Jev is confident", async () => {
+      createModel.mockClear();
+      // baseInput's goal is "accept cookies and search for headphones" —
+      // extractTextCandidates recovers "headphones" (via the "search for X"
+      // phrase) as its first candidate.
+      const goal = "accept cookies and search for headphones";
+      const candidates = extractTextCandidates(goal);
+      const wantIndex = candidates.indexOf("headphones");
+      expect(wantIndex).toBeGreaterThanOrEqual(0);
+
+      const captures: SystemOneEvaluateParams<Record<string, SystemOneQuestion>>[] = [];
+      const client = sequentialClient(
+        [
+          { op: choice("TYPE_TEXT", 0.9), target_type: choice("5", 0.9) },
+          { text_candidate: choice(String(wantIndex), 0.9) },
+        ],
+        { captures },
+      );
+      const result = await decideBrowseStep(client, makeConfig(), {
+        ...baseInput([typeable]),
+        goal,
+      });
+      expect(result).toMatchObject({
+        outcome: "act",
+        operation: "TYPE_TEXT",
+        index: 5,
+        text: "headphones",
+        textSource: "goal",
+      });
+      expect(createModel).not.toHaveBeenCalled();
+      expect(captures).toHaveLength(2);
+      // The second call's criteria carry the real (non-PII) candidate text.
+      const secondQuestions = captures[1]!.questions as Record<
+        string,
+        { criteria: Record<string, string> }
+      >;
+      expect(secondQuestions.text_candidate!.criteria[String(wantIndex)]).toBe("headphones");
+    });
+
+    it("falls back to generateTypeText when the candidate peak is below PEAK_THRESHOLD_TEXT_CANDIDATE", async () => {
+      const goal = "accept cookies and search for headphones";
+      const candidates = extractTextCandidates(goal);
+      const wantIndex = candidates.indexOf("headphones");
+      const client = sequentialClient([
+        { op: choice("TYPE_TEXT", 0.9), target_type: choice("5", 0.9) },
+        { text_candidate: choice(String(wantIndex), PEAK_THRESHOLD_TEXT_CANDIDATE - 0.1) },
+      ]);
+      const result = await decideBrowseStep(client, makeConfig(), {
+        ...baseInput([typeable]),
+        goal,
+      });
+      expect(result.outcome).toBe("act");
+      expect(result.text).toBe("hello world");
+      expect(result.textSource).toBe("llm");
+      expect(createModel).toHaveBeenCalled();
+    });
+
+    it("falls back to generateTypeText when Jev explicitly picks 'none of these'", async () => {
+      const goal = "accept cookies and search for headphones";
+      const client = sequentialClient([
+        { op: choice("TYPE_TEXT", 0.9), target_type: choice("5", 0.9) },
+        { text_candidate: choice("none", 0.95) },
+      ]);
+      const result = await decideBrowseStep(client, makeConfig(), {
+        ...baseInput([typeable]),
+        goal,
+      });
+      expect(result.text).toBe("hello world");
+      expect(result.textSource).toBe("llm");
+    });
+
+    it("skips the fast-path call entirely when the goal has no extractable candidate", async () => {
+      const goal = "please open the settings page and toggle dark mode without typing anything";
+      expect(extractTextCandidates(goal)).toEqual([]);
+      await expectFastPathSkipped(goal);
+    });
+
+    it("never sends a PII candidate's raw text to the vendor, and maps the picked placeholder back to the real value locally", async () => {
+      const goal = "check out as Test User, test@example.com, Germany, standard shipping";
+      const candidates = extractTextCandidates(goal);
+      const emailIndex = candidates.indexOf("test@example.com");
+      expect(emailIndex).toBeGreaterThanOrEqual(0);
+
+      // Labeled "Email" so the picked email-kind candidate clears the
+      // kind/field match check (review finding #2) — a generic "Search"
+      // field would correctly reject an email-kind pick as a mismatch.
+      const emailField: BrowseStepElement = { ...typeable, label: "Email" };
+      const captures: SystemOneEvaluateParams<Record<string, SystemOneQuestion>>[] = [];
+      const client = sequentialClient(
+        [
+          { op: choice("TYPE_TEXT", 0.9), target_type: choice("5", 0.9) },
+          { text_candidate: choice(String(emailIndex), 0.9) },
+        ],
+        { captures },
+      );
+      const result = await decideBrowseStep(client, makeConfig(), {
+        ...baseInput([emailField]),
+        goal,
+      });
+
+      // The real value never left the process except mapped back locally.
+      expect(result.text).toBe("test@example.com");
+      expect(result.textSource).toBe("goal");
+
+      // What actually went to the vendor (both calls) must not contain the
+      // raw email — only a placeholder naming its kind.
+      const sentToVendor = JSON.stringify(captures.map((c) => c.questions));
+      expect(sentToVendor).not.toContain("test@example.com");
+      const secondQuestions = captures[1]!.questions as Record<
+        string,
+        { criteria: Record<string, string> }
+      >;
+      expect(secondQuestions.text_candidate!.criteria[String(emailIndex)]).toBe(
+        `[candidate ${emailIndex}: email]`,
+      );
+    });
+
+    it("falls back to generateTypeText when the fast-path call itself fails (transport/timeout)", async () => {
+      const goal = "accept cookies and search for headphones";
+      let call = 0;
+      const client: SystemOneClient = {
+        async evaluate() {
+          call++;
+          if (call === 1) {
+            return {
+              model: "jev-latest",
+              answers: { op: choice("TYPE_TEXT", 0.9), target_type: choice("5", 0.9) } as never,
+              usage: { input_tokens: 100, output_tokens: 10 },
+            };
+          }
+          throw new Error("transport failure");
+        },
+      };
+      const result = await decideBrowseStep(client, makeConfig(), {
+        ...baseInput([typeable]),
+        goal,
+      });
+      expect(result.outcome).toBe("act");
+      expect(result.text).toBe("hello world");
+      expect(result.textSource).toBe("llm");
+    });
+
+    // Review finding #1: end-to-end (not just extractTextCandidates' own
+    // output) proof that no PII fragment, and no URL fragment, ever reaches
+    // the vendor payload for these three goal shapes — a phone number's
+    // digit groups, an email's local-part/domain words, and a credentialed
+    // URL's username/password/host.
+    describe("no fragment of a PII/URL value ever reaches the vendor (review finding #1)", () => {
+      it.each([
+        {
+          name: "phone number digit groups",
+          goal: "Call the client at +1 (555) 123-4567 and confirm the order.",
+          forbidden: ["555", "123-4567", "admin", "Secret"],
+        },
+        {
+          name: "email local-part/domain words",
+          goal: "Send a receipt to Daniil.Rozhkov@Gmail.com after checkout.",
+          forbidden: ["Daniil", "Rozhkov", "\"Gmail\""],
+        },
+        {
+          name: "credentialed URL's username/password/host",
+          goal: "Log in at https://admin:Secret@host and update the profile.",
+          forbidden: ["admin:Secret", "Secret@host", "\"host\""],
+        },
+      ])("$name", async ({ goal, forbidden }) => {
+        const captures: SystemOneEvaluateParams<Record<string, SystemOneQuestion>>[] = [];
+        const client = sequentialClient(
+          [
+            { op: choice("TYPE_TEXT", 0.9), target_type: choice("5", 0.9) },
+            // Whatever candidate the fast-path offers, always pick index 0 —
+            // this test only cares about what's SENT, not what's chosen.
+            { text_candidate: choice("0", 0.9) },
+          ],
+          { captures },
+        );
+        await decideBrowseStep(client, makeConfig(), { ...baseInput([typeable]), goal });
+        const sentToVendor = JSON.stringify(captures.map((c) => c.questions));
+        for (const fragment of forbidden) {
+          expect(sentToVendor).not.toContain(fragment);
+        }
+      });
+    });
+
+    // Review finding #2: a confident fast-path pick that is plainly the
+    // wrong KIND of value for the target field must not be trusted — the
+    // peak-probability gate alone doesn't check fitness against the field.
+    describe("kind/field mismatch falls back to the LLM path (review finding #2)", () => {
+      it("rejects an email-kind pick offered into a non-email field", async () => {
+        const goal = "check out as test@example.com";
+        const candidates = extractTextCandidates(goal);
+        const emailIndex = candidates.indexOf("test@example.com");
+        expect(emailIndex).toBeGreaterThanOrEqual(0);
+        // typeable is labeled "Search" — not email-shaped.
+        const client = sequentialClient([
+          { op: choice("TYPE_TEXT", 0.9), target_type: choice("5", 0.9) },
+          { text_candidate: choice(String(emailIndex), 0.9) },
+        ]);
+        const result = await decideBrowseStep(client, makeConfig(), {
+          ...baseInput([typeable]),
+          goal,
+        });
+        expect(result.textSource).toBe("llm");
+        expect(result.text).toBe("hello world");
+      });
+
+      it("rejects a non-email pick offered into an email-labeled field", async () => {
+        const goal = "search for headphones";
+        const candidates = extractTextCandidates(goal);
+        const headphonesIndex = candidates.indexOf("headphones");
+        expect(headphonesIndex).toBeGreaterThanOrEqual(0);
+        const emailField: BrowseStepElement = { ...typeable, label: "Email" };
+        const client = sequentialClient([
+          { op: choice("TYPE_TEXT", 0.9), target_type: choice("5", 0.9) },
+          { text_candidate: choice(String(headphonesIndex), 0.9) },
+        ]);
+        const result = await decideBrowseStep(client, makeConfig(), {
+          ...baseInput([emailField]),
+          goal,
+        });
+        expect(result.textSource).toBe("llm");
+      });
+
+      it("rejects a pure-number pick offered into a name field", async () => {
+        const goal = "enter 42 wireless";
+        const candidates = extractTextCandidates(goal);
+        const numberIndex = candidates.indexOf("42");
+        expect(numberIndex).toBeGreaterThanOrEqual(0);
+        const nameField: BrowseStepElement = { ...typeable, label: "Full Name" };
+        const client = sequentialClient([
+          { op: choice("TYPE_TEXT", 0.9), target_type: choice("5", 0.9) },
+          { text_candidate: choice(String(numberIndex), 0.9) },
+        ]);
+        const result = await decideBrowseStep(client, makeConfig(), {
+          ...baseInput([nameField]),
+          goal,
+        });
+        expect(result.textSource).toBe("llm");
+      });
+
+      it("accepts a matching phone-kind pick into a tel-labeled field (control case)", async () => {
+        // Quoted so the whole phone number becomes its own exact candidate
+        // (equal to the PII span) rather than being dropped as a fragment —
+        // see the "extractTextCandidates PII/URL fragment exclusion"
+        // describe block above for why an unquoted phone number in a long
+        // sentence often has no candidate that survives at all.
+        const goal = 'call "+1 (555) 123-4567" now';
+        const candidates = extractTextCandidates(goal);
+        const phoneIndex = candidates.findIndex((c) => candidatePiiKind(c) === "phone");
+        expect(phoneIndex).toBeGreaterThanOrEqual(0);
+        const telField: BrowseStepElement = { ...typeable, label: "Phone" };
+        const client = sequentialClient([
+          { op: choice("TYPE_TEXT", 0.9), target_type: choice("5", 0.9) },
+          { text_candidate: choice(String(phoneIndex), 0.9) },
+        ]);
+        const result = await decideBrowseStep(client, makeConfig(), {
+          ...baseInput([telField]),
+          goal,
+        });
+        expect(result.textSource).toBe("goal");
+        expect(result.text).toBe(candidates[phoneIndex]);
+      });
+    });
+
+    // Review finding #2: two-plus candidates sharing the same PII kind
+    // render as identical placeholders Jev can't meaningfully choose
+    // between — the fast path must not even be attempted.
+    it("skips the fast-path call entirely when the goal has two candidates of the same PII kind", async () => {
+      const goal = "reply to both a@example.com and b@example.com";
+      expect(hasAmbiguousPiiCandidates(extractTextCandidates(goal))).toBe(true);
+      await expectFastPathSkipped(goal);
+    });
+
+    // Review finding: generateTypeText's fallback used to only ever see the
+    // goal with every PII value collapsed into the same bare "[EMAIL]" tag,
+    // so on a goal with TWO emails it had no way to say which one belongs
+    // in this field — it could only type the literal placeholder or invent
+    // a value. Numbered placeholder tokens ("[EMAIL_1]"/"[EMAIL_2]") let the
+    // model pick between them by echoing the right token back, resolved to
+    // the real value locally afterward.
+    describe("generateTypeText numbered PII placeholders", () => {
+      it("chooses the right email via token mapping when the model returns a numbered placeholder", async () => {
+        const goal = "reply to both a@x.com and b@y.com";
+        // Two candidates of the same kind ("email") — fast path is skipped,
+        // this goes straight to generateTypeText.
+        expect(hasAmbiguousPiiCandidates(extractTextCandidates(goal))).toBe(true);
+
+        const { seenPromptText } = mockStructuredModelOnce("[EMAIL_2]");
+        const client = fakeClient({ op: choice("TYPE_TEXT", 0.9), target_type: choice("5", 0.9) });
+        const result = await decideBrowseStep(client, makeConfig(), {
+          ...baseInput([typeable]),
+          goal,
+        });
+
+        expect(result.outcome).toBe("act");
+        expect(result.textSource).toBe("llm");
+        expect(result.text).toBe("b@y.com");
+
+        // The raw emails must never appear in what was sent to the model —
+        // only the numbered placeholder tokens.
+        const prompt = seenPromptText();
+        expect(prompt).not.toContain("a@x.com");
+        expect(prompt).not.toContain("b@y.com");
+        expect(prompt).toContain("[EMAIL_1]");
+        expect(prompt).toContain("[EMAIL_2]");
+      });
+
+      it("rejects a response with an unmapped placeholder token instead of typing it literally, and retries", async () => {
+        const goal = "reply to both a@x.com and b@y.com";
+        mockStructuredModelOnce("[PHONE_1]"); // no phone in this goal — unmapped
+        const client = fakeClient({ op: choice("TYPE_TEXT", 0.9), target_type: choice("5", 0.9) });
+        const result = await decideBrowseStep(client, makeConfig(), {
+          ...baseInput([typeable]),
+          goal,
+        });
+        expect(result.outcome).toBe("retry");
+        expect(result.reason).toContain("unresolved placeholder");
+      });
+
+      it("rejects a bare, un-numbered placeholder too (model reverting to the old shape)", async () => {
+        const goal = "email a@x.com about the order";
+        mockStructuredModelOnce("[EMAIL]");
+        const client = fakeClient({ op: choice("TYPE_TEXT", 0.9), target_type: choice("5", 0.9) });
+        const result = await decideBrowseStep(client, makeConfig(), {
+          ...baseInput([typeable]),
+          goal,
+        });
+        expect(result.outcome).toBe("retry");
+      });
+    });
+
+    // Review finding #3: generateTypeText's own timeout must be capped by
+    // whatever's left of the SHARED overall decision deadline
+    // (BROWSE_STEP_OVERALL_DEADLINE_MS), not a fresh BROWSE_TEXT_TIMEOUT_MS
+    // of its own — otherwise the main fan-out plus a full BROWSE_TEXT_TIMEOUT_MS
+    // can together exceed the frontend's own request timeout.
+    // AbortSignal.timeout's own internal timer runs on REAL wall-clock time,
+    // not vi's fake clock (see vision.test.ts's identical caveat) — so this
+    // spies on AbortSignal.timeout's ARGUMENT instead of waiting for a real
+    // abort to fire, while a fast-resolving mock model keeps the test itself
+    // from ever needing to wait in real time.
+    it("caps generateTypeText's timeout at what's left of the overall deadline, not a fresh BROWSE_TEXT_TIMEOUT_MS", async () => {
+      vi.useFakeTimers();
+      try {
+        const goal = "please open the settings page and toggle dark mode without typing anything";
+        expect(extractTextCandidates(goal)).toEqual([]); // straight to generateTypeText
+
+        const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+        createModel.mockImplementationOnce(() => jsonModel({ text: "typed value" }));
+
+        const elapsedFirstCallMs = 5_000;
+        const client: SystemOneClient = {
+          async evaluate() {
+            // Simulate the main fan-out spending part of the shared budget
+            // (via the fake clock, so this itself costs no real time).
+            await new Promise<void>((resolve) => setTimeout(resolve, elapsedFirstCallMs));
+            return {
+              model: "jev-latest",
+              answers: { op: choice("TYPE_TEXT", 0.9), target_type: choice("5", 0.9) } as never,
+              usage: { input_tokens: 1, output_tokens: 1 },
+            };
+          },
+        };
+
+        const pending = decideBrowseStep(client, makeConfig(), { ...baseInput([typeable]), goal });
+        await vi.advanceTimersByTimeAsync(elapsedFirstCallMs);
+        const result = await pending;
+        expect(result.textSource).toBe("llm");
+        expect(result.text).toBe("typed value");
+
+        const expectedRemainingMs = BROWSE_STEP_OVERALL_DEADLINE_MS - elapsedFirstCallMs;
+        // Prove this is really exercising the tighter overall-deadline cap,
+        // not merely BROWSE_TEXT_TIMEOUT_MS being smaller anyway.
+        expect(expectedRemainingMs).toBeLessThan(BROWSE_TEXT_TIMEOUT_MS);
+        expect(timeoutSpy.mock.calls.map((args) => args[0])).toContain(expectedRemainingMs);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   // SELECT now resolves via a SECOND, small Jev evaluate() call over the
@@ -1217,10 +1859,12 @@ describe("decideBrowseStep", () => {
   // observed via that criteria string's bounded length.
   it("keeps a long element value's rendered criteria bounded even though the raw value is far longer", async () => {
     const longValue: BrowseStepElement = { ...typeable, value: "x".repeat(5_000) };
+    // Capture only the first evaluate() call — see the comment on the
+    // "never sends an element's value/options..." test above.
     let captured: SystemOneEvaluateParams<Record<string, SystemOneQuestion>> | undefined;
     const client = fakeClient(
       { op: choice("TYPE_TEXT", 0.9), target_type: choice("5", 0.9) },
-      { capture: (p) => (captured = p) },
+      { capture: (p) => (captured ??= p) },
     );
     await decideBrowseStep(client, makeConfig(), baseInput([longValue]));
     const targetType = captured!.questions.target_type as { criteria: Record<string, string> };
@@ -1258,12 +1902,14 @@ describe("decideBrowseStep", () => {
   });
 
   it("scrubs PII out of an element's label/value before they reach a target head's criteria", async () => {
+    // Capture only the first evaluate() call — see the comment on the
+    // "never sends an element's value/options..." test above.
     let captured: SystemOneEvaluateParams<Record<string, SystemOneQuestion>> | undefined;
     const pii = "reach me at agent@example.com";
     const el: BrowseStepElement = { ...typeable, label: pii, value: pii };
     const client = fakeClient(
       { op: choice("TYPE_TEXT", 0.9), target_type: choice("5", 0.9) },
-      { capture: (p) => (captured = p) },
+      { capture: (p) => (captured ??= p) },
     );
     await decideBrowseStep(client, makeConfig(), baseInput([el]));
     const targetType = captured!.questions.target_type as { criteria: Record<string, string> };
@@ -1791,5 +2437,90 @@ describe("cascade on low confidence", () => {
     await decideBrowseStep(client, makeConfig(), baseInput([clickable]));
     expect(seenSignal()).toBeInstanceOf(AbortSignal);
     expect(BROWSE_CASCADE_TIMEOUT_MS).toBe(8_000);
+  });
+
+  // Review finding #3: same discipline as generateTypeText — cascadeStep's
+  // own BROWSE_CASCADE_TIMEOUT_MS must be capped by whatever's left of the
+  // shared overall decision deadline once a gate failure triggers it, not a
+  // fresh 8s of its own on top of whatever the primary fan-out already
+  // spent.
+  // Same caveat as generateTypeText's deadline test above: AbortSignal.
+  // timeout's internal timer is real wall-clock, unaffected by vi's fake
+  // clock, so this spies on the ms ARGUMENT rather than waiting for a real
+  // abort — a fast-resolving mocked cascade model keeps the whole test fast.
+  it("caps the cascade's timeout at what's left of the overall deadline, not a fresh BROWSE_CASCADE_TIMEOUT_MS", async () => {
+    vi.useFakeTimers();
+    try {
+      const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+      createModel.mockImplementationOnce(() =>
+        jsonModel({ operation: "CLICK", index: 3, done: false, confidence: 0.9, reason: "ok" }),
+      );
+
+      // Deliberately long enough that the REMAINING overall budget (18s -
+      // elapsed) is tighter than BROWSE_CASCADE_TIMEOUT_MS (8s) itself, so
+      // only the overall-deadline cap (not the cascade's own constant)
+      // explains the capped value below.
+      const elapsedFirstCallMs = 11_000;
+      const client: SystemOneClient = {
+        async evaluate() {
+          await new Promise<void>((resolve) => setTimeout(resolve, elapsedFirstCallMs));
+          return {
+            model: "jev-latest",
+            answers: { op: choice("CLICK", PEAK_THRESHOLD_OP - 0.2) } as never,
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+        },
+      };
+
+      const pending = decideBrowseStep(client, makeConfig(), baseInput([clickable]));
+      await vi.advanceTimersByTimeAsync(elapsedFirstCallMs);
+      const result = await pending;
+      // The cascade succeeds (fast-resolving mock) and its CLICK is what's
+      // returned.
+      expect(result).toMatchObject({ outcome: "act", operation: "CLICK", index: 3, cascade: true });
+
+      const expectedRemainingMs = BROWSE_STEP_OVERALL_DEADLINE_MS - elapsedFirstCallMs;
+      expect(expectedRemainingMs).toBeLessThan(BROWSE_CASCADE_TIMEOUT_MS);
+      expect(timeoutSpy.mock.calls.map((args) => args[0])).toContain(expectedRemainingMs);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Browse-speed contract: every result carries a timing breakdown so a
+  // stuck/slow browse_task can be diagnosed from the route's log line.
+  describe("timings", () => {
+    it("reports jevMs and totalMs on a plain CLICK step, with no textMs/cascadeMs", async () => {
+      const client = fakeClient({ op: choice("CLICK", 0.9), target_click: choice("3", 0.9) });
+      const result = await decideBrowseStep(client, makeConfig(), baseInput([clickable]));
+      expect(result.timings?.jevMs).toBeGreaterThanOrEqual(0);
+      expect(result.timings?.totalMs).toBeGreaterThanOrEqual(result.timings?.jevMs ?? 0);
+      expect(result.timings?.textMs).toBeUndefined();
+      expect(result.timings?.cascadeMs).toBeUndefined();
+    });
+
+    it("reports textMs (and textSource) on a TYPE_TEXT step", async () => {
+      const client = fakeClient({ op: choice("TYPE_TEXT", 0.9), target_type: choice("5", 0.9) });
+      const result = await decideBrowseStep(client, makeConfig(), baseInput([typeable]));
+      expect(result.timings?.textMs).toBeGreaterThanOrEqual(0);
+      expect(result.textSource).toBe("llm");
+    });
+
+    it("reports cascadeMs when the cascade actually ran", async () => {
+      mockCascadeOnce({
+        operation: "CLICK",
+        index: 3,
+        done: false,
+        confidence: 0.9,
+        reason: "ok",
+      });
+      const client = fakeClient({
+        op: choice("CLICK", PEAK_THRESHOLD_OP - 0.1),
+        target_click: choice("3", 0.9),
+      });
+      const result = await decideBrowseStep(client, makeConfig(), baseInput([clickable]));
+      expect(result.cascade).toBe(true);
+      expect(result.timings?.cascadeMs).toBeGreaterThanOrEqual(0);
+    });
   });
 });
