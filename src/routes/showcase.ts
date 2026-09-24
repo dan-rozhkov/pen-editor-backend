@@ -157,6 +157,43 @@ function isEditorImageUrl(url: URL, prefix: URL): boolean {
   );
 }
 
+// A second, small allowlist alongside the S3 prefix one above: reference-image
+// CDNs the design agent's `browse_find_images` tool routinely points at
+// (Pinterest today) that send no CORS headers, so a Pixi image fill loaded
+// straight from them fails all three of imageFillHelpers.ts's load attempts
+// and renders black. This is NOT a general "proxy any image host" escape
+// hatch — it stays a short, explicit set of exact hostnames, kept in one
+// named constant so adding a host is a one-line, reviewable change.
+//
+// Matching is deliberately exact-hostname, not suffix/substring: `.has()`
+// against a fixed string set rejects both `i.pinimg.com.evil.com` (a
+// different, longer hostname) and `evil-i.pinimg.com` (also a different
+// hostname) with no extra logic, and since every allowlisted entry here is a
+// DNS name rather than an IP literal, the same exact-match already excludes
+// `1.2.3.4`-style IP literals from ever matching.
+const REFERENCE_IMAGE_HOSTS = new Set<string>(["i.pinimg.com"]);
+
+// A generic desktop-browser UA string, not our own service's identity —
+// Pinterest's CDN has been observed to reject or degrade requests with no
+// User-Agent at all. Deliberately no Referer and no forwarded
+// cookies/credentials: `fetch` sends neither unless told to.
+const REFERENCE_IMAGE_USER_AGENT =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
+
+function isAllowedReferenceImageUrl(url: URL): boolean {
+  return (
+    url.protocol === "https:" &&
+    url.username === "" &&
+    url.password === "" &&
+    // Empty `port` means "default port for the protocol" (443 for https) —
+    // rejecting anything else stops a non-standard-port variant of an
+    // otherwise-allowlisted hostname from being treated the same as the real
+    // service.
+    url.port === "" &&
+    REFERENCE_IMAGE_HOSTS.has(url.hostname)
+  );
+}
+
 // The 1..25 bound exists solely so a single request can't post `count: 1e9`
 // — it is not a rate limit (there's no dedup, claps are meant to be
 // repeatable).
@@ -185,18 +222,32 @@ export async function showcaseRoutes(
   // host — so converted showcase photos remain renderable without creating an
   // SSRF endpoint.
   app.get("/api/image-proxy", async (request, reply) => {
-    const prefixes = imageProxyPrefixes;
-    if (prefixes.length === 0) {
-      return reply.status(503).send({ error: "S3 storage is not configured" });
-    }
-
     const parsed = imageProxyQuerySchema.safeParse(request.query);
     if (!parsed.success) {
       return reply.status(400).send({ error: "Invalid image URL" });
     }
 
-    const imageUrl = new URL(parsed.data.url);
-    if (!prefixes.some((prefix) => isEditorImageUrl(imageUrl, prefix))) {
+    let imageUrl: URL;
+    try {
+      imageUrl = new URL(parsed.data.url);
+    } catch {
+      return reply.status(400).send({ error: "Invalid image URL" });
+    }
+
+    // The reference-host check doesn't depend on S3 being configured at all
+    // — it's a wholly separate allowlist — so only bail on "S3 not
+    // configured" when the requested URL couldn't be a reference image
+    // either. This keeps the original 503-when-unconfigured behavior for
+    // S3-shaped requests while letting Pinterest-style reference images
+    // through on a deployment that has no S3 wired up yet.
+    const isReferenceImage = isAllowedReferenceImageUrl(imageUrl);
+    const prefixes = imageProxyPrefixes;
+    if (!isReferenceImage && prefixes.length === 0) {
+      return reply.status(503).send({ error: "S3 storage is not configured" });
+    }
+
+    const isEditorImage = prefixes.some((prefix) => isEditorImageUrl(imageUrl, prefix));
+    if (!isEditorImage && !isReferenceImage) {
       return reply.status(403).send({ error: "Image URL is not allowed" });
     }
 
@@ -204,6 +255,14 @@ export async function showcaseRoutes(
     try {
       response = await fetch(imageUrl, {
         signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+        // "manual" means a 3xx from the upstream is handed back to us as a
+        // non-ok response instead of being followed — so a redirect to a
+        // host off either allowlist is simply never fetched, with no need to
+        // re-validate a hop-by-hop chain by hand.
+        redirect: "manual",
+        headers: isReferenceImage
+          ? { "User-Agent": REFERENCE_IMAGE_USER_AGENT }
+          : undefined,
       });
     } catch (error) {
       request.log.warn(
@@ -221,6 +280,14 @@ export async function showcaseRoutes(
       ?.split(";", 1)[0]
       ?.trim();
     if (!contentType?.toLowerCase().startsWith("image/")) {
+      return reply.status(415).send({ error: "Upstream resource is not an image" });
+    }
+    // A third-party reference host's SVG can carry a <script> that would run
+    // in our own origin once re-served from this proxy — unlike the S3 path
+    // below, there's no upload-side sanitizer (assertSvgIsInert) standing
+    // between an arbitrary Pinterest object and this response, so reject
+    // outright rather than trying to lock it down after the fact.
+    if (isReferenceImage && contentType.toLowerCase() === "image/svg+xml") {
       return reply.status(415).send({ error: "Upstream resource is not an image" });
     }
     const contentLength = response.headers.get("content-length");

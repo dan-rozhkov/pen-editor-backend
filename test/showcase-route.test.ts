@@ -754,6 +754,197 @@ describe("GET /api/image-proxy", () => {
       await instance.close();
     });
   });
+
+  // The small reference-image CDN allowlist (currently just i.pinimg.com) —
+  // separate from, and additive to, the S3 prefix allowlist above.
+  describe("reference-image host allowlist (e.g. Pinterest)", () => {
+    it("proxies an allowed pinimg URL with a browser-like User-Agent and no follow-redirect", async () => {
+      const bytes = new Uint8Array([0xff, 0xd8, 0xff]);
+      const fetchMock = vi.fn(async () =>
+        new Response(bytes, { headers: { "content-type": "image/jpeg" } }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const instance = await buildApp(config, {
+        logger: false,
+        showcaseStore: fakeStore(),
+      });
+      const source = "https://i.pinimg.com/originals/aa/bb/cc/deadbeef.jpg";
+      const res = await instance.inject({
+        method: "GET",
+        url: `/api/image-proxy?url=${encodeURIComponent(source)}`,
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.headers["content-type"]).toContain("image/jpeg");
+      expect(res.headers["cache-control"]).toBe(
+        "public, max-age=31536000, immutable",
+      );
+      expect(fetchMock).toHaveBeenCalledWith(
+        new URL(source),
+        expect.objectContaining({
+          signal: expect.any(AbortSignal),
+          redirect: "manual",
+          headers: expect.objectContaining({ "User-Agent": expect.any(String) }),
+        }),
+      );
+      // No Referer, no forwarded credentials.
+      const callOptions = fetchMock.mock.calls[0]?.[1] as RequestInit;
+      expect(callOptions.headers).not.toHaveProperty("Referer");
+      expect(callOptions.credentials).toBeUndefined();
+      await instance.close();
+    });
+
+    it("works even when S3 is not configured at all", async () => {
+      const bytes = new Uint8Array([0xff, 0xd8, 0xff]);
+      const fetchMock = vi.fn(async () =>
+        new Response(bytes, { headers: { "content-type": "image/jpeg" } }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const unconfigured = makeConfig();
+      const instance = await buildApp(unconfigured, {
+        logger: false,
+        showcaseStore: fakeStore(),
+      });
+      const source = "https://i.pinimg.com/originals/aa/bb/cc/deadbeef.jpg";
+      const res = await instance.inject({
+        method: "GET",
+        url: `/api/image-proxy?url=${encodeURIComponent(source)}`,
+      });
+
+      expect(res.statusCode).toBe(200);
+      await instance.close();
+    });
+
+    it("rejects a host that isn't on the reference-image allowlist", async () => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+      const instance = await buildApp(config, {
+        logger: false,
+        showcaseStore: fakeStore(),
+      });
+      const res = await instance.inject({
+        method: "GET",
+        url: `/api/image-proxy?url=${encodeURIComponent("https://not-pinterest.example/x.jpg")}`,
+      });
+
+      expect(res.statusCode).toBe(403);
+      expect(fetchMock).not.toHaveBeenCalled();
+      await instance.close();
+    });
+
+    it.each([
+      ["a suffix lookalike", "https://i.pinimg.com.evil.com/x.jpg"],
+      ["a prefix lookalike", "https://evil-i.pinimg.com/x.jpg"],
+      ["userinfo in the URL", "https://user:pass@i.pinimg.com/x.jpg"],
+      ["a non-default port", "https://i.pinimg.com:8443/x.jpg"],
+      ["plain http", "http://i.pinimg.com/x.jpg"],
+      ["an IP literal", "https://151.101.1.1/x.jpg"],
+    ])("rejects %s without fetching it", async (_label, source) => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+      const instance = await buildApp(config, {
+        logger: false,
+        showcaseStore: fakeStore(),
+      });
+      const res = await instance.inject({
+        method: "GET",
+        url: `/api/image-proxy?url=${encodeURIComponent(source)}`,
+      });
+
+      expect(res.statusCode).toBe(403);
+      expect(fetchMock).not.toHaveBeenCalled();
+      await instance.close();
+    });
+
+    it("does not follow a redirect to an off-allowlist host", async () => {
+      // redirect: "manual" means a 3xx upstream response is handed back to
+      // us un-followed, with Location pointing off-allowlist — we must treat
+      // that as a failed fetch rather than reading a body from it.
+      const fetchMock = vi.fn(async () =>
+        new Response(null, {
+          status: 302,
+          headers: { location: "https://attacker.test/payload.jpg" },
+        }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const instance = await buildApp(config, {
+        logger: false,
+        showcaseStore: fakeStore(),
+      });
+      const source = "https://i.pinimg.com/originals/aa/bb/cc/redirect.jpg";
+      const res = await instance.inject({
+        method: "GET",
+        url: `/api/image-proxy?url=${encodeURIComponent(source)}`,
+      });
+
+      expect(res.statusCode).toBe(502);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock).toHaveBeenCalledWith(
+        new URL(source),
+        expect.objectContaining({ redirect: "manual" }),
+      );
+      await instance.close();
+    });
+
+    it("rejects a non-image content-type from a reference host", async () => {
+      const fetchMock = vi.fn(async () =>
+        new Response("<html></html>", { headers: { "content-type": "text/html" } }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const instance = await buildApp(config, {
+        logger: false,
+        showcaseStore: fakeStore(),
+      });
+      const source = "https://i.pinimg.com/originals/aa/bb/cc/notanimage.html";
+      const res = await instance.inject({
+        method: "GET",
+        url: `/api/image-proxy?url=${encodeURIComponent(source)}`,
+      });
+
+      expect(res.statusCode).toBe(415);
+      await instance.close();
+    });
+
+    it("rejects an SVG from a reference host outright (no lockdown-header fallback)", async () => {
+      const svg = '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>';
+      const fetchMock = vi.fn(async () =>
+        new Response(svg, { headers: { "content-type": "image/svg+xml" } }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const instance = await buildApp(config, {
+        logger: false,
+        showcaseStore: fakeStore(),
+      });
+      const source = "https://i.pinimg.com/originals/aa/bb/cc/evil.svg";
+      const res = await instance.inject({
+        method: "GET",
+        url: `/api/image-proxy?url=${encodeURIComponent(source)}`,
+      });
+
+      expect(res.statusCode).toBe(415);
+      await instance.close();
+    });
+
+    it("still enforces the size cap for a reference host", async () => {
+      const big = new Uint8Array(16 * 1024 * 1024);
+      const fetchMock = vi.fn(async () =>
+        new Response(big, { headers: { "content-type": "image/jpeg" } }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const instance = await buildApp(config, {
+        logger: false,
+        showcaseStore: fakeStore(),
+      });
+      const source = "https://i.pinimg.com/originals/aa/bb/cc/huge.jpg";
+      const res = await instance.inject({
+        method: "GET",
+        url: `/api/image-proxy?url=${encodeURIComponent(source)}`,
+      });
+
+      expect(res.statusCode).toBe(413);
+      await instance.close();
+    });
+  });
 });
 
 describe("POST /api/showcase/:runId/like", () => {
