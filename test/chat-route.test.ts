@@ -1,143 +1,84 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { FastifyInstance } from "fastify";
-import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
 import type { LanguageModelV3StreamPart } from "@ai-sdk/provider";
-import { buildApp } from "../src/app.js";
 import { loadSkills, getSkill } from "../src/ai/skills.js";
 import { makeConfig } from "./helpers.js";
 import { DEFAULT_MODELS } from "../src/config.js";
+import {
+  USAGE,
+  chatMocks,
+  mockModel,
+  resetChatMocks,
+  sequenceModel,
+  textStreamChunks,
+  toolCallStreamChunks,
+  userMessage,
+} from "./chatMocks.js";
+import { postChat, sseChunksOfType, startApp, type RunningApp } from "./chatHarness.js";
 
 // ---------------------------------------------------------------------------
 // Mocks: the provider returns a MockLanguageModelV3 (ai/test) and MCP tools
-// are controlled per test — no network calls and no real API keys.
+// are controlled per test — no network calls and no real API keys. See the
+// hoisting contract at the top of test/chatMocks.ts.
 // ---------------------------------------------------------------------------
 
-const holders = vi.hoisted(() => ({
-  model: undefined as unknown,
-  mcpTools: {} as Record<string, unknown>,
-}));
+vi.mock("../src/ai/provider.js", async (importOriginal) =>
+  (await import("./chatMocks.js")).mockProviderModule(await importOriginal()),
+);
+vi.mock("../src/ai/mcp.js", async () => (await import("./chatMocks.js")).mockMcpModule());
 
-vi.mock("../src/ai/provider.js", async (importOriginal) => {
-  // Only createModel is faked — bareModelId (and anything else the module
-  // exports) must stay the REAL implementation, since src/ai/chatTurn.ts
-  // calls bareModelId on every prepareChatTurn() run.
-  const actual = await importOriginal<typeof import("../src/ai/provider.js")>();
-  return { ...actual, createModel: vi.fn(() => holders.model) };
-});
+// Usage with explicit token totals (undefined = "provider reported none").
+function usage(input: number | undefined, output: number | undefined) {
+  return {
+    inputTokens: { total: input, noCache: input, cacheRead: 0, cacheWrite: 0 },
+    outputTokens: { total: output, text: output, reasoning: 0 },
+  };
+}
 
-vi.mock("../src/ai/mcp.js", () => ({
-  getMCPTools: vi.fn(async () => holders.mcpTools),
-  closeAllMCPClients: vi.fn(async () => {}),
-  attachMobbinRelease: vi.fn(),
-  releaseMCPTools: vi.fn(),
-}));
+// Step 1 of a two-step turn: a server-executed tool (get_guidelines) whose
+// result makes streamText run a second model step inside the same turn.
+function guidelinesStep(
+  stepUsage: Parameters<typeof toolCallStreamChunks>[2] = USAGE,
+): LanguageModelV3StreamPart[] {
+  return toolCallStreamChunks("get_guidelines", { topic: "table" }, stepUsage);
+}
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-const USAGE = {
-  inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
-  outputTokens: { total: 5, text: 5, reasoning: 0 },
+const IMAGE_PART = {
+  type: "file",
+  mediaType: "image/png",
+  url: "data:image/png;base64,iVBORw0KGgo=",
 };
 
-function textStreamChunks(text: string): LanguageModelV3StreamPart[] {
-  return [
-    { type: "stream-start", warnings: [] },
-    { type: "text-start", id: "t1" },
-    { type: "text-delta", id: "t1", delta: text },
-    { type: "text-end", id: "t1" },
-    {
-      type: "finish",
-      finishReason: { unified: "stop", raw: "stop" },
-      usage: USAGE,
-    },
-  ];
-}
-
-function toolCallStreamChunks(
-  toolName: string,
-  input: Record<string, unknown>,
-): LanguageModelV3StreamPart[] {
-  return [
-    { type: "stream-start", warnings: [] },
-    {
-      type: "tool-call",
-      toolCallId: "call-1",
-      toolName,
-      input: JSON.stringify(input),
-    },
-    {
-      type: "finish",
-      finishReason: { unified: "tool-calls", raw: "tool_calls" },
-      usage: USAGE,
-    },
-  ];
-}
-
-function mockModel(chunks: LanguageModelV3StreamPart[]): MockLanguageModelV3 {
-  return new MockLanguageModelV3({
-    doStream: async () => ({
-      stream: simulateReadableStream({ chunks, chunkDelayInMs: null }),
-    }),
-  });
-}
-
-interface RunningServer {
-  app: FastifyInstance;
-  url: string;
-}
-
-async function startServer(
-  config = makeConfig(),
-): Promise<RunningServer> {
-  const app = await buildApp(config, { logger: false });
-  // The chat route hijacks the reply and writes to reply.raw, which
-  // app.inject() does not stream reliably — use a real listener + fetch.
-  const url = await app.listen({ port: 0, host: "127.0.0.1" });
-  return { app, url };
-}
-
-function userMessage(text: string): Record<string, unknown> {
-  return { id: "m1", role: "user", parts: [{ type: "text", text }] };
-}
-
-async function postChat(
-  url: string,
-  body: unknown,
-  headers: Record<string, string> = {},
-): Promise<Response> {
-  return fetch(`${url}/api/chat`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...headers },
-    body: JSON.stringify(body),
-  });
+function messageWithImages(text: string, count: number): Record<string, unknown> {
+  return {
+    id: "m1",
+    role: "user",
+    parts: [{ type: "text", text }, ...Array.from({ length: count }, () => ({ ...IMAGE_PART }))],
+  };
 }
 
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
-let server: RunningServer;
+let server: RunningApp;
 
 beforeAll(async () => {
   await loadSkills();
-  server = await startServer();
+  server = await startApp();
 });
 
 afterAll(async () => {
-  await server.app.close();
+  await server.close();
 });
 
 beforeEach(() => {
-  holders.model = mockModel(textStreamChunks("ok"));
-  holders.mcpTools = {};
+  resetChatMocks();
 });
 
 describe("POST /api/chat — streaming happy paths", () => {
   it("streams a model tool-call (batch_design) to the client without executing it on the server", async () => {
     const operations = 'card=I(document, {type: "frame", name: "Card"})';
-    holders.model = mockModel(
+    chatMocks.model = mockModel(
       toolCallStreamChunks("batch_design", { operations }),
     );
 
@@ -159,7 +100,7 @@ describe("POST /api/chat — streaming happy paths", () => {
   });
 
   it("preserves progressive draw_vector input deltas without executing the tool", async () => {
-    holders.model = mockModel([
+    chatMocks.model = mockModel([
       { type: "stream-start", warnings: [] },
       { type: "tool-input-start", id: "call-vector", toolName: "draw_vector" },
       {
@@ -202,7 +143,7 @@ describe("POST /api/chat — streaming happy paths", () => {
   });
 
   it("streams the model text response to the client", async () => {
-    holders.model = mockModel(textStreamChunks("Hello from the design agent"));
+    chatMocks.model = mockModel(textStreamChunks("Hello from the design agent"));
 
     const res = await postChat(server.url, {
       messages: [userMessage("hi")],
@@ -217,7 +158,7 @@ describe("POST /api/chat — streaming happy paths", () => {
 
   it("passes canvasContext as a trailing message, not into the system prompt (prompt-cache fix)", async () => {
     const model = mockModel(textStreamChunks("ok"));
-    holders.model = model;
+    chatMocks.model = model;
 
     await (
       await postChat(server.url, {
@@ -254,55 +195,10 @@ describe("POST /api/chat — context window meter (finish messageMetadata)", () 
     // end-of-turn prompt size) is deliberately much larger, so a test
     // asserting on the SUMMED totalUsage (60 in + 10 out) instead of the
     // last step's own value (50 in + 5 out = 55) would fail.
-    let call = 0;
-    holders.model = new MockLanguageModelV3({
-      doStream: async () => {
-        call += 1;
-        if (call === 1) {
-          return {
-            stream: simulateReadableStream({
-              chunks: [
-                { type: "stream-start", warnings: [] },
-                {
-                  type: "tool-call",
-                  toolCallId: "call-1",
-                  toolName: "get_guidelines",
-                  input: JSON.stringify({ topic: "table" }),
-                },
-                {
-                  type: "finish",
-                  finishReason: { unified: "tool-calls", raw: "tool_calls" },
-                  usage: {
-                    inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
-                    outputTokens: { total: 5, text: 5, reasoning: 0 },
-                  },
-                },
-              ],
-              chunkDelayInMs: null,
-            }),
-          };
-        }
-        return {
-          stream: simulateReadableStream({
-            chunks: [
-              { type: "stream-start", warnings: [] },
-              { type: "text-start", id: "t1" },
-              { type: "text-delta", id: "t1", delta: "done" },
-              { type: "text-end", id: "t1" },
-              {
-                type: "finish",
-                finishReason: { unified: "stop", raw: "stop" },
-                usage: {
-                  inputTokens: { total: 50, noCache: 50, cacheRead: 0, cacheWrite: 0 },
-                  outputTokens: { total: 5, text: 5, reasoning: 0 },
-                },
-              },
-            ],
-            chunkDelayInMs: null,
-          }),
-        };
-      },
-    });
+    chatMocks.model = sequenceModel(
+      guidelinesStep(usage(10, 5)),
+      textStreamChunks("done", usage(50, 5)),
+    );
 
     const res = await postChat(server.url, {
       messages: [userMessage("what's the table guideline?")],
@@ -310,15 +206,9 @@ describe("POST /api/chat — context window meter (finish messageMetadata)", () 
     expect(res.status).toBe(200);
     const body = await res.text();
 
-    const finishLine = body
-      .split("\n")
-      .find((line) => line.startsWith("data:") && line.includes('"type":"finish"'));
-    expect(finishLine).toBeDefined();
-    const finishChunk = JSON.parse(finishLine!.slice("data:".length)) as {
-      type: string;
-      messageMetadata?: { contextTokens?: number };
-    };
-    expect(finishChunk.messageMetadata).toEqual({ contextTokens: 55 });
+    const finishChunks = sseChunksOfType(body, "finish");
+    expect(finishChunks).toHaveLength(1);
+    expect(finishChunks[0].messageMetadata).toEqual({ contextTokens: 55 });
 
     // No separate `message-metadata` chunk anywhere: metadata must ride
     // inside `finish` (bookkeeping) only, or a real streamWithRetry.ts
@@ -331,99 +221,29 @@ describe("POST /api/chat — context window meter (finish messageMetadata)", () 
     // A provider that reports usage on the first step but omits it on the
     // last one must not wipe the measurement we already have — otherwise the
     // `<= 0` guard suppresses the meter entirely for that provider.
-    let call = 0;
-    holders.model = new MockLanguageModelV3({
-      doStream: async () => {
-        call += 1;
-        if (call === 1) {
-          return {
-            stream: simulateReadableStream({
-              chunks: [
-                { type: "stream-start", warnings: [] },
-                {
-                  type: "tool-call",
-                  toolCallId: "call-1",
-                  toolName: "get_guidelines",
-                  input: JSON.stringify({ topic: "table" }),
-                },
-                {
-                  type: "finish",
-                  finishReason: { unified: "tool-calls", raw: "tool_calls" },
-                  usage: {
-                    inputTokens: { total: 40, noCache: 40, cacheRead: 0, cacheWrite: 0 },
-                    outputTokens: { total: 5, text: 5, reasoning: 0 },
-                  },
-                },
-              ],
-              chunkDelayInMs: null,
-            }),
-          };
-        }
-        return {
-          stream: simulateReadableStream({
-            chunks: [
-              { type: "stream-start", warnings: [] },
-              { type: "text-start", id: "t1" },
-              { type: "text-delta", id: "t1", delta: "done" },
-              { type: "text-end", id: "t1" },
-              {
-                type: "finish",
-                finishReason: { unified: "stop", raw: "stop" },
-                usage: {
-                  inputTokens: {
-                    total: undefined,
-                    noCache: undefined,
-                    cacheRead: 0,
-                    cacheWrite: 0,
-                  },
-                  outputTokens: { total: undefined, text: undefined, reasoning: 0 },
-                },
-              },
-            ],
-            chunkDelayInMs: null,
-          }),
-        };
-      },
-    });
+    chatMocks.model = sequenceModel(
+      guidelinesStep(usage(40, 5)),
+      textStreamChunks("done", usage(undefined, undefined)),
+    );
 
     const res = await postChat(server.url, {
       messages: [userMessage("what's the table guideline?")],
     });
     expect(res.status).toBe(200);
     const body = await res.text();
-    const finishLine = body
-      .split("\n")
-      .find((line) => line.startsWith("data:") && line.includes('"type":"finish"'));
-    expect(finishLine).toBeDefined();
-    const finishChunk = JSON.parse(finishLine!.slice("data:".length)) as {
-      messageMetadata?: { contextTokens?: number };
-    };
-    expect(finishChunk.messageMetadata).toEqual({ contextTokens: 45 });
+    const finishChunks = sseChunksOfType(body, "finish");
+    expect(finishChunks).toHaveLength(1);
+    expect(finishChunks[0].messageMetadata).toEqual({ contextTokens: 45 });
   });
 
   it("omits messageMetadata when no step of the turn reported usable inputTokens", async () => {
-    holders.model = mockModel([
-      { type: "stream-start", warnings: [] },
-      { type: "text-start", id: "t1" },
-      { type: "text-delta", id: "t1", delta: "ok" },
-      { type: "text-end", id: "t1" },
-      {
-        type: "finish",
-        finishReason: { unified: "stop", raw: "stop" },
-        usage: {
-          inputTokens: { total: undefined, noCache: undefined, cacheRead: 0, cacheWrite: 0 },
-          outputTokens: { total: 5, text: 5, reasoning: 0 },
-        },
-      },
-    ]);
+    chatMocks.model = mockModel(textStreamChunks("ok", usage(undefined, 5)));
 
     const res = await postChat(server.url, { messages: [userMessage("hi")] });
     const body = await res.text();
-    const finishLine = body
-      .split("\n")
-      .find((line) => line.startsWith("data:") && line.includes('"type":"finish"'));
-    expect(finishLine).toBeDefined();
-    expect(finishLine).not.toContain("messageMetadata");
+    const finishChunks = sseChunksOfType(body, "finish");
+    expect(finishChunks).toHaveLength(1);
+    expect(finishChunks[0]).not.toHaveProperty("messageMetadata");
   });
 });
 
@@ -488,22 +308,8 @@ describe("POST /api/chat — validation errors", () => {
   });
 
   it("returns 400 when a single message contains more than 4 file/image parts", async () => {
-    const imagePart = {
-      type: "file",
-      mediaType: "image/png",
-      url: "data:image/png;base64,iVBORw0KGgo=",
-    };
     const res = await postChat(server.url, {
-      messages: [
-        {
-          id: "m1",
-          role: "user",
-          parts: [
-            { type: "text", text: "look at these" },
-            ...Array.from({ length: 5 }, () => ({ ...imagePart })),
-          ],
-        },
-      ],
+      messages: [messageWithImages("look at these", 5)],
     });
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error: string };
@@ -512,22 +318,8 @@ describe("POST /api/chat — validation errors", () => {
   });
 
   it("allows exactly 4 image parts in one message", async () => {
-    const imagePart = {
-      type: "file",
-      mediaType: "image/png",
-      url: "data:image/png;base64,iVBORw0KGgo=",
-    };
     const res = await postChat(server.url, {
-      messages: [
-        {
-          id: "m1",
-          role: "user",
-          parts: [
-            { type: "text", text: "ok" },
-            ...Array.from({ length: 4 }, () => ({ ...imagePart })),
-          ],
-        },
-      ],
+      messages: [messageWithImages("ok", 4)],
     });
     expect(res.status).toBe(200);
     await res.text();
@@ -536,8 +328,8 @@ describe("POST /api/chat — validation errors", () => {
 
 describe("POST /api/chat — universal toolset", () => {
   it("no longer 503s without MCP when a legacy research mode is requested", async () => {
-    holders.mcpTools = {};
-    holders.model = mockModel(textStreamChunks("done"));
+    chatMocks.mcpTools = {};
+    chatMocks.model = mockModel(textStreamChunks("done"));
     const res = await postChat(server.url, {
       messages: [userMessage("research pricing pages")],
       agentMode: "research", // legacy field — ignored now
@@ -547,9 +339,9 @@ describe("POST /api/chat — universal toolset", () => {
   });
 
   it("exposes the load_skill tool and the skill catalog to the model", async () => {
-    holders.mcpTools = {};
+    chatMocks.mcpTools = {};
     const model = mockModel(textStreamChunks("done"));
-    holders.model = model;
+    chatMocks.model = model;
     const res = await postChat(server.url, {
       messages: [userMessage("make me a dashboard")],
     });
@@ -571,7 +363,7 @@ describe("POST /api/chat — universal toolset", () => {
 describe("POST /api/chat — skill command injection", () => {
   it("injects a synthetic lookup_skill tool call and strips the command from the user text", async () => {
     const model = mockModel(textStreamChunks("done"));
-    holders.model = model;
+    chatMocks.model = model;
 
     const skill = getSkill("polish");
     expect(skill).toBeDefined();
@@ -614,7 +406,7 @@ describe("POST /api/chat — skill command injection", () => {
 
   it("injects the plugin skill instructions for a /plugin command", async () => {
     const model = mockModel(textStreamChunks("done"));
-    holders.model = model;
+    chatMocks.model = model;
 
     const skill = getSkill("plugin");
     expect(skill).toBeDefined();
@@ -640,7 +432,7 @@ describe("POST /api/chat — skill command injection", () => {
 
   it("passes unknown slash commands through as plain text", async () => {
     const model = mockModel(textStreamChunks("ok"));
-    holders.model = model;
+    chatMocks.model = model;
 
     const res = await postChat(server.url, {
       messages: [userMessage("/no-such-skill help me")],
@@ -655,10 +447,10 @@ describe("POST /api/chat — skill command injection", () => {
 });
 
 describe("POST /api/chat — CORS on the hijacked streaming reply", () => {
-  let corsServer: RunningServer;
+  let corsServer: RunningApp;
 
   beforeAll(async () => {
-    corsServer = await startServer(
+    corsServer = await startApp(
       makeConfig({
         CORS_ALLOWED_ORIGINS: "https://app.example.com, https://other.example.com",
       }),
@@ -666,7 +458,7 @@ describe("POST /api/chat — CORS on the hijacked streaming reply", () => {
   });
 
   afterAll(async () => {
-    await corsServer.app.close();
+    await corsServer.close();
   });
 
   it("reflects an allowlisted origin on the streaming response", async () => {

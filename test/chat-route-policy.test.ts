@@ -1,10 +1,13 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { FastifyInstance } from "fastify";
-import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
-import type { LanguageModelV3StreamPart } from "@ai-sdk/provider";
-import { buildApp } from "../src/app.js";
 import { loadSkills } from "../src/ai/skills.js";
-import { makeConfig } from "./helpers.js";
+import {
+  chatMocks,
+  mockModel,
+  resetChatMocks,
+  toolCallStreamChunks,
+  userMessage,
+} from "./chatMocks.js";
+import { chatTurn, startApp, type RunningApp } from "./chatHarness.js";
 
 // Integration coverage for the FIR-45 structural backstop: when the message
 // history shows the prototype/slides skill was loaded, batch_design is
@@ -14,73 +17,10 @@ import { makeConfig } from "./helpers.js";
 // control case confirms the same op still passes under the default (native)
 // policy.
 
-const holders = vi.hoisted(() => ({
-  model: undefined as unknown,
-  mcpTools: {} as Record<string, unknown>,
-}));
-
-vi.mock("../src/ai/provider.js", async (importOriginal) => {
-  // Only createModel is faked — bareModelId (and anything else the module
-  // exports) must stay the REAL implementation, since src/ai/chatTurn.ts
-  // calls bareModelId on every prepareChatTurn() run.
-  const actual = await importOriginal<typeof import("../src/ai/provider.js")>();
-  return { ...actual, createModel: vi.fn(() => holders.model) };
-});
-
-vi.mock("../src/ai/mcp.js", () => ({
-  getMCPTools: vi.fn(async () => holders.mcpTools),
-  closeAllMCPClients: vi.fn(async () => {}),
-  attachMobbinRelease: vi.fn(),
-  releaseMCPTools: vi.fn(),
-}));
-
-const USAGE = {
-  inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
-  outputTokens: { total: 5, text: 5, reasoning: 0 },
-};
-
-function toolCallStreamChunks(
-  toolName: string,
-  input: Record<string, unknown>,
-): LanguageModelV3StreamPart[] {
-  return [
-    { type: "stream-start", warnings: [] },
-    {
-      type: "tool-call",
-      toolCallId: "call-1",
-      toolName,
-      input: JSON.stringify(input),
-    },
-    {
-      type: "finish",
-      finishReason: { unified: "tool-calls", raw: "tool_calls" },
-      usage: USAGE,
-    },
-  ];
-}
-
-function mockModel(chunks: LanguageModelV3StreamPart[]): MockLanguageModelV3 {
-  return new MockLanguageModelV3({
-    doStream: async () => ({
-      stream: simulateReadableStream({ chunks, chunkDelayInMs: null }),
-    }),
-  });
-}
-
-interface RunningServer {
-  app: FastifyInstance;
-  url: string;
-}
-
-async function startServer(): Promise<RunningServer> {
-  const app = await buildApp(makeConfig(), { logger: false });
-  const url = await app.listen({ port: 0, host: "127.0.0.1" });
-  return { app, url };
-}
-
-function userMessage(text: string): Record<string, unknown> {
-  return { id: "m1", role: "user", parts: [{ type: "text", text }] };
-}
+vi.mock("../src/ai/provider.js", async (importOriginal) =>
+  (await import("./chatMocks.js")).mockProviderModule(await importOriginal()),
+);
+vi.mock("../src/ai/mcp.js", async () => (await import("./chatMocks.js")).mockMcpModule());
 
 // A prior turn's history entry recording a completed `load_skill` call —
 // the same dynamic-tool UI part shape the client persists/replays.
@@ -101,44 +41,42 @@ function loadSkillHistoryEntry(name: "prototype" | "slides"): Record<string, unk
   };
 }
 
-async function postChat(url: string, body: unknown): Promise<Response> {
-  return fetch(`${url}/api/chat`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+// The model answers with one batch_design call carrying these operations.
+function turnWithBatchDesign(operations: string, messages: Record<string, unknown>[]) {
+  chatMocks.model = mockModel(toolCallStreamChunks("batch_design", { operations }));
+  return chatTurn(server.url, { messages });
 }
 
-let server: RunningServer;
+// History where an earlier turn loaded `skill`.
+function afterLoading(skill: "prototype" | "slides", ask: string, followUp: string) {
+  return [userMessage(ask), loadSkillHistoryEntry(skill), userMessage(followUp)];
+}
+
+const NATIVE_FRAME_OP = 'x=I(document, {type: "frame"})';
+
+let server: RunningApp;
 
 beforeAll(async () => {
   await loadSkills();
-  server = await startServer();
+  server = await startApp();
 });
 
 afterAll(async () => {
-  await server.app.close();
+  await server.close();
 });
 
 beforeEach(() => {
-  holders.mcpTools = {};
+  resetChatMocks();
 });
 
 describe("POST /api/chat — prototype/slides embed-only batch_design guard", () => {
   it("rejects a native frame create op when history loaded the prototype skill", async () => {
-    const operations = 'x=I(document, {type: "frame"})';
-    holders.model = mockModel(toolCallStreamChunks("batch_design", { operations }));
-
-    const res = await postChat(server.url, {
-      messages: [
-        userMessage("build me a login screen"),
-        loadSkillHistoryEntry("prototype"),
-        userMessage("now insert it"),
-      ],
-    });
+    const { res, body } = await turnWithBatchDesign(
+      NATIVE_FRAME_OP,
+      afterLoading("prototype", "build me a login screen", "now insert it"),
+    );
 
     expect(res.status).toBe(200);
-    const body = await res.text();
     expect(body).toContain("tool-output-error");
     expect(body).toContain("embed-only");
     expect(body).toContain("may not create a native");
@@ -146,51 +84,33 @@ describe("POST /api/chat — prototype/slides embed-only batch_design guard", ()
   });
 
   it("rejects a native frame create op when history loaded the slides skill", async () => {
-    const operations = 'x=I(document, {type: "frame"})';
-    holders.model = mockModel(toolCallStreamChunks("batch_design", { operations }));
-
-    const res = await postChat(server.url, {
-      messages: [
-        userMessage("build me a 3-slide deck"),
-        loadSkillHistoryEntry("slides"),
-        userMessage("now insert slide 1"),
-      ],
-    });
+    const { res, body } = await turnWithBatchDesign(
+      NATIVE_FRAME_OP,
+      afterLoading("slides", "build me a 3-slide deck", "now insert slide 1"),
+    );
 
     expect(res.status).toBe(200);
-    const body = await res.text();
     expect(body).toContain("tool-output-error");
     expect(body).toContain("embed-only");
   });
 
   it("still allows a top-level embed create op under prototype policy", async () => {
-    const operations = 'embed=I(document, {type: "embed", name: "Screen"})';
-    holders.model = mockModel(toolCallStreamChunks("batch_design", { operations }));
-
-    const res = await postChat(server.url, {
-      messages: [
-        userMessage("build me a login screen"),
-        loadSkillHistoryEntry("prototype"),
-        userMessage("now insert it"),
-      ],
-    });
+    const { res, body } = await turnWithBatchDesign(
+      'embed=I(document, {type: "embed", name: "Screen"})',
+      afterLoading("prototype", "build me a login screen", "now insert it"),
+    );
 
     expect(res.status).toBe(200);
-    const body = await res.text();
     expect(body).not.toContain("tool-output-error");
     expect(body).toContain("tool-input-available");
   });
 
   it("control: the same native frame op passes under the default (native) policy", async () => {
-    const operations = 'x=I(document, {type: "frame"})';
-    holders.model = mockModel(toolCallStreamChunks("batch_design", { operations }));
-
-    const res = await postChat(server.url, {
-      messages: [userMessage("edit the selected frame")],
-    });
+    const { res, body } = await turnWithBatchDesign(NATIVE_FRAME_OP, [
+      userMessage("edit the selected frame"),
+    ]);
 
     expect(res.status).toBe(200);
-    const body = await res.text();
     expect(body).not.toContain("tool-output-error");
     expect(body).toContain("tool-input-available");
   });

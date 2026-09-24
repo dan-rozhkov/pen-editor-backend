@@ -21,13 +21,6 @@ vi.mock("../src/ai/provider.js", async (importOriginal) => {
 
 const { buildApp } = await import("../src/app.js");
 
-function jevResponse(body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status: 200,
-    headers: { "content-type": "application/json" },
-  });
-}
-
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -42,50 +35,67 @@ const validBody = {
   history: [],
 };
 
+// A Jev `choice` answer peaking at `choice` with probability `p`.
+function choice(value: string, p = 0.9) {
+  return { type: "choice", choice: value, probabilities: { [value]: p }, confidence: p };
+}
+
+// goal_met/dead_end ride along on every fan-out now (see
+// buildBrowseStepQuestions) — the real systemone.ts response schema requires
+// an answer for every question id that was sent, so a mocked response
+// missing these would fail validation and come back as a spurious "retry".
+const NOT_DONE = {
+  goal_met: { type: "noul", noul: 0.1 },
+  dead_end: { type: "noul", noul: 0.1 },
+};
+
+// Stubs global fetch so the Jev (System One) call answers with `answers`.
+function stubJev(answers: Record<string, unknown>) {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            model: "jev-latest",
+            answers: { ...NOT_DONE, ...answers },
+            usage: { input_tokens: 10, output_tokens: 5 },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+    ),
+  );
+}
+
+// One POST /api/browse/step against a fresh app.
+async function postStep(payload: Record<string, unknown>, config = makeConfig({ TYPESAFE_API_KEY: "key" })) {
+  const app = await buildApp(config, { logger: false });
+  try {
+    return await app.inject({ method: "POST", url: "/api/browse/step", payload });
+  } finally {
+    await app.close();
+  }
+}
+
 describe("POST /api/browse/step", () => {
   it("503s when TYPESAFE_API_KEY is unset", async () => {
-    const app = await buildApp(makeConfig({ TYPESAFE_API_KEY: undefined }), { logger: false });
-    const res = await app.inject({ method: "POST", url: "/api/browse/step", payload: validBody });
+    const res = await postStep(validBody, makeConfig({ TYPESAFE_API_KEY: undefined }));
     expect(res.statusCode).toBe(503);
-    await app.close();
   });
 
   it("400s on an invalid body", async () => {
-    const app = await buildApp(makeConfig({ TYPESAFE_API_KEY: "key" }), { logger: false });
-    const res = await app.inject({ method: "POST", url: "/api/browse/step", payload: { goal: "" } });
+    const res = await postStep({ goal: "" });
     expect(res.statusCode).toBe(400);
-    await app.close();
   });
 
   it("returns a resolved CLICK decision on the happy path", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
-        jevResponse({
-          model: "jev-latest",
-          answers: {
-            // goal_met/dead_end ride along on every fan-out now (see
-            // buildBrowseStepQuestions) — the real systemone.ts response
-            // schema requires an answer for every question id that was
-            // sent, so a mocked response missing these would fail
-            // validation and come back as a spurious "retry".
-            goal_met: { type: "noul", noul: 0.1 },
-            dead_end: { type: "noul", noul: 0.1 },
-            op: { type: "choice", choice: "CLICK", probabilities: { CLICK: 0.9 }, confidence: 0.9 },
-            target_click: { type: "choice", choice: "3", probabilities: { "3": 0.9 }, confidence: 0.9 },
-          },
-          usage: { input_tokens: 10, output_tokens: 5 },
-        }),
-      ),
-    );
-    const app = await buildApp(makeConfig({ TYPESAFE_API_KEY: "key" }), { logger: false });
-    const res = await app.inject({ method: "POST", url: "/api/browse/step", payload: validBody });
+    stubJev({ op: choice("CLICK"), target_click: choice("3") });
+    const res = await postStep(validBody);
     expect(res.statusCode).toBe(200);
     const json = res.json();
     expect(json.outcome).toBe("act");
     expect(json.operation).toBe("CLICK");
     expect(json.index).toBe(3);
-    await app.close();
   });
 
   // Finding #1: a long textarea value or a big country/state/year <select>
@@ -94,76 +104,37 @@ describe("POST /api/browse/step", () => {
   // entire step budget on identical 400s. The route must accept and
   // truncate, never reject, for realistic page content.
   it("accepts (rather than 400ing) a long textarea value and a 195-option dropdown", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
-        jevResponse({
-          model: "jev-latest",
-          answers: {
-            goal_met: { type: "noul", noul: 0.1 },
-            dead_end: { type: "noul", noul: 0.1 },
-            op: { type: "choice", choice: "CLICK", probabilities: { CLICK: 0.9 }, confidence: 0.9 },
-            target_click: { type: "choice", choice: "3", probabilities: { "3": 0.9 }, confidence: 0.9 },
-          },
-          usage: { input_tokens: 10, output_tokens: 5 },
-        }),
-      ),
-    );
-    const app = await buildApp(makeConfig({ TYPESAFE_API_KEY: "key" }), { logger: false });
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/browse/step",
-      payload: {
-        ...validBody,
-        elements: [
-          { index: 3, tag: "button", label: "Accept all", ops: ["CLICK"] },
-          {
-            index: 4,
-            tag: "textarea",
-            label: "Message",
-            ops: ["TYPE_TEXT"],
-            value: "a".repeat(2_000),
-          },
-          {
-            index: 6,
-            tag: "select",
-            label: "Country",
-            ops: ["SELECT"],
-            options: Array.from({ length: 195 }, (_, i) => `Country ${i}`),
-          },
-        ],
-      },
+    stubJev({ op: choice("CLICK"), target_click: choice("3") });
+    const res = await postStep({
+      ...validBody,
+      elements: [
+        { index: 3, tag: "button", label: "Accept all", ops: ["CLICK"] },
+        {
+          index: 4,
+          tag: "textarea",
+          label: "Message",
+          ops: ["TYPE_TEXT"],
+          value: "a".repeat(2_000),
+        },
+        {
+          index: 6,
+          tag: "select",
+          label: "Country",
+          ops: ["SELECT"],
+          options: Array.from({ length: 195 }, (_, i) => `Country ${i}`),
+        },
+      ],
     });
     expect(res.statusCode).toBe(200);
-    await app.close();
   });
 
   it("refuses to type into a password field end to end", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
-        jevResponse({
-          model: "jev-latest",
-          answers: {
-            goal_met: { type: "noul", noul: 0.1 },
-            dead_end: { type: "noul", noul: 0.1 },
-            op: { type: "choice", choice: "TYPE_TEXT", probabilities: { TYPE_TEXT: 0.9 }, confidence: 0.9 },
-            target_type: { type: "choice", choice: "9", probabilities: { "9": 0.9 }, confidence: 0.9 },
-          },
-          usage: { input_tokens: 10, output_tokens: 5 },
-        }),
-      ),
-    );
-    const app = await buildApp(makeConfig({ TYPESAFE_API_KEY: "key" }), { logger: false });
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/browse/step",
-      payload: {
-        ...validBody,
-        elements: [
-          { index: 9, tag: "input", label: "Password", isPassword: true, ops: ["TYPE_TEXT"] },
-        ],
-      },
+    stubJev({ op: choice("TYPE_TEXT"), target_type: choice("9") });
+    const res = await postStep({
+      ...validBody,
+      elements: [
+        { index: 9, tag: "input", label: "Password", isPassword: true, ops: ["TYPE_TEXT"] },
+      ],
     });
     expect(res.statusCode).toBe(200);
     const json = res.json();
@@ -171,7 +142,6 @@ describe("POST /api/browse/step", () => {
     expect(json.operation).toBe("BLOCKED");
     expect(json.reason).toContain("password");
     expect(createModel).not.toHaveBeenCalled();
-    await app.close();
   });
 
   // Finding #6: a transient Jev failure must come back as outcome "retry",
@@ -184,102 +154,27 @@ describe("POST /api/browse/step", () => {
         throw new Error("ECONNRESET");
       }),
     );
-    const app = await buildApp(makeConfig({ TYPESAFE_API_KEY: "key" }), { logger: false });
-    const res = await app.inject({ method: "POST", url: "/api/browse/step", payload: validBody });
+    const res = await postStep(validBody);
     expect(res.statusCode).toBe(200);
-    const json = res.json();
-    expect(json.outcome).toBe("retry");
-    await app.close();
+    expect(res.json().outcome).toBe("retry");
   });
 
-  // New ops (2026-09-23), end to end through the real route.
-  it("resolves HOVER against target_click's index end to end", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
-        jevResponse({
-          model: "jev-latest",
-          answers: {
-            goal_met: { type: "noul", noul: 0.1 },
-            dead_end: { type: "noul", noul: 0.1 },
-            op: { type: "choice", choice: "HOVER", probabilities: { HOVER: 0.9 }, confidence: 0.9 },
-            target_click: { type: "choice", choice: "3", probabilities: { "3": 0.9 }, confidence: 0.9 },
-          },
-          usage: { input_tokens: 10, output_tokens: 5 },
-        }),
-      ),
-    );
-    const app = await buildApp(makeConfig({ TYPESAFE_API_KEY: "key" }), { logger: false });
-    const res = await app.inject({ method: "POST", url: "/api/browse/step", payload: validBody });
+  // New ops (2026-09-23), end to end through the real route. validBody's one
+  // element supports CLICK, so the fan-out always also asks target_click —
+  // the response schema requires an answer for every question id sent, even
+  // one PRESS_ENTER/PRESS_ESCAPE never reads.
+  it.each([
+    ["HOVER against target_click's index", "HOVER", 0.9, 3],
+    ["PRESS_ENTER with no index", "PRESS_ENTER", 0.9, undefined],
+    // A peak too low for the acting tier but high enough for the passive one.
+    ["PRESS_ESCAPE at a peak only the passive tier accepts", "PRESS_ESCAPE", 0.5, undefined],
+  ] as const)("resolves %s end to end", async (_name, op, peak, index) => {
+    stubJev({ op: choice(op, peak), target_click: choice("3") });
+    const res = await postStep(validBody);
     expect(res.statusCode).toBe(200);
     const json = res.json();
     expect(json.outcome).toBe("act");
-    expect(json.operation).toBe("HOVER");
-    expect(json.index).toBe(3);
-    await app.close();
-  });
-
-  it("resolves PRESS_ENTER with no index end to end", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
-        jevResponse({
-          model: "jev-latest",
-          answers: {
-            goal_met: { type: "noul", noul: 0.1 },
-            dead_end: { type: "noul", noul: 0.1 },
-            op: {
-              type: "choice",
-              choice: "PRESS_ENTER",
-              probabilities: { PRESS_ENTER: 0.9 },
-              confidence: 0.9,
-            },
-            // validBody's one element supports CLICK, so the fan-out also
-            // asks target_click — the response schema requires an answer
-            // for every question id sent, even one PRESS_ENTER never reads.
-            target_click: { type: "choice", choice: "3", probabilities: { "3": 0.9 }, confidence: 0.9 },
-          },
-          usage: { input_tokens: 10, output_tokens: 5 },
-        }),
-      ),
-    );
-    const app = await buildApp(makeConfig({ TYPESAFE_API_KEY: "key" }), { logger: false });
-    const res = await app.inject({ method: "POST", url: "/api/browse/step", payload: validBody });
-    expect(res.statusCode).toBe(200);
-    const json = res.json();
-    expect(json.outcome).toBe("act");
-    expect(json.operation).toBe("PRESS_ENTER");
-    expect(json.index).toBeUndefined();
-    await app.close();
-  });
-
-  it("resolves PRESS_ESCAPE at a peak too low for the acting tier but high enough for the passive one", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
-        jevResponse({
-          model: "jev-latest",
-          answers: {
-            goal_met: { type: "noul", noul: 0.1 },
-            dead_end: { type: "noul", noul: 0.1 },
-            op: {
-              type: "choice",
-              choice: "PRESS_ESCAPE",
-              probabilities: { PRESS_ESCAPE: 0.5 },
-              confidence: 0.5,
-            },
-            target_click: { type: "choice", choice: "3", probabilities: { "3": 0.9 }, confidence: 0.9 },
-          },
-          usage: { input_tokens: 10, output_tokens: 5 },
-        }),
-      ),
-    );
-    const app = await buildApp(makeConfig({ TYPESAFE_API_KEY: "key" }), { logger: false });
-    const res = await app.inject({ method: "POST", url: "/api/browse/step", payload: validBody });
-    expect(res.statusCode).toBe(200);
-    const json = res.json();
-    expect(json.outcome).toBe("act");
-    expect(json.operation).toBe("PRESS_ESCAPE");
-    await app.close();
+    expect(json.operation).toBe(op);
+    expect(json.index).toBe(index);
   });
 });

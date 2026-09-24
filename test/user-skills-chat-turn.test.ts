@@ -4,87 +4,21 @@ import { loadSkills } from "../src/ai/skills.js";
 import type { UserSkill, UserSkillStore } from "../src/ai/skills/userStore.js";
 import type { LearnedSkill, LearnedSkillStore } from "../src/ai/skills/learnedStore.js";
 import { invalidateLearnedCatalog } from "../src/ai/skills/learnedStore.js";
+import { fakeUserSkillStore, userSkill } from "./userSkillFakes.js";
 
-vi.mock("../src/ai/mcp.js", () => ({
-  getMCPTools: vi.fn(async () => ({})),
-  closeAllMCPClients: vi.fn(async () => {}),
-  attachMobbinRelease: vi.fn(),
-  releaseMCPTools: vi.fn(),
-}));
+// See the hoisting contract at the top of test/chatMocks.ts.
+vi.mock("../src/ai/mcp.js", async () => (await import("./chatMocks.js")).mockMcpModule());
 
 function userMessage(text: string) {
   return { role: "user", parts: [{ type: "text", text }] };
 }
 
-const baseSkill: UserSkill = {
-  userId: "u1",
-  name: "my-skill",
-  description: "does a custom thing",
-  body: "CUSTOM BODY",
-  enabled: true,
-  source: "manual",
-  useCount: 0,
-  lastUsedAt: null,
-  createdAt: new Date("2026-01-01T00:00:00Z"),
-  updatedAt: new Date("2026-01-01T00:00:00Z"),
-};
+const baseSkill: UserSkill = userSkill({ userId: "u1", body: "CUSTOM BODY" });
 
-// A minimal in-memory UserSkillStore double, keyed like the real table by
-// (userId, name) — enough surface for chatTurn.ts/skills.ts's usage
-// (get/listEnabled/bumpUse) without needing PGlite.
-function fakeUserSkillStore(initial: UserSkill[]): UserSkillStore & { skills: UserSkill[] } {
-  const skills = initial.map((s) => ({ ...s }));
-  return {
-    skills,
-    async list(userId) {
-      return skills.filter((s) => s.userId === userId);
-    },
-    async listEnabled(userId) {
-      return skills.filter((s) => s.userId === userId && s.enabled);
-    },
-    async get(userId, name) {
-      return skills.find((s) => s.userId === userId && s.name === name) ?? null;
-    },
-    async create(input) {
-      const created: UserSkill = {
-        ...baseSkill,
-        ...input,
-        enabled: true,
-        useCount: 0,
-        lastUsedAt: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      };
-      skills.push(created);
-      return created;
-    },
-    async update(userId, name, patch) {
-      const found = skills.find((s) => s.userId === userId && s.name === name);
-      if (!found) return null;
-      if (patch.newName !== undefined) found.name = patch.newName;
-      if (patch.description !== undefined) found.description = patch.description;
-      if (patch.body !== undefined) found.body = patch.body;
-      if (patch.enabled !== undefined) found.enabled = patch.enabled;
-      found.updatedAt = new Date();
-      return found;
-    },
-    async remove(userId, name) {
-      const idx = skills.findIndex((s) => s.userId === userId && s.name === name);
-      if (idx === -1) return false;
-      skills.splice(idx, 1);
-      return true;
-    },
-    async bumpUse(userId, name) {
-      const found = skills.find((s) => s.userId === userId && s.name === name);
-      if (found) {
-        found.useCount += 1;
-        found.lastUsedAt = new Date();
-      }
-    },
-    async count(userId) {
-      return skills.filter((s) => s.userId === userId).length;
-    },
-    async close() {},
+// The turn's backend-executed load_skill tool, typed for a direct call.
+function loadSkillTool(turn: { tools: Record<string, unknown> }) {
+  return turn.tools.load_skill as {
+    execute: (args: { name: string }) => Promise<Record<string, unknown>>;
   };
 }
 
@@ -241,10 +175,7 @@ describe("prepareChatTurn — user (custom) skills", () => {
       userSkillStore: store,
     });
 
-    const loadSkillTool = turn.tools.load_skill as unknown as {
-      execute: (args: { name: string }) => Promise<Record<string, unknown>>;
-    };
-    const result = await loadSkillTool.execute({ name: "my-skill" });
+    const result = await loadSkillTool(turn).execute({ name: "my-skill" });
     expect(result.error).toContain("Unknown skill");
     expect(store.skills[0].useCount).toBe(0);
   });
@@ -261,10 +192,7 @@ describe("prepareChatTurn — user (custom) skills", () => {
       auditDb: { query: vi.fn(async () => ({ rows: [] })), end: vi.fn(async () => {}) },
     });
 
-    const loadSkillTool = turn.tools.load_skill as unknown as {
-      execute: (args: { name: string }) => Promise<Record<string, unknown>>;
-    };
-    const result = await loadSkillTool.execute({ name: "a-skill" });
+    const result = await loadSkillTool(turn).execute({ name: "a-skill" });
     expect(result.instructions).toBe("CUSTOM WINS");
     expect(result.custom).toBe(true);
 
@@ -285,10 +213,7 @@ describe("prepareChatTurn — user (custom) skills", () => {
       userSkillStore: store,
     });
 
-    const loadSkillTool = turn.tools.load_skill as unknown as {
-      execute: (args: { name: string }) => Promise<Record<string, unknown>>;
-    };
-    const result = await loadSkillTool.execute({ name: "prototype" });
+    const result = await loadSkillTool(turn).execute({ name: "prototype" });
     expect(result.instructions).not.toBe("SHOULD NOT WIN");
 
     const lines = turn.system.split("\n").filter((l) => l.trimStart().startsWith("- `prototype`"));

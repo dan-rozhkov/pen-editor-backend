@@ -1,134 +1,43 @@
 import { describe, expect, it, vi } from "vitest";
-import type { FastifyInstance } from "fastify";
 import { request as httpRequest } from "node:http";
 import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
-import type { LanguageModelV3StreamPart } from "@ai-sdk/provider";
-import { buildApp } from "../src/app.js";
-import type { RawTraceRow, TraceStore } from "../src/tracing/traceStore.js";
+import type { TraceStore } from "../src/tracing/traceStore.js";
 import { makeConfig } from "./helpers.js";
+import {
+  chatMocks,
+  mockModel,
+  sequenceModel,
+  textStreamChunks,
+  toolCallStreamChunks,
+  userMessage,
+} from "./chatMocks.js";
+import { chatTurn, postChat, recordingTraceStore, startApp } from "./chatHarness.js";
 
 // ---------------------------------------------------------------------------
 // Mocks: the provider returns a MockLanguageModelV3 (ai/test) and MCP tools
-// are controlled per test — no network calls and no real API keys.
+// are controlled per test — no network calls and no real API keys. See the
+// hoisting contract at the top of test/chatMocks.ts.
 // ---------------------------------------------------------------------------
 
-const holders = vi.hoisted(() => ({
-  model: undefined as unknown,
-  mcpTools: {} as Record<string, unknown>,
-}));
+vi.mock("../src/ai/provider.js", async (importOriginal) =>
+  (await import("./chatMocks.js")).mockProviderModule(await importOriginal()),
+);
+vi.mock("../src/ai/mcp.js", async () => (await import("./chatMocks.js")).mockMcpModule());
 
-vi.mock("../src/ai/provider.js", async (importOriginal) => {
-  // Only createModel is faked — bareModelId (and anything else the module
-  // exports) must stay the REAL implementation, since src/ai/chatTurn.ts
-  // calls bareModelId on every prepareChatTurn() run.
-  const actual = await importOriginal<typeof import("../src/ai/provider.js")>();
-  return { ...actual, createModel: vi.fn(() => holders.model) };
-});
+// Step 1 of a two-step turn: a server-executed tool call (get_guidelines)
+// whose result makes streamText run a second model step.
+const guidelinesStep = () => toolCallStreamChunks("get_guidelines", { topic: "table" });
 
-vi.mock("../src/ai/mcp.js", () => ({
-  getMCPTools: vi.fn(async () => holders.mcpTools),
-  closeAllMCPClients: vi.fn(async () => {}),
-  attachMobbinRelease: vi.fn(),
-  releaseMCPTools: vi.fn(),
-}));
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-const USAGE = {
-  inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
-  outputTokens: { total: 5, text: 5, reasoning: 0 },
-};
-
-function textStreamChunks(text: string): LanguageModelV3StreamPart[] {
-  return [
-    { type: "stream-start", warnings: [] },
-    { type: "text-start", id: "t1" },
-    { type: "text-delta", id: "t1", delta: text },
-    { type: "text-end", id: "t1" },
-    {
-      type: "finish",
-      finishReason: { unified: "stop", raw: "stop" },
-      usage: USAGE,
-    },
-  ];
-}
-
-// A tool-call step followed by a delayed text-only step, so a test can abort
-// the client fetch in the gap between them and land in onAbort with one
-// already-finished step on record.
-function toolThenSlowTextChunks(): LanguageModelV3StreamPart[] {
-  return [
-    { type: "stream-start", warnings: [] },
-    {
-      type: "tool-call",
-      toolCallId: "call-1",
-      toolName: "get_guidelines",
-      input: JSON.stringify({ topic: "table" }),
-    },
-    {
-      type: "finish",
-      finishReason: { unified: "tool-calls", raw: "tool_calls" },
-      usage: USAGE,
-    },
-  ];
-}
-
-function mockModel(chunks: LanguageModelV3StreamPart[]): MockLanguageModelV3 {
-  return new MockLanguageModelV3({
-    doStream: async () => ({
-      stream: simulateReadableStream({ chunks, chunkDelayInMs: null }),
-    }),
-  });
-}
-
-interface RunningServer {
-  app: FastifyInstance;
-  url: string;
-}
-
-async function startServer(
-  config = makeConfig(),
-  traceStore?: TraceStore | null,
-): Promise<RunningServer> {
-  const app = await buildApp(config, { logger: false, traceStore });
-  const url = await app.listen({ port: 0, host: "127.0.0.1" });
-  return { app, url };
-}
-
-function userMessage(text: string): Record<string, unknown> {
-  return { id: "m1", role: "user", parts: [{ type: "text", text }] };
-}
-
-async function postChat(
-  url: string,
-  body: unknown,
-  headers: Record<string, string> = {},
-): Promise<Response> {
-  return fetch(`${url}/api/chat`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...headers },
-    body: JSON.stringify(body),
-  });
-}
-
-function recordingTraceStore(): TraceStore & { rows: RawTraceRow[] } {
-  const rows: RawTraceRow[] = [];
-  return {
-    rows,
-    writeRawTrace: async (row) => {
-      rows.push(row);
-    },
-    close: async () => {},
-  };
+// Starts an app whose raw_traces writes land in an in-memory recorder.
+async function startTracedApp(store: TraceStore = recordingTraceStore()) {
+  return startApp(makeConfig(), { traceStore: store });
 }
 
 describe("chat route trace writing", () => {
   it("writes a raw trace row with the client session id after a completed stream", async () => {
-    holders.model = mockModel(textStreamChunks("hi"));
+    chatMocks.model = mockModel(textStreamChunks("hi"));
     const store = recordingTraceStore();
-    const { app, url } = await startServer(makeConfig(), store);
+    const { url, close } = await startTracedApp(store);
     const res = await postChat(url, {
       id: "tab-123-1",
       messages: [userMessage("hello")],
@@ -142,45 +51,41 @@ describe("chat route trace writing", () => {
     expect(store.rows[0].payload.messages).toHaveLength(1);
     expect(store.rows[0].payload.systemPromptHash).toMatch(/^[0-9a-f]{16}$/);
     expect(store.rows[0].userId).toBe("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
-    await app.close();
+    await close();
   });
 
   it("writes a null userId when the request body has none", async () => {
-    holders.model = mockModel(textStreamChunks("hi"));
+    chatMocks.model = mockModel(textStreamChunks("hi"));
     const store = recordingTraceStore();
-    const { app, url } = await startServer(makeConfig(), store);
-    await (
-      await postChat(url, { id: "tab-nouser-1", messages: [userMessage("hello")] })
-    ).text();
+    const { url, close } = await startTracedApp(store);
+    await chatTurn(url, { id: "tab-nouser-1", messages: [userMessage("hello")] });
     await vi.waitFor(() => expect(store.rows).toHaveLength(1));
     expect(store.rows[0].userId).toBeNull();
-    await app.close();
+    await close();
   });
 
   it("writes a null userId when the body's userId is shape-invalid", async () => {
-    holders.model = mockModel(textStreamChunks("hi"));
+    chatMocks.model = mockModel(textStreamChunks("hi"));
     const store = recordingTraceStore();
-    const { app, url } = await startServer(makeConfig(), store);
-    await (
-      await postChat(url, {
-        id: "tab-baduser-1",
-        messages: [userMessage("hello")],
-        userId: "not-a-real-id",
-      })
-    ).text();
+    const { url, close } = await startTracedApp(store);
+    await chatTurn(url, {
+      id: "tab-baduser-1",
+      messages: [userMessage("hello")],
+      userId: "not-a-real-id",
+    });
     await vi.waitFor(() => expect(store.rows).toHaveLength(1));
     expect(store.rows[0].userId).toBeNull();
-    await app.close();
+    await close();
   });
 
   it("generates a fallback session id when the body has no id", async () => {
-    holders.model = mockModel(textStreamChunks("hi"));
+    chatMocks.model = mockModel(textStreamChunks("hi"));
     const store = recordingTraceStore();
-    const { app, url } = await startServer(makeConfig(), store);
-    await (await postChat(url, { messages: [userMessage("hello")] })).text();
+    const { url, close } = await startTracedApp(store);
+    await chatTurn(url, { messages: [userMessage("hello")] });
     await vi.waitFor(() => expect(store.rows).toHaveLength(1));
     expect(store.rows[0].sessionId).toMatch(/^anon-/);
-    await app.close();
+    await close();
   });
 
   it("records the real completed steps (not an empty array) when the client aborts mid-session", async () => {
@@ -190,13 +95,13 @@ describe("chat route trace writing", () => {
     // step 1 is already on record — exercising the onAbort trace path with
     // real steps instead of the historical `steps: []`.
     let call = 0;
-    holders.model = new MockLanguageModelV3({
+    chatMocks.model = new MockLanguageModelV3({
       doStream: async ({ abortSignal }) => {
         call += 1;
         if (call === 1) {
           return {
             stream: simulateReadableStream({
-              chunks: toolThenSlowTextChunks(),
+              chunks: guidelinesStep(),
               chunkDelayInMs: null,
             }),
           };
@@ -218,7 +123,7 @@ describe("chat route trace writing", () => {
       },
     });
     const store = recordingTraceStore();
-    const { app, url } = await startServer(makeConfig(), store);
+    const { url, close } = await startTracedApp(store);
 
     // Use a raw http.request (not fetch) so the test can force-destroy the
     // underlying TCP socket — that reliably fires Node's 'close' event on
@@ -268,47 +173,34 @@ describe("chat route trace writing", () => {
       toolCalls: Array<{ toolName: string }>;
     }>;
     expect(steps[0].toolCalls[0].toolName).toBe("get_guidelines");
-    await app.close();
+    await close();
   });
 
   it("a throwing trace store does not break the chat response", async () => {
-    holders.model = mockModel(textStreamChunks("hi"));
+    chatMocks.model = mockModel(textStreamChunks("hi"));
     const store: TraceStore = {
       writeRawTrace: async () => {
         throw new Error("db down");
       },
       close: async () => {},
     };
-    const { app, url } = await startServer(makeConfig(), store);
+    const { url, close } = await startTracedApp(store);
     const res = await postChat(url, { id: "tab-1-1", messages: [userMessage("hi")] });
     expect(res.status).toBe(200);
     const text = await res.text();
     expect(text).toContain("hi"); // stream completed normally
-    await app.close();
+    await close();
   });
 
   it("records v6 step tool input/output into payload.steps", async () => {
     // Turn 1 calls the tool; turn 2 (after the tool result) finishes with text.
-    let call = 0;
-    holders.model = new MockLanguageModelV3({
-      doStream: async () => {
-        call += 1;
-        return {
-          stream: simulateReadableStream({
-            chunks: call === 1 ? toolThenSlowTextChunks() : textStreamChunks("done"),
-            chunkDelayInMs: null,
-          }),
-        };
-      },
-    });
+    chatMocks.model = sequenceModel(guidelinesStep(), textStreamChunks("done"));
     const store = recordingTraceStore();
-    const { app, url } = await startServer(makeConfig(), store);
-    await (
-      await postChat(url, {
-        id: "tab-args-1",
-        messages: [userMessage("give me table guidelines")],
-      })
-    ).text();
+    const { url, close } = await startTracedApp(store);
+    await chatTurn(url, {
+      id: "tab-args-1",
+      messages: [userMessage("give me table guidelines")],
+    });
     await vi.waitFor(() => expect(store.rows).toHaveLength(1));
     const steps = store.rows[0].payload.steps as Array<{
       toolCalls: Array<{ toolName: string; args: Record<string, unknown> }>;
@@ -317,6 +209,6 @@ describe("chat route trace writing", () => {
     expect(steps[0].toolCalls[0].toolName).toBe("get_guidelines");
     expect(steps[0].toolCalls[0].args).toEqual({ topic: "table" });
     expect(steps[0].toolResults[0].result).toBeTruthy();
-    await app.close();
+    await close();
   });
 });

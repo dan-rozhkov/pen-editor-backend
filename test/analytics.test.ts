@@ -1,114 +1,40 @@
 import { describe, expect, it, vi } from "vitest";
-import type { FastifyInstance } from "fastify";
-import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
-import type { LanguageModelV3StreamPart } from "@ai-sdk/provider";
-import { buildApp } from "../src/app.js";
 import {
   createAnalyticsClient,
   wrapPostHogClient,
   type AnalyticsClient,
-  type AnalyticsEvent,
   type PostHogLike,
 } from "../src/analytics/posthog.js";
 import { makeConfig } from "./helpers.js";
+import {
+  chatMocks,
+  mockModel,
+  textStreamChunks,
+  toolCallStreamChunks,
+  userMessage,
+} from "./chatMocks.js";
+import {
+  chatTurn,
+  postChat,
+  recordingAnalyticsClient,
+  startApp,
+  waitForEvent,
+} from "./chatHarness.js";
 
 // ---------------------------------------------------------------------------
 // Mocks: same shape as test/chat-route.test.ts / test/chat-trace.test.ts —
 // the provider returns a MockLanguageModelV3 (ai/test) and MCP tools are
-// controlled per test, no network calls and no real API keys.
+// controlled per test, no network calls and no real API keys. See the
+// hoisting contract at the top of test/chatMocks.ts.
 // ---------------------------------------------------------------------------
 
-const holders = vi.hoisted(() => ({
-  model: undefined as unknown,
-  mcpTools: {} as Record<string, unknown>,
-}));
+vi.mock("../src/ai/provider.js", async (importOriginal) =>
+  (await import("./chatMocks.js")).mockProviderModule(await importOriginal()),
+);
+vi.mock("../src/ai/mcp.js", async () => (await import("./chatMocks.js")).mockMcpModule());
 
-vi.mock("../src/ai/provider.js", async (importOriginal) => {
-  // Only createModel is faked — bareModelId (and anything else the module
-  // exports) must stay the REAL implementation, since src/ai/chatTurn.ts
-  // calls bareModelId on every prepareChatTurn() run.
-  const actual = await importOriginal<typeof import("../src/ai/provider.js")>();
-  return { ...actual, createModel: vi.fn(() => holders.model) };
-});
-
-vi.mock("../src/ai/mcp.js", () => ({
-  getMCPTools: vi.fn(async () => holders.mcpTools),
-  closeAllMCPClients: vi.fn(async () => {}),
-  attachMobbinRelease: vi.fn(),
-  releaseMCPTools: vi.fn(),
-}));
-
-const USAGE = {
-  inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
-  outputTokens: { total: 5, text: 5, reasoning: 0 },
-};
-
-function toolCallStreamChunks(
-  toolName: string,
-  input: Record<string, unknown>,
-): LanguageModelV3StreamPart[] {
-  return [
-    { type: "stream-start", warnings: [] },
-    {
-      type: "tool-call",
-      toolCallId: "call-1",
-      toolName,
-      input: JSON.stringify(input),
-    },
-    {
-      type: "finish",
-      finishReason: { unified: "tool-calls", raw: "tool_calls" },
-      usage: USAGE,
-    },
-  ];
-}
-
-function textStreamChunks(text: string): LanguageModelV3StreamPart[] {
-  return [
-    { type: "stream-start", warnings: [] },
-    { type: "text-start", id: "t1" },
-    { type: "text-delta", id: "t1", delta: text },
-    { type: "text-end", id: "t1" },
-    {
-      type: "finish",
-      finishReason: { unified: "stop", raw: "stop" },
-      usage: USAGE,
-    },
-  ];
-}
-
-function mockModel(chunks: LanguageModelV3StreamPart[]): MockLanguageModelV3 {
-  return new MockLanguageModelV3({
-    doStream: async () => ({
-      stream: simulateReadableStream({ chunks, chunkDelayInMs: null }),
-    }),
-  });
-}
-
-function userMessage(text: string): Record<string, unknown> {
-  return { id: "m1", role: "user", parts: [{ type: "text", text }] };
-}
-
-function recordingAnalyticsClient(): AnalyticsClient & { events: AnalyticsEvent[] } {
-  const events: AnalyticsEvent[] = [];
-  return {
-    events,
-    capture(event) {
-      events.push(event);
-    },
-    async shutdown() {},
-  };
-}
-
-interface RunningServer {
-  app: FastifyInstance;
-  url: string;
-}
-
-async function startServer(analytics: AnalyticsClient): Promise<RunningServer> {
-  const app = await buildApp(makeConfig(), { logger: false, analytics, traceStore: null });
-  const url = await app.listen({ port: 0, host: "127.0.0.1" });
-  return { app, url };
+function startServer(analytics: AnalyticsClient) {
+  return startApp(makeConfig(), { analytics, traceStore: null });
 }
 
 // ---------------------------------------------------------------------------
@@ -170,26 +96,18 @@ describe("createAnalyticsClient", () => {
 
 describe("chat route analytics", () => {
   it("captures agent_turn_completed with the expected shape and no message text anywhere in properties", async () => {
-    holders.model = mockModel(textStreamChunks("this is the secret user message content"));
+    chatMocks.model = mockModel(textStreamChunks("this is the secret user message content"));
     const analytics = recordingAnalyticsClient();
-    const { app, url } = await startServer(analytics);
+    const { url, close } = await startServer(analytics);
 
-    const res = await fetch(`${url}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        id: "tab-analytics-1",
-        userId: "11111111-1111-4111-8111-111111111111",
-        messages: [userMessage("this is the secret user message content")],
-      }),
+    const { res } = await chatTurn(url, {
+      id: "tab-analytics-1",
+      userId: "11111111-1111-4111-8111-111111111111",
+      messages: [userMessage("this is the secret user message content")],
     });
     expect(res.status).toBe(200);
-    await res.text(); // drain the SSE stream so onFinish fires
 
-    await vi.waitFor(() =>
-      expect(analytics.events.some((e) => e.event === "agent_turn_completed")).toBe(true),
-    );
-    const event = analytics.events.find((e) => e.event === "agent_turn_completed")!;
+    const event = await waitForEvent(analytics, "agent_turn_completed");
 
     expect(event.distinctId).toBe("11111111-1111-4111-8111-111111111111");
     expect(event.properties).toMatchObject({
@@ -208,29 +126,20 @@ describe("chat route analytics", () => {
     const serialized = JSON.stringify(analytics.events);
     expect(serialized).not.toContain("this is the secret user message content");
 
-    await app.close();
+    await close();
   });
 
   it("falls back to the session id as distinctId when no userId is sent", async () => {
-    holders.model = mockModel(textStreamChunks("hi"));
+    chatMocks.model = mockModel(textStreamChunks("hi"));
     const analytics = recordingAnalyticsClient();
-    const { app, url } = await startServer(analytics);
+    const { url, close } = await startServer(analytics);
 
-    await (
-      await fetch(`${url}/api/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: "tab-no-user-1", messages: [userMessage("hi")] }),
-      })
-    ).text();
+    await chatTurn(url, { id: "tab-no-user-1", messages: [userMessage("hi")] });
 
-    await vi.waitFor(() =>
-      expect(analytics.events.some((e) => e.event === "agent_turn_completed")).toBe(true),
-    );
-    const event = analytics.events.find((e) => e.event === "agent_turn_completed")!;
+    const event = await waitForEvent(analytics, "agent_turn_completed");
     expect(event.distinctId).toBe("tab-no-user-1");
 
-    await app.close();
+    await close();
   });
 
   it("marks turn_complete: false when the final step still has a pending client-executed tool call", async () => {
@@ -238,28 +147,19 @@ describe("chat route analytics", () => {
     // step ends with a tool call the model handed to the browser — the
     // client would auto-resend a continuation request for this one, so it
     // must NOT be reported as a complete user turn.
-    holders.model = mockModel(
+    chatMocks.model = mockModel(
       toolCallStreamChunks("batch_design", { screens: [] }),
     );
     const analytics = recordingAnalyticsClient();
-    const { app, url } = await startServer(analytics);
+    const { url, close } = await startServer(analytics);
 
-    await (
-      await fetch(`${url}/api/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: "tab-turn-incomplete-1", messages: [userMessage("hi")] }),
-      })
-    ).text();
+    await chatTurn(url, { id: "tab-turn-incomplete-1", messages: [userMessage("hi")] });
 
-    await vi.waitFor(() =>
-      expect(analytics.events.some((e) => e.event === "agent_turn_completed")).toBe(true),
-    );
-    const event = analytics.events.find((e) => e.event === "agent_turn_completed")!;
+    const event = await waitForEvent(analytics, "agent_turn_completed");
     expect(event.properties?.turn_complete).toBe(false);
     expect(event.properties?.tool_call_count as number).toBeGreaterThan(0);
 
-    await app.close();
+    await close();
   });
 });
 
@@ -269,26 +169,18 @@ describe("chat route analytics", () => {
 
 describe("api_request analytics hook", () => {
   it("fires for a normal route and does not fire for excluded routes", async () => {
-    holders.model = mockModel(textStreamChunks("hi"));
+    chatMocks.model = mockModel(textStreamChunks("hi"));
     const analytics = recordingAnalyticsClient();
-    const { app, url } = await startServer(analytics);
+    const { url, close } = await startServer(analytics);
 
     // A normal route: GET /api/models.
     const modelsRes = await fetch(`${url}/api/models`);
     expect(modelsRes.status).toBe(200);
 
     // The excluded chat route.
-    await (
-      await fetch(`${url}/api/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: "tab-hook-1", messages: [userMessage("hi")] }),
-      })
-    ).text();
+    await chatTurn(url, { id: "tab-hook-1", messages: [userMessage("hi")] });
 
-    await vi.waitFor(() =>
-      expect(analytics.events.some((e) => e.event === "api_request")).toBe(true),
-    );
+    await waitForEvent(analytics, "api_request");
 
     const apiRequestEvents = analytics.events.filter((e) => e.event === "api_request");
     expect(apiRequestEvents.some((e) => e.properties?.route === "/api/models")).toBe(true);
@@ -304,7 +196,7 @@ describe("api_request analytics hook", () => {
     const turnCompletedEvent = analytics.events.find((e) => e.event === "agent_turn_completed");
     expect(turnCompletedEvent?.properties?.$process_person_profile).toBeUndefined();
 
-    await app.close();
+    await close();
   });
 });
 
@@ -316,13 +208,9 @@ describe("api_request analytics hook", () => {
 describe("early-rejection analytics", () => {
   it("captures agent_turn_failed with error_kind: invalid_request for a malformed body", async () => {
     const analytics = recordingAnalyticsClient();
-    const { app, url } = await startServer(analytics);
+    const { url, close } = await startServer(analytics);
 
-    const res = await fetch(`${url}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages: [] }),
-    });
+    const res = await postChat(url, { messages: [] });
     expect(res.status).toBe(400);
 
     expect(analytics.events).toContainEqual(
@@ -332,6 +220,6 @@ describe("early-rejection analytics", () => {
       }),
     );
 
-    await app.close();
+    await close();
   });
 });

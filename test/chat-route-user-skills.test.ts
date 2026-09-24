@@ -10,138 +10,32 @@
 // in-memory UserSkillStore via BuildAppOptions (the same test seam
 // memoryStore/learnedSkillStore already use).
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { FastifyInstance } from "fastify";
-import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
-import type { LanguageModelV3StreamPart } from "@ai-sdk/provider";
-import { buildApp } from "../src/app.js";
 import { loadSkills } from "../src/ai/skills.js";
 import { makeConfig } from "./helpers.js";
-import type { UserSkill, UserSkillStore } from "../src/ai/skills/userStore.js";
+import {
+  chatMocks,
+  mockModel,
+  resetChatMocks,
+  textStreamChunks,
+  userMessage,
+} from "./chatMocks.js";
+import { chatTurn, startApp, type RunningApp } from "./chatHarness.js";
+import { fakeUserSkillStore, userSkill } from "./userSkillFakes.js";
 
-vi.mock("../src/ai/provider.js", async (importOriginal) => {
-  // Only createModel is faked — bareModelId (and anything else the module
-  // exports) must stay the REAL implementation, since src/ai/chatTurn.ts
-  // calls bareModelId on every prepareChatTurn() run.
-  const actual = await importOriginal<typeof import("../src/ai/provider.js")>();
-  return { ...actual, createModel: vi.fn(() => holders.model) };
-});
-
-vi.mock("../src/ai/mcp.js", () => ({
-  getMCPTools: vi.fn(async () => ({})),
-  closeAllMCPClients: vi.fn(async () => {}),
-  attachMobbinRelease: vi.fn(),
-  releaseMCPTools: vi.fn(),
-}));
-
-const holders = vi.hoisted(() => ({ model: undefined as unknown }));
-
-const USAGE = {
-  inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
-  outputTokens: { total: 5, text: 5, reasoning: 0 },
-};
-
-function textStreamChunks(text: string): LanguageModelV3StreamPart[] {
-  return [
-    { type: "stream-start", warnings: [] },
-    { type: "text-start", id: "t1" },
-    { type: "text-delta", id: "t1", delta: text },
-    { type: "text-end", id: "t1" },
-    { type: "finish", finishReason: { unified: "stop", raw: "stop" }, usage: USAGE },
-  ];
-}
-
-function mockModel(chunks: LanguageModelV3StreamPart[]): MockLanguageModelV3 {
-  return new MockLanguageModelV3({
-    doStream: async () => ({
-      stream: simulateReadableStream({ chunks, chunkDelayInMs: null }),
-    }),
-  });
-}
+// See the hoisting contract at the top of test/chatMocks.ts.
+vi.mock("../src/ai/provider.js", async (importOriginal) =>
+  (await import("./chatMocks.js")).mockProviderModule(await importOriginal()),
+);
+vi.mock("../src/ai/mcp.js", async () => (await import("./chatMocks.js")).mockMcpModule());
 
 const USER_ID = "11111111-1111-4111-8111-111111111111";
 
-const baseSkill: UserSkill = {
-  userId: USER_ID,
-  name: "my-skill",
-  description: "does a custom thing",
-  body: "USER SKILL BODY FROM REAL HTTP REQUEST",
-  enabled: true,
-  source: "manual",
-  useCount: 0,
-  lastUsedAt: null,
-  createdAt: new Date("2026-01-01T00:00:00Z"),
-  updatedAt: new Date("2026-01-01T00:00:00Z"),
-};
+// The same in-memory store double test/user-skills-chat-turn.test.ts uses
+// (test/userSkillFakes.ts) — what differs here is only the path it travels:
+// buildApp() -> chatRoutes -> prepareChatTurn instead of a direct call.
+const baseSkill = userSkill({ userId: USER_ID, body: "USER SKILL BODY FROM REAL HTTP REQUEST" });
 
-// Minimal in-memory UserSkillStore double — same shape as the one in
-// test/user-skills-chat-turn.test.ts, kept local rather than shared so this
-// file exercises the HTTP path with zero dependency on that file's fixtures.
-function fakeUserSkillStore(initial: UserSkill[]): UserSkillStore & { skills: UserSkill[] } {
-  const skills = initial.map((s) => ({ ...s }));
-  return {
-    skills,
-    async list(userId) {
-      return skills.filter((s) => s.userId === userId);
-    },
-    async listEnabled(userId) {
-      return skills.filter((s) => s.userId === userId && s.enabled);
-    },
-    async get(userId, name) {
-      return skills.find((s) => s.userId === userId && s.name === name) ?? null;
-    },
-    async create(input) {
-      const created: UserSkill = {
-        ...baseSkill,
-        ...input,
-        enabled: true,
-        useCount: 0,
-        lastUsedAt: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      };
-      skills.push(created);
-      return created;
-    },
-    async update(userId, name, patch) {
-      const found = skills.find((s) => s.userId === userId && s.name === name);
-      if (!found) return null;
-      if (patch.newName !== undefined) found.name = patch.newName;
-      if (patch.description !== undefined) found.description = patch.description;
-      if (patch.body !== undefined) found.body = patch.body;
-      if (patch.enabled !== undefined) found.enabled = patch.enabled;
-      found.updatedAt = new Date();
-      return found;
-    },
-    async remove(userId, name) {
-      const idx = skills.findIndex((s) => s.userId === userId && s.name === name);
-      if (idx === -1) return false;
-      skills.splice(idx, 1);
-      return true;
-    },
-    async bumpUse(userId, name) {
-      const found = skills.find((s) => s.userId === userId && s.name === name);
-      if (found) {
-        found.useCount += 1;
-        found.lastUsedAt = new Date();
-      }
-    },
-    async count(userId) {
-      return skills.filter((s) => s.userId === userId).length;
-    },
-    async close() {},
-  };
-}
-
-function userMessage(text: string): Record<string, unknown> {
-  return { id: "m1", role: "user", parts: [{ type: "text", text }] };
-}
-
-interface RunningServer {
-  app: FastifyInstance;
-  url: string;
-}
-
-let server: RunningServer;
+let server: RunningApp;
 let store: ReturnType<typeof fakeUserSkillStore>;
 
 beforeAll(async () => {
@@ -149,11 +43,11 @@ beforeAll(async () => {
 });
 
 beforeEach(() => {
-  holders.model = mockModel(textStreamChunks("ok"));
+  resetChatMocks();
 });
 
 afterAll(async () => {
-  await server?.app.close();
+  await server?.close();
 });
 
 describe("POST /api/chat — user skill store wiring (real HTTP path)", () => {
@@ -163,29 +57,21 @@ describe("POST /api/chat — user skill store wiring (real HTTP path)", () => {
     // prepareChatTurn called directly — this is what catches a dropped
     // argument between buildApp -> chatRoutes -> prepareChatTurn that a
     // prepareChatTurn-only unit test structurally cannot see.
-    const app = await buildApp(makeConfig(), {
-      logger: false,
+    server = await startApp(makeConfig(), {
       userSkillStore: store,
       memoryStore: null,
       learnedSkillStore: null,
       auditDb: null,
     });
-    const url = await app.listen({ port: 0, host: "127.0.0.1" });
-    server = { app, url };
 
     const model = mockModel(textStreamChunks("done"));
-    holders.model = model;
+    chatMocks.model = model;
 
-    const res = await fetch(`${url}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        messages: [userMessage("/my-skill do the thing")],
-        userId: USER_ID,
-      }),
+    const { res } = await chatTurn(server.url, {
+      messages: [userMessage("/my-skill do the thing")],
+      userId: USER_ID,
     });
     expect(res.status).toBe(200);
-    await res.text();
 
     expect(model.doStreamCalls).toHaveLength(1);
     const promptJson = JSON.stringify(model.doStreamCalls[0].prompt);
