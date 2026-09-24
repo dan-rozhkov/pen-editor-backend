@@ -79,6 +79,53 @@ describe("POST /api/browse/locate", () => {
     expect(json.model).toBe("jev-latest");
   });
 
+  // Browse-speed contract (2026-09-24), scroll containers: the same
+  // elementSchema is shared with /api/browse/step (browseStep.ts), so a
+  // scroll-container entry (`ops: [], scrollable: true`) must not 400 here
+  // either, and a genuinely empty `ops` without `scrollable` still should.
+  it("accepts an element with empty ops when scrollable is true, alongside a real candidate", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jevResponse({
+          model: "jev-latest",
+          answers: {
+            locate: { type: "choice", choice: "3", probabilities: { "3": 0.9 }, confidence: 0.9 },
+          },
+          usage: { input_tokens: 10, output_tokens: 5 },
+        }),
+      ),
+    );
+    const app = await buildApp(makeConfig({ TYPESAFE_API_KEY: "key" }), { logger: false });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/browse/locate",
+      payload: {
+        ...validBody,
+        elements: [
+          { index: 3, tag: "button", label: "Continue", ops: ["CLICK"] },
+          { index: 4, tag: "div", label: "Comments list", ops: [], scrollable: true },
+        ],
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    await app.close();
+  });
+
+  it("400s an element with empty ops when scrollable is not set", async () => {
+    const app = await buildApp(makeConfig({ TYPESAFE_API_KEY: "key" }), { logger: false });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/browse/locate",
+      payload: {
+        ...validBody,
+        elements: [{ index: 4, tag: "div", label: "Mystery element", ops: [] }],
+      },
+    });
+    expect(res.statusCode).toBe(400);
+    await app.close();
+  });
+
   it("returns not_found for a peak below the threshold", async () => {
     stubJevLocate("3", 0.2);
     const res = await postLocate(validBody);

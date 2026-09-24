@@ -24,28 +24,65 @@ import {
 // already re-caps `elements` regardless of what the client sent.
 // Exported so routes/browseLocate.ts (same element shape, same truncation
 // rules) doesn't redeclare this schema.
-export const elementSchema = z.object({
-  index: z.number().int().nonnegative(),
-  tag: z.string().min(1).max(40),
-  role: z.string().max(60).optional(),
-  label: z.string().max(200),
-  value: z.string().max(20_000).optional(),
-  // What the desktop sends INSTEAD of `value` for every element whose
-  // content must not leave the page (addendum D) — a password input, an
-  // autocomplete="cc-*" field, a <select>. Without it here zod would strip
-  // the key silently and Jev would lose the only remaining signal that the
-  // field is already filled, which is the whole reason `value` was dropped.
-  hasValue: z.boolean().optional(),
-  checked: z.boolean().optional(),
-  isPassword: z.boolean().optional(),
-  ops: z.array(z.enum(["CLICK", "TYPE_TEXT", "SELECT"])).min(1),
-  options: z.array(z.string().max(2_000)).max(1_000).optional(),
-});
+export const elementSchema = z
+  .object({
+    index: z.number().int().nonnegative(),
+    tag: z.string().min(1).max(40),
+    role: z.string().max(60).optional(),
+    label: z.string().max(200),
+    value: z.string().max(20_000).optional(),
+    // What the desktop sends INSTEAD of `value` for every element whose
+    // content must not leave the page (addendum D) — a password input, an
+    // autocomplete="cc-*" field, a <select>. Without it here zod would strip
+    // the key silently and Jev would lose the only remaining signal that the
+    // field is already filled, which is the whole reason `value` was dropped.
+    hasValue: z.boolean().optional(),
+    checked: z.boolean().optional(),
+    isPassword: z.boolean().optional(),
+    // Browse-speed contract (2026-09-24), scroll containers: a scroll
+    // container entry (`{index, tag, label, ops: [], scrollable: true}`) has
+    // no CLICK/TYPE_TEXT/SELECT of its own — it exists only so browse_act's
+    // scroll action can target it by index. A bare `.min(1)` here would
+    // reject that legitimate shape (400ing every step on a page that has
+    // one), so an empty `ops` is instead allowed below, in `.superRefine`,
+    // gated on `scrollable: true` — a genuinely empty `ops` on a
+    // non-scrollable element still fails validation.
+    ops: z.array(z.enum(["CLICK", "TYPE_TEXT", "SELECT"])),
+    options: z.array(z.string().max(2_000)).max(1_000).optional(),
+    // Browse-speed contract (2026-09-24) item 5: the desktop snapshot now also
+    // marks a scroll container (`scrollable`, pass this element's index to
+    // browse_act's scroll action to scroll inside it) and, once
+    // snapshot/perform pierce iframes, which one an element lives in
+    // (`frame`). Both are cheap to fold into decideBrowseStep's per-element
+    // digest line (elementDigestLine in ../ai/browseStep.js) — optional here
+    // so zod doesn't silently strip them from an older/non-conforming client.
+    scrollable: z.boolean().optional(),
+    frame: z.string().max(200).optional(),
+  })
+  .superRefine((el, ctx) => {
+    if (el.ops.length === 0 && !el.scrollable) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "ops must contain at least 1 element(s) unless scrollable is true",
+        path: ["ops"],
+      });
+    }
+  });
 
 const historyEntrySchema = z.object({
   operation: z.string().max(40),
   label: z.string().max(200),
   ok: z.boolean(),
+});
+
+// Browse-speed contract item 5: the client's own scroll position, sent
+// alongside `elements` so a WAIT/SCROLL decision can see whether the page is
+// already at the bottom rather than guessing. Optional — an older client
+// that doesn't send it degrades to exactly today's behavior.
+const scrollSchema = z.object({
+  y: z.number(),
+  height: z.number(),
+  atBottom: z.boolean().optional(),
 });
 
 const bodySchema = z.object({
@@ -57,6 +94,7 @@ const bodySchema = z.object({
   // only a coarse request-size guard against a pathological payload.
   elements: z.array(elementSchema).max(1_000),
   history: z.array(historyEntrySchema).max(50),
+  scroll: scrollSchema.optional(),
 });
 
 /**
@@ -123,15 +161,33 @@ export async function browseStepRoutes(
   registerJevBrowseRoute(app, config, {
     path: "/api/browse/step",
     bodySchema,
-    decide: (client, body) => {
+    decide: async (client, body) => {
       const input: BrowseStepInput = {
         goal: body.goal,
         url: body.url,
         title: body.title,
         elements: body.elements.slice(0, MAX_SNAPSHOT_ELEMENTS),
         history: body.history,
+        scroll: body.scroll,
       };
-      return decideBrowseStep(client, config, input);
+      const result = await decideBrowseStep(client, config, input);
+      // One line per decision so a stuck browse_task can be diagnosed from
+      // the server log. Only the decision's own fields — never page text;
+      // a cascade `reason` is model-written and may quote the page.
+      app.log.info(
+        {
+          browseStep: {
+            step: body.history.length,
+            outcome: result.outcome,
+            operation: result.operation,
+            confidence: result.confidence,
+            cascade: result.cascade === true,
+            reason: result.cascade ? undefined : result.reason,
+          },
+        },
+        "browse step decided",
+      );
+      return result;
     },
     failureMessage: "failed to evaluate the next browsing step",
   });

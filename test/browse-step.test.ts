@@ -39,6 +39,9 @@ const {
   BROWSE_STEP_TIMEOUT_MS,
   BROWSE_TEXT_TIMEOUT_MS,
   BROWSE_DECISION_TIMEOUT_MS,
+  CASCADE_CONFIDENCE_THRESHOLD,
+  CASCADE_DONE_CONFIDENCE_THRESHOLD,
+  BROWSE_CASCADE_TIMEOUT_MS,
 } = await import("../src/ai/browseStep.js");
 type BrowseStepElement = import("../src/ai/browseStep.js").BrowseStepElement;
 type BrowseStepInput = import("../src/ai/browseStep.js").BrowseStepInput;
@@ -258,6 +261,49 @@ describe("buildBrowseStepQuestions", () => {
     expect(questions.target_type).toBeUndefined();
     expect(questions.target_select).toBeUndefined();
   });
+
+  // Browse-speed contract (2026-09-24), scroll containers: a scroll
+  // container entry (`ops: []`, `scrollable: true`) has no CLICK/TYPE_TEXT/
+  // SELECT of its own — `elements.filter((el) => el.ops.includes(op))`
+  // never matches it for any target head, so it can never be offered as a
+  // click/type/select target, only ever mentioned (via elementDigestLine's
+  // "scrollable" flag) as part of the state digest.
+  it("never offers a no-ops scroll container as a candidate for any target head", () => {
+    const scrollContainer: BrowseStepElement = {
+      index: 4,
+      tag: "div",
+      label: "Comments list",
+      ops: [],
+      scrollable: true,
+    };
+    const questions = buildBrowseStepQuestions([clickable, typeable, scrollContainer]);
+    const clickCriteria = (
+      questions.target_click as { criteria: Record<string, unknown> }
+    ).criteria;
+    const typeCriteria = (
+      questions.target_type as { criteria: Record<string, unknown> }
+    ).criteria;
+    expect(clickCriteria).not.toHaveProperty("4");
+    expect(typeCriteria).not.toHaveProperty("4");
+  });
+
+  it("still renders a no-ops scroll container in the state digest via elementDigestLine, even though it's never a target candidate", () => {
+    const scrollContainer: BrowseStepElement = {
+      index: 4,
+      tag: "div",
+      label: "Comments list",
+      ops: [],
+      scrollable: true,
+    };
+    // buildBrowseStepQuestions itself doesn't render the digest (that's
+    // decideBrowseStep's job via elementDigestLine) — this only asserts
+    // that building questions from an all-empty-ops element list doesn't
+    // throw and simply produces no target heads at all.
+    const questions = buildBrowseStepQuestions([scrollContainer]);
+    expect(questions.target_click).toBeUndefined();
+    expect(questions.target_type).toBeUndefined();
+    expect(questions.target_select).toBeUndefined();
+  });
 });
 
 describe("decideBrowseStep", () => {
@@ -345,6 +391,105 @@ describe("decideBrowseStep", () => {
     expect(filledLine).toContain("filled");
     // Still never the actual value.
     elements.forEach((line) => expect(line).not.toContain("super-secret-current-value"));
+  });
+
+  // Browse-speed contract (2026-09-24) item 5: scrollable/frame element
+  // fields fold into the same compact digest line as isPassword/hasValue/
+  // checked above, and the client's own scroll position (when sent) rides
+  // along in `state.scroll` — cheap to forward since it's plain numbers.
+  it("includes scrollable/frame flags in the state.elements digest", async () => {
+    let captured: SystemOneEvaluateParams<Record<string, SystemOneQuestion>> | undefined;
+    const scrollableEl: BrowseStepElement = {
+      index: 12,
+      tag: "div",
+      label: "Results panel",
+      ops: ["CLICK"],
+      scrollable: true,
+    };
+    const framedEl: BrowseStepElement = {
+      index: 13,
+      tag: "button",
+      label: "Submit",
+      ops: ["CLICK"],
+      frame: "checkout-iframe",
+    };
+    const client = fakeClient(
+      { op: choice("CLICK", 0.9), target_click: choice("12", 0.9) },
+      { capture: (p) => (captured = p) },
+    );
+    await decideBrowseStep(client, makeConfig(), baseInput([scrollableEl, framedEl]));
+    const elements = (captured!.state as { elements: string[] }).elements;
+    const scrollableLine = elements.find((line) => line.includes("[12]"));
+    const framedLine = elements.find((line) => line.includes("[13]"));
+    expect(scrollableLine).toContain("scrollable");
+    expect(framedLine).toContain("in frame checkout-iframe");
+  });
+
+  // Browse-speed contract (2026-09-24) item 5: `frame` is page-controlled
+  // text, exactly like `label`/`value`/`options` — capAndScrubElements used
+  // to scrub only those, letting a PII-shaped iframe name (e.g. an email
+  // address used as an iframe id/title) reach the Jev vendor unscrubbed.
+  it("scrubs PII out of an element's `frame` label before it reaches the digest", async () => {
+    let captured: SystemOneEvaluateParams<Record<string, SystemOneQuestion>> | undefined;
+    const framedEl: BrowseStepElement = {
+      index: 13,
+      tag: "button",
+      label: "Submit",
+      ops: ["CLICK"],
+      frame: "widget for john.doe@example.com",
+    };
+    const client = fakeClient(
+      { op: choice("CLICK", 0.9), target_click: choice("13", 0.9) },
+      { capture: (p) => (captured = p) },
+    );
+    await decideBrowseStep(client, makeConfig(), baseInput([framedEl]));
+    const elements = (captured!.state as { elements: string[] }).elements;
+    const framedLine = elements.find((line) => line.includes("[13]"));
+    expect(framedLine).toContain("[EMAIL]");
+    expect(framedLine).not.toContain("john.doe@example.com");
+  });
+
+  // Browse-speed contract (2026-09-24), scroll containers: a genuine
+  // no-ops scroll container (`ops: []`, `scrollable: true`, matching what
+  // the desktop snapshot now emits) still shows up in the digest so Jev can
+  // scroll it by index — it's simply never a click/type/select candidate
+  // (covered separately in the buildBrowseStepQuestions describe block).
+  it("digests a no-ops scroll container without throwing, alongside a real candidate", async () => {
+    let captured: SystemOneEvaluateParams<Record<string, SystemOneQuestion>> | undefined;
+    const noOpsScrollContainer: BrowseStepElement = {
+      index: 14,
+      tag: "div",
+      label: "Comments list",
+      ops: [],
+      scrollable: true,
+    };
+    const client = fakeClient(
+      { op: choice("CLICK", 0.9), target_click: choice("3", 0.9) },
+      { capture: (p) => (captured = p) },
+    );
+    await decideBrowseStep(client, makeConfig(), baseInput([clickable, noOpsScrollContainer]));
+    const elements = (captured!.state as { elements: string[] }).elements;
+    const scrollContainerLine = elements.find((line) => line.includes("[14]"));
+    expect(scrollContainerLine).toContain("scrollable");
+  });
+
+  it("forwards the client's scroll position into state.scroll when sent, and omits the key when it isn't", async () => {
+    let captured: SystemOneEvaluateParams<Record<string, SystemOneQuestion>> | undefined;
+    const client = fakeClient(
+      { op: choice("CLICK", 0.9), target_click: choice("3", 0.9) },
+      { capture: (p) => (captured = p) },
+    );
+    await decideBrowseStep(client, makeConfig(), {
+      ...baseInput([clickable]),
+      scroll: { y: 400, height: 1200, atBottom: false },
+    });
+    const state = captured!.state as Record<string, unknown>;
+    expect(state.scroll).toEqual({ y: 400, height: 1200, atBottom: false });
+
+    captured = undefined;
+    await decideBrowseStep(client, makeConfig(), baseInput([clickable]));
+    const stateNoScroll = captured!.state as Record<string, unknown>;
+    expect(stateNoScroll).not.toHaveProperty("scroll");
   });
 
   it("reads only the target head matching the chosen operation", async () => {
@@ -1224,5 +1369,260 @@ describe("decideBrowseStep", () => {
       const result = await decideBrowseStep(client, makeConfig(), baseInput([typeable]));
       expect(result.outcome).toBe("retry");
     });
+  });
+});
+
+// Live bench finding (2026-09-24): a low-confidence Jev head used to end
+// the whole task with a terminal `blocked`. The cascade asks
+// STRUCTURED_MODEL for a second opinion exactly once, only once a
+// peak-probability gate has already failed — never on the ordinary
+// confident path.
+describe("cascade on low confidence", () => {
+  /** Mocks the next createModel() call to answer with a cascade-shaped
+   * object (operation/index/text/done/confidence/reason), same pattern as
+   * mockStructuredModelOnce above but for the cascade schema. */
+  function mockCascadeOnce(
+    object: Record<string, unknown>,
+  ): { seenSignal: () => AbortSignal | undefined } {
+    let seenSignal: AbortSignal | undefined;
+    createModel.mockImplementationOnce(
+      () =>
+        new MockLanguageModelV3({
+          doGenerate: async (options: { abortSignal?: AbortSignal }) => {
+            seenSignal = options.abortSignal;
+            return {
+              finishReason: "stop",
+              usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+              warnings: [],
+              content: [{ type: "text", text: JSON.stringify(object) }],
+            };
+          },
+        }),
+    );
+    return { seenSignal: () => seenSignal };
+  }
+
+  it("turns a below-threshold operation peak into an accepted act when the cascade is confident and valid", async () => {
+    mockCascadeOnce({
+      operation: "CLICK",
+      index: 3,
+      done: false,
+      confidence: 0.9,
+      reason: "the Accept all button is clearly the next step",
+    });
+    const client = fakeClient({
+      op: choice("CLICK", PEAK_THRESHOLD_OP - 0.1),
+      target_click: choice("3", 0.9),
+    });
+    const result = await decideBrowseStep(client, makeConfig(), baseInput([clickable]));
+    expect(result).toMatchObject({
+      outcome: "act",
+      operation: "CLICK",
+      index: 3,
+      cascade: true,
+      confidence: 0.9,
+    });
+    expect(result.model).toBe(makeConfig().STRUCTURED_MODEL);
+  });
+
+  it("keeps the original terminal blocked when the cascade's own confidence is below CASCADE_CONFIDENCE_THRESHOLD", async () => {
+    expect(CASCADE_CONFIDENCE_THRESHOLD).toBe(0.6);
+    mockCascadeOnce({
+      operation: "CLICK",
+      index: 3,
+      done: false,
+      confidence: CASCADE_CONFIDENCE_THRESHOLD - 0.01,
+      reason: "not sure",
+    });
+    const client = fakeClient({
+      op: choice("CLICK", PEAK_THRESHOLD_OP - 0.1),
+      target_click: choice("3", 0.9),
+    });
+    const result = await decideBrowseStep(client, makeConfig(), baseInput([clickable]));
+    expect(result.outcome).toBe("blocked");
+    expect(result.cascade).toBeUndefined();
+  });
+
+  it("keeps the original terminal blocked when the cascade names an index that is not a real candidate for the op", async () => {
+    mockCascadeOnce({
+      operation: "CLICK",
+      index: 999,
+      done: false,
+      confidence: 0.9,
+      reason: "clicking something",
+    });
+    const client = fakeClient({
+      op: choice("CLICK", PEAK_THRESHOLD_OP - 0.1),
+      target_click: choice("3", 0.9),
+    });
+    const result = await decideBrowseStep(client, makeConfig(), baseInput([clickable]));
+    expect(result.outcome).toBe("blocked");
+  });
+
+  it("keeps the original terminal blocked when the cascade call itself fails", async () => {
+    createModel.mockImplementationOnce(
+      () =>
+        new MockLanguageModelV3({
+          doGenerate: async () => {
+            throw new Error("provider unavailable");
+          },
+        }),
+    );
+    const client = fakeClient({
+      op: choice("CLICK", PEAK_THRESHOLD_OP - 0.1),
+      target_click: choice("3", 0.9),
+    });
+    const result = await decideBrowseStep(client, makeConfig(), baseInput([clickable]));
+    expect(result.outcome).toBe("blocked");
+  });
+
+  it("resolves a below-threshold cascade to done when the cascade reports the goal already met", async () => {
+    mockCascadeOnce({
+      operation: "WAIT",
+      done: true,
+      confidence: 0.9,
+      reason: "the cart already shows the item",
+    });
+    const client = fakeClient({
+      op: choice("CLICK", PEAK_THRESHOLD_OP - 0.1),
+      target_click: choice("3", 0.9),
+    });
+    const result = await decideBrowseStep(client, makeConfig(), baseInputWithHistory([clickable]));
+    expect(result).toMatchObject({ outcome: "done", operation: "DONE", cascade: true, confidence: 0.9 });
+  });
+
+  // Finding #8: the cascade's `done` reading must clear a stricter bar than
+  // CASCADE_CONFIDENCE_THRESHOLD (0.6) — history must be non-empty AND
+  // confidence must reach CASCADE_DONE_CONFIDENCE_THRESHOLD (0.8), or the
+  // cascade must not be allowed to declare done at all (target/select gate
+  // paths). Otherwise a task could end with zero steps taken on a
+  // 0.6-confidence guess.
+  describe("cascade done gating (finding #8)", () => {
+    it("keeps the original terminal blocked, never done, when the op-gate cascade fires done on an EMPTY history", async () => {
+      expect(CASCADE_DONE_CONFIDENCE_THRESHOLD).toBe(0.8);
+      mockCascadeOnce({
+        operation: "WAIT",
+        done: true,
+        confidence: 0.95,
+        reason: "looks done already",
+      });
+      const client = fakeClient({
+        op: choice("CLICK", PEAK_THRESHOLD_OP - 0.1),
+        target_click: choice("3", 0.9),
+      });
+      // Deliberately empty history (baseInput, not baseInputWithHistory) —
+      // nothing has actually been done yet.
+      const result = await decideBrowseStep(client, makeConfig(), baseInput([clickable]));
+      expect(result.outcome).toBe("blocked");
+      expect(result.cascade).toBeUndefined();
+    });
+
+    it("keeps the original terminal blocked when the op-gate cascade fires done with history present but confidence below CASCADE_DONE_CONFIDENCE_THRESHOLD", async () => {
+      mockCascadeOnce({
+        operation: "WAIT",
+        done: true,
+        confidence: CASCADE_DONE_CONFIDENCE_THRESHOLD - 0.01,
+        reason: "probably done",
+      });
+      const client = fakeClient({
+        op: choice("CLICK", PEAK_THRESHOLD_OP - 0.1),
+        target_click: choice("3", 0.9),
+      });
+      const result = await decideBrowseStep(client, makeConfig(), baseInputWithHistory([clickable]));
+      expect(result.outcome).toBe("blocked");
+      expect(result.cascade).toBeUndefined();
+    });
+
+    it("never resolves done via the cascade on the TARGET gate path, even with non-empty history and high confidence — falls back to blocked", async () => {
+      mockCascadeOnce({
+        operation: "WAIT",
+        done: true,
+        confidence: 0.99,
+        reason: "looks done already",
+      });
+      const client = fakeClient({
+        op: choice("CLICK", 0.9),
+        target_click: choice("3", PEAK_THRESHOLD_TARGET - 0.05),
+      });
+      const result = await decideBrowseStep(client, makeConfig(), baseInputWithHistory([clickable]));
+      expect(result.outcome).toBe("blocked");
+      expect(result.cascade).toBeUndefined();
+    });
+
+    it("never resolves done via the cascade on the SELECT-option gate path, even with non-empty history and high confidence — falls back to blocked", async () => {
+      mockCascadeOnce({
+        operation: "WAIT",
+        done: true,
+        confidence: 0.99,
+        reason: "looks done already",
+      });
+      const client = sequentialClient([
+        { op: choice("SELECT", 0.9), target_select: choice("7", 0.9) },
+        // Second evaluate() call: chooseSelectOption's own low-peak answer
+        // (index "0" -> "US"), which triggers the selectGate → cascade path.
+        { select_option: choice("0", PEAK_THRESHOLD_TARGET - 0.05) },
+      ]);
+      const result = await decideBrowseStep(client, makeConfig(), baseInputWithHistory([selectable]));
+      expect(result.outcome).toBe("blocked");
+      expect(result.cascade).toBeUndefined();
+    });
+  });
+
+  it("never cascades into typing on a password field, even at high cascade confidence", async () => {
+    mockCascadeOnce({
+      operation: "TYPE_TEXT",
+      index: passwordInput.index,
+      text: "hunter2",
+      done: false,
+      confidence: 0.95,
+      reason: "filling the password field",
+    });
+    const client = fakeClient({
+      op: choice("TYPE_TEXT", PEAK_THRESHOLD_OP - 0.1),
+      target_type: choice(String(passwordInput.index), 0.9),
+    });
+    const result = await decideBrowseStep(client, makeConfig(), baseInput([passwordInput]));
+    expect(result.outcome).toBe("blocked");
+  });
+
+  it("never calls the cascade at all when the primary decision is already confident", async () => {
+    createModel.mockClear();
+    const client = fakeClient({ op: choice("CLICK", 0.9), target_click: choice("3", 0.9) });
+    const result = await decideBrowseStep(client, makeConfig(), baseInput([clickable]));
+    expect(result.outcome).toBe("act");
+    expect(createModel).not.toHaveBeenCalled();
+  });
+
+  it("also cascades a below-threshold TARGET peak (not just the operation peak)", async () => {
+    mockCascadeOnce({
+      operation: "CLICK",
+      index: 3,
+      done: false,
+      confidence: 0.8,
+      reason: "the only real candidate",
+    });
+    const client = fakeClient({
+      op: choice("CLICK", 0.9),
+      target_click: choice("3", PEAK_THRESHOLD_TARGET - 0.05),
+    });
+    const result = await decideBrowseStep(client, makeConfig(), baseInput([clickable]));
+    expect(result).toMatchObject({ outcome: "act", operation: "CLICK", index: 3, cascade: true });
+  });
+
+  it("passes an AbortSignal bounded by BROWSE_CASCADE_TIMEOUT_MS to the cascade call", async () => {
+    const { seenSignal } = mockCascadeOnce({
+      operation: "CLICK",
+      index: 3,
+      done: false,
+      confidence: 0.9,
+      reason: "ok",
+    });
+    const client = fakeClient({
+      op: choice("CLICK", PEAK_THRESHOLD_OP - 0.1),
+      target_click: choice("3", 0.9),
+    });
+    await decideBrowseStep(client, makeConfig(), baseInput([clickable]));
+    expect(seenSignal()).toBeInstanceOf(AbortSignal);
+    expect(BROWSE_CASCADE_TIMEOUT_MS).toBe(8_000);
   });
 });

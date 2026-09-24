@@ -1285,6 +1285,19 @@ describe("browse_tabs schema", () => {
   });
 });
 
+// browse-speed-contract.md, "Backend" item 6 / "Frontend" item 3: the
+// frontend rejects an `actions` batch where an index-based entry comes
+// after an `element` entry (the element entry re-snapshots the page,
+// staling the batch's snapshotId for everything after it) — the tool
+// description must say so, or the model has no way to know the rule.
+describe("browse_act description documents the element-entry batch order rule", () => {
+  it("mentions putting `element` entries last / splitting the batch", () => {
+    const description = (penTools.browse_act as { description?: string }).description ?? "";
+    expect(description).toMatch(/element.*re-snapshots the page/i);
+    expect(description).toMatch(/last|split the batch/i);
+  });
+});
+
 describe("browse_act schema (widened)", () => {
   const schema = schemaOf("browse_act");
 
@@ -1346,6 +1359,68 @@ describe("browse_act schema (widened)", () => {
 
   it("rejects an unknown action", () => {
     expect(schema.safeParse({ action: "double-click" }).success).toBe(false);
+  });
+
+  // Browse-speed contract (2026-09-24) item 1: `actions` batches up to 10
+  // entries, each the same shape as a single call minus `snapshotId` (every
+  // entry resolves `index` against the top-level `snapshotId`), and exactly
+  // one of `action`/`actions` must be given.
+  it("accepts a valid `actions` batch, with the top-level `action` omitted", () => {
+    expect(
+      schema.safeParse({
+        snapshotId: "snap-1",
+        actions: [
+          { action: "type", index: 0, text: "a@b.com" },
+          { action: "type", index: 1, text: "hunter2" },
+          { action: "press", key: "Enter" },
+        ],
+      }).success,
+    ).toBe(true);
+  });
+
+  it("accepts a single-entry `actions` batch", () => {
+    expect(
+      schema.safeParse({ actions: [{ action: "click", target: "Submit" }] }).success,
+    ).toBe(true);
+  });
+
+  it("rejects an `actions` batch of more than 10 entries", () => {
+    const actions = Array.from({ length: 11 }, () => ({ action: "wait" as const }));
+    expect(schema.safeParse({ actions }).success).toBe(false);
+  });
+
+  it("rejects an empty `actions` batch", () => {
+    expect(schema.safeParse({ actions: [] }).success).toBe(false);
+  });
+
+  it("rejects a call with neither `action` nor `actions`", () => {
+    expect(schema.safeParse({ snapshotId: "snap-1" }).success).toBe(false);
+  });
+
+  it("rejects a call with BOTH `action` and `actions`", () => {
+    expect(
+      schema.safeParse({ action: "click", actions: [{ action: "click", target: "Submit" }] })
+        .success,
+    ).toBe(false);
+  });
+
+  it("rejects an `actions` entry with `snapshotId` on it (only the top-level one is valid)", () => {
+    // Extra keys are simply stripped by a plain z.object(), not rejected —
+    // pin that behavior explicitly so a future .strict() doesn't silently
+    // change this without a test noticing either way.
+    const result = schema.safeParse({
+      actions: [{ action: "click", index: 0, snapshotId: "snap-1" }],
+    });
+    expect(result.success).toBe(true);
+    assert(result.success);
+    const parsed = result.data as { actions: Array<Record<string, unknown>> };
+    expect(parsed.actions[0]).not.toHaveProperty("snapshotId");
+  });
+
+  it("rejects an unknown action inside an `actions` entry", () => {
+    expect(
+      schema.safeParse({ actions: [{ action: "double-click" }] }).success,
+    ).toBe(false);
   });
 });
 
