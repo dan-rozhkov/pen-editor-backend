@@ -3,52 +3,21 @@ import { MockLanguageModelV3 } from "ai/test";
 import { makeConfig } from "./helpers.js";
 
 // The real provider export is `createModel(config, modelOverride?)`, not a
-// zero-arg `getModel()` — mock that name so generatePrototypeLinks (and the
-// route/buildApp that call it) get a scripted mock model regardless of args.
-// `createModel` is a vi.fn so individual tests can script a different
-// response via mockReturnValueOnce.
-const createModel = vi.fn(() =>
-  new MockLanguageModelV3({
-    doGenerate: async () => ({
-      finishReason: "stop",
-      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-      warnings: [],
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify({
-            links: [
-              { screenId: "login", protoId: "p0", targetScreenId: "dashboard" },
-            ],
-          }),
-        },
-      ],
-    }),
-  }),
+// zero-arg `getModel()` — mocked (test/structuredModelFakes.ts) so
+// generatePrototypeLinks (and the route/buildApp that call it) get a
+// scripted mock model regardless of args. `createModel` is a vi.fn so
+// individual tests can script a different response via mockReturnValueOnce.
+vi.mock("../src/ai/provider.js", async (importOriginal) =>
+  (await import("./structuredModelFakes.js")).mockProviderModule(await importOriginal()),
 );
 
-vi.mock("../src/ai/provider.js", async (importOriginal) => {
-  // Only createModel is faked — bareModelId must stay the REAL
-  // implementation, since GET /api/models (registered by the same buildApp)
-  // calls it via getModels().
-  const actual = await importOriginal<typeof import("../src/ai/provider.js")>();
-  return { ...actual, createModel: (...args: unknown[]) => createModel(...args) };
-});
+import { createModel, jsonModel } from "./structuredModelFakes.js";
+createModel.mockImplementation(() =>
+  modelReturning([{ screenId: "login", protoId: "p0", targetScreenId: "dashboard" }]),
+);
 
 function modelReturning(links: unknown[]): MockLanguageModelV3 {
-  return new MockLanguageModelV3({
-    doGenerate: async () => ({
-      finishReason: "stop",
-      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-      warnings: [],
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify({ links }),
-        },
-      ],
-    }),
-  });
+  return jsonModel({ links });
 }
 
 const { generatePrototypeLinks } = await import(

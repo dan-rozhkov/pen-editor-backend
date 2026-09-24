@@ -84,46 +84,31 @@ describe("POST /api/browse/locate", () => {
   // scroll-container entry (`ops: [], scrollable: true`) must not 400 here
   // either, and a genuinely empty `ops` without `scrollable` still should.
   it("accepts an element with empty ops when scrollable is true, alongside a real candidate", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
-        jevResponse({
-          model: "jev-latest",
-          answers: {
-            locate: { type: "choice", choice: "3", probabilities: { "3": 0.9 }, confidence: 0.9 },
-          },
-          usage: { input_tokens: 10, output_tokens: 5 },
-        }),
-      ),
-    );
-    const app = await buildApp(makeConfig({ TYPESAFE_API_KEY: "key" }), { logger: false });
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/browse/locate",
-      payload: {
-        ...validBody,
-        elements: [
-          { index: 3, tag: "button", label: "Continue", ops: ["CLICK"] },
-          { index: 4, tag: "div", label: "Comments list", ops: [], scrollable: true },
-        ],
-      },
+    stubJevLocate("3", 0.9);
+    const res = await postLocate({
+      ...validBody,
+      elements: [
+        { index: 3, tag: "button", label: "Continue", ops: ["CLICK"] },
+        { index: 4, tag: "div", label: "Comments list", ops: [], scrollable: true },
+      ],
     });
     expect(res.statusCode).toBe(200);
-    await app.close();
+    // Pins that the request actually resolved a decision instead of
+    // silently falling back to a Jev-failure "retry" outcome (which is
+    // also a 200) — the root cause of this suite's browse-speed
+    // regression: a stale `jevResponse(...)` reference removed from this
+    // file's scope by the shared-harness dedup pass threw inside the fetch
+    // stub, and decideBrowseStep's catch-all downgrades that to a 200
+    // "retry" instead of surfacing the bug.
+    expect(res.json().outcome).toBe("found");
   });
 
   it("400s an element with empty ops when scrollable is not set", async () => {
-    const app = await buildApp(makeConfig({ TYPESAFE_API_KEY: "key" }), { logger: false });
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/browse/locate",
-      payload: {
-        ...validBody,
-        elements: [{ index: 4, tag: "div", label: "Mystery element", ops: [] }],
-      },
+    const res = await postLocate({
+      ...validBody,
+      elements: [{ index: 4, tag: "div", label: "Mystery element", ops: [] }],
     });
     expect(res.statusCode).toBe(400);
-    await app.close();
   });
 
   it("returns not_found for a peak below the threshold", async () => {

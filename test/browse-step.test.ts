@@ -2,26 +2,17 @@ import { describe, expect, it, vi } from "vitest";
 import { MockLanguageModelV3 } from "ai/test";
 import { makeConfig } from "./helpers.js";
 
-// createModel is mocked so the TYPE_TEXT branch's small STRUCTURED_MODEL
-// call resolves deterministically, exactly like test/prototype-link.test.ts.
-// SELECT no longer calls this at all (finding: it now uses a second Jev
-// call, see chooseSelectOption) — several tests below assert `createModel`
-// is NOT invoked for SELECT.
-const createModel = vi.fn(() =>
-  new MockLanguageModelV3({
-    doGenerate: async () => ({
-      finishReason: "stop",
-      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-      warnings: [],
-      content: [{ type: "text", text: JSON.stringify({ text: "hello world" }) }],
-    }),
-  }),
+// createModel is mocked (test/structuredModelFakes.ts) so the TYPE_TEXT
+// branch's small STRUCTURED_MODEL call resolves deterministically. SELECT
+// no longer calls this at all (finding: it now uses a second Jev call, see
+// chooseSelectOption) — several tests below assert `createModel` is NOT
+// invoked for SELECT.
+vi.mock("../src/ai/provider.js", async (importOriginal) =>
+  (await import("./structuredModelFakes.js")).mockProviderModule(await importOriginal()),
 );
 
-vi.mock("../src/ai/provider.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../src/ai/provider.js")>();
-  return { ...actual, createModel: (...args: unknown[]) => createModel(...args) };
-});
+import { createModel, jsonModel } from "./structuredModelFakes.js";
+createModel.mockImplementation(() => jsonModel({ text: "hello world" }));
 
 const {
   decideBrowseStep,
@@ -53,31 +44,11 @@ import type {
   SystemOneEvaluateParams,
   SystemOneQuestion,
 } from "../src/services/systemone.js";
+import { fakeClient, choice, noul } from "./browseFakes.js";
 
 // All base fan-out ids that ride along on every evaluate() call now,
 // regardless of how many target heads a given element set produces.
 const BASE_QUESTION_IDS = ["goal_met", "dead_end", "op"];
-
-function fakeClient(
-  answers: Record<string, SystemOneAnswer>,
-  opts: {
-    model?: string;
-    capture?: (params: SystemOneEvaluateParams<Record<string, SystemOneQuestion>>) => void;
-    throwError?: Error;
-  } = {},
-): SystemOneClient {
-  return {
-    async evaluate(params) {
-      opts.capture?.(params);
-      if (opts.throwError) throw opts.throwError;
-      return {
-        model: opts.model ?? "jev-latest",
-        answers: answers as never,
-        usage: { input_tokens: 100, output_tokens: 10 },
-      };
-    },
-  };
-}
 
 /** Client that answers a SEQUENCE of evaluate() calls in order (repeating
  * the last entry if more calls arrive than were provided) — needed for
@@ -109,28 +80,6 @@ function sequentialClient(
       };
     },
   };
-}
-
-/** `pick` wins with peak probability `peak` (the value the new gate reads).
- * `confidence` defaults to the same number — none of the tests below need
- * confidence and peak to diverge, since that divergence is a property of
- * option COUNT (see peakProbability's comment in browseStep.ts), not
- * something a hand-written fixture needs to model to exercise the gate. */
-function choice(
-  pick: string,
-  peak: number,
-  opts: { confidence?: number; probabilities?: Record<string, number> } = {},
-): SystemOneAnswer {
-  return {
-    type: "choice",
-    choice: pick,
-    probabilities: opts.probabilities ?? { [pick]: peak },
-    confidence: opts.confidence ?? peak,
-  };
-}
-
-function noul(value: number): SystemOneAnswer {
-  return { type: "noul", noul: value };
 }
 
 const clickable: BrowseStepElement = {

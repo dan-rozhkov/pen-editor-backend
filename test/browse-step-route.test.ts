@@ -1,23 +1,16 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
-import { MockLanguageModelV3 } from "ai/test";
 import { makeConfig } from "./helpers.js";
 
-// Mirrors test/prototype-link.test.ts's provider mock — the TYPE_TEXT
-// happy-path test below exercises the small STRUCTURED_MODEL call.
-const createModel = vi.fn(() =>
-  new MockLanguageModelV3({
-    doGenerate: async () => ({
-      finishReason: "stop",
-      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-      warnings: [],
-      content: [{ type: "text", text: JSON.stringify({ text: "wireless headphones" }) }],
-    }),
-  }),
-);
-vi.mock("../src/ai/provider.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../src/ai/provider.js")>();
-  return { ...actual, createModel: (...args: unknown[]) => createModel(...args) };
-});
+// See test/structuredModelFakes.ts's HOISTING CONTRACT comment for why this
+// vi.mock must dynamically import the shared helper rather than close over
+// a statically imported binding.
+vi.mock("../src/ai/provider.js", async (importOriginal) =>
+  (await import("./structuredModelFakes.js")).mockProviderModule(await importOriginal()));
+
+import { createModel, jsonModel } from "./structuredModelFakes.js";
+// The TYPE_TEXT happy-path test below exercises the small STRUCTURED_MODEL
+// call; other tests below assert createModel is not invoked at all.
+createModel.mockImplementation(() => jsonModel({ text: "wireless headphones" }));
 
 const { buildApp } = await import("../src/app.js");
 
@@ -133,46 +126,26 @@ describe("POST /api/browse/step", () => {
   // without zod silently stripping any of them — 200 end to end, and the
   // resulting decision reflects the element the digest still picked out.
   it("accepts scroll and element scrollable/frame/checked fields", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
-        jevResponse({
-          model: "jev-latest",
-          answers: {
-            goal_met: { type: "noul", noul: 0.1 },
-            dead_end: { type: "noul", noul: 0.1 },
-            op: { type: "choice", choice: "CLICK", probabilities: { CLICK: 0.9 }, confidence: 0.9 },
-            target_click: { type: "choice", choice: "3", probabilities: { "3": 0.9 }, confidence: 0.9 },
-          },
-          usage: { input_tokens: 10, output_tokens: 5 },
-        }),
-      ),
-    );
-    const app = await buildApp(makeConfig({ TYPESAFE_API_KEY: "key" }), { logger: false });
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/browse/step",
-      payload: {
-        ...validBody,
-        scroll: { y: 200, height: 900, atBottom: false },
-        elements: [
-          {
-            index: 3,
-            tag: "button",
-            label: "Accept all",
-            ops: ["CLICK"],
-            checked: false,
-            scrollable: true,
-            frame: "consent-iframe",
-          },
-        ],
-      },
+    stubJev({ op: choice("CLICK"), target_click: choice("3") });
+    const res = await postStep({
+      ...validBody,
+      scroll: { y: 200, height: 900, atBottom: false },
+      elements: [
+        {
+          index: 3,
+          tag: "button",
+          label: "Accept all",
+          ops: ["CLICK"],
+          checked: false,
+          scrollable: true,
+          frame: "consent-iframe",
+        },
+      ],
     });
     expect(res.statusCode).toBe(200);
     const json = res.json();
     expect(json.outcome).toBe("act");
     expect(json.index).toBe(3);
-    await app.close();
   });
 
   // Browse-speed contract (2026-09-24), scroll containers: a scroll
@@ -180,51 +153,25 @@ describe("POST /api/browse/step", () => {
   // step just because it has no CLICK/TYPE_TEXT/SELECT of its own — the
   // request still 200s (using the other, real candidate for its decision).
   it("accepts an element with empty ops when scrollable is true, alongside a real candidate", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
-        jevResponse({
-          model: "jev-latest",
-          answers: {
-            goal_met: { type: "noul", noul: 0.1 },
-            dead_end: { type: "noul", noul: 0.1 },
-            op: { type: "choice", choice: "CLICK", probabilities: { CLICK: 0.9 }, confidence: 0.9 },
-            target_click: { type: "choice", choice: "3", probabilities: { "3": 0.9 }, confidence: 0.9 },
-          },
-          usage: { input_tokens: 10, output_tokens: 5 },
-        }),
-      ),
-    );
-    const app = await buildApp(makeConfig({ TYPESAFE_API_KEY: "key" }), { logger: false });
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/browse/step",
-      payload: {
-        ...validBody,
-        elements: [
-          { index: 3, tag: "button", label: "Accept all", ops: ["CLICK"] },
-          { index: 4, tag: "div", label: "Comments list", ops: [], scrollable: true },
-        ],
-      },
+    stubJev({ op: choice("CLICK"), target_click: choice("3") });
+    const res = await postStep({
+      ...validBody,
+      elements: [
+        { index: 3, tag: "button", label: "Accept all", ops: ["CLICK"] },
+        { index: 4, tag: "div", label: "Comments list", ops: [], scrollable: true },
+      ],
     });
     expect(res.statusCode).toBe(200);
-    await app.close();
   });
 
   // Same shape, but WITHOUT `scrollable: true` — an empty `ops` on an
   // ordinary element is still rejected, not silently allowed through.
   it("400s an element with empty ops when scrollable is not set", async () => {
-    const app = await buildApp(makeConfig({ TYPESAFE_API_KEY: "key" }), { logger: false });
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/browse/step",
-      payload: {
-        ...validBody,
-        elements: [{ index: 4, tag: "div", label: "Mystery element", ops: [] }],
-      },
+    const res = await postStep({
+      ...validBody,
+      elements: [{ index: 4, tag: "div", label: "Mystery element", ops: [] }],
     });
     expect(res.statusCode).toBe(400);
-    await app.close();
   });
 
   it("refuses to type into a password field end to end", async () => {

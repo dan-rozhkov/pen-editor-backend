@@ -7,11 +7,13 @@ import type {
   SystemOneEvaluateParams,
   SystemOneQuestion,
 } from "../src/services/systemone.js";
+import { fakeClient as fakeSystemOneClient, choice } from "./browseFakes.js";
 
 // Mirrors test/browse-step.test.ts's fixtures — decideBrowseLocate is a
 // one-shot sibling of decideBrowseStep, sharing element caps/scrubbing and
-// target-criterion rendering with it (see browseLocate.ts's header).
-
+// target-criterion rendering with it (see browseLocate.ts's header). Unlike
+// browse-step, decideBrowseLocate only ever asks a single `locate`
+// question, so this thin adapter wraps the shared multi-answer fake.
 function fakeClient(
   answer: SystemOneAnswer,
   opts: {
@@ -20,30 +22,7 @@ function fakeClient(
     throwError?: Error;
   } = {},
 ): SystemOneClient {
-  return {
-    async evaluate(params) {
-      opts.capture?.(params);
-      if (opts.throwError) throw opts.throwError;
-      return {
-        model: opts.model ?? "jev-latest",
-        answers: { locate: answer } as never,
-        usage: { input_tokens: 50, output_tokens: 5 },
-      };
-    },
-  };
-}
-
-function choice(
-  pick: string,
-  peak: number,
-  opts: { confidence?: number; probabilities?: Record<string, number> } = {},
-): SystemOneAnswer {
-  return {
-    type: "choice",
-    choice: pick,
-    probabilities: opts.probabilities ?? { [pick]: peak },
-    confidence: opts.confidence ?? peak,
-  };
+  return fakeSystemOneClient({ locate: answer }, opts);
 }
 
 const continueButton: BrowseStepElement = {
