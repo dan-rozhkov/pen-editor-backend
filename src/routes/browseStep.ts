@@ -183,6 +183,7 @@ export async function browseStepRoutes(
             confidence: result.confidence,
             cascade: result.cascade === true,
             reason: result.cascade ? undefined : result.reason,
+            cascadeNote: result.cascadeNote,
           },
         },
         "browse step decided",

@@ -42,6 +42,7 @@ const {
   CASCADE_CONFIDENCE_THRESHOLD,
   CASCADE_DONE_CONFIDENCE_THRESHOLD,
   BROWSE_CASCADE_TIMEOUT_MS,
+  resolveSelectOptionText,
 } = await import("../src/ai/browseStep.js");
 type BrowseStepElement = import("../src/ai/browseStep.js").BrowseStepElement;
 type BrowseStepInput = import("../src/ai/browseStep.js").BrowseStepInput;
@@ -303,6 +304,55 @@ describe("buildBrowseStepQuestions", () => {
     expect(questions.target_click).toBeUndefined();
     expect(questions.target_type).toBeUndefined();
     expect(questions.target_select).toBeUndefined();
+  });
+});
+
+// Live bench finding (2026-09-24, fixture-shop run): the cascade's own
+// generative model regularly returns text that differs from the real page
+// option in case/whitespace or a trailing "(N)" count — e.g. "AudioNova" vs
+// the real option "AudioNova (3)", or "Rating" vs "Sort by rating" — and an
+// exact-string check rejected the whole cascade step on cases a human would
+// call an obvious match. resolveSelectOptionText is the fix.
+describe("resolveSelectOptionText", () => {
+  it("returns the text unchanged on an exact match", () => {
+    expect(resolveSelectOptionText("CA", ["US", "CA"])).toBe("CA");
+  });
+
+  it("matches case-insensitively and trims whitespace", () => {
+    expect(resolveSelectOptionText("  ca  ", ["US", "CA"])).toBe("CA");
+    expect(resolveSelectOptionText("us", ["US", "CA"])).toBe("US");
+  });
+
+  it("matches when the model's text omits a trailing '(N)' count the real option carries", () => {
+    expect(resolveSelectOptionText("AudioNova", ["AudioNova (3)", "SoundWave (1)"])).toBe(
+      "AudioNova (3)",
+    );
+  });
+
+  it("matches when the real option is a substring of the model's fuller text", () => {
+    expect(resolveSelectOptionText("Sort by rating", ["Rating", "Price", "Newest"])).toBe(
+      "Rating",
+    );
+  });
+
+  it("matches when the model's text is a substring of the real option", () => {
+    expect(resolveSelectOptionText("Rating", ["Sort by rating", "Sort by price"])).toBe(
+      "Sort by rating",
+    );
+  });
+
+  it("returns null when no option matches at all", () => {
+    expect(resolveSelectOptionText("Nonexistent", ["US", "CA"])).toBeNull();
+  });
+
+  it("returns null (ambiguous) when more than one option contains the text", () => {
+    expect(
+      resolveSelectOptionText("Sort", ["Sort by rating", "Sort by price", "Newest"]),
+    ).toBeNull();
+  });
+
+  it("returns null for blank/whitespace-only text rather than matching every option", () => {
+    expect(resolveSelectOptionText("   ", ["US", "CA"])).toBeNull();
   });
 });
 
@@ -1476,6 +1526,97 @@ describe("cascade on low confidence", () => {
     expect(result.outcome).toBe("blocked");
   });
 
+  // browse-speed-contract.md, "Backend" item 3: NoObjectGeneratedError (the
+  // model answered, but not with valid JSON matching cascadeSchema) is
+  // retried once, sharing BROWSE_CASCADE_TIMEOUT_MS across both attempts —
+  // unlike a transport/timeout failure (covered above), which is not
+  // retried at all.
+  describe("NoObjectGeneratedError retry", () => {
+    it("retries once on an invalid object and succeeds when the retry returns a valid one", async () => {
+      // First createModel() call: the model answers with text that doesn't
+      // parse as JSON at all — generateObject surfaces this as
+      // NoObjectGeneratedError.
+      createModel.mockImplementationOnce(
+        () =>
+          new MockLanguageModelV3({
+            doGenerate: async () => ({
+              finishReason: "stop",
+              usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+              warnings: [],
+              content: [{ type: "text", text: "not valid json {" }],
+            }),
+          }),
+      );
+      // Second createModel() call — the retry — answers with a valid
+      // cascade object.
+      mockCascadeOnce({
+        operation: "CLICK",
+        index: 3,
+        done: false,
+        confidence: 0.9,
+        reason: "the Accept all button is clearly the next step",
+      });
+      const client = fakeClient({
+        op: choice("CLICK", PEAK_THRESHOLD_OP - 0.1),
+        target_click: choice("3", 0.9),
+      });
+      const result = await decideBrowseStep(client, makeConfig(), baseInput([clickable]));
+      expect(result).toMatchObject({
+        outcome: "act",
+        operation: "CLICK",
+        index: 3,
+        cascade: true,
+        confidence: 0.9,
+      });
+    });
+
+    it("keeps the original terminal blocked, with an 'invalid object (after retry)' rejection, when the retry also returns an invalid object", async () => {
+      const invalidOnce = () =>
+        new MockLanguageModelV3({
+          doGenerate: async () => ({
+            finishReason: "stop",
+            usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+            warnings: [],
+            content: [{ type: "text", text: "not valid json {" }],
+          }),
+        });
+      createModel.mockClear();
+      createModel.mockImplementationOnce(invalidOnce);
+      createModel.mockImplementationOnce(invalidOnce);
+      const client = fakeClient({
+        op: choice("CLICK", PEAK_THRESHOLD_OP - 0.1),
+        target_click: choice("3", 0.9),
+      });
+      const result = await decideBrowseStep(client, makeConfig(), baseInput([clickable]));
+      expect(result.outcome).toBe("blocked");
+      // decideBrowseStep doesn't surface `rejected` on a `blocked` outcome,
+      // so the important behavior here is "exactly two attempts were made
+      // (the retry), and the task still terminates cleanly" — asserted
+      // through the createModel call count (CLICK never calls createModel
+      // for the primary decision, only the cascade does).
+      expect(createModel).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not retry a plain transport failure (not a NoObjectGeneratedError)", async () => {
+      createModel.mockClear();
+      createModel.mockImplementationOnce(
+        () =>
+          new MockLanguageModelV3({
+            doGenerate: async () => {
+              throw new Error("provider unavailable");
+            },
+          }),
+      );
+      const client = fakeClient({
+        op: choice("CLICK", PEAK_THRESHOLD_OP - 0.1),
+        target_click: choice("3", 0.9),
+      });
+      const result = await decideBrowseStep(client, makeConfig(), baseInput([clickable]));
+      expect(result.outcome).toBe("blocked");
+      expect(createModel).toHaveBeenCalledTimes(1); // exactly one cascade attempt, no retry
+    });
+  });
+
   it("resolves a below-threshold cascade to done when the cascade reports the goal already met", async () => {
     mockCascadeOnce({
       operation: "WAIT",
@@ -1565,6 +1706,83 @@ describe("cascade on low confidence", () => {
       const result = await decideBrowseStep(client, makeConfig(), baseInputWithHistory([selectable]));
       expect(result.outcome).toBe("blocked");
       expect(result.cascade).toBeUndefined();
+    });
+  });
+
+  // Live bench finding (2026-09-24): the cascade's SELECT branch used to
+  // reject the whole step ("SELECT option text not among the element's
+  // options") whenever the model's free-text answer didn't match a real
+  // option byte-for-byte, even for an obvious fuzzy match a human would
+  // accept without a second thought.
+  describe("cascade SELECT fuzzy option resolution", () => {
+    const brandSelect: BrowseStepElement = {
+      index: 7,
+      tag: "select",
+      label: "Brand",
+      ops: ["SELECT"],
+      options: ["AudioNova (3)", "SoundWave (1)"],
+    };
+
+    it("accepts a SELECT cascade whose text differs from the real option only by a trailing '(N)' count", async () => {
+      mockCascadeOnce({
+        operation: "SELECT",
+        index: 7,
+        text: "AudioNova",
+        done: false,
+        confidence: 0.9,
+        reason: "the brand filter is the next step",
+      });
+      const client = fakeClient({
+        op: choice("SELECT", 0.9),
+        target_select: choice("7", PEAK_THRESHOLD_TARGET - 0.05),
+      });
+      const result = await decideBrowseStep(client, makeConfig(), baseInput([brandSelect]));
+      expect(result).toMatchObject({
+        outcome: "act",
+        operation: "SELECT",
+        index: 7,
+        text: "AudioNova (3)", // the REAL option text, not the model's own
+        cascade: true,
+      });
+    });
+
+    it("keeps the original terminal blocked when the SELECT cascade's text matches more than one option", async () => {
+      const ambiguous: BrowseStepElement = {
+        ...brandSelect,
+        options: ["Sort by rating", "Sort by price"],
+      };
+      mockCascadeOnce({
+        operation: "SELECT",
+        index: 7,
+        text: "Sort",
+        done: false,
+        confidence: 0.9,
+        reason: "ambiguous",
+      });
+      const client = fakeClient({
+        op: choice("SELECT", 0.9),
+        target_select: choice("7", PEAK_THRESHOLD_TARGET - 0.05),
+      });
+      const result = await decideBrowseStep(client, makeConfig(), baseInput([ambiguous]));
+      expect(result.outcome).toBe("blocked");
+      expect(result.cascadeNote).toContain("SELECT option text not among the element's options");
+    });
+
+    it("keeps the original terminal blocked when the SELECT cascade's text matches no option at all", async () => {
+      mockCascadeOnce({
+        operation: "SELECT",
+        index: 7,
+        text: "Nonexistent Brand",
+        done: false,
+        confidence: 0.9,
+        reason: "not on the page",
+      });
+      const client = fakeClient({
+        op: choice("SELECT", 0.9),
+        target_select: choice("7", PEAK_THRESHOLD_TARGET - 0.05),
+      });
+      const result = await decideBrowseStep(client, makeConfig(), baseInput([brandSelect]));
+      expect(result.outcome).toBe("blocked");
     });
   });
 

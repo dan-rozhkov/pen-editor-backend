@@ -81,6 +81,16 @@ export interface CreateModelOptions {
   chatAgent?: boolean;
 
   /**
+   * Explicit reasoning effort for a latency-critical helper call, overriding
+   * the chat/helper split resolveReasoningEffort makes. The browse_task step
+   * route uses "none": STRUCTURED_MODEL (deepseek-v4.1-flash) ignores every
+   * gradation except "none" (see deepseek-reasoning-effort-is-noop), so the
+   * helper default "minimal" meant a full reasoning budget — measured
+   * 2026-09-24, the step cascade hit its 8 s timeout on every call.
+   */
+  reasoningEffort?: Config["CHAT_REASONING_EFFORT"] | "minimal";
+
+  /**
    * Stable id for the current conversation, sent upstream as OpenCode's
    * `x-opencode-session` header (see src/ai/opencode.ts). Only meaningful
    * when the resolved provider is an OpenCode route; ignored for OpenRouter.
@@ -118,7 +128,9 @@ export function resolveReasoningEffort(
   config: Config,
   modelOverride?: string,
   chatAgent?: boolean,
+  explicit?: Config["CHAT_REASONING_EFFORT"] | "minimal",
 ): Config["CHAT_REASONING_EFFORT"] | "minimal" {
+  if (explicit !== undefined) return explicit;
   return modelOverride === undefined || chatAgent
     ? config.CHAT_REASONING_EFFORT
     : "minimal";
@@ -236,7 +248,12 @@ export function createModel(
   }
   // See resolveReasoningEffort's own doc comment for why a modelOverride
   // without `chatAgent` deliberately stays on "minimal".
-  const effort = resolveReasoningEffort(config, modelOverride, options.chatAgent);
+  const effort = resolveReasoningEffort(
+    config,
+    modelOverride,
+    options.chatAgent,
+    options.reasoningEffort,
+  );
   return withReasoningMandatoryFallback(
     openrouter(modelId, { reasoning: { effort } }),
     () => openrouter(modelId),

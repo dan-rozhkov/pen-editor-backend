@@ -129,4 +129,12 @@ describe("createModel reasoning effort", () => {
     });
     expect(resolveReasoningEffort(config, "qwen/qwen3.8-flash", true)).toBe("none");
   });
+  // Latency-critical helper calls (the browse_task step cascade and its
+  // TYPE_TEXT text) ask for an explicit effort — "minimal" is a full
+  // reasoning budget on deepseek, which timed the cascade out every call.
+  it("lets a helper call pin an explicit effort over the helper default", () => {
+    const config = makeConfig({ CHAT_REASONING_EFFORT: "high" });
+    expect(resolveReasoningEffort(config, "deepseek/deepseek-v4.1-flash", undefined, "none")).toBe("none");
+    expect(resolveReasoningEffort(config, "deepseek/deepseek-v4.1-flash", undefined)).toBe("minimal");
+  });
 });
