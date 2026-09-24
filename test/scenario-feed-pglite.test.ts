@@ -5,6 +5,7 @@
 // correctly. Reuses the generic harness from test/pgliteShowcaseHelpers.ts.
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createPgliteHarness, type PgliteHarness } from "./pgliteShowcaseHelpers.js";
+import { seedScenario, type ScenarioSeed } from "./reviewFakes.js";
 import {
   fetchDueScenarios,
   markScenariosOffered,
@@ -24,38 +25,7 @@ afterAll(async () => {
   await harness.close();
 });
 
-interface SeedScenario {
-  scope: "user" | "global";
-  userId?: string | null;
-  kind?: string;
-  title?: string;
-  recipe?: string;
-  confirmations?: number;
-  sessionIds?: string[];
-  state?: string;
-  offerCount?: number;
-}
-
-async function seed(row: SeedScenario): Promise<number> {
-  const { rows } = await harness.db.query(
-    `INSERT INTO agent_scenarios
-       (scope, user_id, kind, title, recipe, confirmations, session_ids, state, offer_count)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-     RETURNING id`,
-    [
-      row.scope,
-      row.userId ?? (row.scope === "user" ? "u1" : null),
-      row.kind ?? "correction",
-      row.title ?? "starts with questions",
-      row.recipe ?? "show a draft first",
-      row.confirmations ?? 1,
-      row.sessionIds ?? ["s1"],
-      row.state ?? "open",
-      row.offerCount ?? 0,
-    ],
-  );
-  return Number((rows[0] as { id: number | string }).id);
-}
+const seed = (row: ScenarioSeed) => seedScenario(harness.db, row);
 
 async function stateOf(id: number): Promise<{ state: string; offer_count: number; offered_at: unknown; distilled_into: unknown }> {
   const { rows } = await harness.db.query(

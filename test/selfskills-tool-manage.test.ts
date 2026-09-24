@@ -4,6 +4,8 @@ import { getSelfSkillTools } from "../src/ai/skills/tool.js";
 import { createSkillRunContext, type SkillRunContext } from "../src/ai/skills/runContext.js";
 import type { LearnedSkill, LearnedSkillStore } from "../src/ai/skills/learnedStore.js";
 import type { TraceQueryable } from "../src/tracing/traceStore.js";
+import type { AuditOrigin } from "../src/ai/memory/store.js";
+import { fakeLearnedSkillStore } from "./userSkillFakes.js";
 
 interface AuditCall {
   sql: string;
@@ -20,45 +22,6 @@ function recordingDb(): TraceQueryable & { calls: AuditCall[] } {
     },
     async end() {},
   };
-}
-
-function memoryStore(initial: LearnedSkill[] = []) {
-  const skills = new Map(initial.map((s) => [s.name, { ...s }]));
-  const store: LearnedSkillStore = {
-    async listActive() {
-      return [...skills.values()].filter((s) => s.state === "active");
-    },
-    async get(name) {
-      return skills.get(name) ?? null;
-    },
-    async create({ name, description, body }) {
-      skills.set(name, {
-        name,
-        description,
-        body,
-        createdBy: "agent",
-        state: "active",
-        useCount: 0,
-        viewCount: 0,
-      });
-    },
-    async replaceBody(name, body) {
-      const s = skills.get(name);
-      if (s) s.body = body;
-    },
-    async remove(name) {
-      return skills.delete(name);
-    },
-    async bumpUse() {},
-    async bumpView() {},
-    async reviveArchived(name, { description, body }) {
-      const s = skills.get(name);
-      if (!s || s.state !== "archived" || s.createdBy !== "agent") return false;
-      skills.set(name, { ...s, description, body, state: "active" });
-      return true;
-    },
-  };
-  return { store, skills };
 }
 
 const learned: LearnedSkill = {
@@ -85,16 +48,25 @@ type ViewTool = { execute: (args: { name: string }) => Promise<Record<string, un
 
 let runContext: SkillRunContext;
 
-function build(initial: LearnedSkill[] = [learned]) {
-  const { store, skills } = memoryStore(initial);
+interface BuildOptions {
+  // Replaces individual store methods on top of the in-memory fake, e.g. to
+  // make one of them throw or race.
+  storeOverrides?: Partial<LearnedSkillStore>;
+  db?: TraceQueryable;
+  origin?: AuditOrigin;
+  includeView?: boolean;
+}
+
+function build(initial: LearnedSkill[] = [learned], opts: BuildOptions = {}) {
+  const { store, skills } = fakeLearnedSkillStore(initial);
   const db = recordingDb();
   const tools = getSelfSkillTools({
-    store,
+    store: { ...store, ...opts.storeOverrides },
     runContext,
-    db,
+    db: opts.db ?? db,
     userId: "u1",
-    origin: "background_review",
-    includeView: true,
+    origin: opts.origin ?? "background_review",
+    includeView: opts.includeView ?? true,
   });
   return {
     manage: tools.skill_manage as ManageTool,
@@ -520,26 +492,17 @@ describe("skill_manage — store errors are model-facing, not thrown (finding 7)
     runContext = createSkillRunContext();
   });
 
-  function brokenDb(): TraceQueryable {
-    return { async query() { return { rows: [] }; }, async end() {} };
-  }
+  const connectionRefused = async () => {
+    throw new Error("connection refused");
+  };
 
   it("returns an error instead of throwing when store.get fails (create)", async () => {
-    const store: LearnedSkillStore = {
-      ...memoryStore([]).store,
-      get: async () => {
-        throw new Error("connection refused");
-      },
-    };
-    const tools = getSelfSkillTools({
-      store,
-      runContext,
-      db: brokenDb(),
-      userId: "u1",
+    const { manage } = build([], {
+      storeOverrides: { get: connectionRefused },
       origin: "foreground",
       includeView: false,
     });
-    const result = await (tools.skill_manage as ManageTool).execute({
+    const result = await manage.execute({
       action: "create",
       name: "a-skill",
       description: "d",
@@ -550,25 +513,20 @@ describe("skill_manage — store errors are model-facing, not thrown (finding 7)
   });
 
   it("translates a unique-violation race on create into 'already exists' guidance, not a raw DB error", async () => {
-    const store: LearnedSkillStore = {
-      ...memoryStore([]).store,
-      get: async () => null, // pre-check sees nothing...
-      create: async () => {
-        // ...but another writer won the race in between.
-        const err = new Error('duplicate key value violates unique constraint "agent_skills_pkey"');
-        (err as Error & { code: string }).code = "23505";
-        throw err;
+    const { manage } = build([], {
+      storeOverrides: {
+        get: async () => null, // pre-check sees nothing...
+        create: async () => {
+          // ...but another writer won the race in between.
+          const err = new Error('duplicate key value violates unique constraint "agent_skills_pkey"');
+          (err as Error & { code: string }).code = "23505";
+          throw err;
+        },
       },
-    };
-    const tools = getSelfSkillTools({
-      store,
-      runContext,
-      db: brokenDb(),
-      userId: "u1",
       origin: "foreground",
       includeView: false,
     });
-    const result = await (tools.skill_manage as ManageTool).execute({
+    const result = await manage.execute({
       action: "create",
       name: "a-skill",
       description: "d",
@@ -580,21 +538,12 @@ describe("skill_manage — store errors are model-facing, not thrown (finding 7)
   });
 
   it("returns an error instead of throwing when store.get fails (patch/delete lookup)", async () => {
-    const store: LearnedSkillStore = {
-      ...memoryStore([learned]).store,
-      get: async () => {
-        throw new Error("connection refused");
-      },
-    };
-    const tools = getSelfSkillTools({
-      store,
-      runContext,
-      db: brokenDb(),
-      userId: "u1",
+    const { manage } = build([learned], {
+      storeOverrides: { get: connectionRefused },
       origin: "foreground",
       includeView: false,
     });
-    const result = await (tools.skill_manage as ManageTool).execute({
+    const result = await manage.execute({
       action: "delete",
       name: "reading-canvas-state",
       absorbed_into: "",
@@ -603,23 +552,12 @@ describe("skill_manage — store errors are model-facing, not thrown (finding 7)
   });
 
   it("returns an error instead of throwing when replaceBody fails", async () => {
-    const { store } = memoryStore([learned]);
-    const broken: LearnedSkillStore = {
-      ...store,
-      replaceBody: async () => {
-        throw new Error("connection refused");
-      },
-    };
-    const tools = getSelfSkillTools({
-      store: broken,
-      runContext,
-      db: brokenDb(),
-      userId: "u1",
+    const { manage, view } = build([learned], {
+      storeOverrides: { replaceBody: connectionRefused },
       origin: "foreground",
-      includeView: true,
     });
-    await (tools.skill_view as ViewTool).execute({ name: "reading-canvas-state" });
-    const result = await (tools.skill_manage as ManageTool).execute({
+    await view.execute({ name: "reading-canvas-state" });
+    const result = await manage.execute({
       action: "patch",
       name: "reading-canvas-state",
       old_string: "get_variables",
@@ -630,23 +568,12 @@ describe("skill_manage — store errors are model-facing, not thrown (finding 7)
   });
 
   it("returns an error instead of throwing when remove fails", async () => {
-    const { store } = memoryStore([learned]);
-    const broken: LearnedSkillStore = {
-      ...store,
-      remove: async () => {
-        throw new Error("connection refused");
-      },
-    };
-    const tools = getSelfSkillTools({
-      store: broken,
-      runContext,
-      db: brokenDb(),
-      userId: "u1",
+    const { manage, view } = build([learned], {
+      storeOverrides: { remove: connectionRefused },
       origin: "foreground",
-      includeView: true,
     });
-    await (tools.skill_view as ViewTool).execute({ name: "reading-canvas-state" });
-    const result = await (tools.skill_manage as ManageTool).execute({
+    await view.execute({ name: "reading-canvas-state" });
+    const result = await manage.execute({
       action: "delete",
       name: "reading-canvas-state",
       absorbed_into: "",
@@ -661,20 +588,13 @@ describe("skill_manage — delete reports when the row is already gone (finding 
   });
 
   it("errors (does not report success) when remove() returns false — deleted concurrently since the read", async () => {
-    const { store, skills } = memoryStore([learned]);
     const removeSpy = vi.fn(async () => false);
-    const raced: LearnedSkillStore = { ...store, remove: removeSpy };
-    const db = recordingDb();
-    const tools = getSelfSkillTools({
-      store: raced,
-      runContext,
-      db,
-      userId: "u1",
+    const { manage, view, skills, db } = build([learned], {
+      storeOverrides: { remove: removeSpy },
       origin: "foreground",
-      includeView: true,
     });
-    await (tools.skill_view as ViewTool).execute({ name: "reading-canvas-state" });
-    const result = await (tools.skill_manage as ManageTool).execute({
+    await view.execute({ name: "reading-canvas-state" });
+    const result = await manage.execute({
       action: "delete",
       name: "reading-canvas-state",
       absorbed_into: "",
@@ -697,22 +617,14 @@ describe("skill_manage — failure isolation", () => {
   });
 
   it("returns ok even if the audit write fails", async () => {
-    const { store } = memoryStore([]);
-    const db: TraceQueryable = {
+    const failingDb: TraceQueryable = {
       async query() {
         throw new Error("audit table gone");
       },
       async end() {},
     };
-    const tools = getSelfSkillTools({
-      store,
-      runContext,
-      db,
-      userId: "u1",
-      origin: "background_review",
-      includeView: true,
-    });
-    const result = await (tools.skill_manage as ManageTool).execute({
+    const { manage } = build([], { db: failingDb });
+    const result = await manage.execute({
       action: "create",
       name: "a-skill",
       description: "d",

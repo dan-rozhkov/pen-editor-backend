@@ -3,6 +3,7 @@ import { MockLanguageModelV3 } from "ai/test";
 import type { LanguageModelV3GenerateResult } from "@ai-sdk/provider";
 import { loadSkills } from "../src/ai/skills.js";
 import { makeConfig } from "./helpers.js";
+import { textResult, toolCallResult } from "./reviewFakes.js";
 import { pickTheme } from "../src/showcase/themes.js";
 import { bareModelId } from "../src/ai/provider.js";
 import { TASTE_RULES } from "../src/ai/tasteCheck.js";
@@ -36,39 +37,6 @@ vi.mock("../src/ai/mcp.js", () => ({
   attachMobbinRelease: vi.fn(),
   releaseMCPTools: vi.fn(),
 }));
-
-const USAGE = {
-  inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
-  outputTokens: { total: 5, text: 5, reasoning: 0 },
-};
-
-function toolCallResult(
-  toolName: string,
-  input: Record<string, unknown>,
-): LanguageModelV3GenerateResult {
-  return {
-    content: [
-      {
-        type: "tool-call",
-        toolCallId: `call-${toolName}-${Math.random()}`,
-        toolName,
-        input: JSON.stringify(input),
-      },
-    ],
-    finishReason: { unified: "tool-calls", raw: "tool_calls" },
-    usage: USAGE,
-    warnings: [],
-  };
-}
-
-function textResult(text: string): LanguageModelV3GenerateResult {
-  return {
-    content: [{ type: "text", text }],
-    finishReason: { unified: "stop", raw: "stop" },
-    usage: USAGE,
-    warnings: [],
-  };
-}
 
 // MockLanguageModelV3's array form of `doGenerate` indexes by
 // `doGenerateCalls.length` *after* pushing the current call — i.e. 1-based,

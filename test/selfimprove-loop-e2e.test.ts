@@ -19,10 +19,8 @@
 //   - test/selfimprove-curate-pglite.test.ts (createPgliteHarness, injecting
 //     a PGlite pool into the real store factories)
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import type { FastifyInstance } from "fastify";
 import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
 import type { LanguageModelV3StreamPart } from "@ai-sdk/provider";
-import { buildApp } from "../src/app.js";
 import { loadSkills } from "../src/ai/skills.js";
 import { makeConfig } from "./helpers.js";
 import { createPgliteHarness, type PgliteHarness } from "./pgliteShowcaseHelpers.js";
@@ -34,41 +32,13 @@ import {
 } from "../src/ai/skills/learnedStore.js";
 import { curateSkills, type CuratorClient } from "../src/ai/selfimprove/curate.js";
 import type { TraceQueryable } from "../src/tracing/traceStore.js";
+import { chatMocks, textStreamChunks, userMessage as sharedUserMessage, USAGE } from "./chatMocks.js";
+import { chatTurn, startApp, type RunningApp } from "./chatHarness.js";
 
-vi.mock("../src/ai/mcp.js", () => ({
-  getMCPTools: vi.fn(async () => ({})),
-  closeAllMCPClients: vi.fn(async () => {}),
-  attachMobbinRelease: vi.fn(),
-  releaseMCPTools: vi.fn(),
-}));
-
-// createModel always returns whatever the current test has stashed here —
-// same "holders" indirection as memory-chat-route.test.ts / chat-route.test.ts,
-// required because vi.mock factories are hoisted above normal declarations.
-const holders = vi.hoisted(() => ({ model: undefined as unknown }));
-vi.mock("../src/ai/provider.js", async (importOriginal) => {
-  // Only createModel is faked — bareModelId (and anything else the module
-  // exports) must stay the REAL implementation, since src/ai/chatTurn.ts
-  // calls bareModelId on every prepareChatTurn() run (this file drives
-  // /api/chat over real HTTP).
-  const actual = await importOriginal<typeof import("../src/ai/provider.js")>();
-  return { ...actual, createModel: vi.fn(() => holders.model) };
-});
-
-const USAGE = {
-  inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
-  outputTokens: { total: 5, text: 5, reasoning: 0 },
-};
-
-function textChunks(text: string): LanguageModelV3StreamPart[] {
-  return [
-    { type: "stream-start", warnings: [] },
-    { type: "text-start", id: "t1" },
-    { type: "text-delta", id: "t1", delta: text },
-    { type: "text-end", id: "t1" },
-    { type: "finish", finishReason: { unified: "stop", raw: "stop" }, usage: USAGE },
-  ];
-}
+vi.mock("../src/ai/mcp.js", async () => (await import("./chatMocks.js")).mockMcpModule());
+vi.mock("../src/ai/provider.js", async (importOriginal) =>
+  (await import("./chatMocks.js")).mockProviderModule(await importOriginal()),
+);
 
 let toolCallSeq = 0;
 function toolChunks(toolName: string, input: Record<string, unknown>): LanguageModelV3StreamPart[] {
@@ -97,7 +67,7 @@ function toolCall(toolName: string, input: Record<string, unknown>): ScriptStep 
 }
 
 function chunksForStep(step: ScriptStep): LanguageModelV3StreamPart[] {
-  return step.kind === "text" ? textChunks(step.text) : toolChunks(step.toolName, step.input);
+  return step.kind === "text" ? textStreamChunks(step.text) : toolChunks(step.toolName, step.input);
 }
 
 // Non-streaming counterpart of chunksForStep: the background review
@@ -165,9 +135,9 @@ function makeScriptedModel(queue: ScriptStep[]): MockLanguageModelV3 {
   });
 }
 
-function userMessage(text: string): Record<string, unknown> {
-  return { id: `m-${Math.random().toString(36).slice(2)}`, role: "user", parts: [{ type: "text", text }] };
-}
+// Every call below builds a fresh single-element `messages` array, so the
+// fixed id chatMocks.userMessage uses never collides across requests.
+const userMessage = sharedUserMessage;
 
 // Represents the frontend's resend of a resolved CLIENT-executed tool call
 // (get_editor_state has no `execute`, so the first request ends with a
@@ -192,12 +162,7 @@ function resolvedClientToolMessage(toolName: string, output: string): Record<str
 }
 
 async function postChat(url: string, body: unknown): Promise<string> {
-  const res = await fetch(`${url}/api/chat`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  return res.text();
+  return (await chatTurn(url, body)).body;
 }
 
 // The system message is always prompt[0] for this codebase's turns (see
@@ -244,7 +209,7 @@ describe("self-improvement loop — end to end", () => {
     let memoryStore: MemoryStore;
     let learnedStore: LearnedSkillStore;
     let auditDb: TraceQueryable;
-    let app: FastifyInstance;
+    let server: RunningApp;
     let url: string;
     let queue: ScriptStep[];
     let model: MockLanguageModelV3;
@@ -282,21 +247,20 @@ describe("self-improvement loop — end to end", () => {
 
       queue = [];
       model = makeScriptedModel(queue);
-      holders.model = model;
+      chatMocks.model = model;
 
-      app = await buildApp(config, {
-        logger: false,
+      server = await startApp(config, {
         traceStore: null,
         showcaseStore: null,
         memoryStore: withNoopClose(memoryStore),
         learnedSkillStore: withNoopClose(learnedStore),
         auditDb: withNoopEnd(auditDb),
       });
-      url = await app.listen({ port: 0, host: "127.0.0.1" });
+      url = server.url;
     });
 
     afterAll(async () => {
-      await app?.close();
+      await server?.close();
       await harness?.close();
     });
 
@@ -663,7 +627,7 @@ describe("self-improvement loop — end to end", () => {
   // ------------------------------------------------------------------
   describe("both flags disabled", () => {
     let harness: PgliteHarness;
-    let app: FastifyInstance;
+    let server: RunningApp;
     let url: string;
 
     beforeAll(async () => {
@@ -688,21 +652,20 @@ describe("self-improvement loop — end to end", () => {
       const memoryStore = createMemoryStore(config, harness.pool)!;
       const learnedStore = createLearnedSkillStore(config, harness.pool)!;
 
-      holders.model = makeScriptedModel([text("Hello!"), text("Still working."), text("Yep.")]);
+      chatMocks.model = makeScriptedModel([text("Hello!"), text("Still working."), text("Yep.")]);
 
-      app = await buildApp(config, {
-        logger: false,
+      server = await startApp(config, {
         traceStore: null,
         showcaseStore: null,
         memoryStore: withNoopClose(memoryStore),
         learnedSkillStore: withNoopClose(learnedStore),
         auditDb: withNoopEnd(harness.db),
       });
-      url = await app.listen({ port: 0, host: "127.0.0.1" });
+      url = server.url;
     });
 
     afterAll(async () => {
-      await app?.close();
+      await server?.close();
       await harness?.close();
     });
 
@@ -731,7 +694,7 @@ describe("self-improvement loop — end to end", () => {
       expect((audit.rows[0] as { n: number }).n).toBe(0);
 
       // And the system prompt never advertises either subsystem.
-      const model = holders.model as MockLanguageModelV3;
+      const model = chatMocks.model as MockLanguageModelV3;
       const system = systemOf(model.doStreamCalls[model.doStreamCalls.length - 1]);
       expect(system).not.toContain("Persistent Memory");
       expect(system).not.toContain("(learned)");

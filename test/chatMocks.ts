@@ -31,6 +31,10 @@ import type { LanguageModelV3StreamPart } from "@ai-sdk/provider";
 export const chatMocks = {
   model: undefined as unknown,
   mcpTools: {} as Record<string, unknown>,
+  // Every options object getMCPTools was called with, in order — lets a test
+  // assert on what reached it (e.g. a mobbinAccessToken threaded from a
+  // request header) without replacing the whole mock.
+  mcpToolCalls: [] as Array<{ mobbinAccessToken?: string; modelSupportsVision?: boolean } | undefined>,
 };
 
 // Only createModel is faked — bareModelId, parseModelRef, isOpenCodeProvider
@@ -46,7 +50,12 @@ export function mockProviderModule<T extends object>(actual: T): T {
 // module must declare them or the route 500s on an undefined call.
 export function mockMcpModule() {
   return {
-    getMCPTools: vi.fn(async () => chatMocks.mcpTools),
+    getMCPTools: vi.fn(
+      async (_config: unknown, opts?: { mobbinAccessToken?: string; modelSupportsVision?: boolean }) => {
+        chatMocks.mcpToolCalls.push(opts);
+        return chatMocks.mcpTools;
+      },
+    ),
     closeAllMCPClients: vi.fn(async () => {}),
     attachMobbinRelease: vi.fn(),
     releaseMCPTools: vi.fn(),
@@ -109,6 +118,7 @@ export function sequenceModel(...steps: LanguageModelV3StreamPart[][]): MockLang
 export function resetChatMocks(): void {
   chatMocks.model = mockModel(textStreamChunks("ok"));
   chatMocks.mcpTools = {};
+  chatMocks.mcpToolCalls = [];
 }
 
 export function userMessage(text: string): Record<string, unknown> {

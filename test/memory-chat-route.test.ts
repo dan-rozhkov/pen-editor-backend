@@ -1,75 +1,14 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { FastifyInstance } from "fastify";
-import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
-import type { LanguageModelV3StreamPart } from "@ai-sdk/provider";
-import { buildApp } from "../src/app.js";
 import { loadSkills } from "../src/ai/skills.js";
 import { makeConfig } from "./helpers.js";
 import type { MemoryStore } from "../src/ai/memory/store.js";
+import { chatMocks, mockModel, textStreamChunks, toolCallStreamChunks, userMessage } from "./chatMocks.js";
+import { chatTurn, startApp, type RunningApp } from "./chatHarness.js";
 
-const holders = vi.hoisted(() => ({ model: undefined as unknown }));
-
-vi.mock("../src/ai/provider.js", async (importOriginal) => {
-  // Only createModel is faked — bareModelId (and anything else the module
-  // exports) must stay the REAL implementation, since src/ai/chatTurn.ts
-  // calls bareModelId on every prepareChatTurn() run.
-  const actual = await importOriginal<typeof import("../src/ai/provider.js")>();
-  return { ...actual, createModel: vi.fn(() => holders.model) };
-});
-vi.mock("../src/ai/mcp.js", () => ({
-  getMCPTools: vi.fn(async () => ({})),
-  closeAllMCPClients: vi.fn(async () => {}),
-  attachMobbinRelease: vi.fn(),
-  releaseMCPTools: vi.fn(),
-}));
-
-const USAGE = {
-  inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
-  outputTokens: { total: 5, text: 5, reasoning: 0 },
-};
-
-function textStreamChunks(text: string): LanguageModelV3StreamPart[] {
-  return [
-    { type: "stream-start", warnings: [] },
-    { type: "text-start", id: "t1" },
-    { type: "text-delta", id: "t1", delta: text },
-    { type: "text-end", id: "t1" },
-    { type: "finish", finishReason: { unified: "stop", raw: "stop" }, usage: USAGE },
-  ];
-}
-
-// A client-executed tool call (no `execute` on the server side) ends the
-// step — and this request's stream — with pending tool calls: the browser
-// still has to run it and resend. This is the "continuation" request shape
-// that must NOT count as a completed user turn (see routes/chat.ts's
-// turnComplete computation).
-function toolCallStreamChunks(): LanguageModelV3StreamPart[] {
-  return [
-    { type: "stream-start", warnings: [] },
-    {
-      type: "tool-call",
-      toolCallId: "call-1",
-      toolName: "get_editor_state",
-      input: "{}",
-    },
-    { type: "finish", finishReason: { unified: "tool-calls", raw: "tool_calls" }, usage: USAGE },
-  ];
-}
-
-const capturedPrompts: string[] = [];
-
-function mockModel(
-  chunks: LanguageModelV3StreamPart[] = textStreamChunks("ok"),
-): MockLanguageModelV3 {
-  return new MockLanguageModelV3({
-    doStream: async (options: { prompt: unknown }) => {
-      capturedPrompts.push(JSON.stringify(options.prompt));
-      return {
-        stream: simulateReadableStream({ chunks, chunkDelayInMs: null }),
-      };
-    },
-  });
-}
+vi.mock("../src/ai/provider.js", async (importOriginal) =>
+  (await import("./chatMocks.js")).mockProviderModule(await importOriginal()),
+);
+vi.mock("../src/ai/mcp.js", async () => (await import("./chatMocks.js")).mockMcpModule());
 
 function fakeMemoryStore(): MemoryStore & { loadSnapshot: ReturnType<typeof vi.fn> } {
   return {
@@ -85,8 +24,7 @@ function fakeMemoryStore(): MemoryStore & { loadSnapshot: ReturnType<typeof vi.f
   } as unknown as MemoryStore & { loadSnapshot: ReturnType<typeof vi.fn> };
 }
 
-let app: FastifyInstance;
-let url: string;
+let server: RunningApp;
 let store: ReturnType<typeof fakeMemoryStore>;
 
 beforeAll(async () => {
@@ -94,67 +32,53 @@ beforeAll(async () => {
 });
 
 beforeEach(() => {
-  holders.model = mockModel();
-  capturedPrompts.length = 0;
+  chatMocks.model = mockModel(textStreamChunks("ok"));
 });
 
 async function start(memoryEnabled: boolean) {
   store = fakeMemoryStore();
-  app = await buildApp(makeConfig({ MEMORY_ENABLED: memoryEnabled }), {
-    logger: false,
+  server = await startApp(makeConfig({ MEMORY_ENABLED: memoryEnabled }), {
     traceStore: null,
     showcaseStore: null,
     memoryStore: store,
   });
-  url = await app.listen({ port: 0, host: "127.0.0.1" });
 }
 
 afterAll(async () => {
-  await app?.close();
+  await server?.close();
 });
 
 async function postChat(body: unknown): Promise<string> {
-  const res = await fetch(`${url}/api/chat`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  return res.text();
+  return (await chatTurn(server.url, body)).body;
 }
 
 describe("POST /api/chat — userId plumbing", () => {
   it("loads the caller's memory snapshot for a request carrying a userId", async () => {
     await start(true);
     await postChat({
-      messages: [{ id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] }],
+      messages: [userMessage("hi")],
       userId: "11111111-1111-4111-8111-111111111111",
     });
     expect(store.loadSnapshot).toHaveBeenCalledWith("11111111-1111-4111-8111-111111111111");
-    await app.close();
+    await server.close();
   });
 
   it("works unchanged without a userId and never reads memory", async () => {
     await start(true);
-    const body = await postChat({
-      messages: [{ id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] }],
-    });
+    const body = await postChat({ messages: [userMessage("hi")] });
     expect(body).toContain("data: [DONE]");
     expect(store.loadSnapshot).not.toHaveBeenCalled();
-    await app.close();
+    await server.close();
   });
 
   it("rejects a userId over 64 characters with 400", async () => {
     await start(true);
-    const res = await fetch(`${url}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        messages: [{ id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] }],
-        userId: "x".repeat(65),
-      }),
+    const { res } = await chatTurn(server.url, {
+      messages: [userMessage("hi")],
+      userId: "x".repeat(65),
     });
     expect(res.status).toBe(400);
-    await app.close();
+    await server.close();
   });
 
   // Finding 5: a shape-invalid-but-length-legal userId (an older client
@@ -163,7 +87,7 @@ describe("POST /api/chat — userId plumbing", () => {
   it("silently disables memory for a non-UUID-shaped userId instead of 400ing", async () => {
     await start(true);
     const body = await postChat({
-      messages: [{ id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] }],
+      messages: [userMessage("hi")],
       userId: "user-abc",
     });
     expect(body).toContain("data: [DONE]");
@@ -172,23 +96,23 @@ describe("POST /api/chat — userId plumbing", () => {
     // background review never engaged either.
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(store.bumpCounters).not.toHaveBeenCalled();
-    await app.close();
+    await server.close();
   });
 });
 
 describe("POST /api/chat — review only bumps the counter on a completed turn", () => {
   it("bumps turns_since_memory when the model's final step has no tool calls", async () => {
-    holders.model = mockModel(textStreamChunks("ok"));
+    chatMocks.model = mockModel(textStreamChunks("ok"));
     await start(true);
     await postChat({
-      messages: [{ id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] }],
+      messages: [userMessage("hi")],
       userId: "11111111-1111-4111-8111-111111111111",
     });
     await vi.waitFor(() => expect(store.bumpCounters).toHaveBeenCalledTimes(1));
     expect(store.bumpCounters).toHaveBeenCalledWith(
       expect.objectContaining({ userId: "11111111-1111-4111-8111-111111111111", turns: 1 }),
     );
-    await app.close();
+    await server.close();
   });
 
   it("bumps steps but NOT turns_since_memory on a continuation request (pending client tool call)", async () => {
@@ -197,16 +121,16 @@ describe("POST /api/chat — review only bumps the counter on a completed turn",
     // steps_since_skill fix in ai/selfimprove/review.ts) — but `turns` is 0:
     // a continuation is not a completed user turn, so turns_since_memory
     // must not move for it.
-    holders.model = mockModel(toolCallStreamChunks());
+    chatMocks.model = mockModel(toolCallStreamChunks("get_editor_state", {}));
     await start(true);
     await postChat({
-      messages: [{ id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] }],
+      messages: [userMessage("hi")],
       userId: "11111111-1111-4111-8111-111111111111",
     });
     await vi.waitFor(() => expect(store.bumpCounters).toHaveBeenCalledTimes(1));
     expect(store.bumpCounters).toHaveBeenCalledWith(
       expect.objectContaining({ userId: "11111111-1111-4111-8111-111111111111", turns: 0 }),
     );
-    await app.close();
+    await server.close();
   });
 });

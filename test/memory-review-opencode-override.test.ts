@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import { MockLanguageModelV3 } from "ai/test";
 import type { LanguageModelV3GenerateResult } from "@ai-sdk/provider";
-import type { ModelMessage, ToolSet } from "ai";
-import { makeConfig } from "./helpers.js";
-import { penTools } from "../src/ai/tools.js";
-import type { MemoryStore } from "../src/ai/memory/store.js";
+import type { ModelMessage } from "ai";
+import {
+  capturingGenerateModel,
+  fakeReviewCounterStore,
+  reviewInput,
+  textResult,
+} from "./reviewFakes.js";
 
 // Regression (defect 2): the background review is a helper role, like
 // ANALYSIS_MODEL/VISION_MODEL/STRUCTURED_MODEL — per
@@ -40,59 +42,15 @@ vi.mock("../src/ai/provider.js", async (importOriginal) => {
   };
 });
 
-const USAGE = {
-  inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
-  outputTokens: { total: 5, text: 5, reasoning: 0 },
-};
-
-function reviewModel(result: LanguageModelV3GenerateResult): MockLanguageModelV3 {
-  return new MockLanguageModelV3({
-    doGenerate: async () => result,
-  });
-}
-
-function textResult(text: string): LanguageModelV3GenerateResult {
-  return {
-    content: [{ type: "text", text }],
-    finishReason: { unified: "stop", raw: "stop" },
-    usage: USAGE,
-    warnings: [],
-  };
-}
-
-function fakeStore(memoryReviewDue: boolean): MemoryStore {
-  return {
-    loadSnapshot: vi.fn(async () => ({ memory: [], user: [] })),
-    applyOperations: vi.fn(async () => ({
-      ok: true as const,
-      entries: ["x"],
-      usage: { current: 1, limit: 1375 },
-    })),
-    bumpCounters: vi.fn(async () => ({
-      turnsSinceMemory: memoryReviewDue ? 10 : 1,
-      stepsSinceSkill: 3,
-      memoryReviewDue,
-    })),
-    writeAudit: vi.fn(),
-    close: vi.fn(),
-  } as unknown as MemoryStore;
-}
+const reviewModel = (result: LanguageModelV3GenerateResult) => capturingGenerateModel([], result);
 
 const MESSAGES: ModelMessage[] = [{ role: "user", content: "remember I like short answers" }];
 
 function input(overrides: Record<string, unknown> = {}) {
-  return {
-    config: makeConfig({ MEMORY_ENABLED: true }),
-    store: fakeStore(true),
-    userId: "u1",
-    system: "SYSTEM PROMPT",
-    turnTools: penTools as unknown as ToolSet,
-    modelMessages: MESSAGES,
-    assistantText: "Understood.",
-    stepCount: 3,
-    turnComplete: true,
-    ...overrides,
-  };
+  return reviewInput(
+    { store: fakeReviewCounterStore({ memoryReviewDue: true }), modelMessages: MESSAGES },
+    overrides,
+  );
 }
 
 describe("maybeRunReview with a user-picked OpenCode modelOverride", () => {

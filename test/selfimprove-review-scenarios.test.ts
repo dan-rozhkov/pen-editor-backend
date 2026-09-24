@@ -1,19 +1,25 @@
 // Task 6: wiring `agent_scenarios` evidence into `maybeRunReview`. Reuses
 // two existing conventions rather than inventing new ones:
-//   - the MockLanguageModelV3 doGenerate-capture rig from
-//     test/memory-review.test.ts (generateText, not doStream — see that
-//     file's comment on why),
-//   - the real-Postgres-engine PGlite harness + row-seeding helper from
-//     test/scenario-feed-pglite.test.ts, because fetchDueScenarios /
+//   - the doGenerate-capture rig from test/reviewFakes.ts (generateText,
+//     not doStream),
+//   - the real-Postgres-engine PGlite harness + row seeding (`seedScenario`)
+//     shared with test/scenario-feed-pglite.test.ts, because fetchDueScenarios /
 //     markScenariosOffered / settleScenarios run real SQL
 //     (`ANY($1::bigint[])`, a CASE-guarded jsonb write) that a hand-rolled
 //     fake would risk getting subtly wrong.
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { MockLanguageModelV3 } from "ai/test";
-import type { LanguageModelV3GenerateResult } from "@ai-sdk/provider";
-import type { ModelMessage, ToolSet } from "ai";
-import { makeConfig } from "./helpers.js";
-import { penTools } from "../src/ai/tools.js";
+import type { ModelMessage } from "ai";
+import {
+  fakeReviewCounterStore,
+  generateCaptureRig,
+  reviewInput,
+  seedScenario,
+  textResult,
+  neverRespondingGenerateModel,
+  throwingGenerateModel,
+  toolCallResult,
+  type ScenarioSeed,
+} from "./reviewFakes.js";
 import type { MemoryStore } from "../src/ai/memory/store.js";
 import type { TraceQueryable } from "../src/tracing/traceStore.js";
 import { createPgliteHarness, type PgliteHarness } from "./pgliteShowcaseHelpers.js";
@@ -24,93 +30,13 @@ vi.mock("../src/ai/provider.js", () => ({
   createModel: vi.fn(() => holders.model),
 }));
 
-const USAGE = {
-  inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
-  outputTokens: { total: 5, text: 5, reasoning: 0 },
-};
-
-const capturedCalls: Array<{ system?: unknown; prompt: unknown; tools: unknown }> = [];
-
-// generateText (used by maybeRunReview) calls doGenerate, not doStream — same
-// shape as test/memory-review.test.ts and test/showcase-runner.test.ts.
-function reviewModel(result: LanguageModelV3GenerateResult): MockLanguageModelV3 {
-  return new MockLanguageModelV3({
-    doGenerate: async (options: { system?: unknown; prompt: unknown; tools?: unknown }) => {
-      capturedCalls.push({ system: options.system, prompt: options.prompt, tools: options.tools });
-      return result;
-    },
-  });
-}
-
-function textResult(text: string): LanguageModelV3GenerateResult {
-  return {
-    content: [{ type: "text", text }],
-    finishReason: { unified: "stop", raw: "stop" },
-    usage: USAGE,
-    warnings: [],
-  };
-}
-
-function toolCallResult(
-  toolName: string,
-  input: Record<string, unknown>,
-): LanguageModelV3GenerateResult {
-  return {
-    content: [
-      {
-        type: "tool-call",
-        toolCallId: `call-${toolName}-${Math.random()}`,
-        toolName,
-        input: JSON.stringify(input),
-      },
-    ],
-    finishReason: { unified: "tool-calls", raw: "tool_calls" },
-    usage: USAGE,
-    warnings: [],
-  };
-}
-
-// Same "1-based index" gotcha as memory-review.test.ts's multiStepReviewModel
-// — MockLanguageModelV3's array form indexes by call count *after* pushing.
-function multiStepReviewModel(results: LanguageModelV3GenerateResult[]): MockLanguageModelV3 {
-  let call = 0;
-  return new MockLanguageModelV3({
-    doGenerate: async (options: { system?: unknown; prompt: unknown; tools?: unknown }) => {
-      capturedCalls.push({ system: options.system, prompt: options.prompt, tools: options.tools });
-      const result = results[Math.min(call, results.length - 1)];
-      call += 1;
-      return result;
-    },
-  });
-}
-
-interface StoreDueFlags {
-  memoryReviewDue?: boolean;
-  skillReviewDue?: boolean;
-}
-
-// Only the counter half is faked — scenario reads/writes below run against
-// the real PGlite-backed `auditDb`, exactly like maybeRunReview does in
-// production (memory's counters and skills' counters live in agent_memory /
+// maybeRunReview drives generateText (doGenerate) — see test/reviewFakes.ts.
+// Only the store's counter half is faked; scenario reads/writes below run
+// against the real PGlite-backed `auditDb`, exactly like maybeRunReview does
+// in production (memory's and skills' counters live in agent_memory /
 // agent_review_state; scenarios live in the separate agent_scenarios table).
-function fakeStore(due: StoreDueFlags = {}): MemoryStore {
-  return {
-    loadSnapshot: vi.fn(async () => ({ memory: [], user: [] })),
-    applyOperations: vi.fn(async () => ({
-      ok: true as const,
-      entries: ["x"],
-      usage: { current: 1, limit: 1375 },
-    })),
-    bumpCounters: vi.fn(async () => ({
-      turnsSinceMemory: due.memoryReviewDue ? 10 : 1,
-      stepsSinceSkill: due.skillReviewDue ? 20 : 1,
-      memoryReviewDue: due.memoryReviewDue ?? false,
-      skillReviewDue: due.skillReviewDue ?? false,
-    })),
-    writeAudit: vi.fn(),
-    close: vi.fn(),
-  } as unknown as MemoryStore;
-}
+const { capturedCalls, reviewModel, multiStepReviewModel } = generateCaptureRig();
+const fakeStore = fakeReviewCounterStore;
 
 const MESSAGES: ModelMessage[] = [{ role: "user", content: "make the header tighter" }];
 
@@ -127,39 +53,16 @@ afterAll(async () => {
   await harness.close();
 });
 
-interface SeedScenario {
-  scope?: "user" | "global";
-  userId?: string | null;
-  kind?: string;
-  title?: string;
-  recipe?: string;
-  confirmations?: number;
-  sessionIds?: string[];
-  state?: string;
-  offerCount?: number;
-}
-
-// Copied from test/scenario-feed-pglite.test.ts's `seed` — same table, same
-// columns, no reason to diverge.
-async function seed(row: SeedScenario): Promise<number> {
-  const { rows } = await harness.db.query(
-    `INSERT INTO agent_scenarios
-       (scope, user_id, kind, title, recipe, confirmations, session_ids, state, offer_count)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-     RETURNING id`,
-    [
-      row.scope ?? "user",
-      row.userId ?? (row.scope === "global" ? null : "u1"),
-      row.kind ?? "correction",
-      row.title ?? "ONLY-IN-USER-MESSAGE-MARKER",
-      row.recipe ?? "show a draft first",
-      row.confirmations ?? 5,
-      row.sessionIds ?? ["s1", "s2", "s3"],
-      row.state ?? "open",
-      row.offerCount ?? 0,
-    ],
-  );
-  return Number((rows[0] as { id: number | string }).id);
+// Same row seeding as test/scenario-feed-pglite.test.ts, with this file's
+// defaults: a user-scope row already over the confirmation threshold.
+function seed(row: Partial<ScenarioSeed> = {}): Promise<number> {
+  return seedScenario(harness.db, {
+    scope: "user",
+    title: "ONLY-IN-USER-MESSAGE-MARKER",
+    confirmations: 5,
+    sessionIds: ["s1", "s2", "s3"],
+    ...row,
+  });
 }
 
 async function scenarioRow(
@@ -173,19 +76,10 @@ async function scenarioRow(
 }
 
 function input(overrides: Record<string, unknown> = {}) {
-  return {
-    config: makeConfig({ MEMORY_ENABLED: true }),
-    store: fakeStore(),
-    userId: "u1",
-    system: "SYSTEM PROMPT",
-    turnTools: penTools as unknown as ToolSet,
-    modelMessages: MESSAGES,
-    assistantText: "Done.",
-    stepCount: 3,
-    turnComplete: true,
-    auditDb: harness.db,
-    ...overrides,
-  };
+  return reviewInput(
+    { store: fakeStore(), modelMessages: MESSAGES, assistantText: "Done.", auditDb: harness.db },
+    overrides,
+  );
 }
 
 function lastAuditCall(store: MemoryStore): { action: string; payload: Record<string, unknown> } {
@@ -348,11 +242,7 @@ describe("maybeRunReview — scenario evidence", () => {
   it("marks scenarios offered BEFORE generateText — a failed/timed-out run still counts as an offer", async () => {
     const { maybeRunReview } = await import("../src/ai/selfimprove/review.js");
     const id = await seed({ confirmations: 5 });
-    holders.model = new MockLanguageModelV3({
-      doGenerate: async () => {
-        throw new Error("provider exploded");
-      },
-    });
+    holders.model = throwingGenerateModel();
     const store = fakeStore({ memoryReviewDue: false, skillReviewDue: false });
 
     // The run itself fails — but the offer must already be recorded, or a
@@ -367,11 +257,7 @@ describe("maybeRunReview — scenario evidence", () => {
   it("records scenario_ids in the audit payload on a run that throws — run.ts's evidence classification depends on it", async () => {
     const { maybeRunReview } = await import("../src/ai/selfimprove/review.js");
     const id = await seed({ confirmations: 5 });
-    holders.model = new MockLanguageModelV3({
-      doGenerate: async () => {
-        throw new Error("provider exploded");
-      },
-    });
+    holders.model = throwingGenerateModel();
     const store = fakeStore({ memoryReviewDue: false, skillReviewDue: false });
 
     expect(await maybeRunReview(input({ store }))).toBe("disabled");
@@ -383,17 +269,7 @@ describe("maybeRunReview — scenario evidence", () => {
   it("records scenario_ids in the audit payload on a run that times out", async () => {
     const { maybeRunReview } = await import("../src/ai/selfimprove/review.js");
     const id = await seed({ confirmations: 5 });
-    // Same simulation as test/memory-review.test.ts's timeout test: reject
-    // once the caller's own AbortSignal.timeout fires (a bare
-    // `new Promise(() => {})` would ignore the signal and hang instead).
-    holders.model = new MockLanguageModelV3({
-      doGenerate: (options: { abortSignal?: AbortSignal }) =>
-        new Promise((_resolve, reject) => {
-          options.abortSignal?.addEventListener("abort", () => {
-            reject(options.abortSignal!.reason);
-          });
-        }),
-    });
+    holders.model = neverRespondingGenerateModel();
     const store = fakeStore({ memoryReviewDue: false, skillReviewDue: false });
 
     expect(await maybeRunReview(input({ store, reviewTimeoutMs: 20 }))).toBe("timed-out");

@@ -1,13 +1,18 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import type { FastifyInstance } from "fastify";
 import { request as httpRequest } from "node:http";
-import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
 import type { LanguageModelV3StreamPart } from "@ai-sdk/provider";
-import { buildApp } from "../src/app.js";
 import { loadSkills } from "../src/ai/skills.js";
 import { makeConfig } from "./helpers.js";
-import type { RawTraceRow, TraceStore } from "../src/tracing/traceStore.js";
-import type { AnalyticsClient, AnalyticsEvent } from "../src/analytics/posthog.js";
+import type { AnalyticsClient } from "../src/analytics/posthog.js";
+import type { TraceStore } from "../src/tracing/traceStore.js";
+import { chatMocks, sequenceModel, textStreamChunks, userMessage } from "./chatMocks.js";
+import {
+  postChat,
+  recordingAnalyticsClient,
+  recordingTraceStore,
+  startApp,
+  type RunningApp,
+} from "./chatHarness.js";
 
 // Exercises the /api/chat transparent-retry path (src/ai/streamWithRetry.ts):
 // a retryable provider error that arrives before any content chunk should be
@@ -15,48 +20,10 @@ import type { AnalyticsClient, AnalyticsEvent } from "../src/analytics/posthog.j
 // if it were the only attempt. An error after content, or a non-retryable
 // error, must behave exactly as before (no retry, error surfaces).
 
-const holders = vi.hoisted(() => ({
-  model: undefined as unknown,
-  mcpTools: {} as Record<string, unknown>,
-}));
-
-vi.mock("../src/ai/provider.js", async (importOriginal) => {
-  // Only createModel is faked — bareModelId (and anything else the module
-  // exports) must stay the REAL implementation, since src/ai/chatTurn.ts
-  // calls bareModelId on every prepareChatTurn() run.
-  const actual = await importOriginal<typeof import("../src/ai/provider.js")>();
-  return { ...actual, createModel: vi.fn(() => holders.model) };
-});
-
-vi.mock("../src/ai/mcp.js", () => ({
-  getMCPTools: vi.fn(async () => holders.mcpTools),
-  closeAllMCPClients: vi.fn(async () => {}),
-  attachMobbinRelease: vi.fn(),
-  releaseMCPTools: vi.fn(),
-}));
-
-const USAGE = {
-  inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
-  outputTokens: { total: 5, text: 5, reasoning: 0 },
-};
-
-function finishChunk(): LanguageModelV3StreamPart {
-  return {
-    type: "finish",
-    finishReason: { unified: "stop", raw: "stop" },
-    usage: USAGE,
-  };
-}
-
-function textChunks(text: string): LanguageModelV3StreamPart[] {
-  return [
-    { type: "stream-start", warnings: [] },
-    { type: "text-start", id: "t1" },
-    { type: "text-delta", id: "t1", delta: text },
-    { type: "text-end", id: "t1" },
-    finishChunk(),
-  ];
-}
+vi.mock("../src/ai/provider.js", async (importOriginal) =>
+  (await import("./chatMocks.js")).mockProviderModule(await importOriginal()),
+);
+vi.mock("../src/ai/mcp.js", async () => (await import("./chatMocks.js")).mockMcpModule());
 
 function errorChunks(error: unknown): LanguageModelV3StreamPart[] {
   return [{ type: "stream-start", warnings: [] }, { type: "error", error }];
@@ -71,78 +38,23 @@ function errorAfterTextChunks(text: string, error: unknown): LanguageModelV3Stre
   ];
 }
 
-/** A model whose Nth doStream() call returns the Nth entry of `sequence` (1-indexed calls). */
-function sequencedModel(sequence: LanguageModelV3StreamPart[][]): MockLanguageModelV3 {
-  let call = 0;
-  return new MockLanguageModelV3({
-    doStream: async () => {
-      const chunks = sequence[Math.min(call, sequence.length - 1)];
-      call++;
-      return { stream: simulateReadableStream({ chunks, chunkDelayInMs: null }) };
-    },
-  });
-}
-
-interface RunningServer {
-  app: FastifyInstance;
-  url: string;
-}
-
 interface RunningServerOptions {
-  config?: ReturnType<typeof makeConfig>;
   traceStore?: TraceStore | null;
   analytics?: AnalyticsClient;
   baseDelayMs?: number;
 }
 
-async function startServer(options: RunningServerOptions = {}): Promise<RunningServer> {
-  const app = await buildApp(options.config ?? makeConfig(), {
-    logger: false,
-    // Small, deterministic delays — this test asserts retry *happened*, not
-    // real-world backoff timing.
+// Small, deterministic delays by default — these tests assert retry
+// *happened*, not real-world backoff timing.
+function startServer(options: RunningServerOptions = {}): Promise<RunningApp> {
+  return startApp(makeConfig(), {
     chatRetryPolicy: { maxRetries: 2, baseDelayMs: options.baseDelayMs ?? 5 },
     traceStore: options.traceStore,
     analytics: options.analytics,
   });
-  const url = await app.listen({ port: 0, host: "127.0.0.1" });
-  return { app, url };
 }
 
-function recordingTraceStore(): TraceStore & { rows: RawTraceRow[] } {
-  const rows: RawTraceRow[] = [];
-  return {
-    rows,
-    writeRawTrace: async (row) => {
-      rows.push(row);
-    },
-    close: async () => {},
-  };
-}
-
-function recordingAnalyticsClient(): AnalyticsClient & { events: AnalyticsEvent[] } {
-  const events: AnalyticsEvent[] = [];
-  return {
-    events,
-    capture(event) {
-      events.push(event);
-    },
-    async shutdown() {},
-  };
-}
-
-function userMessage(text: string): Record<string, unknown> {
-  return { id: "m1", role: "user", parts: [{ type: "text", text }] };
-}
-
-async function postChat(url: string, body: unknown): Promise<Response> {
-  return fetch(`${url}/api/chat`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-}
-
-let server: RunningServer;
+let server: RunningApp;
 
 beforeAll(async () => {
   await loadSkills();
@@ -150,19 +62,19 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await server.app.close();
+  await server.close();
 });
 
 afterEach(() => {
-  holders.mcpTools = {};
+  chatMocks.mcpTools = {};
 });
 
 describe("POST /api/chat — transparent retry", () => {
   it("retries a retryable error that arrives before any content: the client sees a clean success", async () => {
-    holders.model = sequencedModel([
+    chatMocks.model = sequenceModel(
       errorChunks(new Error("503 Service Unavailable")),
-      textChunks("Hello after retry"),
-    ]);
+      textStreamChunks("Hello after retry"),
+    );
 
     const res = await postChat(server.url, { messages: [userMessage("hi")] });
     expect(res.status).toBe(200);
@@ -175,10 +87,10 @@ describe("POST /api/chat — transparent retry", () => {
   });
 
   it("does not retry an error that arrives after a content chunk — the error surfaces as-is", async () => {
-    holders.model = sequencedModel([
+    chatMocks.model = sequenceModel(
       errorAfterTextChunks("partial", new Error("503 Service Unavailable")),
-      textChunks("should never be reached"),
-    ]);
+      textStreamChunks("should never be reached"),
+    );
 
     const res = await postChat(server.url, { messages: [userMessage("hi")] });
     expect(res.status).toBe(200);
@@ -191,10 +103,10 @@ describe("POST /api/chat — transparent retry", () => {
   });
 
   it("does not retry a non-retryable error", async () => {
-    holders.model = sequencedModel([
+    chatMocks.model = sequenceModel(
       errorChunks(new Error("insufficient_quota")),
-      textChunks("should never be reached"),
-    ]);
+      textStreamChunks("should never be reached"),
+    );
 
     const res = await postChat(server.url, { messages: [userMessage("hi")] });
     expect(res.status).toBe(200);
@@ -205,11 +117,11 @@ describe("POST /api/chat — transparent retry", () => {
   });
 
   it("surfaces the error once the retry budget (2) is exhausted", async () => {
-    holders.model = sequencedModel([
+    chatMocks.model = sequenceModel(
       errorChunks(new Error("503 Service Unavailable")),
       errorChunks(new Error("502 Bad Gateway")),
       errorChunks(new Error("504 Gateway Timeout")),
-    ]);
+    );
 
     const res = await postChat(server.url, { messages: [userMessage("hi")] });
     expect(res.status).toBe(200);
@@ -229,16 +141,14 @@ describe("POST /api/chat — transparent retry", () => {
 
 describe("POST /api/chat — trace/analytics side effects around retry (findings #1 and #6)", () => {
   afterEach(() => {
-    holders.mcpTools = {};
+    chatMocks.mcpTools = {};
   });
 
   it("finding #1: writes a streamError trace row and fires agent_turn_failed exactly once for an error that arrives AFTER content", async () => {
-    holders.model = sequencedModel([
-      errorAfterTextChunks("partial", new Error("503 Service Unavailable")),
-    ]);
+    chatMocks.model = sequenceModel(errorAfterTextChunks("partial", new Error("503 Service Unavailable")));
     const store = recordingTraceStore();
     const analytics = recordingAnalyticsClient();
-    const { app, url } = await startServer({ traceStore: store, analytics });
+    const { url, close } = await startServer({ traceStore: store, analytics });
 
     const res = await postChat(url, { id: "tab-post-content-error", messages: [userMessage("hi")] });
     expect(res.status).toBe(200);
@@ -258,17 +168,17 @@ describe("POST /api/chat — trace/analytics side effects around retry (findings
     const failedEvents = analytics.events.filter((e) => e.event === "agent_turn_failed");
     expect(failedEvents).toHaveLength(1);
 
-    await app.close();
+    await close();
   });
 
   it("finding #6: exactly one trace row and one agent_turn_completed for a turn with one pre-content retry", async () => {
-    holders.model = sequencedModel([
+    chatMocks.model = sequenceModel(
       errorChunks(new Error("503 Service Unavailable")),
-      textChunks("Hello after retry"),
-    ]);
+      textStreamChunks("Hello after retry"),
+    );
     const store = recordingTraceStore();
     const analytics = recordingAnalyticsClient();
-    const { app, url } = await startServer({ traceStore: store, analytics });
+    const { url, close } = await startServer({ traceStore: store, analytics });
 
     const res = await postChat(url, { id: "tab-retried-success", messages: [userMessage("hi")] });
     expect(res.status).toBe(200);
@@ -282,7 +192,7 @@ describe("POST /api/chat — trace/analytics side effects around retry (findings
     const failedEvents = analytics.events.filter((e) => e.event === "agent_turn_failed");
     expect(failedEvents).toHaveLength(0);
 
-    await app.close();
+    await close();
   });
 });
 
@@ -294,7 +204,7 @@ describe("POST /api/chat — trace/analytics side effects around retry (findings
 
 describe("POST /api/chat — client disconnect during retry backoff (finding #5)", () => {
   afterEach(() => {
-    holders.mcpTools = {};
+    chatMocks.mcpTools = {};
   });
 
   it("records a client-aborted trace row and an agent_turn_failed(aborted) event", async () => {
@@ -302,15 +212,15 @@ describe("POST /api/chat — client disconnect during retry backoff (finding #5)
     // legitimate finish — the test aborts during the backoff sleep before
     // the second attempt's stream is read, so the second entry should never
     // actually matter.
-    holders.model = sequencedModel([
+    chatMocks.model = sequenceModel(
       errorChunks(new Error("503 Service Unavailable")),
-      textChunks("should never be reached"),
-    ]);
+      textStreamChunks("should never be reached"),
+    );
     const store = recordingTraceStore();
     const analytics = recordingAnalyticsClient();
     // A large-ish base delay gives the test a comfortable window to destroy
     // the connection while the backoff sleep is in progress.
-    const { app, url } = await startServer({ traceStore: store, analytics, baseDelayMs: 300 });
+    const { url, close } = await startServer({ traceStore: store, analytics, baseDelayMs: 300 });
 
     const body = JSON.stringify({
       id: "tab-backoff-abort",
@@ -362,6 +272,6 @@ describe("POST /api/chat — client disconnect during retry backoff (finding #5)
     );
     expect(abortedEvents).toHaveLength(1);
 
-    await app.close();
+    await close();
   });
 });

@@ -1,88 +1,35 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { FastifyInstance } from "fastify";
-import { buildApp } from "../src/app.js";
-import { makeConfig } from "./helpers.js";
-import {
-  GithubNotFoundError,
-  type RepoMeta,
-  type RepoTree,
-} from "../src/services/github.js";
+import { startApp, type RunningApp } from "./chatHarness.js";
+import { GithubNotFoundError } from "../src/services/github.js";
+import { FIXTURE_META, githubFixtureMocks } from "./githubRepoFixtures.js";
 
 // GitHub IO is mocked end to end: getRepoMeta/getRepoTree/getFile are faked
-// with in-memory fixtures so the route (validation, error mapping,
-// truncation/missing bookkeeping) is exercised without real network calls.
-// parseRepoRef is left real — it's pure and cheap.
-const FIXTURE_META: RepoMeta = {
-  defaultBranch: "main",
-  htmlUrl: "https://github.com/acme/webapp",
-};
-
-const FIXTURE_TREE: RepoTree = {
-  truncated: false,
-  entries: [
-    { path: "package.json", type: "blob" },
-    { path: "tailwind.config.ts", type: "blob" },
-    { path: "app/globals.css", type: "blob" },
-    { path: "src/components/ui/button.tsx", type: "blob" },
-    { path: "src/components/Header.tsx", type: "blob" },
-  ],
-};
-
-const FIXTURE_FILES: Record<string, string> = {
-  "package.json": JSON.stringify({
-    dependencies: { react: "^18.0.0", next: "^14.0.0", tailwindcss: "^3.4.0" },
-  }),
-  "tailwind.config.ts": `
-    export default {
-      theme: {
-        extend: {
-          colors: { brand: "#3b82f6" },
-        },
-      },
-    };
-  `,
-  "app/globals.css": `
-    :root {
-      --background: #ffffff;
-    }
-  `,
-};
-
-const getRepoMetaMock = vi.fn(async (owner: string, name: string) => {
+// with the in-memory acme/webapp fixtures (test/githubRepoFixtures.ts) so the
+// route (validation, error mapping, truncation/missing bookkeeping) is
+// exercised without real network calls. parseRepoRef is left real — it's
+// pure and cheap.
+const github = githubFixtureMocks(async (owner, name) => {
   if (owner === "acme" && name === "webapp") return FIXTURE_META;
   throw new GithubNotFoundError(`GitHub returned 404 for /repos/${owner}/${name}.`);
 });
-const getRepoTreeMock = vi.fn(async () => FIXTURE_TREE);
-const getFileMock = vi.fn(async (_owner: string, _name: string, _ref: string, path: string) => {
-  return FIXTURE_FILES[path] ?? null;
-});
 
-vi.mock("../src/services/github.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../src/services/github.js")>();
-  return {
-    ...actual,
-    getRepoMeta: (...args: unknown[]) =>
-      getRepoMetaMock(...(args as [string, string])),
-    getRepoTree: (...args: unknown[]) => getRepoTreeMock(...(args as [])),
-    getFile: (...args: unknown[]) => getFileMock(...(args as [string, string, string, string])),
-  };
-});
+vi.mock("../src/services/github.js", async (importOriginal) =>
+  (await import("./githubRepoFixtures.js")).githubModuleWithMocks(await importOriginal(), () => github),
+);
 
-let app: FastifyInstance | undefined;
+let running: RunningApp | undefined;
 
 afterEach(async () => {
-  getRepoMetaMock.mockClear();
-  getRepoTreeMock.mockClear();
-  getFileMock.mockClear();
-  if (app) {
-    await app.close();
-    app = undefined;
-  }
+  github.getRepoMeta.mockClear();
+  github.getRepoTree.mockClear();
+  github.getFile.mockClear();
+  await running?.close();
+  running = undefined;
 });
 
 async function startServer(): Promise<string> {
-  app = await buildApp(makeConfig(), { logger: false });
-  return app.listen({ port: 0, host: "127.0.0.1" });
+  running = await startApp();
+  return running.url;
 }
 
 function postJson(base: string, path: string, body: unknown) {
@@ -121,7 +68,7 @@ describe("POST /api/repo/brief", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { repo: { ref: string } };
     expect(body.repo.ref).toBe("feature-x");
-    expect(getRepoTreeMock).toHaveBeenCalledWith(
+    expect(github.getRepoTree).toHaveBeenCalledWith(
       "acme",
       "webapp",
       "feature-x",
@@ -159,7 +106,7 @@ describe("POST /api/repo/brief", () => {
   // TypeError) into a 400 blamed on the caller, and skipped logging since
   // the log branch only fired for status >= 500.
   it("returns 500, not 400, for an unexpected non-GitHub error, and never leaks the raw message", async () => {
-    getRepoMetaMock.mockImplementationOnce(async () => {
+    github.getRepoMeta.mockImplementationOnce(async () => {
       throw new TypeError("Cannot read properties of undefined (reading 'x')");
     });
     const base = await startServer();
@@ -191,7 +138,7 @@ describe("POST /api/repo/files", () => {
   });
 
   it("truncates a file larger than the 64KB per-file cap", async () => {
-    getFileMock.mockImplementationOnce(async () => "x".repeat(70_000));
+    github.getFile.mockImplementationOnce(async () => "x".repeat(70_000));
     const base = await startServer();
     const res = await postJson(base, "/api/repo/files", {
       repo: "acme/webapp",
@@ -246,7 +193,7 @@ describe("POST /api/repo/files", () => {
   });
 
   it("returns 500, not 400, for an unexpected non-GitHub error while resolving the repo", async () => {
-    getRepoMetaMock.mockImplementationOnce(async () => {
+    github.getRepoMeta.mockImplementationOnce(async () => {
       throw new TypeError("boom");
     });
     const base = await startServer();

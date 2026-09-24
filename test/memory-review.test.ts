@@ -1,13 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
-import { MockLanguageModelV3 } from "ai/test";
-import type { LanguageModelV3GenerateResult } from "@ai-sdk/provider";
 import type { ModelMessage, ToolSet } from "ai";
 import { tool } from "ai";
 import { z } from "zod";
 import { makeConfig } from "./helpers.js";
+import {
+  fakeReviewCounterStore,
+  generateCaptureRig,
+  reviewInput,
+  textResult,
+  neverRespondingGenerateModel,
+  throwingGenerateModel,
+  toolCallResult,
+} from "./reviewFakes.js";
 import { DEFAULT_MEMORY_REVIEW_INTERVAL } from "../src/config.js";
 import { MEMORY_REVIEW_PROMPT } from "../src/ai/memory/prompts.js";
-import { penTools } from "../src/ai/tools.js";
 import type { MemoryStore } from "../src/ai/memory/store.js";
 
 const holders = vi.hoisted(() => ({ model: undefined as unknown }));
@@ -15,102 +21,14 @@ vi.mock("../src/ai/provider.js", () => ({
   createModel: vi.fn(() => holders.model),
 }));
 
-const USAGE = {
-  inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
-  outputTokens: { total: 5, text: 5, reasoning: 0 },
-};
-
-const capturedCalls: Array<{ prompt: unknown; tools: unknown }> = [];
-
-// generateText (used by maybeRunReview) calls doGenerate, not doStream — the
-// streaming seam other tests use (e.g. chat-route.test.ts) is only for
-// streamText. Follows the same mock shape as test/showcase-runner.test.ts,
-// which also drives generateText.
-function reviewModel(result: LanguageModelV3GenerateResult): MockLanguageModelV3 {
-  return new MockLanguageModelV3({
-    doGenerate: async (options: { prompt: unknown; tools?: unknown }) => {
-      capturedCalls.push({ prompt: options.prompt, tools: options.tools });
-      return result;
-    },
-  });
-}
-
-function textResult(text: string): LanguageModelV3GenerateResult {
-  return {
-    content: [{ type: "text", text }],
-    finishReason: { unified: "stop", raw: "stop" },
-    usage: USAGE,
-    warnings: [],
-  };
-}
-
-function toolCallResult(
-  toolName: string,
-  input: Record<string, unknown>,
-): LanguageModelV3GenerateResult {
-  return {
-    content: [
-      {
-        type: "tool-call",
-        toolCallId: `call-${toolName}-${Math.random()}`,
-        toolName,
-        input: JSON.stringify(input),
-      },
-    ],
-    finishReason: { unified: "tool-calls", raw: "tool_calls" },
-    usage: USAGE,
-    warnings: [],
-  };
-}
-
-// Same "1-based index" gotcha as test/showcase-runner.test.ts's mockModel —
-// MockLanguageModelV3's array form indexes by call count *after* pushing, so
-// a plain counter is used instead of passing the array straight through.
-function multiStepReviewModel(results: LanguageModelV3GenerateResult[]): MockLanguageModelV3 {
-  let call = 0;
-  return new MockLanguageModelV3({
-    doGenerate: async (options: { prompt: unknown; tools?: unknown }) => {
-      capturedCalls.push({ prompt: options.prompt, tools: options.tools });
-      const result = results[Math.min(call, results.length - 1)];
-      call += 1;
-      return result;
-    },
-  });
-}
-
-function fakeStore(memoryReviewDue: boolean): MemoryStore {
-  return {
-    loadSnapshot: vi.fn(async () => ({ memory: [], user: [] })),
-    applyOperations: vi.fn(async () => ({
-      ok: true as const,
-      entries: ["x"],
-      usage: { current: 1, limit: 1375 },
-    })),
-    bumpCounters: vi.fn(async () => ({
-      turnsSinceMemory: memoryReviewDue ? 10 : 1,
-      stepsSinceSkill: 3,
-      memoryReviewDue,
-    })),
-    writeAudit: vi.fn(),
-    close: vi.fn(),
-  } as unknown as MemoryStore;
-}
+// maybeRunReview drives generateText (doGenerate) — see test/reviewFakes.ts.
+const { capturedCalls, reviewModel, multiStepReviewModel } = generateCaptureRig();
+const fakeStore = (memoryReviewDue: boolean) => fakeReviewCounterStore({ memoryReviewDue });
 
 const MESSAGES: ModelMessage[] = [{ role: "user", content: "I only ever want short answers" }];
 
 function input(overrides: Record<string, unknown> = {}) {
-  return {
-    config: makeConfig({ MEMORY_ENABLED: true }),
-    store: fakeStore(true),
-    userId: "u1",
-    system: "SYSTEM PROMPT",
-    turnTools: penTools as unknown as ToolSet,
-    modelMessages: MESSAGES,
-    assistantText: "Understood.",
-    stepCount: 3,
-    turnComplete: true,
-    ...overrides,
-  };
+  return reviewInput({ store: fakeStore(true), modelMessages: MESSAGES }, overrides);
 }
 
 describe("maybeRunReview", () => {
@@ -392,18 +310,7 @@ describe("maybeRunReview", () => {
   // forever — the run has a wall-clock cap.
   it("times out rather than hanging forever when the model never responds", async () => {
     const { maybeRunReview } = await import("../src/ai/selfimprove/review.js");
-    holders.model = new MockLanguageModelV3({
-      // A real provider's underlying fetch would reject once the abortSignal
-      // fires; this simulates that (a bare `new Promise(() => {})` would
-      // ignore the signal entirely and hang the test instead of exercising
-      // the timeout path).
-      doGenerate: (options: { abortSignal?: AbortSignal }) =>
-        new Promise((_resolve, reject) => {
-          options.abortSignal?.addEventListener("abort", () => {
-            reject(options.abortSignal!.reason);
-          });
-        }),
-    });
+    holders.model = neverRespondingGenerateModel();
 
     const store = fakeStore(true);
     const outcome = await maybeRunReview(input({ store, reviewTimeoutMs: 20 }));
@@ -421,11 +328,7 @@ describe("maybeRunReview", () => {
 
   it("audits a review that throws, and reports the error on the row", async () => {
     const { maybeRunReview } = await import("../src/ai/selfimprove/review.js");
-    holders.model = new MockLanguageModelV3({
-      doGenerate: async () => {
-        throw new Error("provider exploded");
-      },
-    });
+    holders.model = throwingGenerateModel();
     const store = fakeStore(true);
 
     expect(await maybeRunReview(input({ store }))).toBe("disabled");

@@ -1,65 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
 import { makeConfig } from "./helpers.js";
-import type { RepoMeta, RepoTree } from "../src/services/github.js";
+import { FIXTURE_META, FIXTURE_TREE, githubFixtureMocks } from "./githubRepoFixtures.js";
 
 // Regression test for the buildDesignBrief -> buildDesignBriefFromSource
 // refactor (pen-editor-backend/CLAUDE.md's split-execution architecture
 // aside — this one is purely "did extracting the core change GitHub
-// behavior"). getRepoMeta/getRepoTree/getFile are mocked exactly like
-// test/repo-route.test.ts's fixtures so this pins the SAME brief shape that
-// existed before the refactor, plus the new `source` field.
+// behavior"). getRepoMeta/getRepoTree/getFile serve the same acme/webapp
+// fixtures test/repo-route.test.ts uses (test/githubRepoFixtures.ts), so this
+// pins the SAME brief shape that existed before the refactor, plus the new
+// `source` field.
+const github = githubFixtureMocks();
 
-const FIXTURE_META: RepoMeta = {
-  defaultBranch: "main",
-  htmlUrl: "https://github.com/acme/webapp",
-};
-
-const FIXTURE_TREE: RepoTree = {
-  truncated: false,
-  entries: [
-    { path: "package.json", type: "blob" },
-    { path: "tailwind.config.ts", type: "blob" },
-    { path: "app/globals.css", type: "blob" },
-    { path: "src/components/ui/button.tsx", type: "blob" },
-    { path: "src/components/Header.tsx", type: "blob" },
-  ],
-};
-
-const FIXTURE_FILES: Record<string, string> = {
-  "package.json": JSON.stringify({
-    dependencies: { react: "^18.0.0", next: "^14.0.0", tailwindcss: "^3.4.0" },
-  }),
-  "tailwind.config.ts": `
-    export default {
-      theme: {
-        extend: {
-          colors: { brand: "#3b82f6" },
-        },
-      },
-    };
-  `,
-  "app/globals.css": `
-    :root {
-      --background: #ffffff;
-    }
-  `,
-};
-
-const getRepoMetaMock = vi.fn(async () => FIXTURE_META);
-const getRepoTreeMock = vi.fn(async () => FIXTURE_TREE);
-const getFileMock = vi.fn(async (_owner: string, _name: string, _ref: string, path: string) => {
-  return FIXTURE_FILES[path] ?? null;
-});
-
-vi.mock("../src/services/github.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../src/services/github.js")>();
-  return {
-    ...actual,
-    getRepoMeta: (...args: unknown[]) => getRepoMetaMock(...(args as [string, string])),
-    getRepoTree: (...args: unknown[]) => getRepoTreeMock(...(args as [])),
-    getFile: (...args: unknown[]) => getFileMock(...(args as [string, string, string, string])),
-  };
-});
+vi.mock("../src/services/github.js", async (importOriginal) =>
+  (await import("./githubRepoFixtures.js")).githubModuleWithMocks(await importOriginal(), () => github),
+);
 
 describe("buildDesignBrief (post-refactor wrapper over buildDesignBriefFromSource)", () => {
   it("still produces the same brief shape as before the source-agnostic refactor, now with source: \"github\"", async () => {
@@ -88,7 +42,7 @@ describe("buildDesignBrief (post-refactor wrapper over buildDesignBriefFromSourc
   });
 
   it("surfaces the GitHub-specific truncated-tree note through initialNotes, unchanged", async () => {
-    getRepoTreeMock.mockImplementationOnce(async () => ({ ...FIXTURE_TREE, truncated: true }));
+    github.getRepoTree.mockImplementationOnce(async () => ({ ...FIXTURE_TREE, truncated: true }));
     const { buildDesignBrief } = await import("../src/services/repoDesignSystem.js");
     const config = makeConfig();
 
@@ -108,7 +62,7 @@ describe("buildDesignBrief (post-refactor wrapper over buildDesignBriefFromSourc
   // regression toward the caller-blaming phrasing is caught on the GitHub
   // side too, not just in repo-brief-local-route.test.ts.
   it("uses transport-neutral wording ('could not be read') for a GitHub file getFile returned null for", async () => {
-    getFileMock.mockImplementationOnce(async () => null); // package.json
+    github.getFile.mockImplementationOnce(async () => null); // package.json
     const { buildDesignBrief } = await import("../src/services/repoDesignSystem.js");
     const config = makeConfig();
 

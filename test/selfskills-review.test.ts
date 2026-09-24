@@ -1,7 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { MockLanguageModelV3 } from "ai/test";
-import type { LanguageModelV3GenerateResult } from "@ai-sdk/provider";
 import { makeConfig } from "./helpers.js";
+import { capturingGenerateModel, textResult, type CapturedGenerateCall } from "./reviewFakes.js";
 import { createMemoryStore, type MemoryStore } from "../src/ai/memory/store.js";
 import { createLearnedSkillStore, type LearnedSkillStore } from "../src/ai/skills/learnedStore.js";
 import { MEMORY_REVIEW_PROMPT } from "../src/ai/memory/prompts.js";
@@ -12,27 +11,10 @@ vi.mock("../src/ai/provider.js", () => ({
   createModel: vi.fn(() => holders.model),
 }));
 
-const USAGE = {
-  inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
-  outputTokens: { total: 5, text: 5, reasoning: 0 },
-};
+const capturedCalls: CapturedGenerateCall[] = [];
 
-const capturedCalls: Array<{ prompt: unknown; tools: unknown }> = [];
-
-function reviewModel(text = "Nothing to save."): MockLanguageModelV3 {
-  return new MockLanguageModelV3({
-    doGenerate: async (options: { prompt: unknown; tools?: unknown }) => {
-      capturedCalls.push({ prompt: options.prompt, tools: options.tools });
-      const result: LanguageModelV3GenerateResult = {
-        content: [{ type: "text", text }],
-        finishReason: { unified: "stop", raw: "stop" },
-        usage: USAGE,
-        warnings: [],
-      };
-      return result;
-    },
-  });
-}
+const reviewModel = (text = "Nothing to save.") =>
+  capturingGenerateModel(capturedCalls, textResult(text));
 
 function lastPromptText(): string {
   const call = capturedCalls.at(-1) as { prompt: Array<Record<string, unknown>> };

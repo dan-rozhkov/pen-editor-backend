@@ -2,8 +2,9 @@ import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { loadSkills } from "../src/ai/skills.js";
 import { getSelfSkillTools } from "../src/ai/skills/tool.js";
 import { createSkillRunContext, type SkillRunContext } from "../src/ai/skills/runContext.js";
-import type { LearnedSkill, LearnedSkillStore } from "../src/ai/skills/learnedStore.js";
+import type { LearnedSkill } from "../src/ai/skills/learnedStore.js";
 import type { TraceQueryable } from "../src/tracing/traceStore.js";
+import { fakeLearnedSkillStore } from "./userSkillFakes.js";
 
 const noopDb: TraceQueryable = {
   async query() {
@@ -11,45 +12,6 @@ const noopDb: TraceQueryable = {
   },
   async end() {},
 };
-
-function memoryStore(initial: LearnedSkill[] = []) {
-  const skills = new Map(initial.map((s) => [s.name, { ...s }]));
-  const store: LearnedSkillStore = {
-    async listActive() {
-      return [...skills.values()].filter((s) => s.state === "active");
-    },
-    async get(name) {
-      return skills.get(name) ?? null;
-    },
-    async create({ name, description, body }) {
-      skills.set(name, {
-        name,
-        description,
-        body,
-        createdBy: "agent",
-        state: "active",
-        useCount: 0,
-        viewCount: 0,
-      });
-    },
-    async replaceBody(name, body) {
-      const s = skills.get(name);
-      if (s) s.body = body;
-    },
-    async remove(name) {
-      return skills.delete(name);
-    },
-    async bumpUse(name) {
-      const s = skills.get(name);
-      if (s) s.useCount += 1;
-    },
-    async bumpView(name) {
-      const s = skills.get(name);
-      if (s) s.viewCount += 1;
-    },
-  };
-  return { store, skills };
-}
 
 const learned: LearnedSkill = {
   name: "reading-canvas-state",
@@ -74,7 +36,7 @@ describe("skill_view", () => {
   });
 
   function build(initial: LearnedSkill[] = [learned]) {
-    const { store, skills } = memoryStore(initial);
+    const { store, skills } = fakeLearnedSkillStore(initial);
     const tools = getSelfSkillTools({
       store,
       runContext,
@@ -87,7 +49,7 @@ describe("skill_view", () => {
   }
 
   it("is absent when includeView is false", () => {
-    const { store } = memoryStore([learned]);
+    const { store } = fakeLearnedSkillStore([learned]);
     const tools = getSelfSkillTools({
       store,
       runContext,
