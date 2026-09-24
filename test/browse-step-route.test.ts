@@ -175,7 +175,16 @@ describe("POST /api/browse/step", () => {
   });
 
   it("refuses to type into a password field end to end", async () => {
-    stubJev({ op: choice("TYPE_TEXT"), target_type: choice("9") });
+    // text_candidate also rides along on this fan-out now (browse-speed
+    // contract item 1): validBody's goal ("accept the cookie banner") is a
+    // short, comma-free sentence, so extractTextCandidates' segment
+    // fallback offers it whole as a candidate, and this element is
+    // TYPE_TEXT-capable — see buildBrowseStepQuestions. The real
+    // systemone.ts client throws (SystemOneValidationError -> `retry`) if
+    // any SENT question id is missing an answer, so it must be included
+    // here even though the password rule short-circuits before it's ever
+    // read.
+    stubJev({ op: choice("TYPE_TEXT"), target_type: choice("9"), text_candidate: choice("none") });
     const res = await postStep({
       ...validBody,
       elements: [

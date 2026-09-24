@@ -8,7 +8,7 @@ import type {
   SystemOneClient,
   SystemOneQuestion,
 } from "../services/systemone.js";
-import { scrubPii, findPiiSpans } from "../analysis/pii.js";
+import { scrubPii, findPiiSpans, PII_KINDS, type PiiSpan } from "../analysis/pii.js";
 
 // The Jev-driven decision core of POST /api/browse/step (see
 // docs/superpowers/specs/2026-09-18-browse-task-jev-loop-design.md §2, and
@@ -488,10 +488,16 @@ export interface BrowseStepResult {
   /** Set on a gate failure when the cascade was tried and rejected — why. */
   cascadeNote?: string;
   /** TYPE_TEXT only: whether `text` came from the fast candidate-extraction
-   * path (a literal substring of the goal, chosen by a second small Jev
-   * call — see chooseTypeTextCandidate) or the slower generative
-   * generateTypeText fallback. Undefined for every other operation. */
-  textSource?: "goal" | "llm";
+   * path and, if so, which call answered it — "goal-folded" when the
+   * `text_candidate` head riding along on the MAIN fan-out (see
+   * buildBrowseStepQuestions) was confident enough to use directly (no
+   * second Jev round trip at all — see decideBrowseStepCore's TYPE_TEXT
+   * branch and speed contract item 1), "goal" when that folded answer was
+   * missing/malformed/below-threshold and the separate, isolated
+   * chooseTypeTextCandidate call was used instead (the pre-fold behavior) —
+   * or "llm" for the slower generative generateTypeText fallback. Undefined
+   * for every other operation. */
+  textSource?: "goal-folded" | "goal" | "llm";
   /** Per-step timing breakdown (browse-speed contract) — never page text,
    * safe to log verbatim. `jevMs` covers the primary fan-out call only;
    * `textMs` (TYPE_TEXT only) covers whichever of the fast candidate call /
@@ -510,6 +516,14 @@ const OP_ID = "op";
 const GOAL_MET_ID = "goal_met";
 const DEAD_END_ID = "dead_end";
 const SELECT_OPTION_ID = "select_option";
+/** TYPE_TEXT's fast candidate-pick head — folded into the MAIN fan-out by
+ * buildBrowseStepQuestions when preconditions hold (browse-speed contract
+ * item 1), and also the id of the separate, isolated fallback call
+ * chooseTypeTextCandidate makes when the folded answer isn't usable. Shared
+ * between the two so a folded answer and a standalone one are read with the
+ * exact same id/criteria shape. */
+const TEXT_CANDIDATE_ID = "text_candidate";
+const TEXT_CANDIDATE_NONE = "none";
 const TARGET_IDS: Record<TargetableOp, string> = {
   CLICK: "target_click",
   TYPE_TEXT: "target_type",
@@ -577,9 +591,24 @@ function elementDigestLine(el: BrowseStepElement): string {
  * decideBrowseStep), one `choice` question for the operation, plus one
  * `choice` question per operation-specific target head — but only for
  * heads that actually have a candidate element, since a `choice` question
- * cannot be asked with empty criteria. */
+ * cannot be asked with empty criteria.
+ *
+ * `textCandidates` (browse-speed contract item 1, default `[]`) folds
+ * TYPE_TEXT's text pick into this SAME fan-out, instead of paying a second
+ * Jev round trip after the op head resolves to TYPE_TEXT (live timings:
+ * 283–1904ms just for that second call, on top of the ~300ms main
+ * fan-out). The caller passes the goal-derived candidates only when
+ * extractTextCandidates found some AND they aren't ambiguous same-kind PII
+ * (see decideBrowseStepCore) — an empty array here, the default, omits the
+ * head entirely, byte-identical to today's behavior. Also omitted when the
+ * element set has no TYPE_TEXT-capable element at all: asking would be a
+ * wasted head, since the answer could never be used regardless of what the
+ * op head picks. The answer is read back in decideBrowseStepCore ONLY if
+ * the op head lands on TYPE_TEXT — for every other op it's simply ignored,
+ * exactly like a target head built for an op that wasn't chosen. */
 export function buildBrowseStepQuestions(
   elements: BrowseStepElement[],
+  textCandidates: string[] = [],
 ): Record<string, SystemOneQuestion> {
   const questions: Record<string, SystemOneQuestion> = {
     [GOAL_MET_ID]: {
@@ -619,6 +648,19 @@ export function buildBrowseStepQuestions(
       type: "choice",
       instructions: TARGET_HEAD_INSTRUCTIONS[op],
       criteria,
+    };
+  }
+
+  if (textCandidates.length > 0 && elements.some((el) => el.ops.includes("TYPE_TEXT"))) {
+    questions[TEXT_CANDIDATE_ID] = {
+      type: "choice",
+      instructions:
+        "If the next action types into a field, which value from the goal should be typed " +
+        'into it? Some candidates are shown only as a placeholder naming their kind (e.g. ' +
+        '"[candidate 2: email]") rather than their real text — choose by kind/position, the ' +
+        `real value is filled in locally. Choose "${TEXT_CANDIDATE_NONE}" if the next action ` +
+        "won't type text at all, or none of these values belongs wherever it types.",
+      criteria: buildTextCandidateCriteria(textCandidates),
     };
   }
 
@@ -749,44 +791,144 @@ const typeTextSchema = z.object({
   text: z.string().max(200),
 });
 
+/** The only kinds `buildNumberedPlaceholderGoal` ever hands the model a
+ * NUMBERED, reversible token for (review fix 2(a)) — every other PII kind
+ * (credentials, token, blob, data URL, and any future kind `pii.ts` adds)
+ * gets a bare, non-reversible tag instead (see the loop below), never
+ * entered into `tokenMap` at all. Email/phone are the only kinds a page
+ * field legitimately asks an agent to TYPE — a bare "[TOKEN]"/"[BLOB]"/
+ * "[CREDENTIALS]" can never be resolved back to a real value even if the
+ * model echoes it (resolvePlaceholderTokens rejects it via
+ * UNMAPPED_PLACEHOLDER_RE below), which is exactly what a hostile field
+ * label trying to coax a secret out of the goal must hit. */
+const NUMBERABLE_PII_KINDS = new Set(["email", "phone"]);
+
+/** Every bracket-tag PREFIX scrubbing can actually produce, derived from
+ * `pii.ts`'s own kind list (PII_KINDS) rather than hardcoded here — plus
+ * "SENSITIVE", candidatePiiKind's own fallback name for a kind that isn't
+ * individually named in PII_KIND_PRIORITY (reserved for a future PII rule;
+ * not currently reachable, but named here so this list stays in sync with
+ * that fallback too). Review fix 2(c): the OLD regex (`\[[A-Z][A-Z_]*...\]`)
+ * matched ANY bracketed all-caps word, so ordinary text the goal legitimately
+ * wants typed verbatim — a literal "[WIP] Fix login" — was misread as a
+ * leaked/hallucinated placeholder and rejected. Deriving the prefix list
+ * from what scrubbing can actually emit means only a REAL placeholder shape
+ * is ever flagged. */
+const PLACEHOLDER_KIND_PREFIXES = [
+  ...PII_KINDS.map((kind) => kind.toUpperCase().replace(/\s+/g, "_")),
+  "SENSITIVE",
+];
+
 /** Bracket placeholder found in a `generateTypeText` response that wasn't
  * one of the tokens `buildNumberedPlaceholderGoal` handed the model — either
  * an unmapped/hallucinated token (e.g. "[EMAIL_9]" when the goal only had
- * one email) or the model reverting to the old un-numbered style
- * ("[EMAIL]"). Matches both shapes so either is rejected. */
-const UNMAPPED_PLACEHOLDER_RE = /\[[A-Z][A-Z_]*(?:_\d+)?\]/;
+ * one email), a bare non-reversible tag for a non-numbered kind leaking
+ * through verbatim (e.g. "[TOKEN]"), or the model reverting to the old
+ * un-numbered style for a numbered kind ("[EMAIL]"). Matches both the bare
+ * and numbered shape, but ONLY for a prefix scrubbing can actually produce
+ * (PLACEHOLDER_KIND_PREFIXES) — never an arbitrary bracketed word. */
+const UNMAPPED_PLACEHOLDER_RE = new RegExp(
+  `\\[(?:${PLACEHOLDER_KIND_PREFIXES.join("|")})(?:_\\d+)?\\]`,
+);
+
+/** Picks the single kind that represents a group of overlapping spans'
+ * kinds, for mergeOverlappingPiiSpans below. Deliberately NOT a plain
+ * "highest PII_KIND_PRIORITY wins" — PII_KIND_PRIORITY ranks email above
+ * credentials (arbitrary but stable for candidatePiiKind's own, unrelated
+ * purpose: naming a single already-exact-match candidate), which would be
+ * actively dangerous here: a credentials span (`https://admin:hunter2@`)
+ * commonly overlaps the email regex's match on its own trailing
+ * `user@host` (the credentials rule's char class excludes `:`, so the two
+ * regexes start at different positions but cover overlapping text). If
+ * "email wins" governed the merge, the UNION span — admin:hunter2@ INCLUDED
+ * — would get labeled "email" and, in buildNumberedPlaceholderGoal, become
+ * a NUMBERED, reversible token whose mapped raw value is the credentialed
+ * URL fragment, password and all. Any non-numerable kind in the group
+ * (NUMBERABLE_PII_KINDS — currently credentials/token/blob/data URL) must
+ * always win over every numerable one, full stop; ties within the
+ * non-numerable (or, failing that, numerable) subset fall back to
+ * PII_KIND_PRIORITY order, same as candidatePiiKind's own tie-break. */
+function pickMergedPiiKind(kinds: string[]): string {
+  const nonNumerable = kinds.filter((k) => !NUMBERABLE_PII_KINDS.has(k));
+  const pool = nonNumerable.length > 0 ? nonNumerable : kinds;
+  return pool.reduce((best, k) => (piiKindPriorityIndex(k) < piiKindPriorityIndex(best) ? k : best));
+}
+
+/** Merges overlapping/touching PiiSpans into UNION spans (review fix 2(b)):
+ * the OLD code walked spans in start order and, on hitting one whose start
+ * fell inside the previous span's already-consumed range, simply `continue`d
+ * — SKIPPING that span's redaction entirely rather than extending the
+ * redacted range to cover it. Since the loop's tail copy
+ * (`text += goal.slice(cursor)`) runs unconditionally at the end, a skipped
+ * later span's own text — and everything after it, up to the next
+ * non-overlapping span — leaked into the "redacted" goal verbatim (e.g. a
+ * phone-shaped digit run immediately followed, with no separator, by an
+ * email whose local part starts mid-digit-run: "...4567 1990john@x.com").
+ * Each merged span's final kind is picked by pickMergedPiiKind (see its own
+ * comment for why that's not simply "highest PII_KIND_PRIORITY wins"), so
+ * the union redacts as one placeholder rather than needing to represent
+ * more than one kind at once. */
+function mergeOverlappingPiiSpans(spans: PiiSpan[]): PiiSpan[] {
+  const sorted = [...spans].sort((a, b) => a.start - b.start || a.end - b.end);
+  const merged: Array<{ start: number; end: number; kinds: string[] }> = [];
+  for (const span of sorted) {
+    const last = merged[merged.length - 1];
+    if (last && span.start < last.end) {
+      last.end = Math.max(last.end, span.end);
+      last.kinds.push(span.kind);
+    } else {
+      merged.push({ start: span.start, end: span.end, kinds: [span.kind] });
+    }
+  }
+  return merged.map((m) => ({ start: m.start, end: m.end, kind: pickMergedPiiKind(m.kinds) }));
+}
 
 /** Builds a vendor-safe copy of `goal` with every PII span (via
- * findPiiSpans — the SAME detector scrubPii itself redacts with) replaced
- * by a NUMBERED placeholder token ("[EMAIL_1]", "[EMAIL_2]", "[PHONE_1]",
- * …) instead of scrubPii's bare "[EMAIL]"/"[PHONE]". A bare tag collapses
- * every span of one kind into an indistinguishable blank — fine for the
- * rest of this file, which never needs to tell two redacted emails apart,
- * but wrong for `generateTypeText`: on its fallback paths (same-kind PII
- * ambiguity, a kind/field mismatch, a low fast-path peak, a Jev timeout)
- * the goal may legitimately contain MULTIPLE emails/phones and the model
- * has to be able to say which one belongs in this field. Numbering keeps
- * that distinction while still never putting the raw value in the prompt —
- * the model is told it may echo a token back verbatim, and
- * `resolvePlaceholderTokens` below substitutes the real value locally
- * afterward. Returns the rewritten text plus the token→raw-value map
- * (kept only for that local substitution, never sent anywhere). */
+ * findPiiSpans — the SAME detector scrubPii itself redacts with, first
+ * merged via mergeOverlappingPiiSpans so no span is ever silently skipped —
+ * review fix 2(b)) replaced by a placeholder token. Only email/phone spans
+ * (NUMBERABLE_PII_KINDS, review fix 2(a)) get a NUMBERED, reversible token
+ * ("[EMAIL_1]", "[EMAIL_2]", "[PHONE_1]", …) instead of scrubPii's bare
+ * "[EMAIL]"/"[PHONE]" — every other kind (credentials, token, blob, data
+ * URL, …) gets scrubPii's own bare tag and is NEVER entered into
+ * `tokenMap`, so it can never be resolved back to a real value no matter
+ * what the model echoes (see NUMBERABLE_PII_KINDS' own comment for why —
+ * there is no field a browsing agent should ever type a credential, token,
+ * or blob into). A bare tag for a numbered kind collapses every span of
+ * that kind into an indistinguishable blank — fine for the rest of this
+ * file, which never needs to tell two redacted emails apart, but wrong for
+ * `generateTypeText`: on its fallback paths (same-kind PII ambiguity, a
+ * kind/field mismatch, a low fast-path peak, a Jev timeout) the goal may
+ * legitimately contain MULTIPLE emails/phones and the model has to be able
+ * to say which one belongs in this field. Numbering keeps that distinction
+ * while still never putting the raw value in the prompt — the model is told
+ * it may echo a numbered token back verbatim, and `resolvePlaceholderTokens`
+ * below substitutes the real value locally afterward. Returns the rewritten
+ * text plus the token→raw-value map (kept only for that local substitution,
+ * never sent anywhere; only ever holds email/phone entries). */
 export function buildNumberedPlaceholderGoal(goal: string): {
   text: string;
   tokenMap: Map<string, string>;
 } {
-  const spans = [...findPiiSpans(goal)].sort((a, b) => a.start - b.start);
+  const spans = mergeOverlappingPiiSpans(findPiiSpans(goal));
   const tokenMap = new Map<string, string>();
   const counts = new Map<string, number>();
   let text = "";
   let cursor = 0;
   for (const span of spans) {
-    if (span.start < cursor) continue; // overlapping spans (shouldn't happen) — keep the first
+    if (span.start < cursor) continue; // still-overlapping after merge (shouldn't happen) — keep the first
     const prefix = span.kind.toUpperCase().replace(/\s+/g, "_");
-    const n = (counts.get(prefix) ?? 0) + 1;
-    counts.set(prefix, n);
-    const token = `[${prefix}_${n}]`;
-    tokenMap.set(token, goal.slice(span.start, span.end));
+    let token: string;
+    if (NUMBERABLE_PII_KINDS.has(span.kind)) {
+      const n = (counts.get(prefix) ?? 0) + 1;
+      counts.set(prefix, n);
+      token = `[${prefix}_${n}]`;
+      tokenMap.set(token, goal.slice(span.start, span.end));
+    } else {
+      // Bare, non-reversible tag — deliberately NOT added to tokenMap (see
+      // this function's own comment and NUMBERABLE_PII_KINDS').
+      token = `[${prefix}]`;
+    }
     text += goal.slice(cursor, span.start) + token;
     cursor = span.end;
   }
@@ -1053,6 +1195,20 @@ export function extractTextCandidates(goal: string): string[] {
     }
 
     seen.add(key);
+    // Review fix 2(a): credentials/token/blob candidates are dropped
+    // outright, never offered to the vendor at all — even as a
+    // kind-only "[candidate N: token]" placeholder. Unlike email/phone,
+    // there is no field on a page that legitimately wants a credential,
+    // API token, or binary blob TYPED into it; the only way one of these
+    // ever reaches `candidates` is a value the goal mentions in passing
+    // (e.g. "the API key sk-... goes in the settings field"), and a
+    // hostile page could otherwise coax a confident-looking Choice pick
+    // into re-typing that secret verbatim (`candidates[index]` is always
+    // the REAL, unscrubbed value once chosen — see this function's own
+    // comment). Email/phone stay eligible: those are exactly the kinds
+    // fields legitimately ask a browsing agent to type.
+    const kind = candidatePiiKind(span.text);
+    if (kind === "credentials" || kind === "token" || kind === "blob") continue;
     candidates.push(span.text);
   }
 
@@ -1065,6 +1221,18 @@ export function extractTextCandidates(goal: string): string[] {
 // affects which single kind name is reported, never whether the candidate
 // is flagged at all.
 const PII_KIND_PRIORITY = ["email", "phone", "token", "blob", "data URL", "credentials"];
+
+/** Index of `kind` in PII_KIND_PRIORITY (lower = higher priority), or the
+ * list's length for a kind not named in it — never negative/-1, so an
+ * unrecognized kind sorts as LOWEST priority rather than (via a stray -1)
+ * comparing as highest. Shared by candidatePiiKind's own lookup above and
+ * mergeOverlappingPiiSpans (buildNumberedPlaceholderGoal's helper, earlier
+ * in this file — safe to reference PII_KIND_PRIORITY from there despite the
+ * later declaration; see that call site's own comment). */
+function piiKindPriorityIndex(kind: string): number {
+  const i = PII_KIND_PRIORITY.indexOf(kind);
+  return i === -1 ? PII_KIND_PRIORITY.length : i;
+}
 
 /** What KIND of PII a candidate contains, if any — never the candidate
  * itself. Built on findPiiSpans (the SAME span-finder extractTextCandidates
@@ -1144,8 +1312,24 @@ export function hasAmbiguousPiiCandidates(candidates: string[]): boolean {
   return [...counts.values()].some((count) => count > 1);
 }
 
-const TEXT_CANDIDATE_ID = "text_candidate";
-const TEXT_CANDIDATE_NONE = "none";
+/** Shared criteria-builder for the TEXT_CANDIDATE_ID head, used both when it
+ * rides along on the main fan-out (buildBrowseStepQuestions) and by the
+ * standalone fallback call below — so a folded answer and a standalone one
+ * are validated (membership check) against byte-identical criteria keys.
+ * Never renders a flagged candidate's raw text (see candidatePiiKind) —
+ * only a placeholder naming its kind, exactly as chooseTypeTextCandidate's
+ * own prior behavior did. */
+function buildTextCandidateCriteria(candidates: string[]): Record<string, string> {
+  const criteria: Record<string, string> = {};
+  candidates.forEach((candidate, i) => {
+    const kind = candidatePiiKind(candidate);
+    criteria[String(i)] = kind
+      ? `[candidate ${i}: ${kind}]`
+      : truncateLabel(candidate, MAX_OPTION_CHARS);
+  });
+  criteria[TEXT_CANDIDATE_NONE] = "None of these values belongs in this field.";
+  return criteria;
+}
 
 /** Second, small Jev `evaluate()` call — the fast path for TYPE_TEXT's
  * text, mirroring chooseSelectOption's shape exactly: a bounded, enumerable
@@ -1171,14 +1355,7 @@ async function chooseTypeTextCandidate(
   signal: AbortSignal,
 ): Promise<{ text: string; peak: number; confidence: number; model: string } | null> {
   const label = truncateLabel(fieldLabel, 120);
-  const criteria: Record<string, string | null> = {};
-  candidates.forEach((candidate, i) => {
-    const kind = candidatePiiKind(candidate);
-    criteria[String(i)] = kind
-      ? `[candidate ${i}: ${kind}]`
-      : truncateLabel(candidate, MAX_OPTION_CHARS);
-  });
-  criteria[TEXT_CANDIDATE_NONE] = "None of these values belongs in this field.";
+  const criteria = buildTextCandidateCriteria(candidates);
 
   let result;
   try {
@@ -1202,7 +1379,25 @@ async function chooseTypeTextCandidate(
     return null;
   }
 
-  const answer = result.answers[TEXT_CANDIDATE_ID];
+  const parsed = parseTextCandidateAnswer(result.answers[TEXT_CANDIDATE_ID], candidates, criteria);
+  return parsed ? { ...parsed, model: result.model } : null;
+}
+
+/** Shared validation for a `text_candidate` answer — used both here
+ * (chooseTypeTextCandidate's standalone call) and by the folded read in
+ * decideBrowseStepCore (browse-speed contract item 1), so the two paths
+ * apply byte-identical checks: malformed-answer/empty-distribution
+ * discipline (finding #7), "none of these", membership in the SAME
+ * criteria the question was built from rather than Number() coercion
+ * (finding #9 / addendum E), and the PEAK_THRESHOLD_TEXT_CANDIDATE gate.
+ * Returns `null` for "not usable" in every one of those cases — the caller
+ * decides what "not usable" means for it (fall back to a standalone call,
+ * or straight to generateTypeText). */
+function parseTextCandidateAnswer(
+  answer: SystemOneAnswer | undefined,
+  candidates: string[],
+  criteria: Record<string, string>,
+): { text: string; peak: number; confidence: number } | null {
   if (!answer || answer.type !== "choice") return null;
   if (!hasProbabilities(answer)) return null;
   if (answer.choice === TEXT_CANDIDATE_NONE) return null;
@@ -1213,7 +1408,7 @@ async function chooseTypeTextCandidate(
   if (!Number.isInteger(index) || index < 0 || index >= candidates.length) return null;
   const peak = peakProbability(answer);
   if (peak < PEAK_THRESHOLD_TEXT_CANDIDATE) return null;
-  return { text: candidates[index], peak, confidence: answer.confidence, model: result.model };
+  return { text: candidates[index], peak, confidence: answer.confidence };
 }
 
 /** Picks the value for a SELECT step (addendum A: `text` must be one of
@@ -1684,7 +1879,19 @@ async function decideBrowseStepCore(
   }));
   const scrubbedElements = capAndScrubElements(input.elements);
 
-  const questions = buildBrowseStepQuestions(scrubbedElements);
+  // Browse-speed contract item 1: extracted once, up front, from the RAW
+  // goal (never scrubbedGoal — see extractTextCandidates' own comment) so
+  // the SAME candidate list backs both the folded text_candidate head below
+  // and, if that folded answer isn't usable, the standalone fallback call
+  // further down — computing it twice would risk the two disagreeing.
+  // Offered to the fan-out only when the fast-path preconditions hold (not
+  // ambiguous same-kind PII — see hasAmbiguousPiiCandidates); otherwise
+  // buildBrowseStepQuestions omits the head entirely, and the TYPE_TEXT
+  // branch below skips straight to the standalone call / generateTypeText,
+  // exactly like today.
+  const textCandidates = extractTextCandidates(input.goal);
+  const textCandidatesForFanout = hasAmbiguousPiiCandidates(textCandidates) ? [] : textCandidates;
+  const questions = buildBrowseStepQuestions(scrubbedElements, textCandidatesForFanout);
 
   // Finding #7: one deadline shared by every Jev call this decision makes —
   // just the main fan-out below on most steps, or that fan-out PLUS the
@@ -1981,43 +2188,64 @@ async function decideBrowseStepCore(
     }
     // Fast path (browse-speed contract): the text to type is almost always
     // already a literal substring of the RAW goal (never scrubbedGoal — see
-    // extractTextCandidates' comment) — try a cheap Jev Choice over those
-    // extracted candidates before falling back to generateTypeText's slower
-    // generative call. Candidates are extracted from `input.goal`, not
-    // `scrubbedGoal`: this is the one place in the file that must recover
-    // the REAL value, not the vendor-safe one.
+    // extractTextCandidates' comment). `textCandidates` was already
+    // extracted once, up front (see its own comment above) — reused here
+    // rather than re-derived, so the folded head and this fallback path can
+    // never disagree on what the candidate set was.
     const textStart = Date.now();
-    const candidates = extractTextCandidates(input.goal);
-    let fast: Awaited<ReturnType<typeof chooseTypeTextCandidate>> = null;
+    let fast: { text: string; peak: number; confidence: number } | null = null;
+    let textFolded = false;
     // Review finding #2: two-plus candidates sharing the same PII kind render
     // as identical-looking placeholders Jev has no real basis to choose
     // between — skip the fast path outright rather than let it guess (see
-    // hasAmbiguousPiiCandidates' comment).
-    if (candidates.length > 0 && !hasAmbiguousPiiCandidates(candidates)) {
-      try {
-        fast = await chooseTypeTextCandidate(
-          client,
-          scrubbedGoal,
-          targetElement.label,
-          candidates,
-          perCallSignal(),
-        );
-      } catch {
-        fast = null;
+    // hasAmbiguousPiiCandidates' comment). Mirrors the same precondition
+    // buildBrowseStepQuestions used to decide whether to fold the head in.
+    if (textCandidates.length > 0 && !hasAmbiguousPiiCandidates(textCandidates)) {
+      // Item 1: try the answer already sitting in the MAIN fan-out's
+      // response first — no extra Jev round trip at all when it's usable.
+      const folded = parseTextCandidateAnswer(
+        answers[TEXT_CANDIDATE_ID],
+        textCandidates,
+        buildTextCandidateCriteria(textCandidates),
+      );
+      if (folded && candidateMatchesField(folded.text, targetElement.label)) {
+        fast = folded;
+        textFolded = true;
+      } else if (!folded) {
+        // Folded answer missing/malformed/below-threshold — NOT the same as
+        // a kind/field mismatch (see the branch below): unlike a peak gate
+        // re-asked against the SAME page state, an ISOLATED Choice (no
+        // sibling op/target/noul questions competing for the vendor's
+        // attention) can genuinely land on a different, cleaner peak than
+        // the folded joint answer did, so a real second attempt is worth
+        // making here — the original chooseTypeTextCandidate call.
+        try {
+          const separate = await chooseTypeTextCandidate(
+            client,
+            scrubbedGoal,
+            targetElement.label,
+            textCandidates,
+            perCallSignal(),
+          );
+          if (separate && candidateMatchesField(separate.text, targetElement.label)) {
+            fast = separate;
+          }
+        } catch {
+          fast = null;
+        }
       }
-      // Review finding #2: a confident pick that plainly doesn't belong in
-      // this field (kind/field mismatch) is not trustworthy just because it
-      // beat its siblings — fall back to the LLM path instead of typing it.
-      if (fast && !candidateMatchesField(fast.text, targetElement.label)) {
-        fast = null;
-      }
+      // else: folded answer was confident but plainly the wrong KIND of
+      // value for this field (review finding #2) — that mismatch is a
+      // property of the candidate/field pair, not of which call produced
+      // the answer, so a standalone retry would reject it identically.
+      // Falls straight through to generateTypeText below, `fast` unset.
     }
 
     let text: string;
-    let textSource: "goal" | "llm";
+    let textSource: "goal-folded" | "goal" | "llm";
     if (fast) {
       text = fast.text;
-      textSource = "goal";
+      textSource = textFolded ? "goal-folded" : "goal";
     } else {
       try {
         // Review finding #3: capped by whatever's left of the OVERALL
@@ -2048,7 +2276,11 @@ async function decideBrowseStepCore(
         );
       }
     }
-    timing.textMs = Date.now() - textStart;
+    // textMs = 0 when the folded pick was used: no separate Jev/LLM call
+    // happened at all on this step past the main fan-out (already counted
+    // in jevMs), so there is no separate duration to report — see
+    // textSource's own doc comment on BrowseStepResult.
+    timing.textMs = textFolded ? 0 : Date.now() - textStart;
     return {
       outcome: "act",
       operation,

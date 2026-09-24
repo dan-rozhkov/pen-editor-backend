@@ -25,6 +25,13 @@ export function scrubPii(text: string): string {
   return RULES.reduce((acc, rule) => acc.replace(rule.re, rule.replacement), text);
 }
 
+/** Every distinct `kind` name RULES can produce — the single source of truth
+ * for "what placeholder kinds does scrubbing actually emit," so a consumer
+ * that needs to recognize a scrubbed/placeholder tag (browseStep.ts's
+ * UNMAPPED_PLACEHOLDER_RE) can derive its list from here instead of
+ * hardcoding a parallel copy that could silently drift from RULES. */
+export const PII_KINDS: readonly string[] = [...new Set(RULES.map((r) => r.kind))];
+
 export function containsPii(text: string): boolean {
   return scrubPii(text) !== text;
 }
