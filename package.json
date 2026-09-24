@@ -26,7 +26,8 @@
     "test:coverage": "vitest run --coverage",
     "check:dup": "jscpd src",
     "flaky:summary": "node scripts/flaky-summary.mjs",
-    "test:mutation": "stryker run"
+    "test:mutation": "stryker run",
+    "check:dup:tests": "node scripts/check-test-dup.mjs"
   },
   "dependencies": {
     "@ai-sdk/mcp": "^1.0.23",
