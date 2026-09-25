@@ -49,3 +49,30 @@ export const createModel = vi.fn();
 export function mockProviderModule<T extends object>(actual: T): T {
   return { ...actual, createModel: (...args: unknown[]) => createModel(...(args as [])) };
 }
+
+// Scripts the NEXT createModel() call to answer `json`, capturing the
+// abortSignal and prompt its generation was given — for tests asserting
+// what a small structured-model call was told and how it was bounded.
+export function mockJsonModelOnce(json: unknown): {
+  seenSignal: () => AbortSignal | undefined;
+  seenPrompt: () => string;
+} {
+  let seenSignal: AbortSignal | undefined;
+  let seenPrompt = "";
+  createModel.mockImplementationOnce(
+    () =>
+      new MockLanguageModelV3({
+        doGenerate: async (options: { abortSignal?: AbortSignal; prompt?: unknown }) => {
+          seenSignal = options.abortSignal;
+          seenPrompt = JSON.stringify(options.prompt ?? "");
+          return {
+            finishReason: "stop",
+            usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+            warnings: [],
+            content: [{ type: "text", text: JSON.stringify(json) }],
+          };
+        },
+      }),
+  );
+  return { seenSignal: () => seenSignal, seenPrompt: () => seenPrompt };
+}

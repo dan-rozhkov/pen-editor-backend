@@ -11,7 +11,7 @@ vi.mock("../src/ai/provider.js", async (importOriginal) =>
   (await import("./structuredModelFakes.js")).mockProviderModule(await importOriginal()),
 );
 
-import { createModel, jsonModel } from "./structuredModelFakes.js";
+import { createModel, jsonModel, mockJsonModelOnce } from "./structuredModelFakes.js";
 createModel.mockImplementation(() => jsonModel({ text: "hello world" }));
 
 const {
@@ -103,24 +103,7 @@ function sequentialClient(
 function mockCascadeOnce(
   object: Record<string, unknown>,
 ): { seenSignal: () => AbortSignal | undefined; seenPrompt: () => string } {
-  let seenSignal: AbortSignal | undefined;
-  let seenPrompt = "";
-  createModel.mockImplementationOnce(
-    () =>
-      new MockLanguageModelV3({
-        doGenerate: async (options: { abortSignal?: AbortSignal; prompt?: unknown }) => {
-          seenSignal = options.abortSignal;
-          seenPrompt = JSON.stringify(options.prompt ?? "");
-          return {
-            finishReason: "stop",
-            usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-            warnings: [],
-            content: [{ type: "text", text: JSON.stringify(object) }],
-          };
-        },
-      }),
-  );
-  return { seenSignal: () => seenSignal, seenPrompt: () => seenPrompt };
+  return mockJsonModelOnce(object);
 }
 
 /** Client whose ONE evaluate() call takes `elapsedMs` of (fake-timer) wall
@@ -215,24 +198,8 @@ function mockStructuredModelOnce(text: string): {
   seenSignal: () => AbortSignal | undefined;
   seenPromptText: () => string;
 } {
-  let seenSignal: AbortSignal | undefined;
-  let seenPromptText = "";
-  createModel.mockImplementationOnce(
-    () =>
-      new MockLanguageModelV3({
-        doGenerate: async (options: { abortSignal?: AbortSignal; prompt?: unknown }) => {
-          seenSignal = options.abortSignal;
-          seenPromptText = JSON.stringify(options.prompt ?? "");
-          return {
-            finishReason: "stop",
-            usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-            warnings: [],
-            content: [{ type: "text", text: JSON.stringify({ text }) }],
-          };
-        },
-      }),
-  );
-  return { seenSignal: () => seenSignal, seenPromptText: () => seenPromptText };
+  const { seenSignal, seenPrompt } = mockJsonModelOnce({ text });
+  return { seenSignal, seenPromptText: seenPrompt };
 }
 
 describe("buildBrowseStepQuestions", () => {

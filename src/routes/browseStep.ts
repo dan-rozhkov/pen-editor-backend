@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { Config } from "../config.js";
 import { createSystemOne, type SystemOneClient } from "../services/systemone.js";
+import { decideBrowseStepUltrafast } from "../ai/browseStepUltrafast.js";
 import {
   decideBrowseStep,
   MAX_SNAPSHOT_ELEMENTS,
@@ -99,6 +100,9 @@ const bodySchema = z.object({
   elements: z.array(elementSchema).max(1_000),
   history: z.array(historyEntrySchema).max(50),
   scroll: scrollSchema.optional(),
+  // Visible page text (the snapshot's own, or a browse_read fallback) —
+  // used by the ultrafast policy only. Optional: an older client omits it.
+  pageText: z.string().max(20_000).optional(),
 });
 
 /**
@@ -173,8 +177,12 @@ export async function browseStepRoutes(
         elements: body.elements.slice(0, MAX_SNAPSHOT_ELEMENTS),
         history: body.history,
         scroll: body.scroll,
+        pageText: body.pageText,
       };
-      const result = await decideBrowseStep(client, config, input);
+      const result =
+        config.BROWSE_STEP_POLICY === "ultrafast"
+          ? await decideBrowseStepUltrafast(client, config, input)
+          : await decideBrowseStep(client, config, input);
       // One line per decision so a stuck browse_task can be diagnosed from
       // the server log. Only the decision's own fields — never page text;
       // a cascade `reason` is model-written and may quote the page.
@@ -182,6 +190,7 @@ export async function browseStepRoutes(
         {
           browseStep: {
             step: body.history.length,
+            policy: config.BROWSE_STEP_POLICY,
             outcome: result.outcome,
             operation: result.operation,
             confidence: result.confidence,

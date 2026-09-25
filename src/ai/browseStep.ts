@@ -476,6 +476,9 @@ export interface BrowseStepInput {
   elements: BrowseStepElement[];
   history: BrowseStepHistoryEntry[];
   scroll?: BrowseStepScroll;
+  /** Visible page text from the snapshot (or a `read` fallback) — only the
+   * ultrafast policy uses it; PII-scrubbed before it leaves this server. */
+  pageText?: string;
 }
 
 export interface BrowseStepResult {
@@ -1161,7 +1164,7 @@ export function resolvePlaceholderTokens(text: string, tokenMap: Map<string, str
  * slightly differently worded, in both generateTypeText's prompt and
  * cascadeStep's — one shared block so the two can't drift apart on what
  * they tell the model about the token shape. */
-const NUMBERED_PLACEHOLDER_PROMPT_LINES = [
+export const NUMBERED_PLACEHOLDER_PROMPT_LINES = [
   "Some personal data in the goal (an email address, phone number, etc.) has",
   "been replaced with numbered placeholder tokens like \"[EMAIL_1]\" or",
   "\"[PHONE_2]\" — you are not shown the real values. If a value that belongs",
@@ -1210,7 +1213,7 @@ function stripOneQuoteLayer(text: string): string {
  * page-text-free diagnostic string (review #3) the caller folds into its
  * own failure path — generateTypeText throws it, cascadeStep rejects with
  * it. */
-function resolveTypedPlaceholder(
+export function resolveTypedPlaceholder(
   rawText: string,
   tokenMap: Map<string, string>,
 ): { text: string; substituted: boolean } | { error: string } {

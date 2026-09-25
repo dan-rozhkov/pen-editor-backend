@@ -208,6 +208,12 @@ export const envSchema = z.object({
   // qwen3-next-80b 20/30 with 8s timeouts; deepseek-v4.1-flash 18/30,
   // median 1.8s / p90 8s (timeouts).
   BROWSE_CASCADE_MODEL: z.string().default("openrouter:google/gemini-2.5-flash"),
+  // How /api/browse/step decides (src/ai/browseStep.ts vs
+  // src/ai/browseStepUltrafast.ts). "ultrafast" is the jev-ultrafast scheme:
+  // rules and current field state in the Jev questions, argmax, text from a
+  // small LLM that sees the chosen field. "legacy" is the gated/cascaded
+  // policy it replaced.
+  BROWSE_STEP_POLICY: z.enum(["ultrafast", "legacy"]).default("ultrafast"),
   // --- Trace analysis (all optional; chat server works without them) ---
   // Postgres for raw traces + analysis artifacts (Aiven: append ?sslmode=no-verify —
   // TLS-encrypted, skips CA verification of Aiven's project CA).

@@ -29,22 +29,28 @@ const MAX_RETRY_AFTER_MS = 10_000;
 
 // --- Question types (request side) -----------------------------------
 
+// The vendor accepts structured JSON here as well as plain text —
+// jev-ultrafast sends `{ goal, rules }` objects as instructions and per-option
+// objects (label + current value + state) as choice criteria.
+export type SystemOneInstructions = string | Record<string, unknown>;
+
 export interface SystemOneNoulQuestion {
   type: "noul";
-  instructions: string;
+  instructions: SystemOneInstructions;
   criteria?: { true?: string; false?: string };
 }
 
 export interface SystemOneChoiceQuestion {
   type: "choice";
-  instructions: string;
-  // Option -> description. A null description is allowed by the vendor.
-  criteria: Record<string, string | null>;
+  instructions: SystemOneInstructions;
+  // Option -> description. A null description is allowed by the vendor, and
+  // so is a structured object.
+  criteria: Record<string, string | null | Record<string, unknown>>;
 }
 
 export interface SystemOneScoreQuestion {
   type: "score";
-  instructions: string;
+  instructions: SystemOneInstructions;
   // Ordered level descriptions, low to high. At least 2.
   criteria: string[];
 }

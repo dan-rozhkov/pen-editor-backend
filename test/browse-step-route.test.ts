@@ -62,7 +62,12 @@ function stubJev(answers: Record<string, unknown>) {
 }
 
 // One POST /api/browse/step against a fresh app.
-async function postStep(payload: Record<string, unknown>, config = makeConfig({ TYPESAFE_API_KEY: "key" })) {
+// These cases pin the legacy policy's answer shape (op/target_click + Nouls);
+// the ultrafast default is covered at the end of this file.
+async function postStep(
+  payload: Record<string, unknown>,
+  config = makeConfig({ TYPESAFE_API_KEY: "key", BROWSE_STEP_POLICY: "legacy" }),
+) {
   const app = await buildApp(config, { logger: false });
   try {
     return await app.inject({ method: "POST", url: "/api/browse/step", payload });
@@ -250,5 +255,19 @@ describe("POST /api/browse/step", () => {
     expect(json.outcome).toBe("act");
     expect(json.operation).toBe(op);
     expect(json.index).toBe(index);
+  });
+});
+
+describe("POST /api/browse/step — ultrafast policy (the default)", () => {
+  it("decides with the operation/target questions and accepts pageText", async () => {
+    stubJev({ operation: choice("CLICK"), click_target: choice("3") });
+    const res = await postStep(
+      { ...validBody, pageText: "We use cookies. Accept all?" },
+      makeConfig({ TYPESAFE_API_KEY: "key" }),
+    );
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ outcome: "act", operation: "CLICK", index: 3 });
+    const body = JSON.parse((vi.mocked(fetch).mock.calls[0][1] as RequestInit).body as string);
+    expect(body.state.page.text).toBe("We use cookies. Accept all?");
   });
 });
