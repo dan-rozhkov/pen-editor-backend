@@ -13,6 +13,7 @@ import { createModel, jsonModel } from "./structuredModelFakes.js";
 createModel.mockImplementation(() => jsonModel({ text: "wireless headphones" }));
 
 const { buildApp } = await import("../src/app.js");
+const { PEAK_THRESHOLD_OP, PEAK_THRESHOLD_PASSIVE } = await import("../src/ai/browseStep.js");
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -89,6 +90,17 @@ describe("POST /api/browse/step", () => {
     expect(json.outcome).toBe("act");
     expect(json.operation).toBe("CLICK");
     expect(json.index).toBe(3);
+  });
+
+  // decideBrowseStep's gate/cascade diagnostics (`diag`) are logged
+  // server-side (routes/browseStep.ts) but never part of the HTTP contract
+  // — the route must strip the key before replying, not merely leave it for
+  // the client to ignore.
+  it("never includes `diag` in the HTTP reply body", async () => {
+    stubJev({ op: choice("CLICK"), target_click: choice("3") });
+    const res = await postStep(validBody);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).not.toHaveProperty("diag");
   });
 
   // Finding #1: a long textarea value or a big country/state/year <select>
@@ -218,11 +230,18 @@ describe("POST /api/browse/step", () => {
   // element supports CLICK, so the fan-out always also asks target_click —
   // the response schema requires an answer for every question id sent, even
   // one PRESS_ENTER/PRESS_ESCAPE never reads.
+  //
+  // Review #3: this peak must be derived from the real PEAK_THRESHOLD_OP/
+  // PEAK_THRESHOLD_PASSIVE constants, not a hardcoded literal that could
+  // silently stop being "only the passive tier accepts" whenever either
+  // threshold moves (as PEAK_THRESHOLD_PASSIVE itself did, twice, on
+  // 2026-09-25/26).
+  const passiveOnlyPeak = (PEAK_THRESHOLD_PASSIVE + PEAK_THRESHOLD_OP) / 2;
   it.each([
     ["HOVER against target_click's index", "HOVER", 0.9, 3],
     ["PRESS_ENTER with no index", "PRESS_ENTER", 0.9, undefined],
     // A peak too low for the acting tier but high enough for the passive one.
-    ["PRESS_ESCAPE at a peak only the passive tier accepts", "PRESS_ESCAPE", 0.5, undefined],
+    ["PRESS_ESCAPE at a peak only the passive tier accepts", "PRESS_ESCAPE", passiveOnlyPeak, undefined],
   ] as const)("resolves %s end to end", async (_name, op, peak, index) => {
     stubJev({ op: choice(op, peak), target_click: choice("3") });
     const res = await postStep(validBody);

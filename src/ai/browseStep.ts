@@ -88,6 +88,16 @@ export function peakProbability(answer: SystemOneChoiceAnswer): number {
   return values.length > 0 ? Math.max(...values) : 0;
 }
 
+/** Peak minus the SECOND-highest probability in the distribution — how much
+ * the argmax actually separates itself from the runner-up. Used only by the
+ * PEAK_MARGIN_MID_BAND tie-guard (see that constant's own comment); a
+ * distribution with fewer than two entries has no runner-up, so the margin
+ * is just the peak itself (`0` subtracted). */
+export function peakMargin(answer: SystemOneChoiceAnswer): number {
+  const sorted = Object.values(answer.probabilities).sort((a, b) => b - a);
+  return (sorted[0] ?? 0) - (sorted[1] ?? 0);
+}
+
 /** Terminal `retry`-band removal (2026-09-20 sub-revision): a mid-band peak
  * used to resolve to a non-terminal `retry`, on the theory that "the loop
  * re-snapshots and tries again." That theory doesn't hold for this loop —
@@ -96,12 +106,11 @@ export function peakProbability(answer: SystemOneChoiceAnswer): number {
  * page changes between one call and the next unless the client itself acts
  * or navigates first. A `retry` therefore re-sends an identical fan-out,
  * gets an identical peak back, and repeats until the step budget is spent —
- * a `budget` failure wearing a `retry` costume, on exactly the pages (a
- * 40-option list peaking at 0.6) where this was most likely to fire. Below
- * the relevant threshold is a straight terminal `blocked` again, restoring
- * the semantics addendum B actually specifies: `retry` is reserved for
- * transport failures, malformed answers, and missing candidates — cases
- * where the NEXT call can plausibly differ from this one.
+ * a `budget` failure wearing a `retry` costume. Below the relevant
+ * threshold is a straight terminal `blocked`, restoring the semantics
+ * addendum B actually specifies: `retry` is reserved for transport
+ * failures, malformed answers, and missing candidates — cases where the
+ * NEXT call can plausibly differ from this one.
  *
  * Three separate thresholds, not one, because option count and stakes both
  * vary by head:
@@ -120,74 +129,122 @@ export function peakProbability(answer: SystemOneChoiceAnswer): number {
  *    caught structurally, not just probabilistically, which is why it can
  *    sit at a lower bar than the operation head despite also being
  *    "acting."
- * All three replace the single PEAK_THRESHOLD_ACT / PEAK_THRESHOLD_PASSIVE
- * pair from the first cut of this design, which put the acting bar at 0.75
- * — strictly ABOVE the confidence-based gate it replaced. That old gate was
- * `confidence >= 0.55`; at n=40 (a big fan-out) that is peak ≈ 0.56, and
- * even at n=2 it is only peak ≈ 0.78. Landing at 0.75 for every acting head
- * regardless of n made the bar independent of n (the whole point) but at
- * roughly the WORST-case old value instead of the typical one — the exact
- * opposite of what switching off `confidence` was for. The password rule
- * stays a hard terminal rule regardless of any of these three numbers,
- * never threshold-gated.
+ * The password rule stays a hard terminal rule regardless of any of these
+ * three numbers, never threshold-gated.
  *
- * 2026-09-23: the operation Choice grew from 6 options to 9
- * (HOVER/PRESS_ENTER/PRESS_ESCAPE added — see BrowseOperation). This did
- * NOT move the 0.6 bar, and deliberately so: unlike `confidence`, peak
- * probability has no dependence on option count (see peakProbability's own
- * comment above — "it is what it says regardless of `n`"), which was the
- * entire reason this file gates on peak instead of `confidence` in the
- * first place. A wider Choice does make each individual option's PRIOR
- * share of probability mass smaller on average, but it does not lower the
- * peak Jev actually reports for a page where one option is genuinely the
- * clear answer — three more low-frequency, easily-distinguished options
- * (a hover menu, Enter-to-submit, Escape-to-close) competing for the
- * remaining mass is not the same failure mode as the confidence-formula
- * artifact this threshold was built to avoid. If real traffic later shows
- * the wider Choice systematically depresses peaks even on unambiguous
- * pages, that is a reason to re-derive the number from measured peak
- * distributions — not to adjust it preemptively because the option count
- * changed. HOVER reuses CLICK's target_click head (no new target head), so
- * it adds no additional fan-out to size threshold against either. */
-export const PEAK_THRESHOLD_OP = 0.6;
+ * 2026-09-25: lowered from 0.6 after replaying 47 live steps from the
+ * bench-shop task against several threshold variants: at op .45 / target
+ * .35 (PEAK_THRESHOLD_TARGET) cascade calls dropped 15→4 and total decision
+ * time 56s→28s over the corpus, with hand-judged picks mostly sensible.
+ *
+ * 2026-09-25 live-bench follow-up: at this 0.45 bar, CLICK in the 0.45-0.6
+ * "mid band" was almost always right, but TYPE_TEXT in the SAME band was a
+ * coin flip — 3 of 6 picks were wrong, all typing into the already-filled "Search
+ * products" box instead of the real target (a Max-price field, a brand
+ * filter). Two responses: (1) DATA_WRITING_OPS (TYPE_TEXT, and PRESS_ENTER
+ * for the same "submits whatever is focused" reason) keep their OWN,
+ * un-lowered bar — see PEAK_THRESHOLD_OP_PRE_LOWERING below — this constant
+ * now only gates CLICK/SELECT/HOVER; (2) the surviving 0.45-0.6 mid band
+ * for those ops still gets a margin tie-guard, see PEAK_MARGIN_MID_BAND. A
+ * further floor of .35/.25 was tried and rejected: at that level Jev
+ * started skipping required steps (clicking a product before
+ * filtering/sorting, hitting "Place Order" before accepting terms). */
+export const PEAK_THRESHOLD_OP = 0.45;
+
+/** The operation-head bar for DATA_WRITING_OPS (2026-09-25), NOT
+ * PEAK_THRESHOLD_OP — see that constant's own comment for the live-bench
+ * evidence (3 of 6 TYPE_TEXT picks in the 0.45-0.6 band wrong, all mistyping
+ * into an already-filled field, vs. CLICK being reliable in the exact same
+ * band). 0.6 is PEAK_THRESHOLD_OP's value before the 2026-09-25 threshold
+ * pass — DATA_WRITING_OPS simply never moved off it: both are the most
+ * expensive kind of acting op to get wrong (TYPE_TEXT overwrites a field's
+ * content; PRESS_ENTER submits whatever currently has focus, which can
+ * place an order or submit a login form), so neither gets the mid-band
+ * margin guard either — the gate stays a hard bar, no near-tie exception. */
+export const PEAK_THRESHOLD_OP_PRE_LOWERING = 0.6;
+
+/** Operations whose operation-HEAD gate keeps PEAK_THRESHOLD_OP_PRE_LOWERING
+ * (never PEAK_THRESHOLD_OP, and never the mid-band margin guard) because a
+ * wrong pick WRITES data rather than merely navigating to it — TYPE_TEXT
+ * overwrites a field's content, PRESS_ENTER submits whatever field
+ * currently has focus. Both stayed unreliable in the 0.45-0.6 band the
+ * 2026-09-25 threshold pass otherwise lowered CLICK/SELECT/HOVER into — see
+ * PEAK_THRESHOLD_OP's own comment for the measured evidence. */
+export const DATA_WRITING_OPS = new Set<ChoiceOperation>(["TYPE_TEXT", "PRESS_ENTER"]);
 
 /** See PEAK_THRESHOLD_OP's comment — lower bar for the same operation head
  * when it lands on SCROLL_UP / SCROLL_DOWN / WAIT / PRESS_ESCAPE. Worst case
  * is one wasted step that the loop simply repeats with a different snapshot
- * next time (unlike the removed retry band, an ACTUAL client-driven scroll,
- * wait, or Escape does change the page) — exactly the vendor's low-stakes
- * guidance ("can proceed at lower thresholds, ~0.5+, since recovery is
- * straightforward"). Gating a harmless scroll at the acting bar would make
- * the agent get stuck refusing to scroll on ordinary, only-mildly-ambiguous
- * pages.
+ * next time — exactly the vendor's low-stakes guidance ("can proceed at
+ * lower thresholds, ~0.5+, since recovery is straightforward"). Gating a
+ * harmless scroll at the acting bar would make the agent get stuck
+ * refusing to scroll on ordinary, only-mildly-ambiguous pages.
  *
- * PRESS_ESCAPE joins this tier (2026-09-23), not the acting one: pressing
- * Escape on a page with nothing open to close is a no-op, not a mutation —
- * there is no equivalent to a wrong CLICK on a logged-in page's "Delete
- * account" button. PRESS_ENTER stays on the acting tier instead (not here):
- * Enter submits whatever form field currently has focus, which is exactly
- * the same class of consequential, hard-to-undo action as CLICK/TYPE_TEXT —
- * a wrong PRESS_ENTER can place an order or submit a login form, so it gets
- * the higher bar despite being, like PRESS_ESCAPE, a keypress with no
- * target lookup. */
+ * PRESS_ESCAPE sits on this tier, not the acting one: pressing Escape on a
+ * page with nothing open to close is a no-op, not a mutation. PRESS_ENTER
+ * stays on the acting tier instead: Enter submits whatever form field
+ * currently has focus — the same class of consequential, hard-to-undo
+ * action as CLICK/TYPE_TEXT — so it gets the higher bar despite being,
+ * like PRESS_ESCAPE, a keypress with no target lookup.
+ *
+ * 2026-09-25: briefly lowered to 0.3 alongside PEAK_THRESHOLD_OP/_TARGET,
+ * then reverted here on 2026-09-25 live-bench evidence: at 0.3 the agent
+ * produced WAIT/SCROLL loops instead of finishing — on an order-confirmation
+ * page it WAITed instead of recognizing the task was done. 0.4 restores the
+ * original bar this constant shipped with. */
 export const PEAK_THRESHOLD_PASSIVE = 0.4;
 
 /** See PEAK_THRESHOLD_OP's comment — shared bar for the target_click /
- * target_type / target_select heads and the second SELECT-option call. */
-export const PEAK_THRESHOLD_TARGET = 0.5;
+ * target_select heads and the second SELECT-option call. 2026-09-25:
+ * lowered from 0.5 to 0.35 (see PEAK_THRESHOLD_OP's comment for the
+ * measurement and the rejected .25 floor). The surviving 0.35-0.5 mid band
+ * gets the same margin tie-guard as the op head — see PEAK_MARGIN_MID_BAND.
+ *
+ * target_type (TYPE_TEXT's OWN target head) is the one exception
+ * (2026-09-25 live bench): the wrong-field failures that motivated
+ * DATA_WRITING_OPS were TARGET mistakes, not operation mistakes — typing
+ * into the already-filled search box instead of the real field — so
+ * target_type keeps PEAK_THRESHOLD_TARGET_PRE_LOWERING instead of this
+ * constant, with no margin guard either (same reasoning as
+ * PEAK_THRESHOLD_OP_PRE_LOWERING: the most expensive kind of wrong pick to
+ * get wrong gets the hard bar, not a near-tie exception). */
+export const PEAK_THRESHOLD_TARGET = 0.35;
+
+/** The bar PEAK_THRESHOLD_TARGET sat at before the 2026-09-25 pass — the
+ * upper edge of its "mid band" for the PEAK_MARGIN_MID_BAND tie-guard (see
+ * that constant's own comment), AND target_type's own gate (see
+ * PEAK_THRESHOLD_TARGET's own comment). Not itself a gate on its own: for
+ * target_click/select a peak at or above this bar skips the margin check
+ * entirely; for target_type it IS the gate, no margin check ever applies. */
+export const PEAK_THRESHOLD_TARGET_PRE_LOWERING = 0.5;
+
+/** Margin tie-guard for the "mid band" a lowered gate leaves behind — the
+ * range between the new (lower) threshold and the head's PRE-lowering bar
+ * (PEAK_THRESHOLD_OP_PRE_LOWERING for the op-acting head,
+ * PEAK_THRESHOLD_TARGET_PRE_LOWERING for target_click/select). A peak that
+ * clears the lowered threshold but still sits in that band is exactly the
+ * shape the 2026-09-25 live bench flagged as unreliable for DATA_WRITING_OPS
+ * (see PEAK_THRESHOLD_OP's comment) — the fix there was giving those ops
+ * their own un-lowered bar entirely, but CLICK/target_click/select still
+ * SHARE the lowered gate with whatever pushed it there, so a peak in the
+ * mid band additionally needs `peakMargin(answer) >= PEAK_MARGIN_MID_BAND`
+ * (peak minus the runner-up probability) — a genuine near-tie in that band
+ * is treated as a gate failure too (same cascade fallback, not a hard
+ * block), the same "confident enough among close alternatives" signal
+ * PEAK_THRESHOLD_TARGET's own membership-validation reasoning already leans
+ * on. 0.1 is a modest separation, not a strict one — this is a tie-guard
+ * for genuine coin flips, not a second confidence bar. */
+export const PEAK_MARGIN_MID_BAND = 0.1;
 
 /** Gate for chooseTypeTextCandidate's second, small Jev call below — same
  * "peak, not confidence" discipline as PEAK_THRESHOLD_TARGET, but NOT the
- * same value: this is 0.6, matching PEAK_THRESHOLD_OP (the acting tier),
- * not PEAK_THRESHOLD_TARGET's 0.5. Deliberately the higher bar: unlike the
- * target-element/SELECT-option heads, a wrong pick here is not caught
- * structurally by membership validation against the page's own elements —
- * it is a free-text VALUE about to be typed into a field (the same
- * "acting, not merely selecting among known-safe options" reasoning
- * PEAK_THRESHOLD_OP's own comment gives for its tier), so it gets that
- * tier's bar rather than the target head's lower one. Below this, the
- * caller falls back to the slower generative generateTypeText call instead
- * of typing a low-confidence guess. */
+ * same value: this is 0.6, matching PEAK_THRESHOLD_OP_PRE_LOWERING — unlike
+ * the target-element/SELECT-option heads, a wrong pick here is not caught
+ * structurally by membership validation against the page's own elements.
+ * It is a free-text VALUE about to be typed into a field, so it keeps the
+ * higher, un-lowered bar; below it, the caller falls back to the slower
+ * generative generateTypeText call instead of typing a low-confidence
+ * guess. */
 export const PEAK_THRESHOLD_TEXT_CANDIDATE = 0.6;
 
 /** Below this probability, the `goal_met` Noul is not trusted enough to end
@@ -480,9 +537,9 @@ export interface BrowseStepResult {
   confidence: number;
   model: string;
   reason?: string;
-  /** True when this result came from the STRUCTURED_MODEL cascade
+  /** True when this result came from the BROWSE_CASCADE_MODEL cascade
    * (cascadeStep below) rather than the primary Jev fan-out — see that
-   * function's comment. `model` is the structured model's id in that case,
+   * function's comment. `model` is the cascade model's id in that case,
    * not Jev's. */
   cascade?: boolean;
   /** Set on a gate failure when the cascade was tried and rejected — why. */
@@ -510,6 +567,51 @@ export interface BrowseStepResult {
     cascadeMs?: number;
     totalMs: number;
   };
+  /** Diagnostics for the gate/cascade machinery (browse-speed contract) —
+   * never page text, safe to log verbatim. Stripped from the HTTP reply
+   * body by the route (see routes/browseStep.ts); logged verbatim
+   * server-side. */
+  diag?: BrowseStepDiag;
+}
+
+/** One peak-gate check recorded in `BrowseStepResult.diag.gates` — every
+ * gate this decision evaluated, pass or fail. `jevPick` is the head's
+ * argmax CHOICE KEY, never page text: an operation name for "op", an
+ * element INDEX (as a string) for "target", the chosen OPTION'S INDEX
+ * (never its label) for "select", and the chosen CANDIDATE'S INDEX (never
+ * its text — `"none"` is a valid pick) for "text". `margin` (peakMargin's
+ * own value) is only present when the peak fell in that head's "mid band"
+ * and the PEAK_MARGIN_MID_BAND tie-guard actually ran — see that
+ * constant's own comment. */
+export interface BrowseStepGateDiag {
+  head: "op" | "target" | "select" | "text";
+  peak: number;
+  threshold: number;
+  jevPick: string;
+  margin?: number;
+}
+
+/** `goalMet`/`deadEnd` are the raw noul VALUES read off the main fan-out
+ * (never page text — plain probabilities), recorded whenever the fan-out
+ * answered at all, whether or not either noul ended up deciding the step.
+ * `tier` names which mechanism produced the RETURNED decision:
+ *  - "jev"     — an `act`/`done` decided purely by Jev heads passing their
+ *                gates, no noul short-circuit, no cascade, no hard rule.
+ *  - "noul"    — the `goal_met`/`dead_end` noul decided the outcome —
+ *                including the NOUL_GOAL_MET_SUCCESS_FLOOR "done" path
+ *                taken after an op-gate failure.
+ *  - "cascade" — the LLM cascade actually ran, whether its result was
+ *                accepted or rejected.
+ *  - "rule"    — a hard, non-threshold rule blocked the step (the
+ *                password rules) — never gated by any of the above.
+ *  - "retry"   — the step resolved to a transient `retry` outcome
+ *                (transport failure, a malformed answer, an unknown
+ *                operation/target). */
+export interface BrowseStepDiag {
+  gates: BrowseStepGateDiag[];
+  goalMet?: number;
+  deadEnd?: number;
+  tier: "jev" | "noul" | "cascade" | "rule" | "retry";
 }
 
 const OP_ID = "op";
@@ -765,23 +867,59 @@ export function hasProbabilities(answer: SystemOneChoiceAnswer): boolean {
   return Object.keys(answer.probabilities).length > 0;
 }
 
-/** Peak-probability gate shared by the op head, the target head, and the
- * SELECT-option head: below `threshold` is a terminal `blocked` (see
- * BrowseStepOutcome — there is deliberately no non-terminal middle band any
- * more), at or above it the caller proceeds. Returns `null` to mean
- * "proceed". Callers must rule out an empty/missing distribution with
- * `hasProbabilities` first (finding #7) — this function has no way to tell
- * "genuinely near-zero" apart from "malformed," so it must never see the
- * malformed case. */
-function gatePeak(
-  peak: number,
-  threshold: number,
-  model: string,
-  confidence: number,
-  reason: string,
-): BrowseStepResult | null {
-  if (peak < threshold) return blocked(reason, model, confidence);
-  return null;
+/** Unified peak-probability gate for the op/target/select-option heads
+ * (2026-09-25 — collapses what used to be three separate implementations:
+ * a plain `gatePeak` shared by all three heads, a `gateMidBandMargin` that
+ * derived a margin from a raw answer for op/target, and a fourth, inline
+ * mid-band check hand-rolled at the SELECT call site because it only has a
+ * precomputed `selection.margin`, not a raw answer). ONE function now does
+ * both the threshold check and the PEAK_MARGIN_MID_BAND tie-guard (see that
+ * constant's own comment), and pushes the `diag.gates` entry itself so
+ * every call site does exactly one thing: compute `peak`/`margin`, call
+ * this, branch on the result — never a second, separate diag push that
+ * could drift from what was actually gated.
+ *
+ * `preLoweringBar` is the head's bar before the 2026-09-25 threshold pass
+ * — `null` disables the mid-band check entirely (the passive tier, and any
+ * head that never moved off its historical bar in the first place, e.g.
+ * PRESS_ENTER/TYPE_TEXT's operation gate or TYPE_TEXT's own target gate —
+ * see DATA_WRITING_OPS' comment). `margin` must always be supplied (via
+ * `peakMargin(answer)`, or a precomputed value like chooseSelectOption's
+ * own `selection.margin`) even when `preLoweringBar` is `null`; it's simply
+ * unused in that case. Returns `null` to mean "proceed." */
+function gatePeakWithBand(params: {
+  diag: BrowseStepDiagState;
+  head: BrowseStepGateDiag["head"];
+  peak: number;
+  margin: number;
+  threshold: number;
+  preLoweringBar: number | null;
+  model: string;
+  confidence: number;
+  jevPick: string;
+  reasonSubject: string;
+}): BrowseStepResult | null {
+  const { diag, head, peak, margin, threshold, preLoweringBar, model, confidence, jevPick, reasonSubject } = params;
+  let result: BrowseStepResult | null = null;
+  let recordedMargin: number | undefined;
+  if (peak < threshold) {
+    result = blocked(
+      `${reasonSubject} peak probability is below the ${threshold} threshold for "${jevPick}"`,
+      model,
+      confidence,
+    );
+  } else if (preLoweringBar !== null && peak < preLoweringBar) {
+    recordedMargin = margin;
+    if (margin < PEAK_MARGIN_MID_BAND) {
+      result = blocked(
+        `${reasonSubject} peak ${peak.toFixed(2)} for "${jevPick}" is in the mid band (below ${preLoweringBar}) with margin ${margin.toFixed(2)} under PEAK_MARGIN_MID_BAND (${PEAK_MARGIN_MID_BAND})`,
+        model,
+        confidence,
+      );
+    }
+  }
+  diag.gates.push({ head, peak, threshold, jevPick, margin: recordedMargin });
+  return result;
 }
 
 const typeTextSchema = z.object({
@@ -1018,7 +1156,25 @@ async function generateTypeText(
   return resolved;
 }
 
-const QUOTED_CANDIDATE_RE = /["']([^"']{1,200})["']/g;
+// Live bug (2026-09-25): a bare `["']` treats ANY apostrophe as a quote
+// delimiter, including a word-internal one ("result's", "don't") — that
+// mis-pairs every real quote after it (the opening delimiter for one
+// candidate becomes the apostrophe inside an unrelated word, so the "close"
+// is whatever quote char happens to appear next, potentially many words and
+// several real quoted phrases later). Fixed by requiring a single-quote
+// delimiter (ASCII ' or curly ’, which is ALSO the standard Unicode
+// apostrophe — "José's" is typically typed with a plain ', but "José’s" is
+// just as real) to sit at a WORD BOUNDARY: the open must not be immediately
+// preceded by a letter/digit, and the close must not be immediately
+// followed by one. Unicode-aware (`\p{L}`/`\p{N}`, `u` flag) rather than
+// `[A-Za-z0-9]` — "José's" or "«Москва»" must not be treated as ASCII-only.
+// Double quotes (ASCII `"`, curly “”) and guillemets («») need no such
+// guard — none of them doubles as an apostrophe in any script — and stay
+// plain, unambiguous pairs. Left curly ‘ is likewise unambiguous as an
+// OPENING delimiter (never an apostrophe); only its close needs the
+// boundary check, for the same reason ’ does on its own.
+const QUOTED_CANDIDATE_RE =
+  /"([^"]{1,200})"|(?<![\p{L}\p{N}])'([^']{1,200})'(?![\p{L}\p{N}])|“([^“”]{1,200})”|«([^«»]{1,200})»|‘([^‘’]{1,200})’(?![\p{L}\p{N}])/gu;
 const NUMBER_CANDIDATE_RE = /\$?\d+(?:\.\d{1,2})?/g;
 // "type"/"enter"/"name" is intentionally narrow (not e.g. "set" or "put") —
 // see extractTextCandidates' own comment on why a false negative here is
@@ -1037,6 +1193,18 @@ const CAPITALIZED_NAME_RE = /\b(?:[A-Z][a-zA-Z]*\s+){0,3}[A-Z][a-zA-Z]*\b/g;
 // credentials portion (findPiiSpans' "credentials" span only covers
 // `scheme://user:pass@`, deliberately narrower — see pii.ts).
 const URL_CANDIDATE_RE = /\bhttps?:\/\/\S+/gi;
+
+// Live bug (2026-09-25): pushCandidateSpan already strips a leading/trailing
+// quote char, but a strategy that abuts a quote MID-string (the
+// comma-segment fallback splitting `email "test@example.com"` still leaves
+// `email "test@example.com` after outer-edge stripping — the `"` sits
+// after "email ", not at either edge) produces a candidate that's still
+// junk, just not junk at its very edges. Rather than try to special-case
+// every way a quote can end up mid-string, extractTextCandidates drops any
+// candidate that still contains ANY of these once pushCandidateSpan is
+// done with it — a real value a page field wants typed never legitimately
+// contains a bare quote character.
+const QUOTE_CHAR_RE = /["'‘’“”«»]/;
 
 /** One extracted candidate plus WHERE it sits in the raw goal — the span is
  * what lets extractTextCandidateSpans tell a fragment of a PII/URL match
@@ -1060,10 +1228,30 @@ function pushCandidateSpan(
   rawStart: number,
 ): void {
   if (!raw) return;
-  const trimmed = raw.trim();
+  let trimmed = raw.trim();
   if (!trimmed) return;
-  const leadTrim = raw.length - raw.trimStart().length;
-  out.push({ text: trimmed, start: rawStart + leadTrim, end: rawStart + leadTrim + trimmed.length });
+  let leadTrim = raw.length - raw.trimStart().length;
+  // Live bug (2026-09-25): no candidate should ever keep a surrounding
+  // quote character — a strategy other than QUOTED_CANDIDATE_RE (the
+  // comma-segment fallback, KEYWORD_PHRASE_RE) can still end up directly
+  // abutting one (e.g. splitting `name "Test User", email
+  // "test@example.com"` on the comma leaves each segment wrapped in its
+  // own leftover quote) even though QUOTED_CANDIDATE_RE itself never
+  // touched that span. Strip at most one leading/trailing quote char, then
+  // re-trim in case that exposed more whitespace — this must happen
+  // BEFORE the value ever reaches `out`, since it's what a hostile field
+  // could otherwise get typed verbatim, quotes and all.
+  if (trimmed[0] === '"' || trimmed[0] === "'") {
+    trimmed = trimmed.slice(1);
+    leadTrim += 1;
+  }
+  if (trimmed.length > 0 && (trimmed[trimmed.length - 1] === '"' || trimmed[trimmed.length - 1] === "'")) {
+    trimmed = trimmed.slice(0, -1);
+  }
+  const reTrimmed = trimmed.trim();
+  if (!reTrimmed) return;
+  leadTrim += trimmed.length - trimmed.trimStart().length;
+  out.push({ text: reTrimmed, start: rawStart + leadTrim, end: rawStart + leadTrim + reTrimmed.length });
 }
 
 /** Runs every extraction strategy against the RAW, unscrubbed `goal` (never
@@ -1076,8 +1264,12 @@ function collectCandidateSpans(goal: string): TextCandidateSpan[] {
   const spans: TextCandidateSpan[] = [];
 
   for (const m of goal.matchAll(QUOTED_CANDIDATE_RE)) {
-    if (m.index === undefined || m[1] === undefined) continue;
-    pushCandidateSpan(spans, m[1], m.index + m[0].indexOf(m[1]));
+    // Exactly one of the five alternatives' groups is defined per match —
+    // "double" (m[1]), word-boundary 'single' (m[2]), curly "double"
+    // (m[3]), «guillemet» (m[4]), or word-boundary 'curly single' (m[5]).
+    const captured = m[1] ?? m[2] ?? m[3] ?? m[4] ?? m[5];
+    if (m.index === undefined || captured === undefined) continue;
+    pushCandidateSpan(spans, captured, m.index + m[0].indexOf(captured));
   }
   // Email candidates: reuse findPiiSpans (the SAME detector scrubPii itself
   // redacts with) instead of a private duplicate regex — the two could
@@ -1176,6 +1368,10 @@ export function extractTextCandidates(goal: string): string[] {
   const candidates: string[] = [];
   for (const span of collectCandidateSpans(goal)) {
     if (candidates.length >= MAX_TEXT_CANDIDATES) break;
+    // See QUOTE_CHAR_RE's own comment — a candidate still carrying a quote
+    // character anywhere (not just at its edges) is a junk fragment, never
+    // a real value to offer.
+    if (QUOTE_CHAR_RE.test(span.text)) continue;
     const key = span.text.toLowerCase();
     if (seen.has(key)) continue;
 
@@ -1424,14 +1620,26 @@ function parseTextCandidateAnswer(
  * "Other" entries in different groups, for instance) — same reasoning as
  * the target-element heads being keyed by element index. Throws on any
  * transport/parse/validation failure; the caller treats that as `retry`,
- * same class as a Jev timeout or a malformed choice elsewhere. */
+ * same class as a Jev timeout or a malformed choice elsewhere.
+ *
+ * Also returns the raw `index` picked (the option's position in `options`,
+ * not its text) purely for diagnostics (`BrowseStepGateDiag.jevPick`) —
+ * `decideBrowseStepCore` has no other way to see WHICH option index Jev
+ * picked, since `text` is already resolved to the option's label. */
 async function chooseSelectOption(
   client: SystemOneClient,
   goal: string,
   fieldLabel: string,
   options: string[],
   signal: AbortSignal,
-): Promise<{ text: string; peak: number; confidence: number; model: string }> {
+): Promise<{
+  text: string;
+  peak: number;
+  margin: number;
+  confidence: number;
+  model: string;
+  index: number;
+}> {
   const label = truncateLabel(fieldLabel, 120);
   const criteria: Record<string, string> = {};
   options.forEach((option, i) => {
@@ -1471,8 +1679,13 @@ async function chooseSelectOption(
   return {
     text: options[index],
     peak: peakProbability(answer),
+    // Computed here (not by the caller) since it's the only place with
+    // access to the raw answer's probability distribution — see
+    // PEAK_MARGIN_MID_BAND's own comment for what this feeds.
+    margin: peakMargin(answer),
     confidence: answer.confidence,
     model: result.model,
+    index,
   };
 }
 
@@ -1482,9 +1695,10 @@ async function chooseSelectOption(
  * often perfectly answerable — Jev's per-head Choice/target fan-out is fast
  * but jaggeder on an unusual page than a full-context generative read.
  * `cascadeStep` is that second opinion: a single `generateObject` call
- * against `config.STRUCTURED_MODEL` (the same model/config
- * `generateTypeText` above already uses), given the goal, url/title,
- * recent history and the same scrubbed compact element digest Jev saw —
+ * against `config.BROWSE_CASCADE_MODEL` (a separate role from
+ * `generateTypeText` above's `STRUCTURED_MODEL` — see that config field's
+ * own comment for why), given the goal, url/title, recent history and the
+ * same scrubbed compact element digest Jev saw —
  * never the raw elements, never anything Jev itself wasn't shown. Called
  * ONLY when a peak-probability gate has already failed (op/target/select),
  * so it costs nothing on the common path where Jev is confident. Accepted
@@ -1517,6 +1731,30 @@ export const BROWSE_CASCADE_TIMEOUT_MS = 8_000;
  * (empty history, nothing performed yet) could end a `browse_task` call with
  * zero steps taken on a 0.6-confidence guess. */
 export const CASCADE_DONE_CONFIDENCE_THRESHOLD = 0.8;
+
+/** Pre-check (2026-09-25 live-data finding, reworked 2026-09-25): a fast
+ * cascade model declared `done: true` with high confidence on a checkout
+ * page BEFORE the order was actually placed — the cascade's own read of the
+ * page can be wrong even at high stated confidence, and `done` is the one
+ * outcome that ends the whole task, so it needs a second, independent
+ * signal before it's even offered. The primary Jev fan-out's `goal_met`
+ * noul (read on the SAME step, before the cascade ever runs) is that
+ * signal: decideBrowseStepCore's op-gate call site computes
+ * `allowDone = goalMet === undefined || goalMet >= CASCADE_DONE_MIN_GOAL_MET`
+ * and passes THAT (not a bare `true`) into cascadeStep — see its own
+ * comment for why this moved from a post-hoc rejection to a pre-check: a
+ * `done` rejected AFTER the cascade call, on an unchanged page, just
+ * re-asks the identical question next step and burns a cascade call every
+ * time; a peak below this floor is known before the call ever starts.
+ *
+ * 2026-09-25: raised from 0.2 to 0.3 on measured live values — real
+ * checkout-before-order steps read `goal_met` 0.09-0.23, while the real
+ * order-confirmation page read 0.44-0.49. 0.3 sits cleanly between those
+ * two clusters: it still only catches a stark contradiction (never a merely
+ * uncertain cascade call — that's what CASCADE_DONE_CONFIDENCE_THRESHOLD is
+ * already for), but the old 0.2 left a needless gap right up against the
+ * top of the measured "definitely not done" cluster. */
+export const CASCADE_DONE_MIN_GOAL_MET = 0.3;
 
 const CASCADE_ACTABLE_OPERATIONS = [
   "CLICK",
@@ -1598,17 +1836,44 @@ function cascadeHistoryLines(history: BrowseStepHistoryEntry[]): string {
 
 /** Why a cascade attempt produced no usable decision — logged with the
  * step so a stuck browse_task can be told apart: a timeout, an honest
- * low-confidence answer, or a structurally invalid pick. Never page text. */
+ * low-confidence answer, or a structurally invalid pick. Never page text.
+ *
+ * `skipped` (2026-09-25): true ONLY for the one rejection path where the
+ * cascade MODEL was never actually called at all — the overall decision
+ * deadline was already exhausted before the first `generateObject` attempt
+ * even started (every other rejection, including a retry that runs out of
+ * time, follows at least one real attempt). decideBrowseStepCore's call
+ * sites use this to decide whether `diag.tier` becomes `"cascade"` (a real
+ * attempt happened, whatever its outcome) or is left as whatever it already
+ * was — reporting `"cascade"` for a call that never reached the model would
+ * misrepresent what actually decided the step. */
 export interface CascadeRejection {
   rejected: string;
+  skipped?: true;
 }
 
 function reject(rejected: string): CascadeRejection {
   return { rejected };
 }
 
+function rejectSkipped(rejected: string): CascadeRejection {
+  return { rejected, skipped: true };
+}
+
 function isCascadeRejection(value: BrowseStepResult | CascadeRejection): value is CascadeRejection {
   return "rejected" in value;
+}
+
+/** Sets `diag.tier = "cascade"` only when the cascade model was actually
+ * called — see CascadeRejection's `skipped` comment. A skipped rejection
+ * (the overall deadline was already exhausted before the first attempt)
+ * leaves `diag.tier` as whatever it already was, since no cascade attempt
+ * actually happened. Shared by all three of decideBrowseStepCore's cascade
+ * call sites so this one-line rule can't drift between them. */
+function markCascadeTier(diag: BrowseStepDiagState, cascaded: BrowseStepResult | CascadeRejection): void {
+  if (!isCascadeRejection(cascaded) || !cascaded.skipped) {
+    diag.tier = "cascade";
+  }
 }
 
 /** Second-opinion decision, called only once a peak-probability gate has
@@ -1623,9 +1888,24 @@ function isCascadeRejection(value: BrowseStepResult | CascadeRejection): value i
  * (CLICK/TYPE_TEXT/SELECT/HOVER) and only the target/option choice failed
  * its own gate — "is the goal met" is not what was asked there, so the
  * cascade may only pick a target/option or fail, never declare the task
- * done out from under an operation Jev already committed to. True only on
- * the op-gate path, where the operation head itself found no confident
- * action, so "is there nothing left to do" is a real question. */
+ * done out from under an operation Jev already committed to. On the op-gate
+ * path it also folds in a PRE-check the caller runs before ever starting
+ * this call (see decideBrowseStepCore's own comment at that call site):
+ * `false` there too when the SAME step's own `goal_met` noul is known and
+ * clearly low (CASCADE_DONE_MIN_GOAL_MET) — 2026-09-25 finding: rejecting a
+ * `done` reading AFTER the fact (a `CascadeRejection`) on an unchanged page
+ * just re-asks the identical question next step, since nothing about the
+ * page moved; a below-threshold `goal_met` is known BEFORE the cascade call
+ * even starts, so the fix is to never offer `done` as an option in the
+ * first place. When `allowDone` is false the prompt below tells the model
+ * outright that the task isn't finished, rather than inviting a `done`
+ * reading only to reject it afterward — a `done: true` answer anyway is
+ * still caught by the ordinary `!allowDone` check right below and rejected
+ * exactly like any other cascade failure (the caller's own gate stays
+ * `blocked`, never a special-cased outcome). Runs on
+ * `config.BROWSE_CASCADE_MODEL`, a separate, cheaper/faster model than
+ * STRUCTURED_MODEL — see that config field's own comment for the
+ * measurement. */
 async function cascadeStep(
   config: Config,
   goal: string,
@@ -1652,14 +1932,20 @@ async function cascadeStep(
   // of the shared budget. See BROWSE_STEP_OVERALL_DEADLINE_MS's comment.
   const deadline = Date.now() + Math.min(BROWSE_CASCADE_TIMEOUT_MS, remainingBudgetMs(overallDeadline));
   let retried = false;
+  // Whether `generateObject` has been attempted at least once yet — see
+  // CascadeRejection's `skipped` field. Only the VERY FIRST `remainingMs
+  // <= 0` check below (before any attempt) uses `rejectSkipped`; a retry
+  // that runs out of budget still follows a real first attempt.
+  let calledModel = false;
   for (;;) {
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) {
-      return reject("timeout");
+      return calledModel ? reject("timeout") : rejectSkipped("timeout (no time left before the first attempt)");
     }
     try {
+      calledModel = true;
       const result = await generateObject({
-        model: createModel(config, config.STRUCTURED_MODEL, { reasoningEffort: "none" }),
+        model: createModel(config, config.BROWSE_CASCADE_MODEL, { reasoningEffort: "none" }),
         schema: cascadeSchema,
         abortSignal: AbortSignal.timeout(remainingMs),
         prompt: [
@@ -1675,9 +1961,17 @@ async function cascadeStep(
           "<elements>",
           elements.map(elementDigestLine).join("\n") || "(no interactive elements found)",
           "</elements>",
-          "Decide the single best next operation. If the goal already looks fully",
-          "accomplished, set done: true (operation is still required by the schema —",
-          "reuse WAIT). Never choose TYPE_TEXT or PRESS_ENTER on a password field.",
+          "Decide the single best next operation.",
+          ...(allowDone
+            ? [
+                "If the goal already looks fully accomplished, set done: true",
+                "(operation is still required by the schema — reuse WAIT).",
+              ]
+            : [
+                "The task is NOT finished yet — always set done: false and choose a",
+                "concrete next operation instead, no matter how the page looks.",
+              ]),
+          "Never choose TYPE_TEXT or PRESS_ENTER on a password field.",
           "index must be one of the element indices shown above, required for",
           "CLICK/TYPE_TEXT/SELECT/HOVER and omitted otherwise. For SELECT, text",
           "must be copied verbatim from that element's own options. Report your",
@@ -1703,7 +1997,7 @@ async function cascadeStep(
     return reject(`low confidence ${object.confidence.toFixed(2)} for ${object.operation}${object.done ? " (done)" : ""}`);
   }
 
-  const model = config.STRUCTURED_MODEL;
+  const model = config.BROWSE_CASCADE_MODEL;
 
   if (object.done) {
     // Finding #8: a `done` reading must never end a task on zero recorded
@@ -1840,6 +2134,14 @@ interface BrowseStepTiming {
   cascadeMs?: number;
 }
 
+/** Mutable diagnostics accumulator threaded through decideBrowseStepCore
+ * alongside `timing` — derived from the public `BrowseStepDiag` (not a
+ * parallel interface, review #10) with `tier` loosened to optional: it
+ * starts undefined and defaults to "jev" in the wrapper below if nothing
+ * more specific ever set it (a step where every evaluated gate passed and
+ * neither noul fired). */
+type BrowseStepDiagState = Omit<BrowseStepDiag, "tier"> & { tier?: BrowseStepDiag["tier"] };
+
 /**
  * Runs one Jev decision cycle against an already-scrubbed, already-capped
  * snapshot and returns the next step's outcome. Never throws — transport/
@@ -1859,8 +2161,13 @@ export async function decideBrowseStep(
   // comment.
   const overallDeadline = start + BROWSE_STEP_OVERALL_DEADLINE_MS;
   const timing: BrowseStepTiming = { jevMs: 0 };
-  const result = await decideBrowseStepCore(client, config, input, timing, overallDeadline);
-  return { ...result, timings: { ...timing, totalMs: Date.now() - start } };
+  const diag: BrowseStepDiagState = { gates: [] };
+  const result = await decideBrowseStepCore(client, config, input, timing, overallDeadline, diag);
+  return {
+    ...result,
+    timings: { ...timing, totalMs: Date.now() - start },
+    diag: { gates: diag.gates, goalMet: diag.goalMet, deadEnd: diag.deadEnd, tier: diag.tier ?? "jev" },
+  };
 }
 
 async function decideBrowseStepCore(
@@ -1869,6 +2176,7 @@ async function decideBrowseStepCore(
   input: BrowseStepInput,
   timing: BrowseStepTiming,
   overallDeadline: number,
+  diag: BrowseStepDiagState,
 ): Promise<BrowseStepResult> {
   const scrubbedGoal = scrubPii(input.goal);
   const scrubbedUrl = scrubPii(input.url);
@@ -1946,6 +2254,7 @@ async function decideBrowseStepCore(
   } catch (err) {
     // Transient: a Jev timeout or transport error — the goal may still be
     // reachable next cycle, so this must not be terminal (addendum B).
+    diag.tier = "retry";
     return retry(
       `browse step evaluation failed: ${err instanceof Error ? err.message : String(err)}`,
     );
@@ -1961,6 +2270,11 @@ async function decideBrowseStepCore(
   // missing/malformed Noul answer (see noulValue) just fails to
   // short-circuit rather than blocking or erroring.
   const goalMet = noulValue(answers[GOAL_MET_ID]);
+  const deadEnd = noulValue(answers[DEAD_END_ID]);
+  // Recorded regardless of whether either noul ends up deciding the step —
+  // see BrowseStepDiag's comment.
+  diag.goalMet = goalMet;
+  diag.deadEnd = deadEnd;
   // See NOUL_GOAL_MET_EMPTY_HISTORY_THRESHOLD's comment: an empty history
   // means nothing has been done yet, so ending the task here demands the
   // stricter original 0.8 bar rather than the 0.65 that applies once at
@@ -1968,10 +2282,11 @@ async function decideBrowseStepCore(
   const goalMetThreshold =
     scrubbedHistory.length > 0 ? NOUL_GOAL_MET_THRESHOLD : NOUL_GOAL_MET_EMPTY_HISTORY_THRESHOLD;
   if (goalMet !== undefined && goalMet >= goalMetThreshold) {
+    diag.tier = "noul";
     return { outcome: "done", operation: "DONE", confidence: goalMet, model };
   }
-  const deadEnd = noulValue(answers[DEAD_END_ID]);
   if (deadEnd !== undefined && deadEnd >= NOUL_DEAD_END_THRESHOLD) {
+    diag.tier = "noul";
     return blocked("Jev determined this page is a dead end for the goal", model, deadEnd);
   }
 
@@ -1983,6 +2298,7 @@ async function decideBrowseStepCore(
   // a deliberate refusal — retry rather than reading undefined
   // .choice/.confidence.
   if (!opAnswer || opAnswer.type !== "choice") {
+    diag.tier = "retry";
     return retry(
       `unexpected answer type "${opAnswer?.type ?? "missing"}" for the operation question`,
       model,
@@ -1992,6 +2308,7 @@ async function decideBrowseStepCore(
   // as a wrong answer type — must not fall through into gatePeak, which
   // would read peak 0 and terminally block a merely-glitchy answer.
   if (!hasProbabilities(opAnswer)) {
+    diag.tier = "retry";
     return retry(
       "the operation answer's probability distribution was empty",
       model,
@@ -2004,25 +2321,47 @@ async function decideBrowseStepCore(
   if (!(operation in OP_DESCRIPTIONS)) {
     // Also malformed, not a deliberate refusal — this also catches a stray
     // "DONE"/"BLOCKED" hallucination now that neither is a real option.
+    diag.tier = "retry";
     return retry(`Jev returned an unknown operation "${operation}"`, model, opConfidence);
   }
   const choiceOperation = operation as ChoiceOperation;
 
-  // Thresholds scale with risk: CLICK/TYPE_TEXT/SELECT mutate the page and
-  // get the higher bar (PEAK_THRESHOLD_OP); SCROLL_*/WAIT are free to get
-  // wrong and get the low one (PEAK_THRESHOLD_PASSIVE). Gated on peak
+  // Thresholds scale with risk: CLICK/SELECT/HOVER mutate the page and get
+  // the higher acting bar (PEAK_THRESHOLD_OP); SCROLL_*/WAIT are free to
+  // get wrong and get the low one (PEAK_THRESHOLD_PASSIVE). DATA_WRITING_OPS
+  // (TYPE_TEXT, PRESS_ENTER) are a THIRD tier of their own
+  // (PEAK_THRESHOLD_OP_PRE_LOWERING, never lowered, never margin-guarded) —
+  // see that constant's comment for the live-bench evidence. Gated on peak
   // probability, not `confidence` — see peakProbability's comment. Below
-  // threshold is now a straight terminal `blocked` — see PEAK_THRESHOLD_OP
-  // and BrowseStepOutcome's comments for why the mid-band `retry` this used
-  // to have was removed.
-  const opTier = ACTING_OPS.has(choiceOperation) ? PEAK_THRESHOLD_OP : PEAK_THRESHOLD_PASSIVE;
-  const opGate = gatePeak(
-    peakProbability(opAnswer),
-    opTier,
+  // threshold is a straight terminal `blocked` — see PEAK_THRESHOLD_OP and
+  // BrowseStepOutcome's comments for why the mid-band `retry` this used to
+  // have was removed; the SURVIVING mid band below the pre-lowering bar
+  // gets the PEAK_MARGIN_MID_BAND tie-guard instead (gatePeakWithBand).
+  const isDataWriting = DATA_WRITING_OPS.has(choiceOperation);
+  const opTier = isDataWriting
+    ? PEAK_THRESHOLD_OP_PRE_LOWERING
+    : ACTING_OPS.has(choiceOperation)
+      ? PEAK_THRESHOLD_OP
+      : PEAK_THRESHOLD_PASSIVE;
+  // Computed once and reused for the gate check, the failure message, and
+  // diag (review #10) — no second peakProbability(opAnswer) call.
+  const opPeak = peakProbability(opAnswer);
+  const opGate = gatePeakWithBand({
+    diag,
+    head: "op",
+    peak: opPeak,
+    margin: peakMargin(opAnswer),
+    threshold: opTier,
+    // No mid-band margin guard for DATA_WRITING_OPS (already gated at the
+    // un-lowered bar, nothing to guard) or the passive tier (never lowered
+    // this round) — only the acting, non-data-writing ops actually moved.
+    preLoweringBar:
+      !isDataWriting && ACTING_OPS.has(choiceOperation) ? PEAK_THRESHOLD_OP_PRE_LOWERING : null,
     model,
-    opConfidence,
-    `operation peak probability is below the ${opTier} threshold for "${operation}"`,
-  );
+    confidence: opConfidence,
+    jevPick: operation,
+    reasonSubject: "operation",
+  });
   if (opGate) {
     // Finding #5(b): the op head itself couldn't confidently name ANY
     // concrete next action. That is not automatically a failure — if the
@@ -2031,6 +2370,7 @@ async function decideBrowseStepCore(
     // NOUL_GOAL_MET_SUCCESS_FLOOR's comment): this path only fires once the
     // alternative is already a dead-end read on the operation.
     if (goalMet !== undefined && goalMet >= NOUL_GOAL_MET_SUCCESS_FLOOR) {
+      diag.tier = "noul";
       return {
         outcome: "done",
         operation: "DONE",
@@ -2045,6 +2385,18 @@ async function decideBrowseStepCore(
           "goal_met noul reported the task as likely complete once the operation head had no confident action left to offer — confidence here is a noul probability, not comparable to the Choice confidence other results carry",
       };
     }
+    // Finding #8: the op head itself found no confident action — "is there
+    // nothing left to do" is a real question here, so `done` is a real
+    // possibility, SUBJECT to a pre-check against the SAME step's own
+    // goal_met noul (2026-09-25, see CASCADE_DONE_MIN_GOAL_MET's own
+    // comment for why this moved here instead of rejecting the cascade's
+    // answer after the fact): a peak this low on `goal_met` means the
+    // cascade must not even be TOLD it can say done, or a genuinely stuck
+    // page (Jev confidently unsure, goal clearly unmet) burns a wasted
+    // cascade call every single retry on an otherwise-unchanged page.
+    // cascadeStep's own non-empty-history + confidence bar still apply on
+    // top of this when it IS allowed.
+    const opAllowDone = goalMet === undefined || goalMet >= CASCADE_DONE_MIN_GOAL_MET;
     const cascaded = await timedCascadeStep(
       timing,
       config,
@@ -2053,12 +2405,10 @@ async function decideBrowseStepCore(
       scrubbedTitle,
       scrubbedHistory,
       scrubbedElements,
-      // Finding #8: the op head itself found no confident action — "is
-      // there nothing left to do" is a real question here, so `done` is
-      // allowed (subject to cascadeStep's own non-empty-history + 0.8 bar).
-      true,
+      opAllowDone,
       overallDeadline,
     );
+    markCascadeTier(diag, cascaded);
     if (!isCascadeRejection(cascaded)) return cascaded;
     return { ...opGate, cascadeNote: cascaded.rejected };
   }
@@ -2071,6 +2421,7 @@ async function decideBrowseStepCore(
   // head would have picked (PRESS_ENTER is targetless — there is no target
   // head to check).
   if (operation === "PRESS_ENTER" && scrubbedElements.some((el) => el.isPassword)) {
+    diag.tier = "rule";
     return blocked(
       "refusing to press Enter while a password field is present on the page — the user must log in themselves",
       model,
@@ -2098,11 +2449,13 @@ async function decideBrowseStepCore(
   // targetHeadFor's comment).
   const headOp = targetHeadFor(operation);
   if (!headOp) {
+    diag.tier = "retry";
     return retry(`operation "${operation}" has no target head`, model, opConfidence);
   }
   const targetQuestion = questions[targetIdFor(headOp)];
   const targetAnswer = answers[targetIdFor(headOp)];
   if (!targetQuestion || !targetAnswer || targetAnswer.type !== "choice") {
+    diag.tier = "retry";
     return retry(
       `no candidate target elements were available for "${operation}"`,
       model,
@@ -2111,6 +2464,7 @@ async function decideBrowseStepCore(
   }
   // Finding #7: same malformed-answer check as the op head.
   if (!hasProbabilities(targetAnswer)) {
+    diag.tier = "retry";
     return retry(
       `the target answer's probability distribution was empty for "${operation}"`,
       model,
@@ -2122,15 +2476,31 @@ async function decideBrowseStepCore(
   // an op at a confident peak whose target is a near-uniform guess across
   // 40 candidates is exactly the near-arbitrary click the whole gate exists
   // to prevent (addendum C's reasoning, now expressed on peak probability
-  // instead of `confidence`).
+  // instead of `confidence`). TYPE_TEXT's OWN target head is the one
+  // exception (2026-09-25 live bench): the wrong-field failures that
+  // motivated DATA_WRITING_OPS were TARGET mistakes (typing into the
+  // already-filled search box instead of the real field), so target_type
+  // keeps the pre-lowering PEAK_THRESHOLD_TARGET_PRE_LOWERING bar too, with
+  // no margin guard — target_click/target_select (and HOVER, which borrows
+  // target_click) use the lowered bar plus the mid-band margin guard.
+  const targetIsTypeText = operation === "TYPE_TEXT";
+  const targetThreshold = targetIsTypeText ? PEAK_THRESHOLD_TARGET_PRE_LOWERING : PEAK_THRESHOLD_TARGET;
   const targetConfidence = targetAnswer.confidence;
-  const targetGate = gatePeak(
-    peakProbability(targetAnswer),
-    PEAK_THRESHOLD_TARGET,
+  // Computed once and reused for the gate check, the failure message, and
+  // diag (review #10).
+  const targetPeak = peakProbability(targetAnswer);
+  const targetGate = gatePeakWithBand({
+    diag,
+    head: "target",
+    peak: targetPeak,
+    margin: peakMargin(targetAnswer),
+    threshold: targetThreshold,
+    preLoweringBar: targetIsTypeText ? null : PEAK_THRESHOLD_TARGET_PRE_LOWERING,
     model,
-    targetConfidence,
-    `target peak probability is below the ${PEAK_THRESHOLD_TARGET} threshold for "${operation}"`,
-  );
+    confidence: targetConfidence,
+    jevPick: targetAnswer.choice,
+    reasonSubject: "target",
+  });
   if (targetGate) {
     const cascaded = await timedCascadeStep(
       timing,
@@ -2146,6 +2516,7 @@ async function decideBrowseStepCore(
       false,
       overallDeadline,
     );
+    markCascadeTier(diag, cascaded);
     if (!isCascadeRejection(cascaded)) return cascaded;
     return { ...targetGate, cascadeNote: cascaded.rejected };
   }
@@ -2160,6 +2531,7 @@ async function decideBrowseStepCore(
   // #9 / addendum E): Number("") is 0, so coercion could silently map a
   // blank answer onto element 0 and click it.
   if (!Object.prototype.hasOwnProperty.call(targetQuestion.criteria, targetAnswer.choice)) {
+    diag.tier = "retry";
     return retry(
       `Jev picked an unknown target index "${targetAnswer.choice}" for "${operation}"`,
       model,
@@ -2169,6 +2541,7 @@ async function decideBrowseStepCore(
   const targetIndex = Number(targetAnswer.choice);
   const targetElement = scrubbedElements.find((el) => el.index === targetIndex);
   if (!targetElement) {
+    diag.tier = "retry";
     return retry(
       `Jev picked target index "${targetAnswer.choice}" for "${operation}" but no matching element was found`,
       model,
@@ -2180,6 +2553,7 @@ async function decideBrowseStepCore(
     // Hard rule, not a threshold: never generate text for, or type into, a
     // password field. The user logs in themselves in the visible tab.
     if (targetElement.isPassword) {
+      diag.tier = "rule";
       return blocked(
         "refusing to type into a password field — the user must log in themselves",
         model,
@@ -2203,8 +2577,22 @@ async function decideBrowseStepCore(
     if (textCandidates.length > 0 && !hasAmbiguousPiiCandidates(textCandidates)) {
       // Item 1: try the answer already sitting in the MAIN fan-out's
       // response first — no extra Jev round trip at all when it's usable.
+      const foldedAnswer = answers[TEXT_CANDIDATE_ID];
+      // Diag entry for the folded text_candidate gate (only — the rarer
+      // standalone chooseTypeTextCandidate fallback below isn't separately
+      // diagnosed, since it doesn't expose its raw answer/choice back to
+      // this scope). `jevPick` is the candidate INDEX (or "none"), never
+      // the candidate's own text.
+      if (foldedAnswer && foldedAnswer.type === "choice" && hasProbabilities(foldedAnswer)) {
+        diag.gates.push({
+          head: "text",
+          peak: peakProbability(foldedAnswer),
+          threshold: PEAK_THRESHOLD_TEXT_CANDIDATE,
+          jevPick: foldedAnswer.choice,
+        });
+      }
       const folded = parseTextCandidateAnswer(
-        answers[TEXT_CANDIDATE_ID],
+        foldedAnswer,
         textCandidates,
         buildTextCandidateCriteria(textCandidates),
       );
@@ -2269,6 +2657,7 @@ async function decideBrowseStepCore(
         // The small model call failing is transient, same class as a Jev
         // timeout — try again next cycle rather than aborting the task.
         timing.textMs = Date.now() - textStart;
+        diag.tier = "retry";
         return retry(
           `failed to generate text for "${targetElement.label}": ${err instanceof Error ? err.message : String(err)}`,
           model,
@@ -2295,13 +2684,14 @@ async function decideBrowseStepCore(
   if (operation === "SELECT") {
     const options = targetElement.options;
     if (!options || options.length === 0) {
+      diag.tier = "retry";
       return retry(
         `"${targetElement.label}" has no options to select from`,
         model,
         targetConfidence,
       );
     }
-    let selection: { text: string; peak: number; confidence: number };
+    let selection: Awaited<ReturnType<typeof chooseSelectOption>>;
     try {
       selection = await chooseSelectOption(
         client,
@@ -2313,19 +2703,30 @@ async function decideBrowseStepCore(
     } catch (err) {
       // Same class as a Jev timeout on the main call — a failed second
       // call is transient, try again next cycle rather than aborting.
+      diag.tier = "retry";
       return retry(
         `failed to choose an option for "${targetElement.label}": ${err instanceof Error ? err.message : String(err)}`,
         model,
         targetConfidence,
       );
     }
-    const selectGate = gatePeak(
-      selection.peak,
-      PEAK_THRESHOLD_TARGET,
+    const selectConfidence = Math.min(combinedConfidence, selection.confidence);
+    // chooseSelectOption already computed `margin` once (it's the only
+    // place with the raw answer) — reused here rather than recomputed.
+    const selectGate = gatePeakWithBand({
+      diag,
+      head: "select",
+      peak: selection.peak,
+      margin: selection.margin,
+      threshold: PEAK_THRESHOLD_TARGET,
+      preLoweringBar: PEAK_THRESHOLD_TARGET_PRE_LOWERING,
       model,
-      Math.min(combinedConfidence, selection.confidence),
-      `select-option peak probability is below the ${PEAK_THRESHOLD_TARGET} threshold for "${targetElement.label}"`,
-    );
+      confidence: selectConfidence,
+      // The chosen OPTION'S INDEX, never its text/label — see
+      // BrowseStepGateDiag's own comment.
+      jevPick: String(selection.index),
+      reasonSubject: "select-option",
+    });
     if (selectGate) {
       const cascaded = await timedCascadeStep(
         timing,
@@ -2340,6 +2741,7 @@ async function decideBrowseStepCore(
         false,
         overallDeadline,
       );
+      markCascadeTier(diag, cascaded);
       if (!isCascadeRejection(cascaded)) return cascaded;
       return { ...selectGate, cascadeNote: cascaded.rejected };
     }

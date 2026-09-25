@@ -186,11 +186,16 @@ export async function browseStepRoutes(
             cascadeNote: result.cascadeNote,
             timings: result.timings,
             textSource: result.textSource,
+            diag: result.diag,
           },
         },
         "browse step decided",
       );
-      return result;
+      // `diag` is server-side gate/cascade diagnostics (logged above) —
+      // never part of the HTTP contract, so it's stripped before the reply
+      // is sent rather than left for the client to ignore.
+      const { diag: _diag, ...reply } = result;
+      return reply;
     },
     failureMessage: "failed to evaluate the next browsing step",
   });

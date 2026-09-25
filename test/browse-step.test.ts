@@ -21,8 +21,12 @@ const {
   MAX_ELEMENT_OPTIONS,
   MAX_OPTION_CHARS,
   PEAK_THRESHOLD_OP,
+  PEAK_THRESHOLD_OP_PRE_LOWERING,
+  DATA_WRITING_OPS,
   PEAK_THRESHOLD_TARGET,
+  PEAK_THRESHOLD_TARGET_PRE_LOWERING,
   PEAK_THRESHOLD_PASSIVE,
+  PEAK_MARGIN_MID_BAND,
   NOUL_GOAL_MET_THRESHOLD,
   NOUL_GOAL_MET_EMPTY_HISTORY_THRESHOLD,
   NOUL_GOAL_MET_SUCCESS_FLOOR,
@@ -32,6 +36,7 @@ const {
   BROWSE_DECISION_TIMEOUT_MS,
   CASCADE_CONFIDENCE_THRESHOLD,
   CASCADE_DONE_CONFIDENCE_THRESHOLD,
+  CASCADE_DONE_MIN_GOAL_MET,
   BROWSE_CASCADE_TIMEOUT_MS,
   resolveSelectOptionText,
   extractTextCandidates,
@@ -86,6 +91,26 @@ function sequentialClient(
         model: opts.model ?? "jev-latest",
         answers: answers as never,
         usage: { input_tokens: 100, output_tokens: 10 },
+      };
+    },
+  };
+}
+
+/** Client whose ONE evaluate() call takes `elapsedMs` of (fake-timer) wall
+ * clock before answering — shared by the overall-deadline tests below (one
+ * eats into BROWSE_CASCADE_TIMEOUT_MS but leaves a cascade attempt
+ * possible, the other exhausts BROWSE_STEP_OVERALL_DEADLINE_MS entirely so
+ * the cascade is skipped before its first attempt) so they don't duplicate
+ * the same fake-timer plumbing. Caller still owns `vi.useFakeTimers()`/
+ * `vi.advanceTimersByTimeAsync(elapsedMs)`/`vi.useRealTimers()`. */
+function slowEvaluateClient(elapsedMs: number, opPeak: number): SystemOneClient {
+  return {
+    async evaluate() {
+      await new Promise<void>((resolve) => setTimeout(resolve, elapsedMs));
+      return {
+        model: "jev-latest",
+        answers: { op: choice("CLICK", opPeak) } as never,
+        usage: { input_tokens: 1, output_tokens: 1 },
       };
     },
   };
@@ -335,6 +360,11 @@ describe("resolveSelectOptionText", () => {
 // literal value straight out of the (raw, unscrubbed) goal instead of
 // paying for a generative STRUCTURED_MODEL call every time.
 describe("extractTextCandidates", () => {
+  // Mirrors the module-private QUOTE_CHAR_RE in browseStep.ts — kept here
+  // rather than exported purely for test use, since this file already
+  // needs its own copy to assert the ABSENCE of every quote shape.
+  const ANY_QUOTE_CHAR_RE = /["'‘’“”«»]/;
+
   const benchGoal =
     'Open http://x. Accept cookies, search for headphones, keep only wireless ones from ' +
     "brand AudioNova under $100, sort by rating, open the top result, add it to the cart " +
@@ -382,6 +412,62 @@ describe("extractTextCandidates", () => {
 
   it("offers a short, comma-free goal itself as a candidate via the segment fallback", () => {
     expect(extractTextCandidates("click the button")).toEqual(["click the button"]);
+  });
+
+  // Live bug (2026-09-25): a word-internal apostrophe ("result's") used to
+  // be treated as an opening quote by QUOTED_CANDIDATE_RE, mis-pairing
+  // every real quote after it — on this exact goal it returned garbage like
+  // `s product page, add the item ... fill in: name` and `"Test User"`
+  // (WITH its quotes still attached, which then got typed into "Full name"
+  // literally) while missing "standard" entirely.
+  it("does not let a word-internal apostrophe mis-pair the real quotes after it", () => {
+    const goal =
+      "Search for wireless headphones, open the top-rated result's product page, add the item " +
+      'to the cart, then go to checkout and fill in: name "Test User", email "test@example.com", ' +
+      'country Germany, shipping method "standard", and accept the terms.';
+    const candidates = extractTextCandidates(goal);
+    expect(candidates).toContain("Test User");
+    expect(candidates).toContain("test@example.com");
+    expect(candidates).toContain("standard");
+    expect(candidates.some((c) => c.includes("headphones"))).toBe(true);
+    for (const candidate of candidates) {
+      expect(candidate.startsWith('"')).toBe(false);
+      expect(candidate.startsWith("'")).toBe(false);
+      expect(candidate.endsWith('"')).toBe(false);
+      expect(candidate.endsWith("'")).toBe(false);
+      expect(candidate).not.toContain(", email");
+    }
+  });
+
+  // Item 5 (2026-09-25 third review): a candidate that still carries a
+  // quote character anywhere (not just at its edges) is junk and must be
+  // dropped outright, and the apostrophe word-boundary check must be
+  // Unicode-aware — "José's"/"students'" are real possessives, not ASCII
+  // oddities.
+  it("extracts a plain-ASCII single-quoted phrase, with no candidate keeping a quote character", () => {
+    const candidates = extractTextCandidates("then type 'Blue shirt' in search");
+    expect(candidates).toContain("Blue shirt");
+    for (const candidate of candidates) {
+      expect(ANY_QUOTE_CHAR_RE.test(candidate)).toBe(false);
+    }
+  });
+
+  it("does not produce a junk candidate from a possessive apostrophe followed by another possessive (Unicode-aware boundary)", () => {
+    const candidates = extractTextCandidates("Open José's list of the students' grades");
+    expect(candidates.some((c) => c.includes("s list of the students"))).toBe(false);
+    for (const candidate of candidates) {
+      expect(ANY_QUOTE_CHAR_RE.test(candidate)).toBe(false);
+    }
+  });
+
+  it("extracts a guillemet-quoted Cyrillic phrase", () => {
+    const candidates = extractTextCandidates("введите «Москва» в поле поиска");
+    expect(candidates).toContain("Москва");
+  });
+
+  it("extracts a curly-double-quoted phrase", () => {
+    const candidates = extractTextCandidates('type “Blue” in the color field');
+    expect(candidates).toContain("Blue");
   });
 });
 
@@ -901,15 +987,30 @@ describe("decideBrowseStep", () => {
       expect(result.index).toBeUndefined();
     });
 
-    it("gates PRESS_ENTER at the ACTING tier (PEAK_THRESHOLD_OP), not the passive one", async () => {
-      // Below PEAK_THRESHOLD_OP but above PEAK_THRESHOLD_PASSIVE — blocked
-      // only if PRESS_ENTER is really on the higher bar.
-      const peak = (PEAK_THRESHOLD_OP + PEAK_THRESHOLD_PASSIVE) / 2;
-      expect(peak).toBeLessThan(PEAK_THRESHOLD_OP);
-      expect(peak).toBeGreaterThanOrEqual(PEAK_THRESHOLD_PASSIVE);
-      const client = fakeClient({ op: choice("PRESS_ENTER", peak) });
-      const result = await decideBrowseStep(client, makeConfig(), baseInput([clickable]));
-      expect(result.outcome).toBe("blocked");
+    it("gates PRESS_ENTER at PEAK_THRESHOLD_OP_PRE_LOWERING (DATA_WRITING_OPS), not the plain acting tier or the passive one", async () => {
+      // Below PEAK_THRESHOLD_PASSIVE and PEAK_THRESHOLD_OP — blocked on any
+      // tier, so this alone doesn't distinguish PRESS_ENTER's actual bar.
+      const belowActingPeak = (PEAK_THRESHOLD_OP + PEAK_THRESHOLD_PASSIVE) / 2;
+      expect(belowActingPeak).toBeLessThan(PEAK_THRESHOLD_OP);
+      expect(belowActingPeak).toBeGreaterThanOrEqual(PEAK_THRESHOLD_PASSIVE);
+      const belowActingResult = await decideBrowseStep(
+        fakeClient({ op: choice("PRESS_ENTER", belowActingPeak) }),
+        makeConfig(),
+        baseInput([clickable]),
+      );
+      expect(belowActingResult.outcome).toBe("blocked");
+
+      // Above PEAK_THRESHOLD_OP (would pass the plain acting tier CLICK
+      // uses) but still below PEAK_THRESHOLD_OP_PRE_LOWERING — blocked only
+      // because PRESS_ENTER is on the stricter DATA_WRITING_OPS bar.
+      const midBandPeak = (PEAK_THRESHOLD_OP + PEAK_THRESHOLD_OP_PRE_LOWERING) / 2;
+      expect(midBandPeak).toBeGreaterThan(PEAK_THRESHOLD_OP);
+      const midBandResult = await decideBrowseStep(
+        fakeClient({ op: choice("PRESS_ENTER", midBandPeak) }),
+        makeConfig(),
+        baseInput([clickable]),
+      );
+      expect(midBandResult.outcome).toBe("blocked");
     });
 
     it("blocks PRESS_ENTER with a credentials reason when a password field is present on the page, even though PRESS_ENTER is targetless", async () => {
@@ -2028,6 +2129,150 @@ describe("decideBrowseStep", () => {
     });
   });
 
+  // 2026-09-25 live bench: TYPE_TEXT in the shared 0.45-0.6 mid band was a
+  // coin flip (3 of 6 picks typed into the wrong, already-filled field),
+  // while CLICK in the SAME band was almost always right — so
+  // DATA_WRITING_OPS (TYPE_TEXT, PRESS_ENTER) keep their own, un-lowered
+  // PEAK_THRESHOLD_OP_PRE_LOWERING bar instead of sharing PEAK_THRESHOLD_OP
+  // with the other acting ops.
+  describe("PEAK_THRESHOLD_OP_PRE_LOWERING — DATA_WRITING_OPS keep the old acting bar", () => {
+    it("DATA_WRITING_OPS is exactly {TYPE_TEXT, PRESS_ENTER}", () => {
+      expect(PEAK_THRESHOLD_OP_PRE_LOWERING).toBe(0.6);
+      expect([...DATA_WRITING_OPS].sort()).toEqual(["PRESS_ENTER", "TYPE_TEXT"]);
+    });
+
+    it("blocks TYPE_TEXT (terminal, via cascade) at a peak CLICK would pass", async () => {
+      const midBandPeak = (PEAK_THRESHOLD_OP + PEAK_THRESHOLD_OP_PRE_LOWERING) / 2; // 0.525
+      const client = fakeClient({
+        op: choice("TYPE_TEXT", midBandPeak),
+        target_type: choice("5", 0.9),
+      });
+      const result = await decideBrowseStep(client, makeConfig(), baseInput([typeable]));
+      expect(result.outcome).toBe("blocked");
+      expect(result.reason).toContain("below the 0.6 threshold");
+    });
+
+    it("blocks PRESS_ENTER (terminal, via cascade) at that same mid-band peak — it submits whatever is focused, as risky as TYPE_TEXT", async () => {
+      const midBandPeak = (PEAK_THRESHOLD_OP + PEAK_THRESHOLD_OP_PRE_LOWERING) / 2;
+      const client = fakeClient({ op: choice("PRESS_ENTER", midBandPeak) });
+      const result = await decideBrowseStep(client, makeConfig(), baseInput([]));
+      expect(result.outcome).toBe("blocked");
+      expect(result.reason).toContain("below the 0.6 threshold");
+    });
+
+    it("passes CLICK (act) at that SAME peak — the live-bench asymmetry", async () => {
+      const midBandPeak = (PEAK_THRESHOLD_OP + PEAK_THRESHOLD_OP_PRE_LOWERING) / 2;
+      const client = fakeClient({
+        op: choice("CLICK", midBandPeak, { probabilities: { CLICK: midBandPeak, SELECT: 0.1 } }),
+        target_click: choice("3", 0.9),
+      });
+      const result = await decideBrowseStep(client, makeConfig(), baseInput([clickable]));
+      expect(result.outcome).toBe("act");
+      expect(result.operation).toBe("CLICK");
+    });
+
+    it("gates TYPE_TEXT at 0.6 even though PEAK_THRESHOLD_OP itself is lower", async () => {
+      const client = fakeClient({
+        op: choice("TYPE_TEXT", PEAK_THRESHOLD_OP + 0.01), // clears PEAK_THRESHOLD_OP, not PEAK_THRESHOLD_OP_PRE_LOWERING
+        target_type: choice("5", 0.9),
+      });
+      const result = await decideBrowseStep(client, makeConfig(), baseInput([typeable]));
+      expect(result.outcome).toBe("blocked");
+    });
+
+    // Item 3 (2026-09-25): the live wrong-field failures were TARGET
+    // mistakes (typing into the already-filled search box), so
+    // target_type ALSO keeps the pre-lowering 0.5 bar — with no margin
+    // guard, unlike target_click/select-option.
+    it("keeps target_type at the pre-lowering 0.5 bar (no margin guard), while target_click uses the lowered 0.35 + margin", async () => {
+      // 0.4 clears PEAK_THRESHOLD_TARGET (0.35) but not
+      // PEAK_THRESHOLD_TARGET_PRE_LOWERING (0.5) — for target_type this is
+      // still simply below-threshold (blocked), no mid-band margin check
+      // ever runs since preLoweringBar is null for that head.
+      const client = fakeClient({
+        op: choice("TYPE_TEXT", 0.9),
+        target_type: choice("5", 0.4, { probabilities: { "5": 0.4, "6": 0.1 } }),
+      });
+      const typeableB: BrowseStepElement = { ...typeable, index: 6 };
+      const result = await decideBrowseStep(client, makeConfig(), baseInput([typeable, typeableB]));
+      expect(result.outcome).toBe("blocked");
+      const targetGateDiag = result.diag?.gates.find((g) => g.head === "target");
+      expect(targetGateDiag?.threshold).toBe(PEAK_THRESHOLD_TARGET_PRE_LOWERING);
+      expect(targetGateDiag?.margin).toBeUndefined();
+    });
+
+    it("target_click (CLICK) uses the lowered 0.35 threshold, unlike target_type", async () => {
+      const client = fakeClient({
+        op: choice("CLICK", 0.9),
+        target_click: choice("3", 0.4, { probabilities: { "3": 0.4, "4": 0.1 } }),
+      });
+      const result = await decideBrowseStep(
+        client,
+        makeConfig(),
+        baseInput([clickable, { ...clickable, index: 4 }]),
+      );
+      expect(result.outcome).toBe("act"); // 0.4 clears 0.35, and margin 0.3 clears PEAK_MARGIN_MID_BAND
+      const targetGateDiag = result.diag?.gates.find((g) => g.head === "target");
+      expect(targetGateDiag?.threshold).toBe(PEAK_THRESHOLD_TARGET);
+    });
+  });
+
+  // Tie guard for the surviving mid band a lowered gate leaves behind
+  // (2026-09-25) — see PEAK_MARGIN_MID_BAND's own comment.
+  describe("PEAK_MARGIN_MID_BAND — mid-band margin tie-guard", () => {
+    it("blocks (via cascade) a near-tie target peak in the mid band, even though it clears PEAK_THRESHOLD_TARGET", async () => {
+      expect(PEAK_THRESHOLD_TARGET_PRE_LOWERING).toBe(0.5);
+      expect(PEAK_MARGIN_MID_BAND).toBe(0.1);
+      // Peak 0.36 clears PEAK_THRESHOLD_TARGET (0.35) but sits below
+      // PEAK_THRESHOLD_TARGET_PRE_LOWERING (0.5) — the mid band. Margin
+      // against the runner-up (0.36 - 0.32 = 0.04) is under
+      // PEAK_MARGIN_MID_BAND (0.1), a genuine near-tie.
+      const client = fakeClient({
+        op: choice("CLICK", 0.9),
+        target_click: choice("3", 0.36, { probabilities: { "3": 0.36, "4": 0.32, "5": 0.32 } }),
+      });
+      const result = await decideBrowseStep(
+        client,
+        makeConfig(),
+        baseInput([clickable, { ...clickable, index: 4 }, { ...clickable, index: 5 }]),
+      );
+      expect(result.outcome).toBe("blocked");
+      expect(result.reason).toContain("mid band");
+      const targetGateDiag = result.diag?.gates.find((g) => g.head === "target");
+      expect(targetGateDiag?.margin).toBeCloseTo(0.04, 5);
+    });
+
+    it("passes a mid-band target peak whose margin clears PEAK_MARGIN_MID_BAND", async () => {
+      // Peak 0.4 vs runner-up 0.2: margin 0.2 >= PEAK_MARGIN_MID_BAND (0.1).
+      const client = fakeClient({
+        op: choice("CLICK", 0.9),
+        target_click: choice("3", 0.4, { probabilities: { "3": 0.4, "4": 0.2 } }),
+      });
+      const result = await decideBrowseStep(
+        client,
+        makeConfig(),
+        baseInput([clickable, { ...clickable, index: 4 }]),
+      );
+      expect(result.outcome).toBe("act");
+      expect(result.index).toBe(3);
+      const targetGateDiag = result.diag?.gates.find((g) => g.head === "target");
+      expect(targetGateDiag?.margin).toBeCloseTo(0.2, 5);
+    });
+
+    it("does not apply the margin guard once the peak clears the pre-lowering bar", async () => {
+      // Peak 0.9, single-key probabilities (margin = peak itself) — nowhere
+      // near the mid band, so no margin field at all.
+      const client = fakeClient({
+        op: choice("CLICK", 0.9),
+        target_click: choice("3", 0.9),
+      });
+      const result = await decideBrowseStep(client, makeConfig(), baseInput([clickable]));
+      expect(result.outcome).toBe("act");
+      const targetGateDiag = result.diag?.gates.find((g) => g.head === "target");
+      expect(targetGateDiag?.margin).toBeUndefined();
+    });
+  });
+
   // Finding #6: the old single confidence cliff had grown a non-terminal
   // "retry" middle band below the acting threshold. That band was removed —
   // decideBrowseStep is a pure function of the SAME page state on every
@@ -2291,13 +2536,15 @@ describe("cascade on low confidence", () => {
    * mockStructuredModelOnce above but for the cascade schema. */
   function mockCascadeOnce(
     object: Record<string, unknown>,
-  ): { seenSignal: () => AbortSignal | undefined } {
+  ): { seenSignal: () => AbortSignal | undefined; seenPrompt: () => string } {
     let seenSignal: AbortSignal | undefined;
+    let seenPrompt = "";
     createModel.mockImplementationOnce(
       () =>
         new MockLanguageModelV3({
-          doGenerate: async (options: { abortSignal?: AbortSignal }) => {
+          doGenerate: async (options: { abortSignal?: AbortSignal; prompt?: unknown }) => {
             seenSignal = options.abortSignal;
+            seenPrompt = JSON.stringify(options.prompt ?? "");
             return {
               finishReason: "stop",
               usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
@@ -2307,7 +2554,7 @@ describe("cascade on low confidence", () => {
           },
         }),
     );
-    return { seenSignal: () => seenSignal };
+    return { seenSignal: () => seenSignal, seenPrompt: () => seenPrompt };
   }
 
   it("turns a below-threshold operation peak into an accepted act when the cascade is confident and valid", async () => {
@@ -2330,7 +2577,7 @@ describe("cascade on low confidence", () => {
       cascade: true,
       confidence: 0.9,
     });
-    expect(result.model).toBe(makeConfig().STRUCTURED_MODEL);
+    expect(result.model).toBe(makeConfig().BROWSE_CASCADE_MODEL);
   });
 
   it("keeps the original terminal blocked when the cascade's own confidence is below CASCADE_CONFIDENCE_THRESHOLD", async () => {
@@ -2567,6 +2814,78 @@ describe("cascade on low confidence", () => {
     });
   });
 
+  // 2026-09-25 live-data finding: a fast cascade model declared done: true
+  // with high confidence on a checkout page BEFORE the order was actually
+  // placed. Cross-checked against the SAME step's own goal_met noul.
+  // 2026-09-25 rework: a `done` the cascade proposes despite a clearly low
+  // `goal_met` used to be rejected AFTER the fact (a `retry`) — on an
+  // UNCHANGED page that just re-asked the identical question next step,
+  // burning a wasted cascade call every single retry (live finding: 3
+  // wasted cascades before the loop gave up). Now decideBrowseStepCore
+  // computes `allowDone` from `goal_met` BEFORE the cascade call even
+  // starts and passes it straight through — the cascade prompt never
+  // offers `done` at all in that case (see cascadeStep's own comment), so
+  // the ordinary `!allowDone` guard inside cascadeStep is what actually
+  // catches a `done: true` answer anyway, resolving to the SAME terminal
+  // `blocked` + cascadeNote every other cascade rejection gets — never a
+  // special-cased outcome.
+  describe("goal_met pre-check on cascade done (CASCADE_DONE_MIN_GOAL_MET)", () => {
+    it("resolves to the terminal BLOCKED (not retry) when the fan-out's own goal_met noul is clearly low, via the ordinary allowDone guard", async () => {
+      expect(CASCADE_DONE_MIN_GOAL_MET).toBe(0.3);
+      const { seenPrompt } = mockCascadeOnce({
+        operation: "WAIT",
+        done: true,
+        confidence: 0.95,
+        reason: "the order looks placed",
+      });
+      const client = fakeClient({
+        op: choice("CLICK", PEAK_THRESHOLD_OP - 0.1),
+        target_click: choice("3", 0.9),
+        goal_met: noul(CASCADE_DONE_MIN_GOAL_MET - 0.01),
+      });
+      const result = await decideBrowseStep(client, makeConfig(), baseInputWithHistory([clickable]));
+      expect(result.outcome).toBe("blocked");
+      expect(result.cascadeNote).toContain("done not allowed here");
+      expect(result.diag?.tier).toBe("cascade"); // the cascade WAS called
+      // The prompt itself must not invite a done reading when allowDone is
+      // already known to be false.
+      expect(seenPrompt()).toContain("NOT finished yet");
+      expect(seenPrompt()).not.toContain("already looks fully accomplished");
+    });
+
+    it("still allows a cascade done when goal_met is at or above CASCADE_DONE_MIN_GOAL_MET", async () => {
+      mockCascadeOnce({
+        operation: "WAIT",
+        done: true,
+        confidence: 0.95,
+        reason: "the order looks placed",
+      });
+      const client = fakeClient({
+        op: choice("CLICK", PEAK_THRESHOLD_OP - 0.1),
+        target_click: choice("3", 0.9),
+        goal_met: noul(CASCADE_DONE_MIN_GOAL_MET),
+      });
+      const result = await decideBrowseStep(client, makeConfig(), baseInputWithHistory([clickable]));
+      expect(result).toMatchObject({ outcome: "done", cascade: true });
+    });
+
+    it("still allows a cascade done when goal_met is missing/malformed (nothing to contradict it)", async () => {
+      mockCascadeOnce({
+        operation: "WAIT",
+        done: true,
+        confidence: 0.95,
+        reason: "the order looks placed",
+      });
+      const client = fakeClient({
+        op: choice("CLICK", PEAK_THRESHOLD_OP - 0.1),
+        target_click: choice("3", 0.9),
+        // No goal_met answer at all.
+      });
+      const result = await decideBrowseStep(client, makeConfig(), baseInputWithHistory([clickable]));
+      expect(result).toMatchObject({ outcome: "done", cascade: true });
+    });
+  });
+
   // Live bench finding (2026-09-24): the cascade's SELECT branch used to
   // reject the whole step ("SELECT option text not among the element's
   // options") whenever the model's free-text answer didn't match a real
@@ -2724,16 +3043,7 @@ describe("cascade on low confidence", () => {
       // only the overall-deadline cap (not the cascade's own constant)
       // explains the capped value below.
       const elapsedFirstCallMs = 11_000;
-      const client: SystemOneClient = {
-        async evaluate() {
-          await new Promise<void>((resolve) => setTimeout(resolve, elapsedFirstCallMs));
-          return {
-            model: "jev-latest",
-            answers: { op: choice("CLICK", PEAK_THRESHOLD_OP - 0.2) } as never,
-            usage: { input_tokens: 1, output_tokens: 1 },
-          };
-        },
-      };
+      const client = slowEvaluateClient(elapsedFirstCallMs, PEAK_THRESHOLD_OP - 0.2);
 
       const pending = decideBrowseStep(client, makeConfig(), baseInput([clickable]));
       await vi.advanceTimersByTimeAsync(elapsedFirstCallMs);
@@ -2785,5 +3095,89 @@ describe("cascade on low confidence", () => {
       expect(result.cascade).toBe(true);
       expect(result.timings?.cascadeMs).toBeGreaterThanOrEqual(0);
     });
+  });
+});
+
+// Diagnostics (browse-speed contract) — every evaluated gate recorded, and
+// which mechanism ("jev" / "noul" / "cascade") produced the returned
+// decision.
+describe("decideBrowseStep diag", () => {
+  const clickableA: BrowseStepElement = { index: 3, tag: "button", label: "Accept all", ops: ["CLICK"] };
+
+  it("is present on the result, with every evaluated gate recorded, tier 'jev' when nothing failed", async () => {
+    const client = fakeClient({ op: choice("CLICK", 0.9), target_click: choice("3", 0.9) });
+    const result = await decideBrowseStep(client, makeConfig(), baseInput([clickableA]));
+    expect(result.diag).toBeDefined();
+    expect(result.diag?.tier).toBe("jev");
+    expect(result.diag?.gates).toEqual([
+      { head: "op", peak: 0.9, threshold: PEAK_THRESHOLD_OP, jevPick: "CLICK" },
+      { head: "target", peak: 0.9, threshold: PEAK_THRESHOLD_TARGET, jevPick: "3" },
+    ]);
+  });
+
+  it("records goalMet/deadEnd as the raw noul values from the fan-out", async () => {
+    const client = fakeClient({
+      op: choice("CLICK", 0.9),
+      target_click: choice("3", 0.9),
+      goal_met: noul(0.3),
+      dead_end: noul(0.1),
+    });
+    const result = await decideBrowseStep(client, makeConfig(), baseInput([clickableA]));
+    expect(result.diag?.goalMet).toBe(0.3);
+    expect(result.diag?.deadEnd).toBe(0.1);
+  });
+
+  it("reports tier 'noul' when goal_met decides the step", async () => {
+    const client = fakeClient({ goal_met: noul(0.9) });
+    const result = await decideBrowseStep(client, makeConfig(), baseInputWithHistory([clickableA]));
+    expect(result.outcome).toBe("done");
+    expect(result.diag?.tier).toBe("noul");
+  });
+
+  it("reports tier 'noul' on the NOUL_GOAL_MET_SUCCESS_FLOOR done path after an op-gate failure", async () => {
+    const client = fakeClient({
+      op: choice("CLICK", PEAK_THRESHOLD_OP - 0.05),
+      target_click: choice("3", 0.9),
+      goal_met: noul(NOUL_GOAL_MET_SUCCESS_FLOOR),
+    });
+    const result = await decideBrowseStep(client, makeConfig(), baseInputWithHistory([clickableA]));
+    expect(result.outcome).toBe("done");
+    expect(result.diag?.tier).toBe("noul");
+  });
+
+  it("reports tier 'cascade' when the cascade actually ran, even if it was rejected", async () => {
+    createModel.mockClear();
+    const client = fakeClient({
+      op: choice("CLICK", PEAK_THRESHOLD_OP - 0.05),
+      target_click: choice("3", 0.9),
+    });
+    const result = await decideBrowseStep(client, makeConfig(), baseInput([clickableA]));
+    expect(result.outcome).toBe("blocked");
+    expect(result.diag?.tier).toBe("cascade");
+  });
+
+  // Item 6 (2026-09-25 third review): a cascade rejected BEFORE the model
+  // was ever called (the overall decision deadline already exhausted) must
+  // not be reported as tier "cascade" — nothing actually decided via the
+  // cascade model, so diag.tier is left as whatever it already was.
+  it("does NOT report tier 'cascade' when the cascade is skipped — the overall deadline was already exhausted before the first attempt", async () => {
+    createModel.mockClear();
+    vi.useFakeTimers();
+    try {
+      // Exhausts the whole BROWSE_STEP_OVERALL_DEADLINE_MS budget during
+      // the main Jev fan-out itself, so by the time the op gate fails and
+      // the cascade would start, there's no time left for even one attempt.
+      const elapsedFirstCallMs = BROWSE_STEP_OVERALL_DEADLINE_MS;
+      const client = slowEvaluateClient(elapsedFirstCallMs, PEAK_THRESHOLD_OP - 0.2);
+      const pending = decideBrowseStep(client, makeConfig(), baseInput([clickableA]));
+      await vi.advanceTimersByTimeAsync(elapsedFirstCallMs);
+      const result = await pending;
+      expect(result.outcome).toBe("blocked");
+      expect(result.cascadeNote).toContain("timeout");
+      expect(createModel).not.toHaveBeenCalled(); // the cascade model itself was never invoked
+      expect(result.diag?.tier).toBe("jev");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

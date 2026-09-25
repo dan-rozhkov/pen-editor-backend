@@ -195,6 +195,17 @@ export const envSchema = z.object({
   // the schema is pushed into a system message instead, which drifts out of
   // shape and throws generateObject's NoObjectGeneratedError.
   STRUCTURED_MODEL: z.string().default("openrouter:deepseek/deepseek-v4.1-flash"),
+  // Model for browse_task's second-opinion cascade (src/ai/browseStep.ts,
+  // cascadeStep) — a separate role from STRUCTURED_MODEL (which
+  // generateTypeText still uses) because the cascade's own latency IS the
+  // step's latency: it only runs after a Jev peak-probability gate has
+  // already failed, so the frontend's browse loop is blocked on it.
+  // Measured 2026-09-25 on the 15 hardest steps of a 47-step live corpus,
+  // x2 each: deepseek-v4.1-flash (STRUCTURED_MODEL's default) median 1.56s
+  // / p90 7.8s with 2 timeouts at the 8s cascade budget; gemini-2.5-flash-lite
+  // median 0.68s / p90 1.0s, 0 timeouts; gemini-3.8-flash median 6.1s with 9
+  // timeouts. gemini-2.5-flash-lite wins on every axis.
+  BROWSE_CASCADE_MODEL: z.string().default("openrouter:google/gemini-2.5-flash-lite"),
   // --- Trace analysis (all optional; chat server works without them) ---
   // Postgres for raw traces + analysis artifacts (Aiven: append ?sslmode=no-verify —
   // TLS-encrypted, skips CA verification of Aiven's project CA).
@@ -482,7 +493,7 @@ const LEGACY_ENV_ALIASES: Array<[newName: string, oldName: string]> = [
 // which OpenRouter answers with a 404 on every single turn — a runtime
 // failure for a config mistake, which belongs at boot instead.
 function rejectDeepSeekModelRef(env: Record<string, string | undefined>): void {
-  for (const name of ["CHAT_MODEL", "STRUCTURED_MODEL", "ANALYSIS_MODEL", "VISION_MODEL"]) {
+  for (const name of ["CHAT_MODEL", "STRUCTURED_MODEL", "ANALYSIS_MODEL", "VISION_MODEL", "BROWSE_CASCADE_MODEL"]) {
     const value = env[name];
     if (value?.startsWith("deepseek:")) {
       console.error(
@@ -508,17 +519,18 @@ function rejectDeepSeekModelRef(env: Record<string, string | undefined>): void {
 //    loud-boot-failure treatment rather than a silent 404 on every turn.
 // 2. The SLASH form is a real, parseable OpenCode reference — and it is
 //    STILL rejected here, for a different reason: CHAT_MODEL,
-//    STRUCTURED_MODEL, ANALYSIS_MODEL and VISION_MODEL are all resolved with
-//    NO per-request user key (createModel's opencodeApiKey only ever comes
-//    from the chat route's X-OpenCode-Key header on a live request — see the
-//    spec's "Серверного OPENCODE_API_KEY не существует"). An OpenCode model
-//    as any of these four defaults could never answer a single request, on
-//    any deployment, ever — that is a boot-time misconfiguration, not a
-//    runtime one. CHAT_MODEL is included here (not just the three "helper"
-//    vars) for the same reason: there is no server-side key for it either.
+//    STRUCTURED_MODEL, ANALYSIS_MODEL, VISION_MODEL and BROWSE_CASCADE_MODEL
+//    are all resolved with NO per-request user key (createModel's
+//    opencodeApiKey only ever comes from the chat route's X-OpenCode-Key
+//    header on a live request — see the spec's "Серверного OPENCODE_API_KEY
+//    не существует"). An OpenCode model as any of these defaults could never
+//    answer a single request, on any deployment, ever — that is a boot-time
+//    misconfiguration, not a runtime one. CHAT_MODEL is included here (not
+//    just the "helper" vars) for the same reason: there is no server-side
+//    key for it either.
 function rejectOpenCodeModelRef(env: Record<string, string | undefined>): void {
   const OPENCODE_COLON_PREFIXES = ["opencode-go:", "opencode:"];
-  for (const name of ["CHAT_MODEL", "STRUCTURED_MODEL", "ANALYSIS_MODEL", "VISION_MODEL"]) {
+  for (const name of ["CHAT_MODEL", "STRUCTURED_MODEL", "ANALYSIS_MODEL", "VISION_MODEL", "BROWSE_CASCADE_MODEL"]) {
     const value = env[name];
     if (!value) continue;
     const colonPrefix = OPENCODE_COLON_PREFIXES.find((prefix) => value.startsWith(prefix));

@@ -43,9 +43,9 @@ resolves a reference through `parseModelRef` (`src/ai/modelRef.ts`):
   subscription and Zen pay-as-you-go bases (`src/ai/opencode.ts`). Order
   matters: the longer prefix is tested first.
 - A `"deepseek:"` value, or an OpenCode reference in ANY of `CHAT_MODEL`/
-  `STRUCTURED_MODEL`/`ANALYSIS_MODEL`/`VISION_MODEL`, is a **loud boot
-  failure** (`src/config.ts`). There is no server-side OpenCode key at all,
-  so those roles could never serve one.
+  `STRUCTURED_MODEL`/`ANALYSIS_MODEL`/`VISION_MODEL`/`BROWSE_CASCADE_MODEL`,
+  is a **loud boot failure** (`src/config.ts`). There is no server-side
+  OpenCode key at all, so those roles could never serve one.
 
 **The OpenCode key belongs to the user and lives in their browser.** It
 arrives as the `X-OpenCode-Key` header (never in the body — the body is
