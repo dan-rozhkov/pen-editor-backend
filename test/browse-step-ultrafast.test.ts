@@ -11,7 +11,7 @@ import { choice, fakeClient } from "./browseFakes.js";
 import type { SystemOneAnswer, SystemOneEvaluateParams, SystemOneQuestion } from "../src/services/systemone.js";
 import type { BrowseStepElement, BrowseStepInput } from "../src/ai/browseStep.js";
 
-const { decideBrowseStepUltrafast, buildUltrafastQuestions } = await import("../src/ai/browseStepUltrafast.js");
+const { decideBrowseStepUltrafast, buildUltrafastQuestions, withRememberedSelections } = await import("../src/ai/browseStepUltrafast.js");
 
 const config = makeConfig({ TYPESAFE_API_KEY: "key" });
 
@@ -116,6 +116,42 @@ describe("decideBrowseStepUltrafast", () => {
   ])("maps operation %s to outcome %s", async (op, outcome) => {
     const { result } = await decide({ operation: choice(op, 0.9) });
     expect(result.outcome).toBe(outcome);
+  });
+
+  it.each([
+    ["DONE", "CLICK"],
+    ["BLOCKED", "CLICK"],
+  ])("demotes an unconfident %s to the runner-up operation", async (terminal) => {
+    const { result } = await decide({
+      operation: choice(terminal, 0.3, { probabilities: { [terminal]: 0.3, CLICK: 0.25, WAIT: 0.2 } }),
+      click_target: choice("5", 0.9),
+    });
+    expect(result).toMatchObject({ outcome: "act", operation: "CLICK", index: 5 });
+  });
+
+  it("reports a <select> an older desktop build left unreported as unknown, not filled", () => {
+    const legacySelect: BrowseStepElement = {
+      index: 7,
+      tag: "select",
+      label: "Country",
+      ops: ["SELECT"],
+      options: ["Select a country", "Germany"],
+      hasValue: true,
+    };
+    const { questions } = buildUltrafastQuestions("goal", [legacySelect], undefined);
+    const criteria = questions.select_target.type === "choice" ? questions.select_target.criteria : {};
+    expect(criteria["7:2"]).toMatchObject({ current_value: "(unknown)" });
+  });
+
+  it("remembers a <select> choice from history when the snapshot doesn't report it", () => {
+    const legacySelect: BrowseStepElement = { index: 7, tag: "select", label: "Country", ops: ["SELECT"], options: ["Germany"], hasValue: true };
+    const history = [
+      { operation: "SELECT", label: 'SELECT "France" in "Country"', ok: true, index: 7 },
+      { operation: "SELECT", label: 'SELECT "Germany" in "Country"', ok: true, index: 7 },
+      { operation: "SELECT", label: 'SELECT "Spain" in "Country" (no effect)', ok: false, index: 7 },
+    ];
+    expect(withRememberedSelections([legacySelect], history)[0].value).toBe("Germany");
+    expect(withRememberedSelections([{ ...legacySelect, value: "Italy" }], history)[0].value).toBe("Italy");
   });
 
   it("acts on the argmax target however low its peak (no gates)", async () => {

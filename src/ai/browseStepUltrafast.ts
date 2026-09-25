@@ -90,6 +90,28 @@ const OPERATION_LABELS: Record<Exclude<BrowseOperation, "DONE" | "BLOCKED">, str
   WAIT: "Wait for the page to update.",
 };
 
+/** The one gate kept on top of upstream's argmax: ending the task is not
+ * reversible, so a DONE/BLOCKED pick below this peak yields to the best
+ * non-terminal operation instead. Live (bench shop, old desktop build): DONE
+ * at peak 0.24 with "Please select a country" on screen. */
+export const TERMINAL_MIN_PEAK = 0.5;
+
+const TERMINAL_OPERATIONS = new Set(["DONE", "BLOCKED"]);
+
+/** The operation to act on: Jev's pick, unless it is an unconfident
+ * DONE/BLOCKED — then the most probable operation that is neither. */
+function chooseOperation(answer: SystemOneChoiceAnswer, offered: string[]): { operation: string; demoted: boolean } {
+  if (!TERMINAL_OPERATIONS.has(answer.choice) || peakProbability(answer) >= TERMINAL_MIN_PEAK) {
+    return { operation: answer.choice, demoted: false };
+  }
+  const runnerUp = offered
+    .filter((op) => !TERMINAL_OPERATIONS.has(op))
+    .sort((a, b) => (answer.probabilities[b] ?? 0) - (answer.probabilities[a] ?? 0))[0];
+  return runnerUp && (answer.probabilities[runnerUp] ?? 0) > 0
+    ? { operation: runnerUp, demoted: true }
+    : { operation: answer.choice, demoted: false };
+}
+
 const DONE_LABEL = "Every requirement is visibly satisfied.";
 const BLOCKED_LABEL = "No supported operation can progress.";
 
@@ -114,8 +136,38 @@ interface Target {
  * password…) are only known to be filled or empty. */
 function currentValue(el: BrowseStepElement): string {
   if (el.value !== undefined) return truncateLabel(el.value, 80);
+  // A desktop build older than pen-editor-desktop f29f9ff never reports a
+  // <select>'s choice, and its `hasValue` counts a "Select…" placeholder —
+  // claiming "filled" there made Jev skip Country and submit (live, bench
+  // shop). Unknown is the honest answer.
+  if (el.ops.includes("SELECT")) return el.hasValue === false ? "" : "(unknown)";
   if (el.hasValue === true) return "(filled; value hidden)";
   return "";
+}
+
+/** pen-editor's browseTask.ts records a landed SELECT as
+ * `SELECT "<option>" in "<label>"`. */
+const SELECT_HISTORY_LABEL_RE = /^SELECT "(.+)" in "/;
+
+/** An older desktop build never reports a <select>'s value, so the
+ * history is the only record of what this loop chose there — without it Jev
+ * re-selected Country until the loop stalled (live, bench shop/form). Fills
+ * `value` from the latest landed SELECT on the same element; a value the
+ * snapshot did report always wins. */
+export function withRememberedSelections(
+  elements: BrowseStepElement[],
+  history: BrowseStepInput["history"],
+): BrowseStepElement[] {
+  return elements.map((el) => {
+    if (!el.ops.includes("SELECT") || el.value !== undefined) return el;
+    for (let i = history.length - 1; i >= 0; i--) {
+      const h = history[i];
+      if (h.index !== el.index || h.operation !== "SELECT") continue;
+      const chosen = h.ok ? SELECT_HISTORY_LABEL_RE.exec(h.label)?.[1] : undefined;
+      if (chosen) return { ...el, value: scrubPii(chosen) };
+    }
+    return el;
+  });
 }
 
 function stateElement(el: BrowseStepElement): Record<string, unknown> {
@@ -303,7 +355,7 @@ export async function decideBrowseStepUltrafast(
   });
 
   const goal = scrubPii(input.goal);
-  const elements = capAndScrubElements(input.elements);
+  const elements = withRememberedSelections(capAndScrubElements(input.elements), input.history);
   const pageText = scrubPii((input.pageText ?? "").slice(0, MAX_PAGE_TEXT_CHARS));
   const history = input.history.slice(-HISTORY_WINDOW).map((h) => ({
     action: truncateLabel(scrubPii(h.label), 160),
@@ -338,9 +390,15 @@ export async function decideBrowseStepUltrafast(
   if (!opAnswer || !operations.includes(opAnswer.choice)) {
     return finish(retry("malformed operation answer", model));
   }
-  const operation = opAnswer.choice as BrowseOperation;
-  const confidence = opAnswer.confidence;
-  gates.push({ head: "op", peak: peakProbability(opAnswer), threshold: 0, jevPick: operation });
+  const chosen = chooseOperation(opAnswer, operations);
+  const operation = chosen.operation as BrowseOperation;
+  const confidence = chosen.demoted ? (opAnswer.probabilities[operation] ?? 0) : opAnswer.confidence;
+  gates.push({
+    head: "op",
+    peak: peakProbability(opAnswer),
+    threshold: TERMINAL_OPERATIONS.has(opAnswer.choice) ? TERMINAL_MIN_PEAK : 0,
+    jevPick: opAnswer.choice,
+  });
 
   if (operation === "DONE") return finish({ outcome: "done", operation, confidence, model });
   if (operation === "BLOCKED") return finish(blocked("Jev chose BLOCKED", model, confidence));
