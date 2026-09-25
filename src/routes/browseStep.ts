@@ -73,6 +73,10 @@ const historyEntrySchema = z.object({
   operation: z.string().max(40),
   label: z.string().max(200),
   ok: z.boolean(),
+  // Round 4 review #1/#9: the element index the step acted on, when the
+  // client sends one — see BrowseStepHistoryEntry's own comment. Optional
+  // so an older client that doesn't send it still validates.
+  index: z.number().int().nonnegative().optional(),
 });
 
 // Browse-speed contract item 5: the client's own scroll position, sent

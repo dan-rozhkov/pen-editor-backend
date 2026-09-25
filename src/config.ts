@@ -200,12 +200,14 @@ export const envSchema = z.object({
   // generateTypeText still uses) because the cascade's own latency IS the
   // step's latency: it only runs after a Jev peak-probability gate has
   // already failed, so the frontend's browse loop is blocked on it.
-  // Measured 2026-09-25 on the 15 hardest steps of a 47-step live corpus,
-  // x2 each: deepseek-v4.1-flash (STRUCTURED_MODEL's default) median 1.56s
-  // / p90 7.8s with 2 timeouts at the 8s cascade budget; gemini-2.5-flash-lite
-  // median 0.68s / p90 1.0s, 0 timeouts; gemini-3.8-flash median 6.1s with 9
-  // timeouts. gemini-2.5-flash-lite wins on every axis.
-  BROWSE_CASCADE_MODEL: z.string().default("openrouter:google/gemini-2.5-flash-lite"),
+  // Judged 2026-09-25 on the 15 hardest steps of a 47-step live corpus
+  // (x2, each answer checked against the page state — speed alone picked
+  // wrong once: flash-lite was fastest but clicked "Place Order" on an
+  // unfinished form, which looped live): gemini-2.5-flash 27/30 correct,
+  // median 0.91s / p90 1.19s; gemini-2.5-flash-lite 23/30, 0.62s / 0.79s;
+  // qwen3-next-80b 20/30 with 8s timeouts; deepseek-v4.1-flash 18/30,
+  // median 1.8s / p90 8s (timeouts).
+  BROWSE_CASCADE_MODEL: z.string().default("openrouter:google/gemini-2.5-flash"),
   // --- Trace analysis (all optional; chat server works without them) ---
   // Postgres for raw traces + analysis artifacts (Aiven: append ?sslmode=no-verify —
   // TLS-encrypted, skips CA verification of Aiven's project CA).
