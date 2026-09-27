@@ -207,7 +207,10 @@ export const envSchema = z.object({
   // median 0.91s / p90 1.19s; gemini-2.5-flash-lite 23/30, 0.62s / 0.79s;
   // qwen3-next-80b 20/30 with 8s timeouts; deepseek-v4.1-flash 18/30,
   // median 1.8s / p90 8s (timeouts).
-  BROWSE_CASCADE_MODEL: z.string().default("openrouter:google/gemini-2.5-flash"),
+  // Switched 2026-09-27 to openai/gpt-6-luna at the user's request (smoke:
+  // json_schema + reasoning "none" answered 3/3, 1.0-2.6s; not re-run on the
+  // 47-step corpus above). Set this env var back to gemini-2.5-flash to revert.
+  BROWSE_CASCADE_MODEL: z.string().default("openrouter:openai/gpt-6-luna"),
   // How /api/browse/step decides (src/ai/browseStep.ts vs
   // src/ai/browseStepUltrafast.ts). "ultrafast" is the jev-ultrafast scheme:
   // rules and current field state in the Jev questions, argmax, text from a
