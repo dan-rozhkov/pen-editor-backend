@@ -65,10 +65,11 @@ const NEXT_ACTION_RULES = [
   "Submit populated search fields (CLICK the search button, or PRESS_ENTER right after typing) before opening a result; a populated field alone is not an applied search.",
   "WAIT only when the needed control is absent/disabled, or submitted results are still loading.",
   "If Search/Submit is visible and the required fields are ready, CLICK it immediately.",
+  "A form whose results are already shown for the requested values is applied: do not CLICK its Search/Submit again; move on to the next requirement (or DONE).",
   "Recent WAIT actions are not evidence of loading. Prefer a useful visible control over WAIT.",
   'A recent action marked "(no effect)" changed nothing; do not repeat it unchanged.',
   "DONE requires visible evidence that ALL requirements are satisfied. If asked to open a result, a matching link is not enough.",
-  "Before DONE, check that every value the goal asks for (place, dates, guests, filters) is visibly applied in the fields or results; an empty or placeholder field (e.g. \"Check-in date\") means the task is not done.",
+  "Before DONE, check that every value the goal asks for is visibly applied in the page's fields or results; a field still showing its empty placeholder means the task is not done.",
   "BLOCKED means no supported operation can make progress, or the page needs credentials the user must enter themselves.",
 ].join("\n");
 
