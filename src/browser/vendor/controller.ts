@@ -1,4 +1,4 @@
-// VENDORED from pen-editor-desktop/src/main/browser/controller.ts @ 19c97ac.
+// VENDORED from pen-editor-desktop/src/main/browser/controller.ts @ 7121ea5.
 // Do not edit: regenerate with `npm run browser:sync` (scripts/sync-browser-vendor.mjs).
 // ---- end of vendor header ----
 // The built-in browser's command surface (design doc
@@ -1727,7 +1727,24 @@ export class BrowserController {
     // before this point have already spent part of it.
     const margin = Math.min(SLIDER_TIME_MARGIN_MS, this.timeoutMs / 4);
     const deadline = deadlineAt - margin;
+    const requested = typeof raw.requested === "number" ? raw.requested : raw.target;
     const outcome = await this.driveSlider(page, frameId, { min, max, target: raw.target }, deadline);
+    // Clamping is honest too: a request beyond a bound by more than 5% of
+    // the range (any excess when only one bound is known) did NOT get set to
+    // the number asked for, though the drive to the bound itself succeeded.
+    if ("value" in outcome && requested !== raw.target) {
+      const fivePercent = min !== null && max !== null && max >= min ? (max - min) * 0.05 + 1e-9 : 0;
+      if (Math.abs(requested - raw.target) > fivePercent) {
+        const dir = requested > raw.target ? "above" : "below";
+        return {
+          error: `slider can't go ${dir} ${raw.target} (target ${requested}) \u2014 it is now at ${outcome.value}`,
+          url: page.getURL(),
+          title: page.getTitle(),
+          __scopedBefore: result.__scopedBefore,
+          __sliderPartial: true,
+        };
+      }
+    }
     if ("error" in outcome) {
       if (!outcome.moved) return errorResult(outcome.error);
       return {
@@ -1827,6 +1844,16 @@ export class BrowserController {
     const { min, max, target } = slider;
     let presses = 0;
     let now = NaN;
+    /** Every value read so far: the reachable set as far as we know it. */
+    const seen: number[] = [];
+    // Success is 'as close as a normal step grid gets': half a step, but never
+    // more than 5% of the range. A jump of 25 on a 0-100 slider whose only
+    // stops are 0/26/37/100 is not 'within half a step' (delta 63) — it is a
+    // different number, and reporting it as done made the agent tell the
+    // user the slider shows 75. A reversed or half-known range gives no cap.
+    const range = min !== null && max !== null && max >= min ? max - min : null;
+    const cap = range !== null ? range * 0.05 + 1e-9 : Infinity;
+    const tolerance = (step: number) => Math.min(step / 2, cap);
     const fail = (error: string) => ({ error, moved: presses > 0 });
     const stopped = () =>
       fail(
@@ -1843,6 +1870,7 @@ export class BrowserController {
       if (r.focused !== true) throw new Error("Could not focus the slider, so key presses would not reach it.");
       if (typeof r.now !== "number") throw new Error("The slider no longer reports a numeric aria-valuenow.");
       now = r.now;
+      seen.push(now);
     };
     /** Presses `name` up to `times` times, stopping early at the press cap
      * or the deadline; returns how many were actually sent. */
@@ -1919,6 +1947,60 @@ export class BrowserController {
         if (now !== before) delta = Math.abs(now - before);
       }
 
+      /** The loop cannot get closer by pressing more (within half a step yet
+       * outside tolerance, or swinging without progress). In order:
+       * 1. once, an off-grid start (a widget that does not snap): realign
+       *    from the known bound nearest the target (Home/End, then whole
+       *    steps) and re-evaluate;
+       * 2. if the target is BRACKETED — values seen on both sides of it, one
+       *    step apart, neither within tolerance — it genuinely sits between
+       *    two stops: press once toward the nearer, re-check tolerance, and
+       *    report 'nearest reachable' honestly;
+       * 3. anything else keeps the plain 'slider stopped at X' wording: that
+       *    is not evidence that the target is unreachable. */
+      //
+      // A stall (fromStall) skips the realignment: on a non-linear scale the
+      // local step estimate would land Home/End + n steps far from where the
+      // loop already got, so it stops where it stalled instead.
+      let realigned = false;
+      const conclude = async (fromStall = false): Promise<{ value: number } | { error: string; moved: boolean }> => {
+        if (!realigned && !fromStall) {
+          realigned = true;
+          const toMin = min === null ? Infinity : Math.abs(target - min);
+          const toMax = max === null ? Infinity : Math.abs(max - target);
+          if (toMin !== Infinity || toMax !== Infinity) {
+            const home = toMin <= toMax;
+            const bound = (home ? min : max) as number;
+            await probe(home ? "Home" : "End");
+            if (Math.abs(now - bound) <= tolerance(delta)) {
+              const n = Math.round(Math.abs(target - bound) / delta);
+              if (n > 0) {
+                await press(home ? inc : dec, n);
+                await settle();
+              }
+              if (Math.abs(target - now) <= tolerance(delta)) return { value: now };
+            }
+          }
+        }
+        const tol = tolerance(delta);
+        const lo = Math.max(-Infinity, ...seen.filter((v) => v < target));
+        const hi = Math.min(Infinity, ...seen.filter((v) => v > target));
+        const bracketed =
+          Number.isFinite(lo) && Number.isFinite(hi) && target - lo > tol && hi - target > tol && hi - lo <= delta * 1.5;
+        if (!bracketed) return stopped();
+        const nearest = target - lo <= hi - target ? lo : hi;
+        // One press only moves between neighbours when the slider sits on one
+        // of the two bracketing stops; after an off-grid realignment it may sit
+        // elsewhere, and a press from there is a guess that can move it away.
+        if (now !== lo && now !== hi) return stopped();
+        if (nearest !== now) {
+          await press(nearest > now ? inc : dec, 1);
+          await settle();
+          if (Math.abs(target - now) <= tol) return { value: now };
+        }
+        return fail(`slider can't be set to exactly ${target}; nearest reachable value is ${nearest} \u2014 it is now at ${now}`);
+      };
+
       let pageDelta: number | undefined; // undefined = untried, 0 = no use
       let pageInc = "PageUp";
       let pageDec = "PageDown";
@@ -1927,7 +2009,9 @@ export class BrowserController {
       for (;;) {
         const remaining = target - now;
         const distance = Math.abs(remaining);
-        if (distance <= delta / 2) return { value: now };
+        if (distance <= tolerance(delta)) return { value: now };
+        // Closer than one step could get, yet not close: no press helps.
+        if (distance <= delta / 2) return await conclude();
         if (presses >= SLIDER_MAX_PRESSES || Date.now() > deadline) return stopped();
         const up = remaining > 0;
 
@@ -1980,7 +2064,8 @@ export class BrowserController {
           bestError = error;
           stalls = 0;
         } else if (++stalls >= 3) {
-          return stopped();
+          // Swinging between grid points that are both too far off.
+          return await conclude(true);
         }
       }
     } catch (err) {

@@ -94,6 +94,13 @@ export default defineConfig({
         // measure whether CI has browser binaries, not whether the code is
         // tested.
         "src/showcase/screenshot.ts",
+        // pen-editor-desktop's BrowserController, copied verbatim by
+        // `npm run browser:sync` (spec: docs/specs/2026-09-29-cloud-browser-
+        // steel-design.md §3.1). Its tests live in the desktop repo, next to
+        // the source; counting ~7k lines of foreign code here would measure
+        // which repo tests it, not whether it is tested. The backend's own
+        // glue around it (src/browser/*.ts) stays measured.
+        "src/browser/vendor/**",
         "src/**/*.d.ts",
       ],
       // Non-regression gate: floors sit ~1-2pp below current measured coverage

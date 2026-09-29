@@ -1,4 +1,4 @@
-// VENDORED from pen-editor-desktop/src/main/browser/pageScripts.ts @ 19c97ac.
+// VENDORED from pen-editor-desktop/src/main/browser/pageScripts.ts @ 7121ea5.
 // Do not edit: regenerate with `npm run browser:sync` (scripts/sync-browser-vendor.mjs).
 // ---- end of vendor header ----
 // Scripts injected into a browser tab's real page via
@@ -447,6 +447,71 @@ const LABEL_HELPER_JS = `
     return "";
   }
 
+  // Context for a slider with NO legend / labelled group AND no label of its
+  // own (labelOf asks only then: "Volume" needs no help), from nearby visible
+  // text. Ten bare "slider 0-100" controls on one page (a component gallery)
+  // are otherwise indistinguishable. One rule, per element (no cross-element
+  // dedupe, so the label the snapshot reports is the one relocation
+  // recomputes): the SMALLEST ancestor (<= 9 levels up: a thumb sits several
+  // wrappers below its track) whose text, minus that of the sliders inside
+  // it, has a meaningful line. No context when that ancestor holds more than
+  // 4 sliders (too shared to name this one), or when it, or an ancestor on
+  // the way, has more than 2000 chars of text or contains page furniture (a
+  // page region, not a card: climbing on would label a slider with the site
+  // header), and never <body>/<html> themselves. The cheap
+  // textContent tests run first; innerText is read only on a candidate.
+  // Meaningful = a line with a real word and none of: a digit (live readouts
+  // like "Up to \u20ac400" or "75%" change as the slider moves and would break
+  // fingerprint relocation; it also drops code- and password-like tokens), an
+  // "@", a code character, a trailing colon (the caption of a neighbouring
+  // control, "Disabled:") or a leading quote. The first two are joined and
+  // capped at 40 chars. The same visible text already leaves the page in the
+  // snapshot's text field.
+  function penNearbyTextOf(el) {
+    var SLIDER_SEL = "[role='slider'], input[type='range']";
+    function meaningful(text) {
+      var lines = text.split(/\\n+/);
+      var kept = [];
+      for (var li = 0; li < lines.length && kept.length < 2; li++) {
+        var line = lines[li].trim().replace(/\\s+/g, " ");
+        if (
+          /\\p{L}{3,}/u.test(line) &&
+          !/\\d|@|:$|[<>{};=\\[\\]]|,$|^['"]/.test(line)
+        ) {
+          kept.push(line);
+        }
+      }
+      return kept.join(" ").slice(0, 40).trim();
+    }
+    // A container with page furniture in it (nav, footer, banner) is a page
+    // region, not a card: never name a slider after the site header.
+    var FURNITURE_SEL =
+      "nav, footer, [role='banner'], [role='navigation'], [role='contentinfo'], header:not(:is(article, section, main, aside) header)";
+    var anc = el.parentElement;
+    for (var up = 0; anc && up < 9; up++) {
+      if (anc === document.body || anc === document.documentElement) return "";
+      var all = anc.textContent || "";
+      if (all.length > 2000 || anc.querySelector(FURNITURE_SEL)) return "";
+      var sliders = anc.querySelectorAll(SLIDER_SEL);
+      var rest = all;
+      for (var si = 0; si < sliders.length; si++) {
+        var st = sliders[si].textContent || "";
+        if (st) rest = rest.replace(st, "");
+      }
+      if (/\\p{L}{3,}/u.test(rest)) {
+        var text = anc.innerText || "";
+        for (var sj = 0; sj < sliders.length; sj++) {
+          var st2 = sliders[sj].textContent || "";
+          if (st2) text = text.replace(st2, "");
+        }
+        var found = meaningful(text);
+        if (found) return sliders.length <= 4 ? found : "";
+      }
+      anc = anc.parentElement;
+    }
+    return "";
+  }
+
   function penRangeBounds(el) {
     var min = parseFloat(el.getAttribute("min"));
     var max = parseFloat(el.getAttribute("max"));
@@ -474,7 +539,7 @@ const LABEL_HELPER_JS = `
       return own;
     }
     var suffix = penSliderSuffix(bounds);
-    var head = [penGroupContextOf(el), own.slice(0, 40)].filter(Boolean).join(": ");
+    var head = [penGroupContextOf(el) || (own ? "" : penNearbyTextOf(el)), own.slice(0, 40)].filter(Boolean).join(": ");
     return head ? head + " (" + suffix + ")" : suffix;
   }
 
@@ -1221,11 +1286,12 @@ const RANGE_TYPE_HELPER_JS = `
     if (isNaN(parseFloat(el.getAttribute("aria-valuenow")))) {
       return { error: "a slider with no numeric aria-valuenow, so it cannot be set by typing." };
     }
+    var requested = v;
     if (min !== null && v < min) v = min;
     if (max !== null && v > max) v = max;
     el.scrollIntoView({ block: "center" });
     el.focus();
-    return { slider: { min: min, max: max, target: v } };
+    return { slider: { min: min, max: max, target: v, requested: requested } };
   }
 
   function penRangeValueFor(el, raw) {
@@ -1240,14 +1306,56 @@ const RANGE_TYPE_HELPER_JS = `
     var step = stepAttr === "" ? 1 : parseFloat(stepAttr);
     var v = penFirstNumber(raw);
     if (v === null) return { error: "a slider (" + min + "\\u2013" + max + "); type a number." };
+    var raw_ = v;
     if (v < min) v = min;
     if (v > max) v = max;
+    var clamped = v;
     if (stepAttr !== "any" && !isNaN(step) && step > 0) {
       var snapped = min + Math.round((v - min) / step) * step;
       if (snapped > max) snapped = min + Math.floor((max - min) / step + 1e-9) * step;
       v = snapped;
     }
-    return { value: String(parseFloat(v.toFixed(10))) };
+    return {
+      value: String(parseFloat(v.toFixed(10))),
+      raw: raw_,
+      clamped: clamped,
+      min: min,
+      max: max,
+      step: stepAttr === "any" ? NaN : step,
+    };
+  }
+
+  // The verdict on a native range AFTER the value was set: it reads el.value
+  // back (the browser sanitizes it and a controlled input may revert it) and
+  // judges what the slider really holds. Tolerance is half a step but never
+  // more than 5% of the range (a reversed range gives no cap). "" = success.
+  function penRangeVerdict(el, info) {
+    var actual = parseFloat(el.value);
+    if (isNaN(actual)) return "";
+    function fmt(n) {
+      return String(parseFloat(n.toFixed(10)));
+    }
+    var range = info.max >= info.min ? info.max - info.min : null;
+    var five = range === null ? Infinity : range * 0.05 + 1e-9;
+    // A framework-controlled range often re-renders to its own coarser grid
+    // than the declared step (a price slider with no step attribute that lands
+    // on 625 for 624), so half the declared step is floored at 1% of the
+    // range before the 5% cap.
+    var tol = info.step > 0 ? Math.min(Math.max(info.step / 2, range === null ? 0 : range * 0.01), five) : five;
+    // Clamping is honest too: asking for 1500 on a 20-400 slider is not "ok".
+    if (info.raw !== info.clamped && Math.abs(info.raw - info.clamped) > (range === null ? 0 : five)) {
+      return (
+        "slider can't go " + (info.raw > info.clamped ? "above " + fmt(info.max) : "below " + fmt(info.min)) +
+        " (target " + fmt(info.raw) + ") \u2014 it is now at " + fmt(actual)
+      );
+    }
+    if (Math.abs(actual - info.clamped) > tol) {
+      return (
+        "slider can't be set to exactly " + fmt(info.clamped) + "; nearest reachable value is " + fmt(actual) +
+        " \u2014 it is now at " + fmt(actual)
+      );
+    }
+    return "";
   }
 `;
 
@@ -1310,10 +1418,12 @@ export const TYPE_JS = `(() => {
   el.scrollIntoView({ block: "center" });
   el.focus();
   var tag = (el.tagName || "").toLowerCase();
+  var rangeInfo = null;
   if (tag === "input" && (el.getAttribute("type") || "").toLowerCase() === "range") {
     var rangeTyped = penRangeValueFor(el, text);
     if (rangeTyped.error) return { error: "Element is " + rangeTyped.error + " Target: " + target };
     text = rangeTyped.value;
+    rangeInfo = rangeTyped;
   }
   if (tag === "input" || tag === "textarea") {
     var proto = tag === "input" ? window.HTMLInputElement.prototype : window.HTMLTextAreaElement.prototype;
@@ -1326,13 +1436,21 @@ export const TYPE_JS = `(() => {
   }
   el.dispatchEvent(new Event("input", { bubbles: true }));
   el.dispatchEvent(new Event("change", { bubbles: true }));
-  return {
+  var rangeMiss = rangeInfo ? penRangeVerdict(el, rangeInfo) : "";
+  var typedResult = {
     url: location.href,
     title: document.title,
     matched: target,
     __scopedBefore: scopedBefore,
     __targetSelfDisabled: !busyBefore && penTargetIsBusy(el),
   };
+  // A coarse native range moved to a different number than asked: an error
+  // that still carries the evidence (the value did move).
+  if (rangeMiss) {
+    typedResult.error = rangeMiss;
+    typedResult.__sliderPartial = true;
+  }
+  return typedResult;
 })()`;
 
 /**
@@ -2480,10 +2598,12 @@ export const PERFORM_JS = `(() => {
     el.scrollIntoView({ block: "center" });
     el.focus();
     var tag = (el.tagName || "").toLowerCase();
+    var rangeInfo = null;
     if (tag === "input" && (el.getAttribute("type") || "").toLowerCase() === "range") {
       var rangeTyped = penRangeValueFor(el, text);
       if (rangeTyped.error) return { error: "Element at index " + index + " is " + rangeTyped.error };
       text = rangeTyped.value;
+      rangeInfo = rangeTyped;
     }
     if (tag === "input" || tag === "textarea") {
       var proto = tag === "input" ? window.HTMLInputElement.prototype : window.HTMLTextAreaElement.prototype;
@@ -2496,7 +2616,14 @@ export const PERFORM_JS = `(() => {
     }
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
-    return penResult();
+    var rangeMiss = rangeInfo ? penRangeVerdict(el, rangeInfo) : "";
+    var typedResult = penResult();
+    // See TYPE_JS: a coarse native range moved to a different number.
+    if (rangeMiss) {
+      typedResult.error = rangeMiss;
+      typedResult.__sliderPartial = true;
+    }
+    return typedResult;
   }
 
   if (operation === "SELECT") {
