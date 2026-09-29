@@ -1,0 +1,3757 @@
+// VENDORED from pen-editor-desktop/src/main/browser/controller.ts @ 19c97ac.
+// Do not edit: regenerate with `npm run browser:sync` (scripts/sync-browser-vendor.mjs).
+// ---- end of vendor header ----
+// The built-in browser's command surface (design doc
+// `2026-09-18-builtin-browser-design.md` §3). Electron-free, in the style of
+// ../mcp/dispatcher.ts: the page is injected via BrowserTarget so this stays
+// unit-testable under plain Node/vitest. window.ts adapts a real
+// WebContentsView (via TabManager.browserHandle()/newTab("browser")) into
+// BrowserTarget/BrowserPageHandle.
+//
+// Every method below takes `unknown` and validates it before touching
+// anything — these arguments arrive from an LLM through a renderer, so
+// neither their shape nor their types can be trusted. Every method resolves;
+// a failure comes back as `{ error: string }`, never a rejection, matching
+// how pen-editor's own toolHandlers behave everywhere else in this project
+// (and how dispatcher.ts's ToolCallResult never rejects either).
+
+import { randomUUID } from "node:crypto";
+import { decideBrowserNavigation } from "./navigation.js";
+import { parseKeySpec, modifiersBitmask, resolveEditCommand, resolveNamedKey } from "./keys.js";
+// Second-pass review finding 10: BrowserTabInfo is declared once, in
+// tabManager.ts — see the re-export below, where the type used to be
+// declared a second time in this file.
+interface BrowserTabInfo {
+  tabId: number;
+  url: string;
+  title: string;
+  current: boolean;
+}
+import {
+  ARGS_MARKER,
+  FIND_IMAGES_JS,
+  CLICK_JS,
+  TYPE_JS,
+  SCROLL_JS,
+  SNAPSHOT_JS,
+  PERFORM_JS,
+  SIGNATURE_JS,
+  READ_JS,
+  TARGET_BUSY_JS,
+  CURSOR_JS,
+  MARKS_JS,
+  REMOVE_MARKS_JS,
+  HOVER_TARGET_JS,
+  FOCUS_JS,
+  WAIT_TEXT_JS,
+  WAIT_DOM_ACTIVITY_JS,
+  CLICK_RESOLVE_JS,
+  REVEAL_TARGET_JS,
+  SELECT_ALL_CONTENT_JS,
+  READ_TARGET_VALUE_JS,
+  SLIDER_READ_JS,
+  SLIDER_SCROLL_JS,
+  BOT_CHECK_JS,
+  IFRAME_RECTS_JS,
+} from "./pageScripts.js";
+
+const SCRIPT_TEMPLATES = {
+  FIND_IMAGES_JS,
+  CLICK_JS,
+  TYPE_JS,
+  SCROLL_JS,
+  SNAPSHOT_JS,
+  PERFORM_JS,
+  READ_JS,
+  TARGET_BUSY_JS,
+  CURSOR_JS,
+  MARKS_JS,
+  REMOVE_MARKS_JS,
+  HOVER_TARGET_JS,
+  FOCUS_JS,
+  WAIT_TEXT_JS,
+  WAIT_DOM_ACTIVITY_JS,
+  CLICK_RESOLVE_JS,
+  REVEAL_TARGET_JS,
+  SELECT_ALL_CONTENT_JS,
+  READ_TARGET_VALUE_JS,
+  SLIDER_READ_JS,
+  SLIDER_SCROLL_JS,
+  BOT_CHECK_JS,
+  IFRAME_RECTS_JS,
+} as const;
+
+type ScriptName = keyof typeof SCRIPT_TEMPLATES;
+
+/** Hard bounds on `driveSlider`: total trusted key presses (what a
+ * misbehaving widget can cost; large ranges are covered by Home/End and page
+ * keys, not by raising this), and the margin subtracted from the controller's
+ * command timeout to get the loop's own deadline, so it ends itself before
+ * the command timeout abandons it mid-flight. */
+const SLIDER_MAX_PRESSES = 300;
+const SLIDER_TIME_MARGIN_MS = 3_000;
+
+/** jev-loop design doc "Addendum 2, 2026-09-19" §2: default/hard-cap for
+ * browse_read's `maxChars`. */
+const READ_MAX_CHARS_DEFAULT = 6_000;
+const READ_MAX_CHARS_HARD_CAP = 20_000;
+
+/** The `{ changed, changes }` signature diffed before/after an action —
+ * "Addendum 2" §1. `changes` entries are stable, documented category names
+ * ("url" | "title" | "dom" | "text" | "main-image"), not raw field names. */
+export interface EffectEvidence {
+  changed: boolean;
+  changes: string[];
+  /** Browse-speed contract (2026-09-24), report-only: whether a real,
+   * visible-content mutation happened during the action window — a stricter
+   * signal than `changes.includes("dom"|"text")`, which counts whole-
+   * document noise (carousels, lazy images) on purpose to stay useful as
+   * context. `pageChanged` ignores the cursor/marks overlay, script/style/
+   * link/meta churn and attribute-only mutations, so a caller can trust it
+   * as "something a user would see actually changed" even when `changed` is
+   * false (e.g. a click that mutated a status element elsewhere on the page
+   * rather than the clicked element itself). Present whenever an "after"
+   * signature capture succeeded; absent when it didn't (see diffSignatures). */
+  pageChanged?: boolean;
+  /** Up to 3 short (<=80 char) snippets of visible text that newly appeared
+   * or changed during the action window — never input/password values.
+   * Present (possibly empty) whenever `pageChanged` is present. */
+  appeared?: string[];
+}
+
+/** A single element's own signature — SCOPED_SIGNATURE_JS in pageScripts.ts.
+ * Review finding 4: the element actually acted on, not the whole document,
+ * is the real evidence on a live page. */
+interface ScopedSignature {
+  nodeCount: number;
+  textHash: number;
+  src: string;
+  valueLength: number;
+  ariaExpanded: string;
+  ariaSelected: string;
+  /** Optional: a slider's only moving property (see SCOPED_SIGNATURE_JS). */
+  ariaValueNow?: string;
+  checked: boolean;
+}
+
+function isScopedSignature(value: unknown): value is ScopedSignature {
+  return (
+    isRecord(value) &&
+    typeof value.nodeCount === "number" &&
+    typeof value.textHash === "number" &&
+    typeof value.src === "string" &&
+    typeof value.valueLength === "number" &&
+    typeof value.ariaExpanded === "string" &&
+    typeof value.ariaSelected === "string" &&
+    (value.ariaValueNow === undefined || typeof value.ariaValueNow === "string") &&
+    typeof value.checked === "boolean"
+  );
+}
+
+interface PageSignature {
+  url: string;
+  title: string;
+  nodeCount: number;
+  textLength: number;
+  textHash: number;
+  mainImageSrc: string;
+  /** Review finding 3: absent from the original signature, so a successful
+   * scroll and a scroll on a dead page were indistinguishable. */
+  scrollY: number;
+  /** Review finding 3: a *length*, never the focused field's content — see
+   * SCOPED_SIGNATURE_JS's doc comment for the same reasoning applied to the
+   * scoped-target signature. */
+  focusedValueLength: number;
+  /** Only present on a `phase: "after"` capture, and only when the acting
+   * script stamped a target element — review finding 4. */
+  scopedAfter?: ScopedSignature | null;
+  /** Browse-speed contract (2026-09-24) — see EffectEvidence's doc comment.
+   * `false`/`[]` on a "before" capture (SIGNATURE_JS only tracks real
+   * mutations while the observer runs, i.e. between "before" and "after").
+   * Optional on the type (rather than required) only so isPageSignature
+   * keeps validating pre-2026-09-24 fixtures/mocks that predate these
+   * fields — a real SIGNATURE_JS capture always includes both; diffSignatures
+   * defaults a missing value to false/[]. */
+  pageChanged?: boolean;
+  appeared?: string[];
+}
+
+function isPageSignature(value: unknown): value is PageSignature {
+  return (
+    isRecord(value) &&
+    typeof value.url === "string" &&
+    typeof value.title === "string" &&
+    typeof value.nodeCount === "number" &&
+    typeof value.textLength === "number" &&
+    typeof value.textHash === "number" &&
+    typeof value.mainImageSrc === "string" &&
+    typeof value.scrollY === "number" &&
+    typeof value.focusedValueLength === "number" &&
+    (value.scopedAfter === undefined || value.scopedAfter === null || isScopedSignature(value.scopedAfter)) &&
+    (value.pageChanged === undefined || typeof value.pageChanged === "boolean") &&
+    (value.appeared === undefined || (Array.isArray(value.appeared) && value.appeared.every((s) => typeof s === "string")))
+  );
+}
+
+/** Review finding 3: type/scroll (and perform's TYPE_TEXT/SELECT/SCROLL_*)
+ * had no settle at all between the action and the after-capture, and the
+ * fields that would show they worked (scrollY, a focused input's value
+ * length) weren't even in the signature — a successful type/scroll and a
+ * dead one both reported changed: false. Short, because unlike a click
+ * there is no navigation to wait for, just a paint/reflow. */
+const NON_CLICK_SETTLE_MS = 50;
+
+/** Spec `2026-09-18-browse-task-jev-loop-design.md` §1: the element table is
+ * the whole request payload for /api/browse/step, so an uncapped snapshot on
+ * a big page is both slow and expensive. */
+export const MAX_SNAPSHOT_ELEMENTS = 120;
+
+/** Wave 3 reliability, item 2: at most this many child frames are ever
+ * descended into for one snapshot/read/findImages call — a page with dozens
+ * of ad/tracker iframes must not turn one command into dozens of extra
+ * round trips. */
+export const MAX_BROWSER_FRAMES = 8;
+
+/** Wave 3 reliability, item 2: electron/electron#5183 — a child frame's own
+ * `executeJavaScript` only resolves once THAT frame stops loading, so a
+ * frame that never finishes (a slow/broken ad iframe) must not hang the
+ * whole command. Short on purpose: this bounds one frame's script call, not
+ * the whole multi-frame command. */
+export const FRAME_SCRIPT_TIMEOUT_MS = 1_500;
+
+/** Wave 3 reliability, item 4: bounds `checkBotWall`'s own script call,
+ * independent of `open`'s own DOM-ready/grace-period timing — see
+ * `checkBotWall`'s doc comment for why this has to be its own short budget
+ * rather than inheriting whatever's left of the command's timeout. */
+export const BOT_CHECK_TIMEOUT_MS = 400;
+
+/** A top-document `<iframe>` matched to its `WebFrameMain` child frame — see
+ * `resolveVisibleFrames`'s doc comment. */
+interface ResolvedFrame {
+  frameId: number;
+  url: string;
+  name: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** Below the frontend's own per-tool timeout, so the agent gets a real "the
+ * browser command timed out" message rather than a generic tool-loop
+ * timeout with no detail. */
+export const BROWSER_COMMAND_TIMEOUT_MS = 20_000;
+
+/** `open`'s own, longer budget.
+ *
+ * Every other command evaluates a script against a page that already
+ * exists, so 20s is generous. `open` is a NAVIGATION: it waits on a remote
+ * server, and measured against the live site (2026-09-19, 8 runs) an
+ * amazon.com search stalled past 20s in roughly one run in four while the
+ * rest finished in ~2s. The DOM-ready race below does not help those: when
+ * Amazon is slow it is slow at the document level, so `dom-ready` has not
+ * fired either and there is nothing to race against — the request simply
+ * needs longer than a script call ever should.
+ *
+ * Deliberately not unbounded: a command that never returns is worse than
+ * one that fails, and the frontend loop's own per-step budget still has to
+ * fit several of these. */
+export const BROWSER_OPEN_TIMEOUT_MS = 45_000;
+
+/** How long a click is given to show *any* sign of having started a
+ * navigation — either `getURL()` moving away from its pre-click value, or
+ * `isLoading()` going true — before concluding it didn't navigate at all
+ * (see runClick's doc comment / finding 7 and settleAfterClick below).
+ * `isLoading()` is the signal that actually keeps this bound usable: real
+ * Electron navigations flip it true essentially as soon as the navigation is
+ * requested (`did-start-loading`), long before a slow commit would move
+ * `getURL()` — relying on the URL alone is what made addendum F's "commit
+ * takes longer than 300ms" case possible.
+ *
+ * Wave 1 speed (`2026-09-24-browse-speed-contract.md`): this is now only the
+ * *fallback* bound, used when a `BrowserPageHandle` doesn't implement
+ * `onNavigationEvent` (every unit-test fake, notably) and this file has to
+ * fall back to the original polling behaviour. A real desktop page settles
+ * via `NAV_START_GRACE_MS` instead — see `armNavigationWatcher`. */
+const CLICK_SETTLE_TIMEOUT_MS = 300;
+
+/** Wave 1 speed: how long `armNavigationWatcher` waits, event-driven, for a
+ * `did-start-navigation`/`did-navigate`/`did-navigate-in-page`/
+ * `did-start-loading` event on the acted-on tab before concluding the action
+ * didn't navigate at all — the event-driven replacement for polling
+ * `getURL()`/`isLoading()` for up to CLICK_SETTLE_TIMEOUT_MS (300ms). A real
+ * Electron navigation fires `did-start-loading` essentially synchronously
+ * with the click handler that triggers it, so this only has to be "long
+ * enough for that event to be delivered", not "long enough to catch a slow
+ * commit" — hence much shorter than the 300ms polling bound it replaces.
+ * Picked to match the contract's own suggested 60–100ms range; 80ms leaves
+ * comfortable margin over a same-process event dispatch while still cutting
+ * a non-navigating click's settle time roughly 4x versus the old fixed
+ * probe. */
+const NAV_START_GRACE_MS = 80;
+
+/** Wave 1 speed: CDP network-quiet settle (Stagehand's
+ * `waitForDomNetworkQuiet`), used by `settleAfterClick` once a click/press is
+ * known NOT to have navigated — a click that triggers a `fetch()` without a
+ * full navigation (the common SPA case) previously got no wait at all beyond
+ * the fixed 300ms probe, so a slow-network render (e.g. 1.2s) was routinely
+ * missed by the very next read. "Quiet" means zero relevant in-flight
+ * requests (tracked via CDP `Network.*` events, `BrowserPageHandle.
+ * networkStats`) continuously for this long. 300ms — long enough that a
+ * request chain (one fetch kicking off another) doesn't get cut off between
+ * requests, short enough that it doesn't meaningfully slow down an action
+ * whose network traffic has genuinely settled; the same order of magnitude
+ * as CLICK_SETTLE_TIMEOUT_MS/NAV_START_GRACE_MS above. */
+const NETWORK_QUIET_WINDOW_MS = 300;
+
+/** Wave 1 speed: absolute upper bound on how long `settleAfterClick`/`act`'s
+ * `wait` will wait for network quiet, regardless of how much traffic keeps
+ * arriving — a page that never goes network-quiet (analytics beacons aside,
+ * which are already filtered — see `networkStats`) must not be able to stall
+ * a command past this. Comfortably under BROWSER_COMMAND_TIMEOUT_MS's
+ * default headroom for act/press (`this.timeoutMs + this.cursorBudgetMs`). */
+const NETWORK_QUIET_HARD_CAP_MS = 5_000;
+
+/** Wave 1 speed: a single tracked request still "in flight" this long after
+ * it started is force-dropped from the pending count — a long-poll or SSE
+ * connection that never completes would otherwise keep `networkStats().
+ * pending` above zero forever and defeat the quiet check entirely. */
+const NETWORK_REQUEST_DROP_MS = 2_000;
+
+/** Wave 1 speed: how often `waitForNetworkQuiet`'s loop polls
+ * `page.networkStats()` — a cheap, synchronous, in-process call (no
+ * `executeJavaScript` round trip), so a short interval costs nothing. */
+const NETWORK_POLL_INTERVAL_MS = 20;
+
+/** Addendum F ("Load, not commit"): once a click is seen to have started a
+ * navigation (settleAfterClick's first phase), how long to wait for the
+ * document to actually finish loading (`isLoading()` back to false) before
+ * trusting the result's url/title. Navigation *commit* — the point
+ * `getURL()` changes — is not the same as laid out: a following
+ * browse_find_images measures an unlaid-out document at commit, where every
+ * getBoundingClientRect() is 0x0, so the size filter drops every image and
+ * the tool reports count: 0. This is a separate, longer budget than
+ * CLICK_SETTLE_TIMEOUT_MS because a real page load is routinely slower than
+ * the time it takes just to observe that a navigation started at all. */
+const CLICK_LOAD_SETTLE_TIMEOUT_MS = 8_000;
+
+/** How long an action may wait for a control that disabled *itself* while
+ * its handler runs (see pageScripts.ts's TARGET_BUSY_HELPER_JS for the
+ * case, from upstream jev-ultrafast PR #58). Paid only when the acting
+ * script reports `__targetSelfDisabled` — a control that was already
+ * disabled before the action, or one that never goes busy, waits zero. The
+ * bound is what keeps a control that never re-enables (a button disabled
+ * for good after submit) from burning the whole command timeout: after it,
+ * the observation proceeds anyway, exactly as it did before this wait
+ * existed. */
+const BUSY_SETTLE_TIMEOUT_MS = 3_000;
+const BUSY_POLL_INTERVAL_MS = 50;
+
+/** Bounds `moveCursor`'s own CURSOR_JS call — a little above CURSOR_JS's own
+ * internal ~1.15s backstop, so that backstop (which always resolves with a
+ * best-effort position rather than hanging) is what normally fires, not
+ * this outer timeout.
+ *
+ * The cursor step runs *inside* the same closure `withCommandTimeout` bounds
+ * (see `moveCursor`'s own call sites in `act`/`perform`), so its own bound
+ * is added to that command's budget rather than carved out of it (see
+ * `BrowserController.cursorBudgetMs`) — a cosmetic overlay must never be
+ * what pushes a slow-but-working command over its timeout. `moveCursor`'s
+ * own call to `withTimeout` is still independently bounded by
+ * `Math.min(this.timeoutMs, CURSOR_TIMEOUT_MS)`, so a short caller-supplied
+ * `timeoutMs` still gets a correspondingly short-bounded cursor call. */
+const CURSOR_TIMEOUT_MS = 1_500;
+
+/** How long the command queue waits for a TIMED-OUT command's abandoned work
+ * to settle before letting the next command run anyway — see
+ * `BrowserController.overrun`. */
+const OVERRUN_GRACE_MS = 10_000;
+
+/** `open`'s DOM-ready-not-full-load fix: `webContents.loadURL()` resolves
+ * only at `did-finish-load` — every subresource, including ads/trackers on a
+ * heavy commercial page, which routinely blows past
+ * BROWSER_COMMAND_TIMEOUT_MS. `open` instead resolves once the DOM is ready
+ * (see `BrowserPageHandle.onceDomReady`) and gives the page this short,
+ * bounded grace period to finish the *full* load too, so the common fast
+ * page still reports `loaded: true`. Well under BROWSER_COMMAND_TIMEOUT_MS —
+ * this is a courtesy wait, not a correctness requirement, so a slow page
+ * simply returns with `loaded: false` instead of blocking the command. */
+const OPEN_LOAD_GRACE_MS = 1_500;
+
+/** Second-pass review finding 6: extra budget `tabs({action:"new", url})`
+ * gives its own outer command on top of `openTimeoutMs`, so its nested
+ * `open()` call's identically-`openTimeoutMs`-budgeted timeout always
+ * resolves first — see the doc comment where this is used, in `tabs()`. */
+const OPEN_COMMAND_MARGIN_MS = 5_000;
+
+/** `act`'s `wait` action (design doc `2026-09-23-full-browser-use-design.md`):
+ * default and hard cap for `ms`, mirroring `browse_read`'s
+ * default/hard-cap-for-a-numeric-arg shape (`READ_MAX_CHARS_DEFAULT`/
+ * `_HARD_CAP` above) — validated and clamped here, not left to whatever a
+ * caller asks for, since this is untrusted LLM input. */
+const WAIT_DEFAULT_MS = 3_000;
+const WAIT_MAX_MS = 15_000;
+/** How often `runWait` polls the page for `text` while waiting. */
+const WAIT_POLL_INTERVAL_MS = 100;
+
+/** Second-pass review finding 7: bounds `screenshot({ annotate: true })`'s
+ * post-MARKS_JS paint wait (`waitForPaint`) — a double requestAnimationFrame
+ * normally resolves within a frame or two (well under this), but a hidden
+ * `WebContentsView` never ticks `requestAnimationFrame` at all, so this is
+ * what keeps that case from hanging the whole screenshot command. */
+const PAINT_WAIT_TIMEOUT_MS = 100;
+
+/** A browser tab's page, as the controller needs to drive it. Electron-free
+ * — window.ts supplies the real implementation over a WebContentsView. */
+export interface BrowserPageHandle {
+  loadURL(url: string): Promise<void>;
+  executeJavaScript(code: string): Promise<unknown>;
+  getURL(): string;
+  getTitle(): string;
+  goBack(): void;
+  goForward(): void;
+  reload(): void;
+  canGoBack(): boolean;
+  canGoForward(): boolean;
+  /**
+   * True while the page is mid-navigation (Electron's
+   * `webContents.isLoading()`). Addendum F: the post-click settle wait uses
+   * this to wait for the document to actually finish loading rather than
+   * merely for `getURL()` to change at navigation commit — see
+   * CLICK_LOAD_SETTLE_TIMEOUT_MS's doc comment.
+   */
+  isLoading(): boolean;
+  /**
+   * Resolves once the current navigation's DOM is ready — see
+   * `TabViewHandle.onceDomReady`'s doc comment (tabManager.ts) for the full
+   * rationale. `open` races this against `loadURL()` so a heavy page's
+   * subresources don't have to finish before the command returns.
+   */
+  onceDomReady(): Promise<void>;
+  /**
+   * Optional: true while this page's view is actually being drawn (Electron's
+   * `View#getVisible()`). A hidden `WebContentsView` stops firing
+   * `requestAnimationFrame`, so CURSOR_JS's animation never starts and the
+   * script only settles via its internal backstop — burning ~1.15s per
+   * click/type/select for an overlay nobody is looking at (this repo has
+   * been bitten by rAF-in-a-hidden-tab before — get_screenshot). `moveCursor`
+   * skips the cursor step entirely when this returns false. A handle that
+   * doesn't implement it (every fake page in the test suite, notably) behaves
+   * as before — the cursor always runs.
+   */
+  isVisible?(): boolean;
+  /**
+   * Optional: full browser use (design doc `2026-09-23-full-browser-use-design.md`).
+   * Captures the tab's current viewport as a downscaled JPEG — window.ts's
+   * real implementation is `webContents.capturePage()` resized to ≤1280px
+   * wide and encoded via `nativeImage.toJPEG(70)`. Returns `null` (not a
+   * rejection) on an empty capture (`image.isEmpty()`) or any other capture
+   * failure — `screenshot()` turns that into a `{ error }` result rather
+   * than handing back a blank image.
+   */
+  capture?(): Promise<{ imageData: string; width: number; height: number } | null>;
+  /**
+   * Optional: sends a raw Chrome DevTools Protocol command against this
+   * tab's attached debugger session (`webContents.debugger` in window.ts,
+   * attached once per browser tab at creation — see CLAUDE.md's "Full
+   * browser use" section). Backs `act`'s `press` (`Input.dispatchKeyEvent`)
+   * and `hover` (`Input.dispatchMouseEvent`) — both are trusted, OS-level
+   * input events, unlike a page-script `dispatchEvent`, which is what makes
+   * `press` reach an app's real keydown handlers and `hover` genuinely
+   * trigger `:hover`/`mouseover`. Absent (or rejecting) when the debugger
+   * failed to attach (e.g. real DevTools already attached to this tab) —
+   * `press`/`hover` report a clear `{ error }` in that case rather than
+   * silently doing nothing.
+   */
+  sendCdp?(method: string, params?: Record<string, unknown>): Promise<unknown>;
+  /**
+   * Optional: drains (and clears) the JS dialogs (`alert`/`confirm`/
+   * `prompt`/`beforeunload`) this tab's CDP session auto-handled since the
+   * last drain — see CLAUDE.md's dialog policy. `withCommandTimeout` calls
+   * this after every command and merges a non-empty result into that
+   * command's own `{ dialogs }` field, so a dialog raised mid-action is
+   * reported back to the agent instead of just silently vanishing.
+   */
+  drainDialogs?(): { type: string; message: string }[];
+  /**
+   * Optional: Wave 3 reliability, item 3 (revised by code review finding
+   * 3). Drains (and clears) this tab's console-error ring buffer — JS
+   * exceptions and explicit `console.error(...)` calls, both reported via
+   * Electron's `webContents.on("console-message", ...)` with `level ===
+   * "error"` — since the last drain. Deliberately NOT sourced from the CDP
+   * `Runtime` domain: `Runtime.enable` is a common automation fingerprint,
+   * and a browser tab is the user's own real, logged-in session, not a
+   * disposable scraping target. Each entry is already truncated to ≤200
+   * chars at capture time (window.ts); the ring buffer itself caps at 50
+   * entries (oldest dropped first) so a page that spams errors can't grow
+   * it unboundedly between drains. Merged into `act`/`perform` results only
+   * (never `open`/`read`/etc, which have no "since the previous command"
+   * window to report against) — present for any browser tab regardless of
+   * whether its CDP debugger session attached, unlike `sendCdp`/
+   * `drainDialogs`, since it needs no debugger session at all.
+   */
+  drainConsoleErrors?(): string[];
+  /**
+   * Optional: Wave 1 speed (`2026-09-24-browse-speed-contract.md`).
+   * Subscribes to this tab's navigation lifecycle (`did-start-navigation`,
+   * `did-navigate`, `did-navigate-in-page`, `did-start-loading`) — fired
+   * once per event, with no payload, since `armNavigationWatcher` only ever
+   * needs "did *something* just start", not which event it was. Returns an
+   * unsubscribe function. Absent on every unit-test fake, notably — callers
+   * fall back to polling `getURL()`/`isLoading()` (the pre-Wave-1 behavior)
+   * when this is undefined, so behavior is unchanged wherever a page handle
+   * doesn't implement it.
+   */
+  onNavigationEvent?(cb: () => void): () => void;
+  /**
+   * Optional: Wave 1 speed. A cheap, synchronous snapshot of this tab's
+   * CDP-tracked network activity (`Network.enable`'d once at tab creation
+   * alongside `Page.enable` — see CLAUDE.md's "Network-quiet settle"
+   * section). `dropAfterMs` force-drops (and stops counting) any request
+   * still outstanding longer than that — a long-poll/SSE connection must
+   * never keep `pending` above zero forever. `generation` increments once
+   * per *new* relevant request seen (WebSocket/EventSource/Ping —
+   * covering beacons — are never counted at all), so a caller can detect
+   * "did any request start since I last checked" without needing to track
+   * individual completed requests, which vanish from the live pending set
+   * the moment they finish. Absent when the debugger failed to attach, same
+   * as `sendCdp`.
+   *
+   * `sinceGeneration`, when given, scopes `pending` down to only requests
+   * whose own per-request generation is greater than it (code review
+   * finding 2) — omitted (the default, used by `runWaitForActivityThenQuiet`)
+   * counts every currently-pending request regardless of when it started, as
+   * before. Without this, a request already in flight *before* the acted-on
+   * command (a lazy-loading image grid still fetching from a prior scroll,
+   * say) kept `pending` above zero for `waitForNetworkQuiet`, making a
+   * genuinely no-network action (a baseline-unchanged click) wait out the
+   * full quiet window/hard cap for a request it never caused and has no
+   * bearing on.
+   */
+  networkStats?(dropAfterMs: number, sinceGeneration?: number): { pending: number; generation: number };
+  /**
+   * Optional: Wave 3 reliability, item 2. Every direct child frame of the
+   * top document (Electron's `webContents.mainFrame.frames` — one level
+   * deep, same-origin AND cross-origin/OOPIF frames alike; WebFrameMain
+   * abstracts over the process boundary so both look identical here).
+   * `frameId` is Electron's `frameTreeNodeId` — stable for the frame's
+   * lifetime, unlike the deprecated `routingId`. Absent on every unit-test
+   * fake — `snapshot`/`read`/`findImages` degrade to top-document-only, the
+   * pre-Wave-3 behavior.
+   */
+  listFrames?(): { frameId: number; url: string; name: string }[];
+  /**
+   * Optional: Wave 3 reliability, item 2. Runs `code` inside the named
+   * child frame (by `frameId`, from `listFrames()`) and races it against
+   * `timeoutMs` — electron/electron#5183 means a child frame's own
+   * `executeJavaScript` only resolves once THAT frame stops loading, so a
+   * frame that never finishes loading must not hang the whole snapshot; a
+   * timed-out or failed frame is simply skipped by the caller. Rejects if
+   * the frame no longer exists (closed/navigated away) between `listFrames`
+   * and this call.
+   */
+  executeJavaScriptInFrame?(frameId: number, code: string, timeoutMs: number): Promise<unknown>;
+}
+
+// BrowserTabInfo is declared once, in tabManager.ts (second-pass review
+// finding 10) — before this, controller.ts and tabManager.ts each declared
+// their own structurally-identical copy (one comment even said so:
+// tabManager.ts's used to read "structurally identical to BrowserTarget's
+// own BrowserTabInfo there"), which is exactly the kind of pair that can
+// silently drift. Re-exported here (imported at the top of this file) so
+// every existing `import { BrowserTabInfo } from "./controller"` keeps
+// working.
+export type { BrowserTabInfo };
+
+export interface BrowserTarget {
+  /** Resolves the tab to drive, creating one if none exists. */
+  ensurePage(): Promise<BrowserPageHandle>;
+  /** Null when no browser tab is open — read-only commands fail cleanly. */
+  currentPage(): BrowserPageHandle | null;
+  /**
+   * Optional: full browser use's `tabs` command. All four are present or
+   * all four are absent in practice (window.ts implements them together
+   * over TabManager) — `tabs()` reports "not supported" up front if any is
+   * missing, rather than failing action-by-action.
+   */
+  listPages?(): Promise<BrowserTabInfo[]>;
+  selectPage?(tabId: number): Promise<boolean>;
+  closePage?(tabId: number): Promise<boolean>;
+  newPage?(url?: string): Promise<BrowserTabInfo>;
+  /**
+   * Optional: review finding 6. Every currently open browser tab's own
+   * `BrowserPageHandle`, tagged with its `tabId` — used by `mergeDialogs` to
+   * drain dialogs from *every* browser tab, not just `currentPage()`. Without
+   * this, a dialog on a tab that isn't the one a command happens to act on
+   * (a popup that raised its own dialog, or the tab a command just switched
+   * away from) was silently dropped instead of surfacing on the next command
+   * that could report it. Absent on any `BrowserTarget` that predates this
+   * (every unit-test fake, notably) — `mergeDialogs` degrades to draining
+   * only `currentPage()`, the previous behavior.
+   */
+  pageHandles?(): Promise<{ tabId: number; page: BrowserPageHandle }[]>;
+}
+
+export type BrowserCommandResult = Record<string, unknown>;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function errorResult(message: string): BrowserCommandResult {
+  return { error: message };
+}
+
+/** Wave 3 reliability, item 2: the `frame: "…"` label stamped onto every
+ * element/text-digest entry that came from a child frame — the frame's own
+ * `document.title` (from that frame's own SNAPSHOT_JS/READ_JS/FIND_IMAGES_JS
+ * result, when it returned a non-blank one) first, else the iframe's `name`
+ * attribute, else its resolved URL's host, else the raw url as a last
+ * resort. */
+function frameLabel(frame: { url: string; name: string }, title?: string): string {
+  if (title && title.trim()) return title.trim();
+  if (frame.name && frame.name.trim()) return frame.name.trim();
+  try {
+    const host = new URL(frame.url).host;
+    if (host) return host;
+  } catch {
+    // fall through
+  }
+  return frame.url || "frame";
+}
+
+function toMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err: unknown) => {
+        clearTimeout(timer);
+        reject(err instanceof Error ? err : new Error(toMessage(err)));
+      },
+    );
+  });
+}
+
+function validateOpenArgs(args: unknown): { ok: true; url: string } | { ok: false; error: string } {
+  if (!isRecord(args) || typeof args.url !== "string" || args.url.trim() === "") {
+    return { ok: false, error: 'browse_open requires a non-empty string "url".' };
+  }
+  const url = args.url.trim();
+  if (decideBrowserNavigation(url) !== "allow") {
+    return { ok: false, error: `browse_open only supports http(s) URLs, got: ${url}` };
+  }
+  return { ok: true, url };
+}
+
+interface ValidatedReadArgs {
+  maxChars: number;
+  selector?: string;
+}
+
+function validateReadArgs(args: unknown): { ok: true; value: ValidatedReadArgs } | { ok: false; error: string } {
+  if (args !== undefined && !isRecord(args)) {
+    return { ok: false, error: "browse_read requires an object (or no arguments)." };
+  }
+  const raw = isRecord(args) ? args : {};
+
+  let maxChars = READ_MAX_CHARS_DEFAULT;
+  if (raw.maxChars !== undefined) {
+    if (typeof raw.maxChars !== "number" || !Number.isFinite(raw.maxChars) || raw.maxChars <= 0) {
+      return { ok: false, error: 'browse_read requires "maxChars" to be a positive number when provided.' };
+    }
+    // Hard cap regardless of what the caller asked for — the default (6000)
+    // is a courtesy, the cap (20000) is not negotiable.
+    maxChars = Math.min(raw.maxChars, READ_MAX_CHARS_HARD_CAP);
+  }
+
+  let selector: string | undefined;
+  if (raw.selector !== undefined) {
+    if (typeof raw.selector !== "string" || raw.selector.trim() === "") {
+      return { ok: false, error: 'browse_read requires "selector" to be a non-empty string when provided.' };
+    }
+    selector = raw.selector;
+  }
+
+  return { ok: true, value: { maxChars, selector } };
+}
+
+// Full browser use (design doc `2026-09-23-full-browser-use-design.md`)
+// added select/press/hover/reload/wait to the original five.
+type ActAction = "click" | "type" | "select" | "press" | "hover" | "scroll" | "back" | "forward" | "reload" | "wait";
+
+const ACT_ACTIONS: readonly ActAction[] = [
+  "click",
+  "type",
+  "select",
+  "press",
+  "hover",
+  "scroll",
+  "back",
+  "forward",
+  "reload",
+  "wait",
+];
+
+function isActAction(value: unknown): value is ActAction {
+  return typeof value === "string" && (ACT_ACTIONS as readonly string[]).includes(value);
+}
+
+/** Shared by `act`'s click/type/select/press/hover: an `index` requires a
+ * `snapshotId` alongside it (and vice versa) — this only validates the
+ * *shape*, the staleness/cross-tab check happens where `perform()` already
+ * does it, for the actions that route there. */
+function validateIndexSnapshot(
+  args: Record<string, unknown>,
+  actionLabel: string,
+): { ok: true; index: number; snapshotId: string } | { ok: false; error: string } {
+  if (!isNonNegativeInteger(args.index)) {
+    return {
+      ok: false,
+      error: `browse_act "${actionLabel}" requires a non-negative integer "index" (with "snapshotId") or a string "target".`,
+    };
+  }
+  if (typeof args.snapshotId !== "string" || args.snapshotId.trim() === "") {
+    return {
+      ok: false,
+      error: `browse_act "${actionLabel}" with "index" also requires a non-empty string "snapshotId".`,
+    };
+  }
+  return { ok: true, index: args.index, snapshotId: args.snapshotId };
+}
+
+function validateScreenshotArgs(
+  args: unknown,
+): { ok: true; value: { annotate: boolean } } | { ok: false; error: string } {
+  if (args !== undefined && !isRecord(args)) {
+    return { ok: false, error: "browse_screenshot requires an object (or no arguments)." };
+  }
+  const raw = isRecord(args) ? args : {};
+  if (raw.annotate !== undefined && typeof raw.annotate !== "boolean") {
+    return { ok: false, error: 'browse_screenshot requires "annotate" to be a boolean when provided.' };
+  }
+  return { ok: true, value: { annotate: raw.annotate === true } };
+}
+
+type TabsAction = "list" | "switch" | "close" | "new";
+
+function isTabsAction(value: unknown): value is TabsAction {
+  return value === "list" || value === "switch" || value === "close" || value === "new";
+}
+
+interface ValidatedTabsArgs {
+  action: TabsAction;
+  tabId?: number;
+  url?: string;
+}
+
+function validateTabsArgs(args: unknown): { ok: true; value: ValidatedTabsArgs } | { ok: false; error: string } {
+  if (!isRecord(args) || !isTabsAction(args.action)) {
+    return {
+      ok: false,
+      error: `browse_tabs requires an "action" of "list", "switch", "close", or "new" (got ${
+        isRecord(args) ? JSON.stringify(args.action) : JSON.stringify(args)
+      }).`,
+    };
+  }
+  const action = args.action;
+  let tabId: number | undefined;
+  if (args.tabId !== undefined) {
+    if (!isNonNegativeInteger(args.tabId)) {
+      return { ok: false, error: 'browse_tabs requires "tabId" to be a non-negative integer when provided.' };
+    }
+    tabId = args.tabId;
+  }
+  if ((action === "switch" || action === "close") && tabId === undefined) {
+    return { ok: false, error: `browse_tabs "${action}" requires a "tabId".` };
+  }
+  let url: string | undefined;
+  if (args.url !== undefined) {
+    if (typeof args.url !== "string" || args.url.trim() === "") {
+      return { ok: false, error: 'browse_tabs requires "url" to be a non-empty string when provided.' };
+    }
+    const trimmed = args.url.trim();
+    if (decideBrowserNavigation(trimmed) !== "allow") {
+      return { ok: false, error: `browse_tabs only supports http(s) URLs, got: ${trimmed}` };
+    }
+    url = trimmed;
+  }
+  return { ok: true, value: { action, tabId, url } };
+}
+
+type PerformOperation = "CLICK" | "TYPE_TEXT" | "SELECT" | "SCROLL_UP" | "SCROLL_DOWN";
+
+const PERFORM_OPERATIONS: readonly PerformOperation[] = ["CLICK", "TYPE_TEXT", "SELECT", "SCROLL_UP", "SCROLL_DOWN"];
+
+// Addendum A: index is required only for these three — SCROLL_UP/SCROLL_DOWN
+// act on the page itself and must be accepted with no index at all (they
+// used to always fail at the bridge because index was unconditionally
+// required). WAIT is not a member of PerformOperation/PERFORM_OPERATIONS at
+// all — it is never sent to perform(); the frontend loop handles it locally
+// by sleeping and taking a fresh snapshot.
+const INDEXED_OPERATIONS: readonly PerformOperation[] = ["CLICK", "TYPE_TEXT", "SELECT"];
+
+function isPerformOperation(value: unknown): value is PerformOperation {
+  return typeof value === "string" && (PERFORM_OPERATIONS as readonly string[]).includes(value);
+}
+
+interface ValidatedPerformArgs {
+  /** Present only for CLICK/TYPE_TEXT/SELECT — see INDEXED_OPERATIONS. */
+  index?: number;
+  operation: PerformOperation;
+  text?: string;
+  snapshotId: string;
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+function validatePerformArgs(args: unknown): { ok: true; value: ValidatedPerformArgs } | { ok: false; error: string } {
+  if (!isRecord(args)) {
+    return { ok: false, error: "browse perform requires an object." };
+  }
+  if (typeof args.snapshotId !== "string" || args.snapshotId.trim() === "") {
+    return { ok: false, error: 'browse perform requires a non-empty string "snapshotId".' };
+  }
+  if (!isPerformOperation(args.operation)) {
+    return {
+      ok: false,
+      error: `browse perform requires an "operation" of ${PERFORM_OPERATIONS.join(", ")} (got ${JSON.stringify(args.operation)}).`,
+    };
+  }
+  const operation = args.operation;
+  const indexRequired = (INDEXED_OPERATIONS as readonly string[]).includes(operation);
+  let index: number | undefined;
+  if (indexRequired) {
+    if (!isNonNegativeInteger(args.index)) {
+      return { ok: false, error: `browse perform "${operation}" requires a non-negative integer "index".` };
+    }
+    index = args.index;
+  } else if (args.index !== undefined) {
+    // Not required for SCROLL_UP/SCROLL_DOWN, but if the caller passed one
+    // anyway, it must still be well-formed rather than silently ignored.
+    if (!isNonNegativeInteger(args.index)) {
+      return { ok: false, error: `browse perform "${operation}" requires "index" to be a non-negative integer when provided.` };
+    }
+    index = args.index;
+  }
+  if (args.text !== undefined && typeof args.text !== "string") {
+    return { ok: false, error: 'browse perform requires "text" to be a string when provided.' };
+  }
+  if ((operation === "TYPE_TEXT" || operation === "SELECT") && typeof args.text !== "string") {
+    return { ok: false, error: `browse perform "${operation}" requires a string "text".` };
+  }
+  return {
+    ok: true,
+    value: { index, operation, text: args.text, snapshotId: args.snapshotId },
+  };
+}
+
+export class BrowserController {
+  private readonly timeoutMs: number;
+  private readonly openTimeoutMs: number;
+
+  // The most recent snapshot() call's id, together with the exact page it
+  // was taken against — perform() compares its caller-supplied snapshotId
+  // (and the *current* page) against this single slot and hard-errors on
+  // either mismatch — see "Credentials"/§1 of the jev-loop design doc: a
+  // page that re-rendered between snapshot and perform must never be
+  // silently acted on, so this is a rejection, not a best-effort lookup.
+  //
+  // Finding 5: this used to be a bare snapshotId string, justified by "there
+  // is only ever one browser tab" — but File ▸ New Browser Tab and popups
+  // both make more than one possible, and `browserHandle()` (window.ts)
+  // picks active-if-browser else last-created, so which tab a command hits
+  // depends on what the user clicked. Without the page identity check, a
+  // snapshot on tab A followed by a perform after the user switched to tab B
+  // would pass this staleness check (the id matches) and only then fail
+  // in-page against tab B's DOM with a misleading "no element at index N"
+  // error, instead of an accurate cross-tab message. Comparing the page
+  // reference itself needs no new "tab id" concept in the Electron-free
+  // BrowserPageHandle — window.ts hands back the same object for a given tab
+  // on every call, and a different object for a different tab.
+  // Wave 3 reliability, item 2: `frameMap` records, for every global element
+  // index this snapshot minted, which frame it actually lives in —
+  // `frameId: null` means the top document, using SNAPSHOT_JS's own index
+  // directly; a non-null `frameId` means a child frame, and `localIndex` is
+  // the index *that frame's own* SNAPSHOT_JS call stamped its element with
+  // (each frame numbers its own elements from 0 — see takeSnapshot). perform()
+  // looks a caller's global index up here to decide whether to run the
+  // follow-up script against the top page or a specific child frame.
+  private lastSnapshot: {
+    id: string;
+    page: BrowserPageHandle;
+    frameMap: Map<number, { frameId: number | null; localIndex: number }>;
+    // Wave 3 reliability, item 2: each frame's own content-box offset/size
+    // in top-level viewport CSS px, keyed by frameId — used to move the
+    // cursor overlay (which lives in the top document) to a best-effort
+    // point over a frame-routed element (the frame's own center — see
+    // performUnlocked) since the overlay can't resolve or scroll to an
+    // element inside a frame's own document.
+    frameRects: Map<number, { x: number; y: number; width: number; height: number }>;
+    // Re-mount recovery (booking.com finding): for each TOP-document
+    // interactive element, the `{ tag, label, role? }` the snapshot's element
+    // table reported (label already truncated by SNAPSHOT_JS). Every
+    // index-based top-document page-script call carries it (see
+    // `executeScript`) so FIND_BY_SNAPSHOT_JS can re-find a node the page
+    // re-mounted after the stamp was set — only by a unique exact match.
+    // Absent for positional-fallback labels ("<tag> #<n>"), scroll-container
+    // entries, and frame-routed elements.
+    fingerprints: Map<number, ElementFingerprint>;
+  } | null = null;
+
+  /** Set by `executeScript` when a page script reports `relocated: true`
+   * (a re-mounted target re-found by fingerprint); read and cleared by the
+   * public `act`/`perform` entry points, which surface it on their result. */
+  private relocatedThisCommand = false;
+
+  /** Second-pass review finding 8: a FIFO queue every public command
+   * (open/act/findImages/snapshot/perform/read/screenshot/tabs) runs
+   * through, via `runExclusive` — nothing previously serialized concurrent
+   * `BrowserController` calls, so two tool calls the frontend fired without
+   * waiting for each other could interleave (a `screenshot({annotate:true})`
+   * overlaying marks in the middle of an unrelated command's signature
+   * capture; `lastSnapshot` being replaced mid-`perform` by a `snapshot()`
+   * that raced it). Each command's own `withCommandTimeout` bound already
+   * guarantees it eventually settles, so a plain FIFO — no separate queue
+   * timeout — is enough: nothing can wedge the queue forever short of a
+   * command hanging past its own timeout, which `withCommandTimeout` doesn't
+   * allow. Each command's timeout starts only once it actually begins
+   * running `fn` (inside `runExclusive`'s callback), not while it's still
+   * waiting in the queue — a command queued behind a slow one is not charged
+   * for time it spent waiting.
+   *
+   * A command that itself calls another public command internally (`tabs`'s
+   * "new"+url case calling `open`; `act`'s index-based branches calling
+   * `perform`) must call that command's `*Unlocked` implementation directly,
+   * never the public method — calling back into `runExclusive` while already
+   * inside it would enqueue behind itself and deadlock forever, since the
+   * outer call can't finish (and let the queue advance) until the inner call
+   * it's waiting on does.
+   *
+   * `runExclusive` starts `fn` synchronously (no `.then()` hop at all) when
+   * the queue is idle, rather than always chaining onto `mutexTail` — this
+   * matters beyond micro-optimization: several existing behaviors (e.g.
+   * `withCommandTimeout` capturing `pageHandles`/`currentPage()` "before
+   * `fn()` runs") were written, and tested, assuming a command begins
+   * executing in the same synchronous tick it's called in, up to its own
+   * first `await`. Always deferring the start by one `Promise.then()` hop
+   * (even for the common, uncontended case of one in-flight command at a
+   * time) would push that capture one microtask later than callers observe
+   * — silently changing what "before" means relative to code that runs
+   * right after the call, with no queueing actually needed to explain it. */
+  private mutexBusy = false;
+  private mutexTail: Promise<void> = Promise.resolve();
+  /** Set by `withCommandTimeout` when a command TIMES OUT: its `fn()` keeps
+   * running in the background (a promise can't be cancelled), so releasing
+   * the queue the moment the timeout fires would let the next command start
+   * while the late click/type/`REMOVE_MARKS_JS` still lands mid-way through
+   * its before/after captures (third-pass review). The next command waits
+   * for that work to settle — bounded by OVERRUN_GRACE_MS, since the work
+   * may be blocked forever (a page script behind a dialog). */
+  private overrun: Promise<void> | null = null;
+
+  private runExclusive<T>(fn: () => Promise<T>): Promise<T> {
+    const start = (): Promise<T> => {
+      this.mutexBusy = true;
+      // Checked here, inside `start`, not at enqueue time: a command already
+      // waiting in the queue when its predecessor timed out must wait out
+      // that predecessor's abandoned work too (see `overrun`).
+      const pendingOverrun = this.overrun;
+      this.overrun = null;
+      const p = pendingOverrun ? pendingOverrun.then(fn) : fn();
+      p.then(
+        () => {
+          this.mutexBusy = false;
+        },
+        () => {
+          this.mutexBusy = false;
+        },
+      );
+      return p;
+    };
+    const result = this.mutexBusy ? this.mutexTail.then(start, start) : start();
+    // Chained regardless of `result`'s outcome — a rejecting command must
+    // still let the next queued one run, and this tail itself must never
+    // reject (an unhandled rejection here would break every future queue
+    // entry), so both branches resolve.
+    this.mutexTail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  /** Same staleness/cross-tab guard `perform()` applies to its own
+   * `snapshotId`, factored out (review finding 5) so `runPress`/`runHover`
+   * can apply it too when they're given `index`+`snapshotId` — before this,
+   * those two skipped the guard entirely and went straight to a page-script
+   * lookup, so a stale or cross-tab snapshotId silently failed with "no
+   * element" instead of the same clear staleness error `perform()` gives.
+   * Returns an error result on mismatch, `null` when `snapshotId` is current
+   * for `page`. */
+  private checkSnapshotStale(snapshotId: string, page: BrowserPageHandle): BrowserCommandResult | null {
+    if (!this.lastSnapshot || snapshotId !== this.lastSnapshot.id || page !== this.lastSnapshot.page) {
+      return errorResult(
+        this.lastSnapshot && snapshotId === this.lastSnapshot.id
+          ? "Stale snapshotId — a different browser tab is now active. Call browser snapshot again on this tab before perform."
+          : "Stale or unknown snapshotId — the page may have changed since that snapshot. Call browser snapshot again before perform.",
+      );
+    }
+    return null;
+  }
+
+  // The last known viewport position CURSOR_JS's overlay landed at — fed
+  // back as `from` on the next moveCursor call so consecutive moves chain
+  // from where the cursor actually is rather than resetting to a default
+  // start point every command. Updated only when a cursor call reports
+  // finite numeric x/y; a failed or no-op cursor call leaves it as-is.
+  private cursorPosition: { x: number; y: number } | null = null;
+  private readonly cursorEnabled: boolean;
+
+  /** The cursor step runs inside the command closure `withCommandTimeout`
+   * bounds, so its own bound is added to that command's budget rather than
+   * taken out of it — a cosmetic overlay must never be what pushes a
+   * slow-but-working command over its timeout. Zero when the cursor is
+   * disabled, since no cursor step runs at all. */
+  private get cursorBudgetMs(): number {
+    return this.cursorEnabled ? Math.min(this.timeoutMs, CURSOR_TIMEOUT_MS) : 0;
+  }
+
+  constructor(
+    private readonly target: BrowserTarget,
+    opts?: { timeoutMs?: number; openTimeoutMs?: number; cursor?: boolean },
+  ) {
+    this.timeoutMs = opts?.timeoutMs ?? BROWSER_COMMAND_TIMEOUT_MS;
+    // An explicitly supplied timeoutMs bounds EVERY command including
+    // open — a caller (or a test) that asks for a short budget means it.
+    // open only gets its own longer default when nothing was specified.
+    this.openTimeoutMs =
+      opts?.openTimeoutMs ?? opts?.timeoutMs ?? BROWSER_OPEN_TIMEOUT_MS;
+    this.cursorEnabled = opts?.cursor ?? true;
+  }
+
+  /** Runs CURSOR_JS to move the built-in browser's visible cursor overlay
+   * toward the target of an upcoming action, before that action's own
+   * before-signature capture — see CURSOR_JS's doc comment (pageScripts.ts)
+   * for why the ordering matters. A no-op when `cursorEnabled` is false
+   * (PEN_DESKTOP_BROWSER_CURSOR=off — config.ts's
+   * `resolveBrowserCursorEnabled`), and also a no-op when the driven page
+   * reports itself not visible (`page.isVisible?.() === false`) — a hidden
+   * `WebContentsView` never fires `requestAnimationFrame`, so the animation
+   * would only ever settle via its internal backstop, paying ~1.15s for an
+   * overlay nobody can see. Every failure — a rejecting/throwing
+   * executeJavaScript, a timeout, a malformed response — is swallowed: the
+   * cursor is cosmetic, and must never turn a working browser command into
+   * an error or a timeout of its own.
+   *
+   * Runs inside the same command closure `withCommandTimeout` bounds — see
+   * `cursorBudgetMs`'s doc comment for why callers extend that budget by the
+   * cursor's own bound rather than letting this eat into it. */
+  private async moveCursor(
+    page: BrowserPageHandle,
+    spec: {
+      action: "click" | "type" | "select" | "scroll" | "hover" | "press";
+      target?: string;
+      snapshotId?: string;
+      index?: number;
+      /** Wave 3 reliability, item 2: an explicit top-level-viewport point,
+       * used instead of target/snapshotId+index for an element that lives
+       * inside a child frame — see CURSOR_JS's doc comment for why the
+       * overlay (which lives in the top document) can't resolve one of
+       * those itself. */
+      point?: { x: number; y: number };
+    },
+  ): Promise<void> {
+    if (!this.cursorEnabled) return;
+    if (page.isVisible?.() === false) return;
+    try {
+      const scriptArgs = { ...spec, from: this.cursorPosition };
+      // Bounded by the smaller of CURSOR_TIMEOUT_MS and this controller's
+      // own configured timeoutMs — same convention as
+      // settleWhileTargetBusy/waitForUrlChange/waitForLoadStop above, so a
+      // caller (or a test) that asks for a short overall budget also gets a
+      // short-bounded cursor call rather than one that can outlive the
+      // command it's decorating.
+      const result = await withTimeout(
+        this.executeScript(page, "CURSOR_JS", scriptArgs),
+        Math.min(this.timeoutMs, CURSOR_TIMEOUT_MS),
+        "Cursor animation timed out.",
+      );
+      if (
+        isRecord(result) &&
+        typeof result.x === "number" &&
+        Number.isFinite(result.x) &&
+        typeof result.y === "number" &&
+        Number.isFinite(result.y)
+      ) {
+        this.cursorPosition = { x: result.x, y: result.y };
+      }
+    } catch {
+      // Cosmetic only — see this method's doc comment.
+    }
+  }
+
+  /** Resolves once the DOM is ready, not once every subresource has
+   * finished — `webContents.loadURL()`'s own promise resolves at
+   * `did-finish-load`, which on a heavy commercial page (ads, trackers,
+   * video) routinely exceeds BROWSER_COMMAND_TIMEOUT_MS even though the page
+   * is perfectly usable well before that. The DOM-ready listener
+   * (`page.onceDomReady()`) is armed *before* `loadURL` is called — arming
+   * it after risks missing an event that fires while `loadURL` is still
+   * synchronously setting up the navigation.
+   *
+   * Both promises are raced. If the full load settles first (fast page, or a
+   * genuine navigation error before the DOM ever became ready), that result
+   * is trusted outright — a rejection here is surfaced as `{ error }`, same
+   * as before this fix. If DOM-ready wins, the page gets a short, bounded
+   * grace period (OPEN_LOAD_GRACE_MS) to finish the full load too, so the
+   * common fast page still comes back `loaded: true`; if the grace period
+   * expires first, the command returns with `loaded: false` and the load
+   * promise's eventual settlement (success or failure) is one that already
+   * has both a resolve and a reject handler attached below, so it can never
+   * become an unhandled rejection — a subresource failing after the page is
+   * usable is not treated as this command failing.
+   *
+   * Second-pass review finding 8: this public method just serializes onto
+   * the command queue (`runExclusive`) and delegates to `openUnlocked` for
+   * the actual work — see `runExclusive`'s doc comment for why `tabs()`'s
+   * internal "new"+url case calls `openUnlocked` directly instead of this. */
+  async open(args: unknown): Promise<BrowserCommandResult> {
+    return this.runExclusive(() => this.openUnlocked(args));
+  }
+
+  private async openUnlocked(args: unknown): Promise<BrowserCommandResult> {
+    const validated = validateOpenArgs(args);
+    if (!validated.ok) return errorResult(validated.error);
+    return this.withCommandTimeout(async () => {
+      const page = await this.target.ensurePage();
+
+      // Armed before loadURL() is called — see the doc comment above.
+      const domReadyPromise = page.onceDomReady();
+      const loadPromise = page.loadURL(validated.url);
+
+      type Outcome = { via: "dom-ready" } | { via: "load"; error: Error | null };
+      // .then's reject handler here consumes loadPromise's rejection into a
+      // resolved value — this is what keeps a late load failure from ever
+      // reaching Node as an unhandled rejection, regardless of which branch
+      // below is taken or how long after this function returns it settles.
+      const loadOutcome: Promise<Outcome> = loadPromise.then(
+        () => ({ via: "load", error: null }),
+        (err: unknown) => ({ via: "load", error: err instanceof Error ? err : new Error(toMessage(err)) }),
+      );
+      const domReadyOutcome: Promise<Outcome> = domReadyPromise.then(() => ({ via: "dom-ready", error: null }));
+
+      const first = await Promise.race([domReadyOutcome, loadOutcome]);
+
+      if (first.via === "load") {
+        // The full load settled before the DOM even became ready — either a
+        // fast page (nothing left to wait for) or a genuine navigation
+        // failure. Either way there is no "DOM ready but still loading"
+        // state to report, so this is the whole answer.
+        if (first.error) throw first.error;
+        return { url: page.getURL(), title: page.getTitle(), loaded: true, ...(await this.checkBotWall(page)) };
+      }
+
+      const graceOutcome = await Promise.race([
+        loadOutcome,
+        new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), OPEN_LOAD_GRACE_MS)),
+      ]);
+      // A load failure that happens *after* DOM-ready already succeeded is
+      // not a command failure (e.g. a stalled subresource) — it just means
+      // the full load never completed, so `loaded` stays false.
+      const loaded = graceOutcome !== "timeout" && graceOutcome.via === "load" && graceOutcome.error === null;
+      return { url: page.getURL(), title: page.getTitle(), loaded, ...(await this.checkBotWall(page)) };
+    }, this.openTimeoutMs);
+  }
+
+  /** Second-pass review finding 8: public entry point — serializes onto the
+   * command queue and delegates to `actUnlocked`. */
+  async act(args: unknown): Promise<BrowserCommandResult> {
+    return this.runExclusive(async () => {
+      this.relocatedThisCommand = false;
+      const result = this.withRelocated(await this.actUnlocked(args));
+      // Wave 3 reliability, item 3: drained once, at the outermost public
+      // entry point — see mergeConsoleErrors's doc comment.
+      return this.mergeConsoleErrors(result, this.target.currentPage());
+    });
+  }
+
+  private async actUnlocked(args: unknown): Promise<BrowserCommandResult> {
+    if (!isRecord(args) || !isActAction(args.action)) {
+      return errorResult(
+        `browse_act requires an "action" of "click", "type", "select", "press", "hover", "scroll", "back", ` +
+          `"forward", "reload", or "wait" (got ${
+            isRecord(args) ? JSON.stringify(args.action) : JSON.stringify(args)
+          }).`,
+      );
+    }
+    const action = args.action;
+
+    if (action === "reload") {
+      return this.withCommandTimeout(async () => {
+        const page = this.target.currentPage();
+        if (!page) return errorResult("No browser tab is open — call browse_open first.");
+        const previousUrl = page.getURL();
+        // Armed before reload() — Wave 1 speed's event-driven equivalent of
+        // the old fixed-probe wait. Same two-phase settle as a click's
+        // navigation (addendum F) — reload() is fire-and-forget just like
+        // goBack()/goForward(), so "did it even start" and "has it
+        // finished" are separate questions. reload() always intends to
+        // navigate, so the load-stop wait below runs unconditionally,
+        // regardless of what the watcher observed (same as before this
+        // change) — it just resolves immediately if isLoading() never went
+        // true.
+        const navWatcher = this.armNavigationWatcher(page, previousUrl);
+        page.reload();
+        await navWatcher.wait();
+        navWatcher.dispose();
+        await this.waitForLoadStop(page, CLICK_LOAD_SETTLE_TIMEOUT_MS);
+        return { url: page.getURL(), title: page.getTitle() };
+      });
+    }
+
+    if (action === "wait") {
+      if (args.text !== undefined && (typeof args.text !== "string" || args.text.trim() === "")) {
+        return errorResult('browse_act "wait" requires "text" to be a non-empty string when provided.');
+      }
+      if (args.ms !== undefined && (typeof args.ms !== "number" || !Number.isFinite(args.ms) || args.ms < 0)) {
+        return errorResult('browse_act "wait" requires "ms" to be a non-negative number when provided.');
+      }
+      const ms = Math.min(typeof args.ms === "number" ? args.ms : WAIT_DEFAULT_MS, WAIT_MAX_MS);
+      const text = typeof args.text === "string" ? args.text : undefined;
+      // Own budget, not this.timeoutMs — a caller waiting up to WAIT_MAX_MS
+      // (15s) must not be cut off by the default 20s command timeout minus
+      // whatever else this closure does; a little headroom on top of `ms`
+      // covers the poll/script round trips themselves.
+      return this.withCommandTimeout(() => this.runWait(text, ms), ms + 5_000);
+    }
+
+    if (action === "press") {
+      if (typeof args.key !== "string" || args.key.trim() === "") {
+        return errorResult('browse_act "press" requires a non-empty string "key".');
+      }
+      const key = args.key;
+      let focusTarget: string | undefined;
+      let focusIndex: number | undefined;
+      let focusSnapshotId: string | undefined;
+      if (args.target !== undefined) {
+        if (typeof args.target !== "string" || args.target.trim() === "") {
+          return errorResult('browse_act "press" requires "target" to be a non-empty string when provided.');
+        }
+        focusTarget = args.target;
+      }
+      if (args.index !== undefined || args.snapshotId !== undefined) {
+        const validated = validateIndexSnapshot(args, "press");
+        if (!validated.ok) return errorResult(validated.error);
+        focusIndex = validated.index;
+        focusSnapshotId = validated.snapshotId;
+      }
+      return this.withCommandTimeout(
+        () => this.runPress(key, { target: focusTarget, index: focusIndex, snapshotId: focusSnapshotId }),
+        this.timeoutMs + this.cursorBudgetMs,
+      );
+    }
+
+    if (action === "hover") {
+      let hoverTarget: string | undefined;
+      let hoverIndex: number | undefined;
+      let hoverSnapshotId: string | undefined;
+      if (typeof args.target === "string" && args.target.trim() !== "") {
+        hoverTarget = args.target;
+      } else if (args.index !== undefined || args.snapshotId !== undefined) {
+        const validated = validateIndexSnapshot(args, "hover");
+        if (!validated.ok) return errorResult(validated.error);
+        hoverIndex = validated.index;
+        hoverSnapshotId = validated.snapshotId;
+      } else {
+        return errorResult('browse_act "hover" requires a "target" string, or "index" with "snapshotId".');
+      }
+      return this.withCommandTimeout(
+        () => this.runHover({ target: hoverTarget, index: hoverIndex, snapshotId: hoverSnapshotId }),
+        this.timeoutMs + this.cursorBudgetMs,
+      );
+    }
+
+    if (action === "select") {
+      const validated = validateIndexSnapshot(args, "select");
+      if (!validated.ok) return errorResult(validated.error);
+      if (typeof args.text !== "string") {
+        return errorResult('browse_act "select" requires a string "text".');
+      }
+      // Routes to the same perform() path the jev loop uses — see the
+      // design doc's table ("select | index+snapshotId, text | perform
+      // SELECT"). perform() already applies the staleness/cross-tab
+      // snapshotId check and produces evidence for SELECT. `performUnlocked`
+      // (not the public `perform`) — see `runExclusive`'s doc comment: this
+      // call is already running inside the queue, from `act`'s own turn.
+      return this.performUnlocked({ operation: "SELECT", index: validated.index, snapshotId: validated.snapshotId, text: args.text });
+    }
+
+    if (action === "back" || action === "forward") {
+      return this.withCommandTimeout(async () => {
+        const page = this.target.currentPage();
+        if (!page) return errorResult("No browser tab is open — call browse_open first.");
+        if (action === "back" && !page.canGoBack()) {
+          return errorResult("Cannot go back: no previous page in this tab's history.");
+        }
+        if (action === "forward" && !page.canGoForward()) {
+          return errorResult("Cannot go forward: no next page in this tab's history.");
+        }
+        // goBack()/goForward() are fire-and-forget (BrowserPageHandle has no
+        // navigation-complete signal) — wait for the URL to actually change
+        // before reading it back, so the result reflects the page the user
+        // lands on rather than a stale pre-navigation URL.
+        const previousUrl = page.getURL();
+        const before = await this.captureSignature(page, "before");
+        if (action === "back") page.goBack();
+        else page.goForward();
+        await this.waitForUrlChange(page, previousUrl);
+        const after = await this.captureSignature(page, "after");
+        const currentUrl = page.getURL();
+        return {
+          url: currentUrl,
+          title: page.getTitle(),
+          ...this.diffSignatures(before, after, { previousUrl, currentUrl }),
+        };
+      });
+    }
+
+    if (action === "scroll") {
+      if (args.amount !== undefined && (typeof args.amount !== "number" || !Number.isFinite(args.amount))) {
+        return errorResult('browse_act "scroll" requires "amount" to be a number when provided.');
+      }
+      const amount = typeof args.amount === "number" ? args.amount : 1;
+      // Wave 2 reliability item 4: optional target/index+snapshotId scrolls
+      // that element (or its nearest scrollable ancestor) instead of the
+      // window — see SCROLL_JS's own doc comment for the full auto-pick
+      // rule when neither is given.
+      let scrollTarget: string | undefined;
+      let scrollIndex: number | undefined;
+      let scrollSnapshotId: string | undefined;
+      if (typeof args.target === "string" && args.target.trim() !== "") {
+        scrollTarget = args.target;
+      } else if (args.index !== undefined || args.snapshotId !== undefined) {
+        const validated = validateIndexSnapshot(args, "scroll");
+        if (!validated.ok) return errorResult(validated.error);
+        scrollIndex = validated.index;
+        scrollSnapshotId = validated.snapshotId;
+      }
+      return this.withCommandTimeout(
+        () =>
+          this.runOnPageWithEvidence("SCROLL_JS", {
+            amount,
+            target: scrollTarget,
+            index: scrollIndex,
+            snapshotId: scrollSnapshotId,
+          }),
+        this.timeoutMs + this.cursorBudgetMs,
+      );
+    }
+
+    // click / type — target OR index+snapshotId (design doc's table: "click
+    // / type | target or index+snapshotId (+text) | index → existing
+    // perform CLICK/TYPE_TEXT path"). Index-based routes straight to
+    // perform(), which already carries the staleness/cross-tab check,
+    // evidence, and (for CLICK) openedTab detection.
+    if (args.index !== undefined || args.snapshotId !== undefined) {
+      const validated = validateIndexSnapshot(args, action);
+      if (!validated.ok) return errorResult(validated.error);
+      if (action === "type" && typeof args.text !== "string") {
+        return errorResult('browse_act "type" requires a string "text" when using "index".');
+      }
+      // `performUnlocked`, not the public `perform` — see `runExclusive`'s
+      // doc comment.
+      return this.performUnlocked({
+        operation: action === "click" ? "CLICK" : "TYPE_TEXT",
+        index: validated.index,
+        snapshotId: validated.snapshotId,
+        text: args.text,
+      });
+    }
+
+    if (typeof args.target !== "string" || args.target.trim() === "") {
+      return errorResult(`browse_act "${action}" requires a non-empty string "target" (or "index" with "snapshotId").`);
+    }
+    // Captured as a local const, not read as `args.target` again below: TS
+    // narrowing of a property access does not survive into the closures
+    // passed to withCommandTimeout, so `runClick`'s `target: string`
+    // parameter needs an already-narrowed value.
+    const target = args.target;
+    if (action === "type") {
+      if (typeof args.text !== "string") {
+        return errorResult('browse_act "type" requires a string "text".');
+      }
+      const text = args.text;
+      // Wave 2 reliability item 2: trusted CDP typing (dispatchType), with
+      // its own DOM fallback baked in — see runTypeWithEvidence.
+      return this.withCommandTimeout(
+        (deadlineAt) => this.runTypeWithEvidence({ target }, text, deadlineAt),
+        this.timeoutMs + this.cursorBudgetMs,
+      );
+    }
+    return this.withCommandTimeout(() => this.runClick(target), this.timeoutMs + this.cursorBudgetMs);
+  }
+
+  /** Wave 2 reliability, item 1: performs a click via trusted CDP mouse
+   * events when it safely can, falling back to the existing `el.click()`
+   * page-script path (CLICK_JS for a `target`, PERFORM_JS's CLICK branch for
+   * an `index`+`snapshotId`) otherwise. `locateArgs` carries exactly one of
+   * the two the way LOCATE_TARGET_JS's `locateTarget` already expects.
+   *
+   * `CLICK_RESOLVE_JS` finds and stamps the element and hit-tests its centre
+   * point (`document.elementFromPoint`, recursing into open shadow roots)
+   * *without acting on it* — see its own doc comment for what `hitOk` means.
+   * When `hitOk` is true and this tab has a CDP session (`page.sendCdp`), a
+   * `mouseMoved`/`mousePressed`/`mouseReleased` triple lands a real,
+   * OS-trusted click (`event.isTrusted === true` on the page, unlike a
+   * page-script `el.click()`) at that point, and the busy state of the
+   * stamped element is re-read (`TARGET_BUSY_JS`) to compute
+   * `__targetSelfDisabled` the same way the DOM path does inline. Reports
+   * `via: "cdp"`.
+   *
+   * Any other outcome — the hit-test failed (covered, zero-size, offscreen
+   * after scroll), no CDP session, or the trusted dispatch itself threw —
+   * falls back to the pre-existing DOM click entirely (a fresh resolve, not
+   * a reuse of CLICK_RESOLVE_JS's own stamp), reporting `via: "dom"`. `via`
+   * is deliberately optional on the result (not every caller needs it) but
+   * always present here — see CLAUDE.md's "Trusted input" section. */
+  /** Wave 3 reliability, item 2: the frame-routed counterpart of
+   * `dispatchClick`/`dispatchType` — runs `PERFORM_JS`'s CLICK/TYPE_TEXT
+   * branch directly inside the given child frame via `executeScriptInFrame`,
+   * skipping the trusted-CDP path entirely (see the call sites' doc
+   * comments for why that skip is the design's own sanctioned fallback, not
+   * a shortcut). Reports `via: "dom"` on success, matching the shape both
+   * `dispatchClick`/`dispatchType`'s own DOM-fallback branches already
+   * report, so a caller can't tell "top-level DOM fallback" from
+   * "frame-routed" from `via` alone — that distinction is exactly what the
+   * result's `frame` field (set by takeSnapshot/mergeFrameEntries) is for. */
+  private async frameClickOrType(
+    page: BrowserPageHandle,
+    frameId: number,
+    operation: "CLICK" | "TYPE_TEXT",
+    localIndex: number,
+    snapshotId: string,
+    deadlineAt: number,
+    text?: string,
+  ): Promise<BrowserCommandResult> {
+    const result = await this.executeScriptInFrame(page, frameId, "PERFORM_JS", {
+      snapshotId,
+      index: localIndex,
+      operation,
+      text,
+    });
+    if ("error" in result) return result;
+    // A role=slider comes back prepared (focused, target parsed) but not yet
+    // moved: the trusted key presses go to whichever frame holds focus.
+    if (operation === "TYPE_TEXT") return this.completeSliderResult(page, frameId, { ...result, via: "dom" }, deadlineAt);
+    return { ...result, via: "dom" };
+  }
+
+  /** Scrolls the click/type target into view (REVEAL_TARGET_JS) BEFORE the
+   * caller's before-signature capture — see that script's doc comment and
+   * runHover's finding 8. Best-effort: a failure here is never an error (the
+   * action script reports a genuinely missing target itself). */
+  private async revealTarget(
+    page: BrowserPageHandle,
+    locateArgs: { target?: string; index?: number; snapshotId?: string },
+  ): Promise<void> {
+    try {
+      await this.executeScript(page, "REVEAL_TARGET_JS", locateArgs);
+    } catch {
+      // Best-effort.
+    }
+  }
+
+  private async dispatchClick(
+    page: BrowserPageHandle,
+    locateArgs: { target?: string; index?: number; snapshotId?: string },
+  ): Promise<BrowserCommandResult> {
+    const located = await this.executeScript(page, "CLICK_RESOLVE_JS", locateArgs);
+    if ("error" in located) return located;
+    const scopedBefore = extractScopedBefore(located);
+    const busyBefore = extractBusyBefore(located);
+
+    if (located.hitOk === true && page.sendCdp) {
+      const x = located.x as number;
+      const y = located.y as number;
+      // Code review finding 8: whether `Input.dispatchMouseEvent`'s
+      // "mousePressed" was actually issued — set true right before that
+      // call, not after it resolves, since a rejecting `sendCdp` promise
+      // doesn't prove the underlying mouse-down was never delivered to the
+      // page. Once it's true, a failure must NOT fall through to the DOM
+      // `el.click()` path below: that would risk a genuine, physically
+      // dispatched mouse-down (or a full press+release that just failed to
+      // report success) PLUS a synthetic click landing on the same target —
+      // a double click. A failure before mousePressed was ever attempted
+      // (only "mouseMoved" ran) carries no such risk, so that case still
+      // falls through exactly as before.
+      let mousePressedSent = false;
+      try {
+        await page.sendCdp("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "none" });
+        mousePressedSent = true;
+        await page.sendCdp("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
+        await page.sendCdp("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
+        let busyAfter = busyBefore;
+        try {
+          const busyResult = await this.executeScript(page, "TARGET_BUSY_JS", {});
+          busyAfter = busyResult.present === true && busyResult.busy === true;
+        } catch {
+          // Best-effort — see TARGET_BUSY_JS's own polling use elsewhere.
+        }
+        return {
+          url: page.getURL(),
+          title: page.getTitle(),
+          matched: located.matched,
+          via: "cdp",
+          __scopedBefore: scopedBefore,
+          __targetSelfDisabled: !busyBefore && busyAfter,
+        };
+      } catch (err) {
+        if (mousePressedSent) {
+          return errorResult(
+            `Trusted click failed after the mouse-down was dispatched — refusing to fall back to a DOM click (possible double click): ${toMessage(err)}`,
+          );
+        }
+        // Fall through to the DOM path below — a trusted dispatch that
+        // failed before any mouse-down was sent (e.g. the debugger session
+        // dropped mid-command) must not turn a click that would otherwise
+        // have worked via el.click() into a hard failure.
+      }
+    }
+
+    // DOM fallback — re-resolves independently (CLICK_JS/PERFORM_JS already
+    // do their own find+stamp+scopedBefore) rather than reusing the state
+    // captured above, keeping this path identical to pre-Wave-2 behavior.
+    if (locateArgs.target !== undefined) {
+      const domResult = await this.executeScript(page, "CLICK_JS", { target: locateArgs.target });
+      if ("error" in domResult) return domResult;
+      return { ...domResult, via: "dom" };
+    }
+    const domResult = await this.executeScript(page, "PERFORM_JS", {
+      snapshotId: locateArgs.snapshotId,
+      index: locateArgs.index,
+      operation: "CLICK",
+    });
+    if ("error" in domResult) return domResult;
+    return { ...domResult, via: "dom" };
+  }
+
+  /** Wave 2 reliability, item 2: types via trusted CDP input when it safely
+   * can, falling back to the existing native-setter + input/change path
+   * (TYPE_JS/PERFORM_JS's TYPE_TEXT branch) otherwise — mirrors
+   * `dispatchClick`'s structure and reasoning.
+   *
+   * Focus is attempted two ways in sequence, not either/or: a trusted CDP
+   * click at the resolved point (when the hit-test passed and a CDP session
+   * exists) *and then* `SELECT_ALL_CONTENT_JS`'s own `el.focus()` — the CDP
+   * click can land on a non-focusable wrapper that merely delegates focus on
+   * `click`, so the explicit `el.focus()` call is what actually guarantees
+   * the target field itself ends up focused before typing. Existing content
+   * is then selected (native `el.select()`/`setSelectionRange`, or a DOM
+   * Range for `contenteditable`) so the inserted text *replaces* it, the way
+   * a real keyboard-driven fill would.
+   *
+   * The actual typing is one `keyDown`+`keyUp` pair for the first character
+   * — carrying no `text`, so it fires `keydown`/`keyup` listeners without
+   * itself inserting anything — followed by a single `Input.insertText` for
+   * the *entire* string, which fires `beforeinput`/`input` the same way a
+   * real paste/IME commit would (React-compatible, unlike a raw `.value =`
+   * assignment). Sending one `dispatchKeyEvent` pair per character (matching
+   * a real keystroke-by-keystroke type) was considered and rejected here as
+   * too slow for anything but a short string — see the shared contract doc.
+   *
+   * The result is verified (`READ_TARGET_VALUE_JS`, comparing on the page,
+   * never returning the raw value itself) before being trusted: a
+   * masked/formatted input that rejects or rewrites what was inserted falls
+   * back to the legacy path rather than reporting a false success. Never
+   * types into anything `SELECT_ALL_CONTENT_JS` doesn't itself recognize as
+   * editable — this file's existing password-field/value-privacy rules
+   * (SNAPSHOT_JS's addendum D, SCOPED_SIGNATURE_JS's `valueLength`) are
+   * untouched by this path: it never reads or reports a field's content,
+   * only a boolean match. */
+  private async dispatchType(
+    page: BrowserPageHandle,
+    locateArgs: { target?: string; index?: number; snapshotId?: string },
+    text: string,
+    deadlineAt: number,
+  ): Promise<BrowserCommandResult> {
+    if (!page.sendCdp) {
+      return this.legacyTypeFallback(page, locateArgs, text, deadlineAt);
+    }
+    const located = await this.executeScript(page, "CLICK_RESOLVE_JS", locateArgs);
+    if ("error" in located) return located;
+
+    // Code review finding 4: check editability BEFORE any trusted click —
+    // a trusted CDP click was previously sent to "focus" the target first,
+    // so typing into a text match that was actually a link/button clicked
+    // it. `located.editable` (CLICK_RESOLVE_JS) is a read-only check with no
+    // side effect, so it's safe to consult ahead of any click; a
+    // non-editable target goes straight to the legacy path, which reports
+    // the same "not a text field" style error TYPE_JS/PERFORM_JS always
+    // have, without ever touching the mouse.
+    if (located.editable !== true) {
+      return this.legacyTypeFallback(page, locateArgs, text, deadlineAt);
+    }
+
+    const scopedBefore = extractScopedBefore(located);
+    const busyBefore = extractBusyBefore(located);
+
+    if (located.hitOk === true) {
+      try {
+        const x = located.x as number;
+        const y = located.y as number;
+        await page.sendCdp("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "none" });
+        await page.sendCdp("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
+        await page.sendCdp("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
+      } catch {
+        // Fall through — SELECT_ALL_CONTENT_JS's own el.focus() below is
+        // still attempted even if the trusted click itself failed.
+      }
+    }
+
+    let selectResult: BrowserCommandResult;
+    try {
+      selectResult = await this.executeScript(page, "SELECT_ALL_CONTENT_JS", {});
+    } catch (err) {
+      return errorResult(`Failed to focus target before typing: ${toMessage(err)}`);
+    }
+    if ("error" in selectResult) return selectResult;
+    if (selectResult.editable !== true) {
+      return this.legacyTypeFallback(page, locateArgs, text, deadlineAt);
+    }
+
+    try {
+      if (text.length > 0) {
+        const firstKey = resolveNamedKey(text[0]);
+        if (firstKey) await this.dispatchKeyPair(page, firstKey);
+      }
+      await page.sendCdp("Input.insertText", { text });
+    } catch {
+      return this.legacyTypeFallback(page, locateArgs, text, deadlineAt);
+    }
+
+    let verify: BrowserCommandResult;
+    try {
+      verify = await this.executeScript(page, "READ_TARGET_VALUE_JS", { text });
+    } catch {
+      return this.legacyTypeFallback(page, locateArgs, text, deadlineAt);
+    }
+    if ("error" in verify || verify.matches !== true) {
+      return this.legacyTypeFallback(page, locateArgs, text, deadlineAt);
+    }
+
+    let busyAfter = busyBefore;
+    try {
+      const busyResult = await this.executeScript(page, "TARGET_BUSY_JS", {});
+      busyAfter = busyResult.present === true && busyResult.busy === true;
+    } catch {
+      // Best-effort — see TARGET_BUSY_JS's own polling use elsewhere.
+    }
+
+    return {
+      url: page.getURL(),
+      title: page.getTitle(),
+      matched: located.matched,
+      via: "cdp",
+      __scopedBefore: scopedBefore,
+      __targetSelfDisabled: !busyBefore && busyAfter,
+    };
+  }
+
+  /** `dispatchType`'s fallback — the pre-Wave-2 native-setter + input/change
+   * path, re-resolving independently (TYPE_JS/PERFORM_JS already do their
+   * own find+stamp+scopedBefore) rather than reusing whatever
+   * `dispatchType`'s trusted attempt already captured. */
+  private async legacyTypeFallback(
+    page: BrowserPageHandle,
+    locateArgs: { target?: string; index?: number; snapshotId?: string },
+    text: string,
+    deadlineAt: number,
+  ): Promise<BrowserCommandResult> {
+    if (locateArgs.target !== undefined) {
+      const domResult = await this.executeScript(page, "TYPE_JS", { target: locateArgs.target, text });
+      if ("error" in domResult) return domResult;
+      return this.completeSliderResult(page, null, { ...domResult, via: "dom" }, deadlineAt);
+    }
+    const domResult = await this.executeScript(page, "PERFORM_JS", {
+      snapshotId: locateArgs.snapshotId,
+      index: locateArgs.index,
+      operation: "TYPE_TEXT",
+      text,
+    });
+    if ("error" in domResult) return domResult;
+    return this.completeSliderResult(page, null, { ...domResult, via: "dom" }, deadlineAt);
+  }
+
+  /** TYPE_JS/PERFORM_JS answer a role=slider target with `__slider`
+   * ({ min, max, target }) instead of typing: the element is focused and the
+   * number parsed, but a custom slider keeps its value in its own state, so
+   * nothing a page script could set would stick. This finishes the job with
+   * trusted key presses (`driveSlider`) and folds the outcome into the
+   * result. A result without `__slider` (every other target) passes through
+   * untouched.
+   *
+   * A drive that fails AFTER moving the slider still carries evidence: the
+   * error plus url/title and the target's own before-signature
+   * (`__scopedBefore`) with `__sliderPartial`, which the two callers that
+   * compute `{ changed, changes }` (perform TYPE_TEXT, act type) treat as
+   * "diff it anyway". The agent then learns the value moved
+   * (`slider stopped at 300 (target 900)` + changed: true) instead of
+   * retrying blind. */
+  private async completeSliderResult(
+    page: BrowserPageHandle,
+    frameId: number | null,
+    result: BrowserCommandResult,
+    deadlineAt: number,
+  ): Promise<BrowserCommandResult> {
+    const raw = result.__slider;
+    delete result.__slider;
+    if ("error" in result || raw === undefined) return result;
+    const bound = (v: unknown): number | null | undefined => (v === null || typeof v === "number" ? v : undefined);
+    const min = isRecord(raw) ? bound(raw.min) : undefined;
+    const max = isRecord(raw) ? bound(raw.max) : undefined;
+    if (!isRecord(raw) || min === undefined || max === undefined || typeof raw.target !== "number") {
+      return errorResult("Unexpected slider description from the page script.");
+    }
+    // The command's own absolute deadline (captured when it started), not a
+    // fresh budget from here: the cursor move, snapshots and page scripts
+    // before this point have already spent part of it.
+    const margin = Math.min(SLIDER_TIME_MARGIN_MS, this.timeoutMs / 4);
+    const deadline = deadlineAt - margin;
+    const outcome = await this.driveSlider(page, frameId, { min, max, target: raw.target }, deadline);
+    if ("error" in outcome) {
+      if (!outcome.moved) return errorResult(outcome.error);
+      return {
+        error: outcome.error,
+        url: page.getURL(),
+        title: page.getTitle(),
+        __scopedBefore: result.__scopedBefore,
+        __sliderPartial: true,
+      };
+    }
+    return { ...result, via: "cdp", sliderValue: outcome.value };
+  }
+
+  /** One trusted key press (`rawKeyDown` + `keyUp` via
+   * `Input.dispatchKeyEvent`), shared by typing's first key, `press` and the
+   * slider loop. `text` makes the down event a `keyDown` that also inserts
+   * it; `modifiers`/`commands` are `press`'s modifier bitmask and editing
+   * command. Throws if the tab has no CDP session or a dispatch rejects. */
+  private async dispatchKeyPair(
+    page: BrowserPageHandle,
+    key: { key: string; code: string; windowsVirtualKeyCode: number },
+    opts?: { modifiers?: number; text?: string; commands?: string[] },
+  ): Promise<void> {
+    if (!page.sendCdp) throw new Error("Keyboard input requires a CDP session, which is unavailable for this browser tab.");
+    const base: Record<string, unknown> = {
+      key: key.key,
+      code: key.code,
+      windowsVirtualKeyCode: key.windowsVirtualKeyCode,
+      nativeVirtualKeyCode: key.windowsVirtualKeyCode,
+    };
+    if (opts?.modifiers !== undefined) base.modifiers = opts.modifiers;
+    const down: Record<string, unknown> = { type: opts?.text ? "keyDown" : "rawKeyDown", ...base };
+    if (opts) {
+      // Present even when undefined: `press`'s callers (and tests) read them.
+      down.text = opts.text;
+      down.unmodifiedText = opts.text;
+      down.commands = opts.commands;
+    }
+    await page.sendCdp("Input.dispatchKeyEvent", down);
+    await page.sendCdp("Input.dispatchKeyEvent", { type: "keyUp", ...base });
+  }
+
+  /** Moves a focused ARIA slider to `target` with trusted CDP key presses
+   * (the WAI-ARIA slider keyboard contract). Trusted, not synthesized: many
+   * widgets read `keyCode`/`which`, which a constructed KeyboardEvent leaves
+   * at 0, and ignore attribute writes entirely.
+   *
+   * ARIA has no step attribute, so the step is learned and kept current:
+   * two single arrow presses (the first can be a partial step off an
+   * off-grid start, 137 -> 140), and after EVERY batch the step is
+   * re-estimated as |moved| / presses. The remaining distance goes out as
+   * round(|distance| / step) arrow presses, so an overshoot is corrected by
+   * the next batch with the fresh estimate; three batches in a row that get
+   * no closer stop the loop (no oscillation). It succeeds within half an
+   * arrow step of the target, inclusive (a target exactly between two grid
+   * points is as close as the widget can get, and pressing again would only
+   * swing back).
+   *
+   * A long distance (> 20 arrow steps) first tries Home/End when a KNOWN
+   * bound is much closer than the current value (an unstated aria-valuemin/
+   * max is unknown, never a default), then PageUp/PageDown once to measure
+   * their step: if it beats the arrow step, whole pages (floored, never
+   * overshooting) do the bulk and arrows finish.
+   *
+   * A key the widget does not handle falls through to the browser, which
+   * scrolls the page. SLIDER_SCROLL_JS guards against it: a window keydown
+   * listener cancels the default of any such key the widget left un-prevented,
+   * and the scroll position saved once at the start is restored (instantly,
+   * only if it moved) after every batch, for widgets that swallow the key
+   * without preventing it.
+   *
+   * Direction keys are learned too (ArrowRight/Left, else ArrowUp/Down; a
+   * value moving against the intent swaps them, e.g. RTL). Every read also
+   * checks the slider still holds keyboard focus (SLIDER_READ_JS). Document
+   * focus is not required, since Chromium reports none whenever the window
+   * is not OS-focused although CDP keys still arrive: a press that lands
+   * elsewhere shows up as an unchanged value, which stops the drive.
+   *
+   * Bounded by SLIDER_MAX_PRESSES and `deadline` (the command's own absolute
+   * deadline minus a margin), checked before EVERY press: `withCommandTimeout`
+   * abandons but never cancels the work, so an abandoned loop must be unable
+   * to keep pressing keys into the page after the caller was told it timed
+   * out. Once any key was sent the slider may have moved, so every failure
+   * after that reports `moved` and keeps its evidence. */
+  private async driveSlider(
+    page: BrowserPageHandle,
+    frameId: number | null,
+    slider: { min: number | null; max: number | null; target: number },
+    deadline: number,
+  ): Promise<{ value: number } | { error: string; moved: boolean }> {
+    if (!page.sendCdp) {
+      return {
+        error: "Setting a slider requires a CDP session (trusted key input), which is unavailable for this browser tab.",
+        moved: false,
+      };
+    }
+    const { min, max, target } = slider;
+    let presses = 0;
+    let now = NaN;
+    const fail = (error: string) => ({ error, moved: presses > 0 });
+    const stopped = () =>
+      fail(
+        `slider stopped at ${now} (target ${target})` +
+          (presses >= SLIDER_MAX_PRESSES ? " after the press limit" : Date.now() > deadline ? " at the time limit" : ""),
+      );
+
+    const script = (name: "SLIDER_READ_JS" | "SLIDER_SCROLL_JS", args: Record<string, unknown>) =>
+      frameId === null ? this.executeScript(page, name, args) : this.executeScriptInFrame(page, frameId, name, args);
+    const read = async (): Promise<void> => {
+      const r = await script("SLIDER_READ_JS", {});
+      if ("error" in r) throw new Error(String(r.error));
+      if (r.present !== true) throw new Error("The slider disappeared from the page.");
+      if (r.focused !== true) throw new Error("Could not focus the slider, so key presses would not reach it.");
+      if (typeof r.now !== "number") throw new Error("The slider no longer reports a numeric aria-valuenow.");
+      now = r.now;
+    };
+    /** Presses `name` up to `times` times, stopping early at the press cap
+     * or the deadline; returns how many were actually sent. */
+    const press = async (name: string, times: number): Promise<number> => {
+      const key = resolveNamedKey(name);
+      if (!key) throw new Error(`Unsupported key: ${name}`);
+      let sent = 0;
+      while (sent < times && presses < SLIDER_MAX_PRESSES && Date.now() <= deadline) {
+        await this.dispatchKeyPair(page, key);
+        presses++;
+        sent++;
+      }
+      return sent;
+    };
+    /** One batch's read-back: reads aria-valuenow, then puts back any scroll
+     * a key the widget swallowed without preventing still caused. */
+    const settle = async (): Promise<void> => {
+      await read();
+      await script("SLIDER_SCROLL_JS", { op: "restore" });
+    };
+    /** One press + read. True when aria-valuenow changed. */
+    const probe = async (name: string): Promise<boolean> => {
+      const before = now;
+      await press(name, 1);
+      await settle();
+      return now !== before;
+    };
+    let guarded = false;
+    try {
+      await read();
+      if (now === target) return { value: now };
+      // Unhandled keys must not scroll the page (see SLIDER_SCROLL_JS): the
+      // guard stops the default action, and the scroll position saved once
+      // here is restored after every batch for widgets that swallow keys
+      // without preventing them.
+      await script("SLIDER_SCROLL_JS", { op: "guard" });
+      guarded = true;
+      await script("SLIDER_SCROLL_JS", { op: "save" });
+
+      let boundTried = false;
+      const boundKey = target <= (min ?? -Infinity) ? "Home" : target >= (max ?? Infinity) ? "End" : null;
+      if (boundKey) {
+        // Home/End land exactly on a bound, whatever the step. A widget that
+        // ignores them leaves the value alone and the arrows take over.
+        boundTried = true;
+        await probe(boundKey);
+        if (now === target) return { value: now };
+      }
+
+      // Learn the direction keys and the arrow step.
+      let inc = "ArrowRight";
+      let dec = "ArrowLeft";
+      let delta = 0;
+      for (const pair of [
+        ["ArrowRight", "ArrowLeft"],
+        ["ArrowUp", "ArrowDown"],
+      ]) {
+        const wantUp = target > now;
+        const before = now;
+        if (await probe(wantUp ? pair[0] : pair[1])) {
+          delta = Math.abs(now - before);
+          [inc, dec] = now > before === wantUp ? pair : [pair[1], pair[0]];
+          break;
+        }
+        if (presses >= SLIDER_MAX_PRESSES || Date.now() > deadline) break;
+      }
+      if (delta === 0) return stopped();
+      if (Math.abs(target - now) >= delta) {
+        // A second press: the first may have been a partial step from an
+        // off-grid start, the second is a whole one.
+        const before = now;
+        await press(target > now ? inc : dec, 1);
+        await settle();
+        if (now !== before) delta = Math.abs(now - before);
+      }
+
+      let pageDelta: number | undefined; // undefined = untried, 0 = no use
+      let pageInc = "PageUp";
+      let pageDec = "PageDown";
+      let bestError = Math.abs(target - now);
+      let stalls = 0;
+      for (;;) {
+        const remaining = target - now;
+        const distance = Math.abs(remaining);
+        if (distance <= delta / 2) return { value: now };
+        if (presses >= SLIDER_MAX_PRESSES || Date.now() > deadline) return stopped();
+        const up = remaining > 0;
+
+        let key = up ? inc : dec;
+        let count = Math.max(1, Math.round(distance / delta));
+        let isPage = false;
+        if (distance / delta > 20) {
+          if (!boundTried) {
+            boundTried = true;
+            const toMin = min === null ? Infinity : Math.abs(target - min);
+            const toMax = max === null ? Infinity : Math.abs(max - target);
+            if (Math.min(toMin, toMax) < distance / 2) {
+              await probe(toMin <= toMax ? "Home" : "End");
+              continue;
+            }
+          }
+          if (pageDelta === undefined) {
+            // Probe once: does a page key move it, which way, how far?
+            const before = now;
+            if (await probe(up ? pageInc : pageDec)) {
+              pageDelta = Math.abs(now - before);
+              if (now > before !== up) [pageInc, pageDec] = [pageDec, pageInc];
+            } else {
+              pageDelta = 0; // ignored: never used again this drive
+            }
+            continue;
+          }
+          if (pageDelta > delta * 1.5 && Math.floor(distance / pageDelta) >= 1) {
+            // Floored: bulk by pages never overshoots, arrows finish.
+            key = up ? pageInc : pageDec;
+            count = Math.floor(distance / pageDelta);
+            isPage = true;
+          }
+        }
+
+        const before = now;
+        const sent = await press(key, count);
+        await settle();
+        const moved = Math.abs(now - before);
+        if (moved === 0) {
+          if (!isPage) return stopped(); // at a bound or ignoring the key
+          pageDelta = 0;
+        } else if (sent > 0) {
+          // Re-estimate: covers off-grid starts, non-linear scales, page steps.
+          if (isPage) pageDelta = moved / sent;
+          else delta = moved / sent;
+        }
+        const error = Math.abs(target - now);
+        if (error < bestError) {
+          bestError = error;
+          stalls = 0;
+        } else if (++stalls >= 3) {
+          return stopped();
+        }
+      }
+    } catch (err) {
+      return fail(toMessage(err));
+    } finally {
+      // settle() restores only after a successful read; a drive that threw
+      // mid-batch (thumb re-mounted, focus lost) must not leave the page
+      // scrolled by a key the widget stopped without preventing — and
+      // unguard drops the saved position, so restore has to come first.
+      if (guarded) await script("SLIDER_SCROLL_JS", { op: "restore" }).catch(() => undefined);
+      if (guarded) await script("SLIDER_SCROLL_JS", { op: "unguard" }).catch(() => undefined);
+    }
+  }
+
+  /** Runs CLICK_JS and, if the click actually started a navigation, waits
+   * briefly for it to land before trusting the result's url/title — see
+   * CLICK_SETTLE_TIMEOUT_MS's doc comment. CLICK_JS itself reads
+   * location.href/document.title synchronously, so on its own it reports
+   * whatever page the agent was just on, not the one the click navigated
+   * to, and a following browse_find_images would then race the new page's
+   * load (finding 7).
+   *
+   * "Addendum 2" §1: a signature is captured before the click and again
+   * after the settle, and the diff is merged into the result as
+   * `{ changed, changes }` — the whole point being that `changed: false` is
+   * a normal, reportable answer (a click on a wrapper that did nothing),
+   * never an error.
+   *
+   * Review finding 4: CLICK_JS also stamps the element it actually clicked
+   * and returns that element's own before-signature (`__scopedBefore`) —
+   * extracted here (and stripped from the result, see extractScopedBefore)
+   * so diffSignatures can compare it against the same element's after
+   * state, the real evidence on a page whose whole-document dom/text moves
+   * on its own. */
+  private async runClick(target: string): Promise<BrowserCommandResult> {
+    const page = this.target.currentPage();
+    if (!page) return errorResult("No browser tab is open — call browse_open first.");
+    const previousUrl = page.getURL();
+    // Full browser use: a click may open a popup as a new browser tab
+    // (attachBrowserTabPolicy in window.ts) — listed before the action so
+    // detectOpenedTab can diff against it after, the same before/after
+    // shape captureSignature already uses.
+    const tabsBefore = await this.listPagesSafe();
+    // Before the before-signature capture, deliberately — see CURSOR_JS's
+    // doc comment (pageScripts.ts) for why the overlay's own DOM/scroll
+    // footprint must never land between the two evidence-of-effect captures.
+    await this.revealTarget(page, { target });
+    await this.moveCursor(page, { action: "click", target });
+    const before = await this.captureSignature(page, "before");
+    // Armed/captured before CLICK_JS runs — Wave 1 speed: a navigation, or a
+    // fetch/XHR the click handler fires synchronously, can start inside that
+    // very call, so listening/marking has to happen before it, not after.
+    const navWatcher = this.armNavigationWatcher(page, previousUrl);
+    const networkBaseline = this.captureNetworkBaseline(page);
+    // Wave 2 reliability item 1: trusted CDP click, falling back to CLICK_JS
+    // internally — see dispatchClick's doc comment.
+    const result = await this.dispatchClick(page, { target });
+    if ("error" in result) {
+      navWatcher.dispose();
+      return result;
+    }
+    const scopedBefore = extractScopedBefore(result);
+    const selfDisabled = extractTargetSelfDisabled(result);
+    await this.settleAfterClick(page, navWatcher, networkBaseline);
+    if (selfDisabled) {
+      await this.settleWhileTargetBusy(page);
+      // A handler that disables its button and *then* navigates finishes
+      // after the busy wait, not before it — so the load wait is redone
+      // here. It returns immediately when nothing is loading.
+      await this.waitForLoadStop(page, CLICK_LOAD_SETTLE_TIMEOUT_MS);
+    }
+    const after = await this.captureSignature(page, "after");
+    const currentUrl = page.getURL();
+    const openedTab = await this.detectOpenedTab(tabsBefore);
+    const merged: BrowserCommandResult = {
+      ...result,
+      url: currentUrl,
+      title: page.getTitle(),
+      ...this.diffSignatures(before, after, { previousUrl, currentUrl, scopedBefore }),
+    };
+    if (openedTab) merged.openedTab = openedTab;
+    return merged;
+  }
+
+  /** `act`'s `press` — a trusted CDP `Input.dispatchKeyEvent` key press,
+   * optionally focusing a target first (FOCUS_JS). Reports `{ error }`
+   * outright when this tab's CDP session never attached (`page.sendCdp`
+   * absent) — degrading gracefully per the design doc rather than silently
+   * doing nothing. Reuses the same click-settle/openedTab machinery as
+   * runClick/perform's CLICK, since Enter routinely submits a form (a real
+   * navigation) and can just as easily open a popup.
+   *
+   * Review finding 5: an `index`+`snapshotId` focus target now goes through
+   * the same staleness/cross-tab guard `perform()` uses (previously it went
+   * straight to FOCUS_JS, so a stale snapshotId just failed to find an
+   * element with no explanation), and a focus that was explicitly requested
+   * but fails is now a hard error rather than best-effort — sending the key
+   * to whatever happens to already have focus when the caller asked for a
+   * specific element is worse than reporting the failure. */
+  private async runPress(
+    keySpec: string,
+    focus: { target?: string; index?: number; snapshotId?: string },
+  ): Promise<BrowserCommandResult> {
+    const page = this.target.currentPage();
+    if (!page) return errorResult("No browser tab is open — call browse_open first.");
+    const parsed = parseKeySpec(keySpec);
+    if (!parsed) return errorResult(`Unsupported key: ${JSON.stringify(keySpec)}`);
+    if (!page.sendCdp) {
+      return errorResult("Keyboard input (press) requires a CDP session, which is unavailable for this browser tab.");
+    }
+
+    const hasIndexTarget = focus.index !== undefined && focus.snapshotId !== undefined;
+    // Code review finding 6: an index-based focus target routes FOCUS_JS
+    // into whichever document it actually lives in — it used to always run
+    // against the top document, so pressing a key against an element inside
+    // a child frame failed to focus it at all ("No element matched: index
+    // N") instead of pressing the key. The key dispatch itself
+    // (`page.sendCdp("Input.dispatchKeyEvent", ...)` below) needs no frame
+    // routing of its own: CDP keyboard input targets whichever frame
+    // currently holds focus in the renderer, regardless of which document
+    // FOCUS_JS ran in to get it there.
+    const { frameRoute, cursorPoint } = this.resolveFrameRouteWithCursorPoint(focus.index);
+    if (focus.target || hasIndexTarget) {
+      if (hasIndexTarget) {
+        const staleError = this.checkSnapshotStale(focus.snapshotId!, page);
+        if (staleError) return staleError;
+      }
+      let focusResult: BrowserCommandResult;
+      try {
+        const focusArgs = { target: focus.target, index: frameRoute.localIndex, snapshotId: focus.snapshotId };
+        focusResult =
+          frameRoute.frameId === null
+            ? await this.executeScript(page, "FOCUS_JS", focusArgs)
+            : await this.executeScriptInFrame(page, frameRoute.frameId, "FOCUS_JS", focusArgs);
+      } catch (err) {
+        return errorResult(`Failed to focus target before press: ${toMessage(err)}`);
+      }
+      if ("error" in focusResult) return focusResult;
+      if (focusResult.focused !== true) {
+        // Item 3: FOCUS_JS reports `hidden: true` when the only text match
+        // it found was hidden (see LOCATE_TARGET_JS's doc comment) — a
+        // distinct, more actionable error than "nothing matched at all".
+        if (focusResult.hidden === true) {
+          return errorResult(`target is not visible (hidden element): ${focus.target ?? `index ${focus.index}`}`);
+        }
+        return errorResult(`No element matched to focus before press: ${focus.target ?? `index ${focus.index}`}`);
+      }
+    }
+
+    await this.moveCursor(page, {
+      action: "press",
+      target: focus.target,
+      snapshotId: focus.snapshotId,
+      index: focus.index,
+      point: cursorPoint,
+    });
+
+    const previousUrl = page.getURL();
+    const tabsBefore = await this.listPagesSafe();
+    const before = await this.captureSignature(page, "before");
+
+    // Armed/captured before the key is dispatched — Wave 1 speed: Enter can
+    // submit a form (navigation) or fire a synchronous fetch/XHR handler,
+    // either of which can start inside the dispatchKeyEvent calls below.
+    const navWatcher = this.armNavigationWatcher(page, previousUrl);
+    const networkBaseline = this.captureNetworkBaseline(page);
+
+    const { descriptor, modifiers } = parsed;
+    const modBits = modifiersBitmask(modifiers);
+    // Review finding 2: a Meta/Ctrl-modified combo (Cmd+A, Ctrl+C, …) is
+    // sent as a *textless* event with CDP's `commands` field naming the
+    // editing command — Chromium doesn't run its native accelerator table
+    // off a CDP-synthesized modified keydown the way it would a genuine
+    // OS-level shortcut, so a synthetic Cmd+A on macOS Chromium silently did
+    // nothing before this. Sending `text` alongside a modified combo would
+    // also be actively wrong — Cmd+A must select all, never additionally
+    // insert the literal character "a".
+    const isEditCombo = modifiers.meta || modifiers.ctrl;
+    const commands = isEditCombo ? resolveEditCommand(descriptor.key, modifiers) : undefined;
+    const text = isEditCombo ? undefined : descriptor.text;
+    try {
+      await this.dispatchKeyPair(page, descriptor, { modifiers: modBits, text, commands });
+    } catch (err) {
+      navWatcher.dispose();
+      return errorResult(`Failed to dispatch key "${keySpec}": ${toMessage(err)}`);
+    }
+
+    // Wave 1 speed: Enter routinely submits a form — the same event-driven
+    // navigation-then-load-stop settle a click uses — and every other key
+    // now gets the network-quiet settle instead of an unconditional extra
+    // fixed sleep (`settleShort` used to always run here too, on top of
+    // settleAfterClick, i.e. a double settle for every single press). A key
+    // that neither navigates nor triggers network activity still repaints
+    // synchronously, so this is not a regression versus the old
+    // NON_CLICK_SETTLE_MS sleep — it's strictly bounded by the same
+    // near-instant "nothing to wait for" path settleAfterClick already
+    // takes for a non-navigating click.
+    await this.settleAfterClick(page, navWatcher, networkBaseline);
+    const after = await this.captureSignature(page, "after");
+    const currentUrl = page.getURL();
+    const openedTab = await this.detectOpenedTab(tabsBefore);
+    const result: BrowserCommandResult = {
+      url: currentUrl,
+      title: page.getTitle(),
+      ...this.diffSignatures(before, after, { previousUrl, currentUrl }),
+    };
+    if (openedTab) result.openedTab = openedTab;
+    return result;
+  }
+
+  /** `act`'s `hover` — locates the target (HOVER_TARGET_JS), then dispatches
+   * a trusted CDP `Input.dispatchMouseEvent` `mouseMoved` at its centre. A
+   * page-script `dispatchEvent("mouseover")` would not trigger the
+   * browser's own `:hover` CSS pseudo-class, which is the entire point of
+   * this action existing separately from a page script.
+   *
+   * Review finding 8: HOVER_TARGET_JS itself scrolls the target into view
+   * while locating it (a target below the fold has to be scrolled to before
+   * its coordinates mean anything) — that scroll must happen *before* the
+   * before-signature capture, per CLAUDE.md's before/after-capture ordering
+   * rule (the same rule runClick's cursor-move-before-capture comment
+   * documents), otherwise the before-capture's scrollY reflects the
+   * pre-scroll page and the diff reports a `scrollY` change caused by
+   * locating the target, not by the hover itself. Locate (and scroll) runs
+   * first now, then the cursor overlay move, then the before-capture.
+   *
+   * Review finding 5: an `index`+`snapshotId` target now goes through the
+   * same staleness/cross-tab guard `perform()` uses, instead of skipping
+   * straight to a page-script lookup that would just report "not found" on
+   * a stale snapshot. */
+  private async runHover(spec: { target?: string; index?: number; snapshotId?: string }): Promise<BrowserCommandResult> {
+    const page = this.target.currentPage();
+    if (!page) return errorResult("No browser tab is open — call browse_open first.");
+    if (!page.sendCdp) {
+      return errorResult("Hover requires a CDP session, which is unavailable for this browser tab.");
+    }
+    if (spec.index !== undefined && spec.snapshotId !== undefined) {
+      const staleError = this.checkSnapshotStale(spec.snapshotId, page);
+      if (staleError) return staleError;
+    }
+    // Code review finding 6: an index-based hover target routes
+    // HOVER_TARGET_JS into whichever document it actually lives in — it
+    // used to always run against the top document, so hovering an element
+    // inside a child frame failed with "No element matched for hover:
+    // index N" instead of hovering it. Unlike press's keyboard dispatch,
+    // the trusted `Input.dispatchMouseEvent` below DOES need frame-aware
+    // coordinates: `located.x`/`located.y` from a frame-routed
+    // HOVER_TARGET_JS call are relative to that frame's own document, so
+    // the iframe's own content-box offset (`frameRect`, the same one
+    // `resolveVisibleFrames` computed for the cursor overlay) is added to
+    // get back to top-level-viewport coordinates, the space CDP mouse
+    // events are always expressed in.
+    const { frameRoute, frameRect, cursorPoint } = this.resolveFrameRouteWithCursorPoint(spec.index);
+    const located =
+      frameRoute.frameId === null
+        ? await this.executeScript(page, "HOVER_TARGET_JS", {
+            target: spec.target,
+            index: spec.index,
+            snapshotId: spec.snapshotId,
+          })
+        : await this.executeScriptInFrame(page, frameRoute.frameId, "HOVER_TARGET_JS", {
+            target: spec.target,
+            index: frameRoute.localIndex,
+            snapshotId: spec.snapshotId,
+          });
+    if ("error" in located) return located;
+    if (located.found !== true || typeof located.x !== "number" || typeof located.y !== "number") {
+      // Item 3: see runPress's identical hidden-vs-not-found distinction.
+      if (located.hidden === true) {
+        return errorResult(`target is not visible (hidden element): ${spec.target ?? `index ${spec.index}`}`);
+      }
+      return errorResult(`No element matched for hover: ${spec.target ?? `index ${spec.index}`}`);
+    }
+    const hoverX = frameRect ? frameRect.x + located.x : located.x;
+    const hoverY = frameRect ? frameRect.y + located.y : located.y;
+    await this.moveCursor(page, {
+      action: "hover",
+      target: spec.target,
+      snapshotId: spec.snapshotId,
+      index: spec.index,
+      point: cursorPoint,
+    });
+    const before = await this.captureSignature(page, "before");
+    try {
+      await page.sendCdp("Input.dispatchMouseEvent", { type: "mouseMoved", x: hoverX, y: hoverY, button: "none" });
+    } catch (err) {
+      return errorResult(`Failed to dispatch hover: ${toMessage(err)}`);
+    }
+    await this.settleShort();
+    const after = await this.captureSignature(page, "after");
+    return { url: page.getURL(), title: page.getTitle(), ...this.diffSignatures(before, after, {}) };
+  }
+
+  /** `act`'s `wait` — without `text`, Wave 1 speed's follow-up rule: `wait`
+   * exists precisely because the caller expects *something* — often a
+   * client-side timer with no network involvement at all (a spinner
+   * resolving into a button, say) — to still be in flight, so returning
+   * early just because nothing has happened *yet* would defeat the whole
+   * point. The rule is therefore "wait for activity, then for it to settle",
+   * not "wait for quiet from the start": this polls both DOM mutations
+   * (`WAIT_DOM_ACTIVITY_JS`, a `MutationObserver` installed on
+   * `document.body` for the duration of this call) and network activity
+   * (`page.networkStats`, the same CDP tracking `settleAfterClick`'s
+   * network-quiet settle uses) every WAIT_POLL_INTERVAL_MS, and returns
+   * once *some* activity has been observed (a DOM mutation, or a new
+   * network request) AND that activity has since been quiet — no pending
+   * network requests and no DOM mutation within the last
+   * NETWORK_QUIET_WINDOW_MS — continuously for NETWORK_QUIET_WINDOW_MS. If
+   * nothing at all happens for the whole call, it waits out the full `ms`
+   * exactly as the original fixed-sleep behavior did — this is not a
+   * "return as soon as quiet" wait, only a "don't keep waiting once
+   * whatever was happening has finished" one. Falls back to a plain bounded
+   * sleep when neither signal is available (no CDP session *and* the DOM
+   * observer failed to install) — see the loop below.
+   *
+   * With `text`, polls WAIT_TEXT_JS every WAIT_POLL_INTERVAL_MS until it
+   * reports a case-insensitive substring match or `ms` runs out. Never
+   * errors on a miss — `found: false` is a normal, reportable answer (see
+   * the design doc's table), the same "not finding something is not a
+   * failure" convention `diffSignatures`'s `changed: false` already
+   * established.
+   *
+   * Second-pass review finding 9: a do/while, not a `while` — with `text`
+   * and a `ms` of 0 (or small enough that the deadline has already passed by
+   * the time `Date.now()` is checked), the previous `while (Date.now() <
+   * deadline)` loop's condition could be false before the body ever ran even
+   * once, so the page was never actually checked at all and the call simply
+   * reported `found: false` no matter what was already on the page. The text
+   * is now always polled at least once, regardless of `ms`. */
+  private async runWait(text: string | undefined, ms: number): Promise<BrowserCommandResult> {
+    const page = this.target.currentPage();
+    if (!page) return errorResult("No browser tab is open — call browse_open first.");
+    if (!text) {
+      await this.runWaitForActivityThenQuiet(page, ms);
+      return { found: true, url: page.getURL(), title: page.getTitle() };
+    }
+    const deadline = Date.now() + ms;
+    let found = false;
+    do {
+      try {
+        const result = await this.executeScript(page, "WAIT_TEXT_JS", { text });
+        if (isRecord(result) && result.found === true) {
+          found = true;
+        }
+      } catch {
+        // Keep polling — a transient executeJavaScript failure (mid
+        // navigation, say) shouldn't end the wait early.
+      }
+      if (found || Date.now() >= deadline) break;
+      await new Promise((resolve) => setTimeout(resolve, WAIT_POLL_INTERVAL_MS));
+    } while (true);
+    return { found, url: page.getURL(), title: page.getTitle() };
+  }
+
+  /** `runWait`'s no-`text` engine — see its doc comment for the rule. Installs
+   * `WAIT_DOM_ACTIVITY_JS`'s `MutationObserver` for the duration of the call
+   * (best-effort: a failed install just means the DOM half of the signal
+   * never fires, degrading gracefully to network-only, or to a plain sleep
+   * if network is unavailable too), captures a network-activity baseline the
+   * same way `captureNetworkBaseline` does for click/press, then polls both
+   * every WAIT_POLL_INTERVAL_MS. `quietSince` accumulates only once *some*
+   * activity (DOM or network) has actually been observed — before that, it
+   * is deliberately left `null` on every iteration, which is what makes
+   * "nothing ever happened" wait out the full `ms` rather than exiting
+   * immediately (a DOM/network signal that starts at `pending === 0`/
+   * `ageMs === null` looks identical to "never happened" until something
+   * actually does). */
+  private async runWaitForActivityThenQuiet(page: BrowserPageHandle, ms: number): Promise<void> {
+    let domInstalled = false;
+    try {
+      const installed = await this.executeScript(page, "WAIT_DOM_ACTIVITY_JS", { action: "install" });
+      domInstalled = !("error" in installed);
+    } catch {
+      domInstalled = false;
+    }
+    const networkBaseline = page.networkStats ? page.networkStats(NETWORK_REQUEST_DROP_MS).generation : undefined;
+
+    try {
+      const deadline = Date.now() + ms;
+      let sawActivity = false;
+      let quietSince: number | null = null;
+      while (Date.now() < deadline) {
+        let domAgeMs: number | null = null;
+        if (domInstalled) {
+          try {
+            const domResult = await this.executeScript(page, "WAIT_DOM_ACTIVITY_JS", { action: "check" });
+            if (!("error" in domResult) && domResult.mutated === true && typeof domResult.ageMs === "number") {
+              domAgeMs = domResult.ageMs;
+            }
+          } catch {
+            // Keep polling — a transient executeJavaScript failure (mid
+            // navigation, say) shouldn't end the wait early.
+          }
+        }
+        let networkPending = 0;
+        let networkStarted = false;
+        if (page.networkStats) {
+          // Second-pass review finding 2: scope `pending` to requests that
+          // started AFTER `networkBaseline` — same fix as
+          // `waitForNetworkQuiet` (see its own comment). Without the
+          // baseline, a request already in flight before this wait started
+          // kept `pending > 0` — and therefore `currentlyActive` — for the
+          // whole `ms` budget, even after it had genuinely gone quiet.
+          const stats = page.networkStats(NETWORK_REQUEST_DROP_MS, networkBaseline);
+          networkPending = stats.pending;
+          networkStarted = networkBaseline !== undefined && stats.generation !== networkBaseline;
+        }
+
+        if (domAgeMs !== null || networkStarted) sawActivity = true;
+        const domRecentlyActive = domAgeMs !== null && domAgeMs < NETWORK_QUIET_WINDOW_MS;
+        const currentlyActive = networkPending > 0 || domRecentlyActive;
+
+        if (sawActivity && !currentlyActive) {
+          if (quietSince === null) quietSince = Date.now();
+          if (Date.now() - quietSince >= NETWORK_QUIET_WINDOW_MS) return;
+        } else {
+          quietSince = null;
+        }
+        await new Promise((resolve) => setTimeout(resolve, WAIT_POLL_INTERVAL_MS));
+      }
+    } finally {
+      if (domInstalled) {
+        try {
+          await this.executeScript(page, "WAIT_DOM_ACTIVITY_JS", { action: "uninstall" });
+        } catch {
+          // Best-effort cleanup — a stray observer on the page is harmless
+          // (the next "install" call disconnects it anyway) and must never
+          // mask the wait's own result.
+        }
+      }
+    }
+  }
+
+  /** Second-pass review finding 8: public entry point — serializes onto the
+   * command queue and delegates to `findImagesUnlocked`. */
+  async findImages(args: unknown): Promise<BrowserCommandResult> {
+    return this.runExclusive(() => this.findImagesUnlocked(args));
+  }
+
+  private async findImagesUnlocked(args: unknown): Promise<BrowserCommandResult> {
+    if (args !== undefined && !isRecord(args)) {
+      return errorResult("browse_find_images requires an object (or no arguments).");
+    }
+    const raw = isRecord(args) ? args : {};
+    const minWidth = normalizeNonNegativeNumber(raw.minWidth, 200);
+    if (minWidth.error) return errorResult(`"minWidth" ${minWidth.error}`);
+    const minHeight = normalizeNonNegativeNumber(raw.minHeight, 200);
+    if (minHeight.error) return errorResult(`"minHeight" ${minHeight.error}`);
+    const limitField = normalizeNonNegativeNumber(raw.limit, 30);
+    if (limitField.error) return errorResult(`"limit" ${limitField.error}`);
+    const limit = Math.max(1, Math.min(limitField.value, 100));
+
+    return this.withCommandTimeout(async () => {
+      const page = this.target.currentPage();
+      if (!page) return errorResult("No browser tab is open — call browse_open first.");
+      const top = await this.executeScript(page, "FIND_IMAGES_JS", {
+        minWidth: minWidth.value,
+        minHeight: minHeight.value,
+        limit,
+      });
+      if ("error" in top) return top;
+      // Wave 3 reliability, item 2: merge in every visible child frame's own
+      // images, then re-apply the same "largest first, capped at limit"
+      // rule FIND_IMAGES_JS itself uses — a frame's images are otherwise
+      // invisible to browse_find_images entirely.
+      const images: Record<string, unknown>[] = Array.isArray(top.images) ? [...(top.images as Record<string, unknown>[])] : [];
+      const frames = await this.resolveVisibleFrames(page);
+      for (const frame of frames) {
+        let frameResult: BrowserCommandResult;
+        try {
+          frameResult = await this.executeScriptInFrame(page, frame.frameId, "FIND_IMAGES_JS", {
+            minWidth: minWidth.value,
+            minHeight: minHeight.value,
+            limit,
+          });
+        } catch {
+          continue; // electron#5183 — a stuck frame is skipped, not fatal.
+        }
+        if ("error" in frameResult || !Array.isArray(frameResult.images)) continue;
+        for (const img of frameResult.images as Record<string, unknown>[]) images.push(img);
+      }
+      images.sort((a, b) => {
+        const areaA = (typeof a.width === "number" ? a.width : 0) * (typeof a.height === "number" ? a.height : 0);
+        const areaB = (typeof b.width === "number" ? b.width : 0) * (typeof b.height === "number" ? b.height : 0);
+        return areaB - areaA;
+      });
+      const capped = images.slice(0, limit);
+      return { ...top, images: capped, count: capped.length };
+    });
+  }
+
+  /** A readable digest of the current page — jev-loop design doc "Addendum
+   * 2, 2026-09-19" §2. Read-only, so unlike act/perform it carries no
+   * `{ changed, changes }` evidence. A `selector` that matches nothing is a
+   * page-script `{ error }`, surfaced here exactly like any other page
+   * error, not silently widened to a whole-page read. */
+  async read(args: unknown): Promise<BrowserCommandResult> {
+    return this.runExclusive(() => this.readUnlocked(args));
+  }
+
+  private async readUnlocked(args: unknown): Promise<BrowserCommandResult> {
+    const validated = validateReadArgs(args);
+    if (!validated.ok) return errorResult(validated.error);
+    const { maxChars, selector } = validated.value;
+    return this.withCommandTimeout(async () => {
+      const page = this.target.currentPage();
+      if (!page) return errorResult("No browser tab is open — call browse_open first.");
+      const top = await this.executeScript(page, "READ_JS", { maxChars, selector: selector ?? null });
+      if ("error" in top) return top;
+      // Wave 3 reliability, item 2: a `selector` scopes the read to a part
+      // of the TOP document only — descending into frames as well wouldn't
+      // even mean anything (a frame is never inside the selector's scope),
+      // so frame text is only appended for a plain, whole-page read.
+      if (selector) return top;
+      const frames = await this.resolveVisibleFrames(page);
+      if (frames.length === 0) return top;
+      let text = typeof top.text === "string" ? top.text : "";
+      for (const frame of frames) {
+        if (text.length >= maxChars) break;
+        let frameResult: BrowserCommandResult;
+        try {
+          frameResult = await this.executeScriptInFrame(page, frame.frameId, "READ_JS", {
+            maxChars: maxChars - text.length,
+            selector: null,
+          });
+        } catch {
+          continue; // electron#5183 — a stuck frame is skipped, not fatal.
+        }
+        if ("error" in frameResult || typeof frameResult.text !== "string" || !frameResult.text) continue;
+        const label = frameLabel(frame, typeof frameResult.title === "string" ? frameResult.title : undefined);
+        text += ` [frame: ${label}] ${frameResult.text}`;
+      }
+      const truncated = text.length > maxChars || top.truncated === true;
+      return { ...top, text: text.length > maxChars ? text.slice(0, maxChars) : text, truncated };
+    });
+  }
+
+  /** Walks the current page and returns an indexed element table (jev-loop
+   * design doc §1). Generates a fresh snapshotId every call — the id is
+   * both embedded in the page (SNAPSHOT_JS stamps each surviving element
+   * with `data-pen-snap="<id>:<index>"`) and returned to the caller, and
+   * becomes the *only* snapshotId perform() will accept until the next
+   * snapshot() call. */
+  async snapshot(): Promise<BrowserCommandResult> {
+    return this.runExclusive(() => this.snapshotUnlocked());
+  }
+
+  private async snapshotUnlocked(): Promise<BrowserCommandResult> {
+    return this.withCommandTimeout(async () => {
+      const page = this.target.currentPage();
+      if (!page) return errorResult("No browser tab is open — call browse_open first.");
+      return this.takeSnapshot(page);
+    });
+  }
+
+  /** The actual snapshot() work, factored out so `screenshot({ annotate:
+   * true })` can take one against a page it already resolved, without a
+   * second `currentPage()` lookup (and the TOCTOU risk of that lookup
+   * returning a different tab than the one already being screenshotted). */
+  private async takeSnapshot(page: BrowserPageHandle): Promise<BrowserCommandResult> {
+    const snapshotId = randomUUID();
+    const result = await this.executeScript(page, "SNAPSHOT_JS", {
+      snapshotId,
+      maxElements: MAX_SNAPSHOT_ELEMENTS,
+    });
+    if ("error" in result) return result;
+
+    // Wave 3 reliability, item 2: indices are global and stable within one
+    // snapshot — the top document's own elements keep the indices
+    // SNAPSHOT_JS already assigned them (0..N-1), and every visible child
+    // frame's own elements are appended after them, renumbered globally.
+    // frameMap records how to route perform() back to the right document
+    // for each global index (see its own doc comment).
+    const elements: Record<string, unknown>[] = Array.isArray(result.elements)
+      ? [...(result.elements as Record<string, unknown>[])]
+      : [];
+    const frameMap = new Map<number, { frameId: number | null; localIndex: number }>();
+    const frameRects = new Map<number, { x: number; y: number; width: number; height: number }>();
+    for (const el of elements) {
+      if (typeof el.index === "number") frameMap.set(el.index, { frameId: null, localIndex: el.index });
+    }
+
+    let remaining = MAX_SNAPSHOT_ELEMENTS - elements.length;
+    // A modal scope on the top document (`result.modal`) makes child frames
+    // outside the modal unreachable too — SNAPSHOT_JS scopes only its own
+    // document, so only frames whose <iframe> is inside the modal are merged
+    // (it reports them as `__modalFrames`, identified by src/name the way
+    // IFRAME_RECTS_JS does; matched below the way resolveVisibleFrames does).
+    const modalFrames = extractModalFrames(result);
+    if (remaining > 0) {
+      const frames = (await this.resolveVisibleFrames(page)).filter(
+        (f) =>
+          !modalFrames || modalFrames.some((m) => (m.url !== "" && m.url === f.url) || (m.name !== "" && m.name === f.name)),
+      );
+      for (const frame of frames) {
+        frameRects.set(frame.frameId, { x: frame.x, y: frame.y, width: frame.width, height: frame.height });
+        if (remaining <= 0) break;
+        let frameResult: BrowserCommandResult;
+        try {
+          frameResult = await this.executeScriptInFrame(page, frame.frameId, "SNAPSHOT_JS", {
+            snapshotId,
+            maxElements: Math.min(MAX_SNAPSHOT_ELEMENTS, remaining),
+          });
+        } catch {
+          // electron#5183: a frame that never finishes loading (or one that
+          // navigated away between resolveVisibleFrames and here) must not
+          // hang or fail the whole snapshot — it's simply skipped.
+          continue;
+        }
+        if ("error" in frameResult || !Array.isArray(frameResult.elements)) continue;
+        const label = frameLabel(frame, typeof frameResult.title === "string" ? frameResult.title : undefined);
+        for (const el of frameResult.elements as Record<string, unknown>[]) {
+          if (remaining <= 0) break;
+          const localIndex = typeof el.index === "number" ? el.index : 0;
+          const globalIndex = elements.length;
+          frameMap.set(globalIndex, { frameId: frame.frameId, localIndex });
+          elements.push({ ...el, index: globalIndex, frame: label });
+          remaining--;
+        }
+      }
+    }
+
+    const fingerprints = new Map<number, ElementFingerprint>();
+    const candidatesFp: [number, ElementFingerprint][] = [];
+    for (const el of (Array.isArray(result.elements) ? result.elements : []) as Record<string, unknown>[]) {
+      const fp = fingerprintOf(el);
+      if (fp) candidatesFp.push([el.index as number, fp]);
+    }
+    // A fingerprint shared by several entries of this table is ambiguous by
+    // construction (two "Remove" buttons) — relocation could hand one index
+    // the other's node — so none of them keeps one.
+    const fpKey = (f: ElementFingerprint) => JSON.stringify([f.tag, f.label, f.role ?? ""]);
+    const fpCounts = new Map<string, number>();
+    for (const [, f] of candidatesFp) fpCounts.set(fpKey(f), (fpCounts.get(fpKey(f)) ?? 0) + 1);
+    for (const [i, f] of candidatesFp) if (fpCounts.get(fpKey(f)) === 1) fingerprints.set(i, f);
+
+    this.lastSnapshot = { id: snapshotId, page, frameMap, frameRects, fingerprints };
+    const { __modalFrames: _internal, ...publicResult } = result;
+    void _internal;
+    return { ...publicResult, elements, snapshotId };
+  }
+
+  /** Full browser use: a downscaled JPEG of the current viewport —
+   * `page.capture()` (window.ts: `webContents.capturePage()` → resize to
+   * ≤1280px wide → `toJPEG(70)`). `annotate: true` first takes a fresh
+   * snapshot (so its `snapshotId` becomes the one `perform`/`act`'s
+   * index-based actions will accept next), overlays a numbered label on
+   * every one of its elements (MARKS_JS — "set of marks"), captures, and
+   * always removes the overlay in `finally` regardless of how the capture
+   * itself goes, so a failed capture can never leave marks stuck on the
+   * page. An empty capture (`capture()` returning null) is an `{ error }`,
+   * not a blank image — a caller has no way to tell "the page is genuinely
+   * blank" from "the capture silently failed" otherwise. */
+  async screenshot(args: unknown): Promise<BrowserCommandResult> {
+    return this.runExclusive(() => this.screenshotUnlocked(args));
+  }
+
+  private async screenshotUnlocked(args: unknown): Promise<BrowserCommandResult> {
+    const validated = validateScreenshotArgs(args);
+    if (!validated.ok) return errorResult(validated.error);
+    const { annotate } = validated.value;
+    return this.withCommandTimeout(async () => {
+      const page = this.target.currentPage();
+      if (!page) return errorResult("No browser tab is open — call browse_open first.");
+      if (!page.capture) return errorResult("Screenshot is not supported by this browser tab.");
+
+      let snapshotId: string | undefined;
+      let elements: unknown;
+      if (annotate) {
+        const snap = await this.takeSnapshot(page);
+        if ("error" in snap) return snap;
+        snapshotId = snap.snapshotId as string;
+        elements = snap.elements;
+        // Second-pass review finding 7: MARKS_JS's own result is checked
+        // before proceeding — before this, a MARKS_JS failure (a throwing/
+        // rejecting executeJavaScript, or a page-script `{ error }`) was
+        // silently ignored and the capture ran anyway, so a failed overlay
+        // produced a screenshot with no marks and no indication why. On
+        // error, any partially-applied marks are removed (best-effort) before
+        // returning, same as the ordinary `finally` cleanup below would.
+        const marksResult = await this.executeScript(page, "MARKS_JS", { snapshotId });
+        if ("error" in marksResult) {
+          try {
+            await this.executeScript(page, "REMOVE_MARKS_JS", {});
+          } catch {
+            // Best-effort — see this method's `finally` block below.
+          }
+          return marksResult;
+        }
+        // Second-pass review finding 7: capturing right after MARKS_JS
+        // returns can miss the overlay entirely — the DOM mutation hasn't
+        // necessarily been painted yet when `capturePage()` runs. Waits for
+        // an in-page double requestAnimationFrame (the standard "wait for
+        // the next paint" idiom), raced against a short timeout: a hidden
+        // `WebContentsView` never fires `requestAnimationFrame` at all (this
+        // repo has been bitten by that before — get_screenshot), so this must
+        // never hang the whole command waiting for a paint that will never
+        // come.
+        await this.waitForPaint(page);
+      }
+      try {
+        const captured = await page.capture();
+        if (!captured || !captured.imageData) {
+          return errorResult("Screenshot capture failed (empty image).");
+        }
+        const result: BrowserCommandResult = {
+          imageData: captured.imageData,
+          width: captured.width,
+          height: captured.height,
+          url: page.getURL(),
+          title: page.getTitle(),
+        };
+        if (annotate) {
+          result.snapshotId = snapshotId;
+          result.elements = elements;
+        }
+        return result;
+      } finally {
+        if (annotate) {
+          try {
+            await this.executeScript(page, "REMOVE_MARKS_JS", {});
+          } catch {
+            // Best-effort cleanup — a failure here must never mask whatever
+            // the capture itself returned/threw.
+          }
+        }
+      }
+    });
+  }
+
+  /** Full browser use's `tabs` command — lists/switches/closes/opens browser
+   * tabs. Reports "not supported" up front when the injected `BrowserTarget`
+   * doesn't implement the four optional methods this needs (window.ts
+   * always implements all four together, but the unit-test fakes and any
+   * future embedder might not). */
+  async tabs(args: unknown): Promise<BrowserCommandResult> {
+    return this.runExclusive(() => this.tabsUnlocked(args));
+  }
+
+  private async tabsUnlocked(args: unknown): Promise<BrowserCommandResult> {
+    const validated = validateTabsArgs(args);
+    if (!validated.ok) return errorResult(validated.error);
+    const { action, tabId, url } = validated.value;
+    if (!this.target.listPages || !this.target.selectPage || !this.target.closePage || !this.target.newPage) {
+      return errorResult("Tab management is not supported by this browser build.");
+    }
+    // "new" with a url delegates to open() below (review finding 9), which
+    // needs its own longer openTimeoutMs budget (BROWSER_OPEN_TIMEOUT_MS) —
+    // the default command timeout would otherwise cut a slow page's
+    // DOM-ready wait short before open()'s own grace period ever gets a
+    // chance to run.
+    //
+    // Second-pass review finding 6: this outer command starts its own
+    // withTimeout clock *before* `newPage()` runs, while the nested
+    // `this.open()` call below starts its own (separately budgeted at the
+    // same `this.openTimeoutMs`) only after `newPage()` has resolved — so the
+    // outer timer's deadline was always strictly earlier than the inner
+    // one's, and the outer timeout fired first, on every slow `open`,
+    // producing a bare "Browser command timed out" with no tab listing at
+    // all instead of `open()`'s own more specific timeout (which at least
+    // still runs `listTabsResult()` afterward). Padding the outer budget by
+    // OPEN_COMMAND_MARGIN_MS — comfortably more than `newPage()` (an
+    // in-process tab creation, not a network wait) could ever take — ensures
+    // the inner `open()` timeout always resolves first.
+    const budgetMs = action === "new" && url ? this.openTimeoutMs + OPEN_COMMAND_MARGIN_MS : undefined;
+    return this.withCommandTimeout(async () => {
+      if (action === "list") return this.listTabsResult();
+      if (action === "new") {
+        // Review finding 9: `newPage` itself only creates the tab and makes
+        // it current — it used to also `await`s a full `loadURL()` (the same
+        // `did-finish-load` wait `open()` deliberately avoids for a heavy
+        // page), so `tabs({action:"new", url})` blocked for as long as the
+        // whole page took to finish loading instead of `open()`'s
+        // DOM-ready-plus-grace-period compromise. `newPage()` now never
+        // takes a url; loading one, when given, reuses `open()` outright —
+        // same DOM-ready race, same grace period, same `{ loaded }` field.
+        await this.target.newPage!();
+        if (!url) return this.listTabsResult();
+        // `openUnlocked`, not the public `open` — see `runExclusive`'s doc
+        // comment: this call is already running inside the queue, from
+        // `tabs`'s own turn, and calling back into `open` would deadlock.
+        const openResult = await this.openUnlocked({ url });
+        const tabsResult = await this.listTabsResult();
+        // On open failure the tab still exists (newPage() already created
+        // it) — report the error alongside the tab listing so the caller
+        // can see the new (empty) tab instead of retrying `new` into a
+        // duplicate tab.
+        return "error" in openResult ? { ...tabsResult, error: openResult.error } : { ...tabsResult, ...openResult };
+      }
+      if (action === "switch") {
+        const ok = await this.target.selectPage!(tabId!);
+        if (!ok) return errorResult(`No browser tab with id ${tabId}.`);
+        return this.listTabsResult();
+      }
+      // close
+      const ok = await this.target.closePage!(tabId!);
+      if (!ok) return errorResult(`No browser tab with id ${tabId} to close, or it is not a browser tab.`);
+      return this.listTabsResult();
+    }, budgetMs);
+  }
+
+  private async listTabsResult(): Promise<BrowserCommandResult> {
+    const pages = await this.target.listPages!();
+    const tabsOut = pages.map((p) => ({ tabId: p.tabId, url: p.url, title: p.title, current: p.current }));
+    const current = pages.find((p) => p.current)?.tabId ?? null;
+    return { tabs: tabsOut, current };
+  }
+
+  /** Best-effort tab listing used by `detectOpenedTab` — never throws, and
+   * returns `[]` when the injected `BrowserTarget` doesn't implement
+   * `listPages` at all (every unit-test fake, notably), so a click's own
+   * result is never broken by openedTab detection being unavailable. */
+  private async listPagesSafe(): Promise<BrowserTabInfo[]> {
+    if (!this.target.listPages) return [];
+    try {
+      return await this.target.listPages();
+    } catch {
+      return [];
+    }
+  }
+
+  /** Full browser use, fixing upstream jev-ultrafast #61 ("the agent sticks
+   * to the old tab"): diffs a tab listing taken before a click-like action
+   * against one taken after, and reports the first genuinely new tab id (if
+   * any) as `openedTab` — the agent's current tab has already followed a
+   * popup (window.ts's attachBrowserTabPolicy sets `agentBrowserTabId` to
+   * it), so this is purely informational, telling the caller a new tab
+   * exists rather than silently leaving it undiscovered. */
+  private async detectOpenedTab(
+    before: BrowserTabInfo[],
+  ): Promise<{ tabId: number; url: string; title: string } | undefined> {
+    const after = await this.listPagesSafe();
+    if (after.length <= before.length) return undefined;
+    const beforeIds = new Set(before.map((p) => p.tabId));
+    const opened = after.find((p) => !beforeIds.has(p.tabId));
+    if (!opened) return undefined;
+    return { tabId: opened.tabId, url: opened.url, title: opened.title };
+  }
+
+  /** Acts by index against the elements table from the caller's most recent
+   * snapshot() — see validatePerformArgs and lastSnapshot's doc comment for
+   * the staleness/cross-tab guard. CLICK reuses the same post-click settle
+   * wait as browse_act's click (runClick above). */
+  async perform(args: unknown): Promise<BrowserCommandResult> {
+    return this.runExclusive(async () => {
+      this.relocatedThisCommand = false;
+      const result = this.withRelocated(await this.performUnlocked(args));
+      // Wave 3 reliability, item 3: see act()'s identical call for why this
+      // only ever runs once, at the outermost public entry point.
+      return this.mergeConsoleErrors(result, this.target.currentPage());
+    });
+  }
+
+  private async performUnlocked(args: unknown): Promise<BrowserCommandResult> {
+    const validated = validatePerformArgs(args);
+    if (!validated.ok) return errorResult(validated.error);
+    const { index, operation, text, snapshotId } = validated.value;
+
+    // Resolved before the staleness check (not inside withCommandTimeout)
+    // so the check can compare it against the page snapshot() actually ran
+    // against — see lastSnapshot's doc comment / finding 5.
+    const page = this.target.currentPage();
+    if (!page) return errorResult("No browser tab is open — call browse_open first.");
+
+    const staleError = this.checkSnapshotStale(snapshotId, page);
+    if (staleError) return staleError;
+
+    // Wave 3 reliability, item 2: look up which document `index` actually
+    // lives in (the top page, or a specific child frame) once, up front —
+    // every branch below needs it. `cursorPoint` is a best-effort top-level-
+    // viewport point for the overlay (see moveCursor's `point` doc comment)
+    // when the element is frame-routed; the overlay itself is unchanged and
+    // still always runs before the action, per the hard constraint.
+    const { frameRoute, cursorPoint } = this.resolveFrameRouteWithCursorPoint(index);
+
+    return this.withCommandTimeout(async (deadlineAt) => {
+      if (operation === "CLICK") {
+        const previousUrl = page.getURL();
+        // Full browser use: same openedTab detection as runClick — an
+        // index-based click ("index click" in the design doc's item 4) gets
+        // the same treatment as a target-based one.
+        const tabsBefore = await this.listPagesSafe();
+        // Before the before-signature capture — see runClick's comment.
+        if (frameRoute.frameId === null) await this.revealTarget(page, { index, snapshotId });
+        await this.moveCursor(page, { action: "click", snapshotId, index, point: cursorPoint });
+        const before = await this.captureSignature(page, "before");
+        // Armed/captured before the click runs — see runClick's comment.
+        const navWatcher = this.armNavigationWatcher(page, previousUrl);
+        const networkBaseline = this.captureNetworkBaseline(page);
+        // Wave 2 reliability item 1: trusted CDP click, falling back to
+        // PERFORM_JS's CLICK branch internally — see dispatchClick. Wave 3
+        // reliability item 2: an element routed to a child frame skips the
+        // trusted-CDP path outright (the design doc's own sanctioned
+        // fallback — "if hit-test inside the frame fails fall back to DOM
+        // click via frame.executeJavaScript") and runs the DOM click path
+        // directly inside that frame.
+        const result =
+          frameRoute.frameId === null
+            ? await this.dispatchClick(page, { index, snapshotId })
+            : await this.frameClickOrType(page, frameRoute.frameId, "CLICK", frameRoute.localIndex, snapshotId, deadlineAt);
+        if ("error" in result) {
+          navWatcher.dispose();
+          return result;
+        }
+        const scopedBefore = extractScopedBefore(result);
+        const selfDisabled = extractTargetSelfDisabled(result);
+        await this.settleAfterClick(page, navWatcher, networkBaseline);
+        if (selfDisabled) {
+          await this.settleWhileTargetBusy(page);
+          // See runClick: the navigation can start after the busy wait.
+          await this.waitForLoadStop(page, CLICK_LOAD_SETTLE_TIMEOUT_MS);
+        }
+        const after = await this.captureSignature(page, "after");
+        const currentUrl = page.getURL();
+        const openedTab = await this.detectOpenedTab(tabsBefore);
+        const merged: BrowserCommandResult = {
+          ...result,
+          url: currentUrl,
+          title: page.getTitle(),
+          ...this.diffSignatures(before, after, { previousUrl, currentUrl, scopedBefore }),
+        };
+        if (openedTab) merged.openedTab = openedTab;
+        return merged;
+      }
+
+      if (operation === "TYPE_TEXT") {
+        // Before the before-signature capture — see runClick's comment.
+        if (frameRoute.frameId === null) await this.revealTarget(page, { index, snapshotId });
+        await this.moveCursor(page, { action: "type", snapshotId, index, point: cursorPoint });
+        const before = await this.captureSignature(page, "before");
+        // Wave 2 reliability item 2: trusted CDP typing, falling back to
+        // PERFORM_JS's TYPE_TEXT branch internally — see dispatchType. Wave 3
+        // reliability item 2: same frame-routing skip-trusted-CDP rule as
+        // CLICK above.
+        const result =
+          frameRoute.frameId === null
+            ? await this.dispatchType(page, { index, snapshotId }, text!, deadlineAt)
+            : await this.frameClickOrType(page, frameRoute.frameId, "TYPE_TEXT", frameRoute.localIndex, snapshotId, deadlineAt, text);
+        if ("error" in result && !extractSliderPartial(result)) return result;
+        const scopedBefore = extractScopedBefore(result);
+        const selfDisabled = extractTargetSelfDisabled(result);
+        await this.settleShort();
+        if (selfDisabled) await this.settleWhileTargetBusy(page);
+        const after = await this.captureSignature(page, "after");
+        return { ...result, ...this.diffSignatures(before, after, { scopedBefore }) };
+      }
+
+      // Review finding 3: SELECT/SCROLL_UP/SCROLL_DOWN get a short settle
+      // before the after-capture too — see NON_CLICK_SETTLE_MS.
+      // Before the before-signature capture — see runClick's comment.
+      const cursorAction: "select" | "scroll" = operation === "SELECT" ? "select" : "scroll";
+      await this.moveCursor(page, { action: cursorAction, snapshotId, index, point: cursorPoint });
+      const before = await this.captureSignature(page, "before");
+      // Wave 3 reliability, item 2: SELECT/SCROLL_* routed to a child frame
+      // run PERFORM_JS inside that frame directly — there is no trusted-CDP
+      // path for either operation even at the top level (see act's own
+      // doc comment on `select`/`scroll`), so this is a plain routing
+      // choice, not a fallback.
+      const result =
+        frameRoute.frameId === null
+          ? await this.executeScript(page, "PERFORM_JS", { snapshotId, index, operation, text })
+          : await this.executeScriptInFrame(page, frameRoute.frameId, "PERFORM_JS", {
+              snapshotId,
+              index: frameRoute.localIndex,
+              operation,
+              text,
+            });
+      if ("error" in result) return result;
+      const scopedBefore = extractScopedBefore(result);
+      const selfDisabled = extractTargetSelfDisabled(result);
+      await this.settleShort();
+      if (selfDisabled) await this.settleWhileTargetBusy(page);
+      const after = await this.captureSignature(page, "after");
+      return { ...result, ...this.diffSignatures(before, after, { scopedBefore }) };
+    }, this.timeoutMs + this.cursorBudgetMs);
+  }
+
+  /** Wraps a page-script call with a before/after page-signature
+   * diff merged into a successful result as `{ changed, changes }` —
+   * "Addendum 2" §1. Used by act's `scroll` (click has its own variant
+   * inlined in runClick, since it also needs the click-settle wait in
+   * between the two captures; `type` has its own variant too —
+   * `runTypeWithEvidence` below — since Wave 2 reliability gave it a
+   * trusted-CDP path with its own DOM fallback, not a single script call).
+   *
+   * Review finding 3: a short settle (NON_CLICK_SETTLE_MS) now runs between
+   * the action and the after-capture — scroll used to capture "after"
+   * immediately, with no settle at all.
+   *
+   * Code review finding 6: an index-based `scroll` now resolves and routes
+   * through the same frame map CLICK/TYPE_TEXT/SELECT already do
+   * (`resolveFrameRouteWithCursorPoint`) — it used to always run SCROLL_JS
+   * against the top document, so an index that actually lived inside a
+   * child frame (one of `SNAPSHOT_JS`'s frame-sourced entries) failed with
+   * "No element matched: index N" instead of scrolling anything. */
+  private async runOnPageWithEvidence(
+    script: "SCROLL_JS",
+    scriptArgs: Record<string, unknown> & { index?: number },
+  ): Promise<BrowserCommandResult> {
+    const page = this.target.currentPage();
+    if (!page) return errorResult("No browser tab is open — call browse_open first.");
+    const { frameRoute } = this.resolveFrameRouteWithCursorPoint(scriptArgs.index);
+    // Before the before-signature capture — see runClick's comment /
+    // CURSOR_JS's doc comment for why. CURSOR_JS itself short-circuits for
+    // "scroll" before ever looking at target/index/point, so there is
+    // nothing frame-specific to pass here even for a frame-routed scroll.
+    await this.moveCursor(page, { action: "scroll" });
+    const before = await this.captureSignature(page, "before");
+    const result =
+      frameRoute.frameId === null
+        ? await this.executeScript(page, script, scriptArgs)
+        : await this.executeScriptInFrame(page, frameRoute.frameId, script, { ...scriptArgs, index: frameRoute.localIndex });
+    if ("error" in result) return result;
+    const scopedBefore = extractScopedBefore(result);
+    const selfDisabled = extractTargetSelfDisabled(result);
+    await this.settleShort();
+    if (selfDisabled) await this.settleWhileTargetBusy(page);
+    const after = await this.captureSignature(page, "after");
+    return { ...result, ...this.diffSignatures(before, after, { scopedBefore }) };
+  }
+
+  /** `act`'s target-based `type` — Wave 2 reliability item 2's trusted CDP
+   * typing (`dispatchType`, which already has its own DOM fallback baked
+   * in), wrapped with the same before/after evidence capture
+   * `runOnPageWithEvidence` gives `scroll`. Kept separate from
+   * `runOnPageWithEvidence` because `dispatchType` takes a locate-args
+   * object plus `text`, not a single script name — the two no longer share
+   * a call shape now that `type` can run two different scripts internally
+   * (CLICK_RESOLVE_JS then either the trusted-input path or TYPE_JS). */
+  private async runTypeWithEvidence(
+    locateArgs: { target?: string; index?: number; snapshotId?: string },
+    text: string,
+    deadlineAt: number,
+  ): Promise<BrowserCommandResult> {
+    const page = this.target.currentPage();
+    if (!page) return errorResult("No browser tab is open — call browse_open first.");
+    await this.revealTarget(page, locateArgs);
+    await this.moveCursor(page, { action: "type", target: locateArgs.target, index: locateArgs.index, snapshotId: locateArgs.snapshotId });
+    const before = await this.captureSignature(page, "before");
+    const result = await this.dispatchType(page, locateArgs, text, deadlineAt);
+    if ("error" in result && !extractSliderPartial(result)) return result;
+    const scopedBefore = extractScopedBefore(result);
+    const selfDisabled = extractTargetSelfDisabled(result);
+    await this.settleShort();
+    if (selfDisabled) await this.settleWhileTargetBusy(page);
+    const after = await this.captureSignature(page, "after");
+    return { ...result, ...this.diffSignatures(before, after, { scopedBefore }) };
+  }
+
+  /** Wave 3 reliability, item 4: runs BOT_CHECK_JS after `open` settles and
+   * returns `{ botCheck: true }` only when the page looks like a bot-check
+   * wall — the field is deliberately omitted (not `{ botCheck: false }`)
+   * when it doesn't, matching this file's "only report what's actually
+   * true" convention for other optional result fields (`openedTab`,
+   * `dialogs`). Best-effort: a throwing/rejecting script must never turn a
+   * successful open into an error.
+   *
+   * Bounded by its own short timeout (`BOT_CHECK_TIMEOUT_MS`), independent
+   * of `open`'s own DOM-ready-vs-grace-period race: electron/electron#5183
+   * means `executeJavaScript` defers until the page stops loading, so a
+   * page `open` correctly returned early for (`loaded: false`, a still-
+   * pending subresource) would otherwise make this call block for however
+   * long that subresource takes — silently reintroducing the exact "wait
+   * for the whole page to finish loading" cost the DOM-ready fix exists to
+   * avoid, just one call later. A timed-out check degrades to "no botCheck
+   * field", same as a throwing one. */
+  private async checkBotWall(page: BrowserPageHandle): Promise<{ botCheck?: true }> {
+    try {
+      const result = await withTimeout(
+        this.executeScript(page, "BOT_CHECK_JS", {}),
+        BOT_CHECK_TIMEOUT_MS,
+        "botCheck timed out.",
+      );
+      return result.botCheck === true ? { botCheck: true } : {};
+    } catch {
+      return {};
+    }
+  }
+
+  /** Wave 3 reliability, item 3: drains this tab's console-error ring buffer
+   * (window.ts, via the same CDP session as sendCdp/drainDialogs) and merges
+   * up to 5 entries into `act`/`perform`'s own result as `consoleErrors` —
+   * omitted entirely when there's nothing new, so a caller can check for the
+   * field's presence rather than an always-present empty array. Called once,
+   * by the outermost public `act()`/`perform()` entry point (not by every
+   * internal branch), so an action that itself routes through another
+   * command internally (`act`'s index-based click calling `perform`'s CLICK
+   * branch) never double-drains the same ring buffer. */
+  private mergeConsoleErrors(result: BrowserCommandResult, page: BrowserPageHandle | null): BrowserCommandResult {
+    if (!page?.drainConsoleErrors) return result;
+    let errors: string[];
+    try {
+      errors = page.drainConsoleErrors();
+    } catch {
+      return result;
+    }
+    if (errors.length === 0) return result;
+    return { ...result, consoleErrors: errors.slice(-5) };
+  }
+
+  /** Wave 3 reliability, item 2: discovers which of the top document's
+   * `<iframe>` elements are worth descending into for a `snapshot`/`read`/
+   * `findImages` call — matches Electron's `WebFrameMain` child frames
+   * (`page.listFrames()`) against `IFRAME_RECTS_JS`'s report of every
+   * visible iframe *element* in the top document, by `url` first (falls
+   * back to `name` when the url doesn't match, e.g. a frame that hasn't
+   * finished its first navigation yet) — see IFRAME_RECTS_JS's doc comment
+   * for why matching has to happen this way at all (a WebFrameMain has no
+   * DOM-side identity a page script could read, and a cross-origin iframe's
+   * `src` attribute can differ from the frame's current, possibly-
+   * redirected `url`). Capped at MAX_BROWSER_FRAMES; each matched entry
+   * carries the iframe element's own content-box offset in top-level
+   * viewport CSS px, so a child frame's own (frame-relative)
+   * `getBoundingClientRect()` output can be turned into a top-level
+   * coordinate by simple addition (one level of nesting only — see the
+   * class-level "Wave 3" note on why this doesn't recurse further). Returns
+   * `[]` (never throws) when the page/target doesn't support frames at all,
+   * or when the rect script itself fails. */
+  private async resolveVisibleFrames(page: BrowserPageHandle): Promise<ResolvedFrame[]> {
+    if (!page.listFrames || !page.executeJavaScriptInFrame) return [];
+    let frames: { frameId: number; url: string; name: string }[];
+    try {
+      frames = page.listFrames();
+    } catch {
+      return [];
+    }
+    if (frames.length === 0) return [];
+    let rectsResult: BrowserCommandResult;
+    try {
+      rectsResult = await this.executeScript(page, "IFRAME_RECTS_JS", {});
+    } catch {
+      return [];
+    }
+    if ("error" in rectsResult || !Array.isArray(rectsResult.frames)) return [];
+    const usedFrameIds = new Set<number>();
+    const resolved: ResolvedFrame[] = [];
+    for (const raw of rectsResult.frames as unknown[]) {
+      if (resolved.length >= MAX_BROWSER_FRAMES) break;
+      if (!isRecord(raw)) continue;
+      const url = typeof raw.url === "string" ? raw.url : "";
+      const name = typeof raw.name === "string" ? raw.name : "";
+      const x = typeof raw.x === "number" ? raw.x : NaN;
+      const y = typeof raw.y === "number" ? raw.y : NaN;
+      const width = typeof raw.width === "number" ? raw.width : 0;
+      const height = typeof raw.height === "number" ? raw.height : 0;
+      if (!Number.isFinite(x) || !Number.isFinite(y) || width <= 0 || height <= 0) continue;
+      let match = url ? frames.find((f) => !usedFrameIds.has(f.frameId) && f.url === url) : undefined;
+      if (!match && name) match = frames.find((f) => !usedFrameIds.has(f.frameId) && f.name === name);
+      if (!match) continue;
+      usedFrameIds.add(match.frameId);
+      resolved.push({ frameId: match.frameId, url: match.url, name: match.name, x, y, width, height });
+    }
+    return resolved;
+  }
+
+  /** Wave 3 reliability, item 2: same templating as `executeScript`, but
+   * runs the resulting code inside a specific child frame
+   * (`page.executeJavaScriptInFrame`) instead of the top document, bounded
+   * by `FRAME_SCRIPT_TIMEOUT_MS` — electron/electron#5183 means a frame
+   * that never finishes loading would otherwise hang this call forever
+   * (window.ts's own implementation also races it, but this bounds every
+   * caller regardless of which `BrowserPageHandle` is behind it). */
+  private async executeScriptInFrame(
+    page: BrowserPageHandle,
+    frameId: number,
+    script: ScriptName,
+    scriptArgs: Record<string, unknown>,
+  ): Promise<BrowserCommandResult> {
+    if (!page.executeJavaScriptInFrame) return errorResult("This browser tab does not support frame scripting.");
+    const code = SCRIPT_TEMPLATES[script].replace(ARGS_MARKER, () => JSON.stringify(scriptArgs));
+    const result = await page.executeJavaScriptInFrame(frameId, code, FRAME_SCRIPT_TIMEOUT_MS);
+    if (!isRecord(result)) return errorResult("Unexpected response from the frame script.");
+    return result;
+  }
+
+  /** Wave 3 reliability, item 2: looks a `perform()` caller's global element
+   * index up in the current snapshot's frame map — `frameId: null` (or no
+   * entry at all, e.g. a snapshot taken before this wave) means "act on the
+   * top document with this same index", exactly the pre-Wave-3 behavior. */
+  private resolveFrameRoute(index: number): { frameId: number | null; localIndex: number } {
+    const route = this.lastSnapshot?.frameMap.get(index);
+    return route ?? { frameId: null, localIndex: index };
+  }
+
+  /** Code review finding 6: `resolveFrameRoute` plus the `cursorPoint`
+   * derivation `performUnlocked` already did for CLICK/TYPE_TEXT — factored
+   * out so `act`'s index-based `scroll`/`hover`/`press` (which used to call
+   * `executeScript` directly against the top document, ignoring the frame
+   * map entirely, and so failed with "No element matched: index N" for any
+   * element actually inside a child frame) can route the same way. `index`
+   * undefined (no index given at all, e.g. a target-based or window-level
+   * action) resolves to `{ frameId: null, localIndex: 0 }` — the top
+   * document, exactly as before this wave for every caller that never
+   * routes to a frame. */
+  private resolveFrameRouteWithCursorPoint(index: number | undefined): {
+    frameRoute: { frameId: number | null; localIndex: number };
+    frameRect: { x: number; y: number; width: number; height: number } | undefined;
+    cursorPoint: { x: number; y: number } | undefined;
+  } {
+    const frameRoute = index !== undefined ? this.resolveFrameRoute(index) : { frameId: null, localIndex: index ?? 0 };
+    const frameRect = frameRoute.frameId !== null ? this.lastSnapshot?.frameRects.get(frameRoute.frameId) : undefined;
+    const cursorPoint = frameRect ? { x: frameRect.x + frameRect.width / 2, y: frameRect.y + frameRect.height / 2 } : undefined;
+    return { frameRoute, frameRect, cursorPoint };
+  }
+
+  /** Surfaces `relocated: true` on a successful act/perform result when any
+   * of its page-script calls re-found a re-mounted target by fingerprint. */
+  private withRelocated(result: BrowserCommandResult): BrowserCommandResult {
+    const relocated = this.relocatedThisCommand;
+    this.relocatedThisCommand = false;
+    if (!relocated || "error" in result) return result;
+    return { ...result, relocated: true };
+  }
+
+  private async executeScript(
+    page: BrowserPageHandle,
+    script: ScriptName,
+    scriptArgs: Record<string, unknown>,
+  ): Promise<BrowserCommandResult> {
+    // A function replacer, not a plain string — String.prototype.replace's
+    // *string* form treats `$&`, `` $` ``, `$'` and `$$` in the replacement
+    // as special patterns (e.g. `$&` re-inserts the whole match, `$'`
+    // inserts everything after it), so a JSON.stringify'd arg containing one
+    // of those two-character sequences (a click target of "$'", chat text
+    // "price is $&") would get silently mangled — and `$'` in particular can
+    // splice page content into the JSON string literal, breaking the "can
+    // never break out of the script" invariant this file's header claims.
+    // The function form's return value is inserted verbatim, no pattern
+    // interpretation.
+    // Re-mount recovery: an index-based call against the CURRENT snapshot on
+    // its own tab carries that element's snapshot fingerprint. Only the top
+    // document ever reaches executeScript with an index (frame-routed calls go
+    // through executeScriptInFrame, which never adds one). Relocation is
+    // strictly within the same snapshot and tab — the controller-level
+    // staleness check has already run by the time we get here.
+    let args = scriptArgs;
+    if (
+      typeof scriptArgs.snapshotId === "string" &&
+      typeof scriptArgs.index === "number" &&
+      scriptArgs.fingerprint === undefined &&
+      this.lastSnapshot &&
+      this.lastSnapshot.id === scriptArgs.snapshotId &&
+      this.lastSnapshot.page === page
+    ) {
+      const fingerprint = this.lastSnapshot.fingerprints.get(scriptArgs.index);
+      if (fingerprint) args = { ...scriptArgs, fingerprint };
+    }
+    const code = SCRIPT_TEMPLATES[script].replace(ARGS_MARKER, () => JSON.stringify(args));
+    const result = await page.executeJavaScript(code);
+    if (!isRecord(result)) return errorResult("Unexpected response from the page script.");
+    if (result.relocated === true) this.relocatedThisCommand = true;
+    return result;
+  }
+
+  /** Runs SIGNATURE_JS for the given phase and returns the parsed signature,
+   * or `null` on any failure (a throwing/rejecting executeJavaScript, or a
+   * malformed response) — evidence capture must never itself turn a
+   * successful action into an error result, so a capture failure degrades
+   * to "no evidence available" rather than propagating.
+   *
+   * Review finding 4: SIGNATURE_JS now takes `phase` (via ARGS_MARKER, like
+   * every other script here) — it needs to know "before" from "after" to
+   * coordinate the `data-pen-sig-mainimg`/`data-pen-sig-target` identity
+   * markers across the two calls (see SIGNATURE_JS's doc comment). */
+  private async captureSignature(page: BrowserPageHandle, phase: "before" | "after"): Promise<PageSignature | null> {
+    try {
+      const code = SIGNATURE_JS.replace(ARGS_MARKER, () => JSON.stringify({ phase }));
+      const result = await page.executeJavaScript(code);
+      return isPageSignature(result) ? result : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** "Addendum 2" §1, reshaped by review findings 2/4: diffs two page
+   * signatures into `{ changed, changes }`. `changes` uses stable category
+   * names, not raw field names.
+   *
+   * Finding 2: when either capture is missing (most likely the AFTER one —
+   * `executeJavaScript` rejecting mid a cross-origin navigation's frame
+   * swap is exactly when the page is most likely to have actually changed),
+   * this used to unconditionally report `changed: false` — self-contradictory
+   * at the moment of the biggest effect. `opts.previousUrl`/`opts.currentUrl`
+   * (both already tracked by every caller that navigates) are used as a
+   * fallback signal instead of guessing "no change".
+   *
+   * Finding 4: a whole-document `dom`/`text` delta is noisy on a live page
+   * (carousels, lazy images, ads) and is reported in `changes` for context,
+   * but never gates `changed` on its own — only url/title/main-image
+   * (identity-guarded via SIGNATURE_JS's marker, see its doc comment) and
+   * the acted-on element's own scoped signature do. `scrollY` and
+   * `focusedValueLength` (finding 3) also gate `changed`: unlike `dom`/
+   * `text`, neither one drifts on its own between two captures of the same
+   * page — they only move because the action itself scrolled the page or
+   * changed what's typed into a field — so they're trustworthy evidence,
+   * not noise. */
+  private diffSignatures(
+    before: PageSignature | null,
+    after: PageSignature | null,
+    opts?: { previousUrl?: string; currentUrl?: string; scopedBefore?: ScopedSignature | null },
+  ): EffectEvidence {
+    if (!before || !after) {
+      const changes: string[] = [];
+      if (opts?.previousUrl !== undefined && opts?.currentUrl !== undefined && opts.previousUrl !== opts.currentUrl) {
+        changes.push("url");
+      }
+      return { changed: changes.length > 0, changes };
+    }
+
+    const changes: string[] = [];
+    const urlChanged = before.url !== after.url;
+    const titleChanged = before.title !== after.title;
+    const mainImageChanged = before.mainImageSrc !== after.mainImageSrc;
+    const scrollChanged = before.scrollY !== after.scrollY;
+    const valueChanged = before.focusedValueLength !== after.focusedValueLength;
+
+    if (urlChanged) changes.push("url");
+    if (titleChanged) changes.push("title");
+    // Report-only — see the doc comment above for why these don't gate.
+    if (before.nodeCount !== after.nodeCount) changes.push("dom");
+    if (before.textLength !== after.textLength || before.textHash !== after.textHash) changes.push("text");
+    if (scrollChanged) changes.push("scroll");
+    if (valueChanged) changes.push("value");
+    if (mainImageChanged) changes.push("main-image");
+
+    let scopedChanged = false;
+    if (opts && opts.scopedBefore !== undefined) {
+      const scopedBefore = opts.scopedBefore;
+      const scopedAfter = after.scopedAfter ?? null;
+      if (scopedBefore || scopedAfter) {
+        scopedChanged =
+          !scopedBefore ||
+          !scopedAfter ||
+          scopedBefore.nodeCount !== scopedAfter.nodeCount ||
+          scopedBefore.textHash !== scopedAfter.textHash ||
+          scopedBefore.src !== scopedAfter.src ||
+          scopedBefore.valueLength !== scopedAfter.valueLength ||
+          scopedBefore.ariaExpanded !== scopedAfter.ariaExpanded ||
+          scopedBefore.ariaSelected !== scopedAfter.ariaSelected ||
+          (scopedBefore.ariaValueNow ?? "") !== (scopedAfter.ariaValueNow ?? "") ||
+          scopedBefore.checked !== scopedAfter.checked;
+      }
+      if (scopedChanged) changes.push("target");
+    }
+
+    const changed = urlChanged || titleChanged || mainImageChanged || scrollChanged || valueChanged || scopedChanged;
+    return { changed, changes, pageChanged: after.pageChanged ?? false, appeared: after.appeared ?? [] };
+  }
+
+  /** Review finding 3: a short, fixed settle for a non-click action before
+   * capturing "after" — see NON_CLICK_SETTLE_MS's doc comment. */
+  private async settleShort(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, NON_CLICK_SETTLE_MS));
+  }
+
+  /** Second-pass review finding 7: waits for the next paint after a DOM
+   * mutation (MARKS_JS's overlay) before `screenshot({ annotate: true })`
+   * captures the page — an in-page double `requestAnimationFrame` (the
+   * standard "wait for the browser to actually paint" idiom: the first rAF
+   * only guarantees the *next* frame is about to be produced, the second
+   * guarantees that frame has landed), raced against PAINT_WAIT_TIMEOUT_MS.
+   * Swallows every failure (a throwing/rejecting executeJavaScript, or the
+   * race timing out) — a hidden `WebContentsView` never fires
+   * `requestAnimationFrame` at all, so timing out here is the expected,
+   * common case for an off-screen tab, not an error; the capture proceeds
+   * either way, exactly as it did before this wait existed. */
+  private async waitForPaint(page: BrowserPageHandle): Promise<void> {
+    const script =
+      "(function(){return new Promise(function(resolve){" +
+      "requestAnimationFrame(function(){requestAnimationFrame(function(){resolve(true);});});" +
+      "});})()";
+    try {
+      await withTimeout(page.executeJavaScript(script), PAINT_WAIT_TIMEOUT_MS, "paint wait timed out");
+    } catch {
+      // See this method's doc comment.
+    }
+  }
+
+  /** Waits (bounded by BUSY_SETTLE_TIMEOUT_MS) for the element the acting
+   * script stamped `data-pen-sig-target` to stop being busy — i.e. for the
+   * handler that disabled it to finish. Called only when that script
+   * reported `__targetSelfDisabled`, so the common action pays nothing.
+   *
+   * Every failure mode ends the wait rather than extending it: the element
+   * disappearing (`present: false` — a re-render or a navigation), a page
+   * script `{ error }`, a rejecting executeJavaScript, or a malformed
+   * answer. Observing a moment early is the old behaviour; hanging here is
+   * not. */
+  private async settleWhileTargetBusy(page: BrowserPageHandle): Promise<void> {
+    const deadline = Date.now() + Math.min(this.timeoutMs, BUSY_SETTLE_TIMEOUT_MS);
+    while (Date.now() < deadline) {
+      let busy = false;
+      try {
+        const result = await this.executeScript(page, "TARGET_BUSY_JS", {});
+        busy = result.present === true && result.busy === true;
+      } catch {
+        return;
+      }
+      if (!busy) return;
+      await new Promise((resolve) => setTimeout(resolve, BUSY_POLL_INTERVAL_MS));
+    }
+  }
+
+  /** Polls briefly for `page.getURL()` to move away from `previousUrl` —
+   * bounded well under the overall command timeout so a page whose URL
+   * never actually changes (e.g. a fake in tests, or a click that doesn't
+   * navigate) doesn't stall a command. `maxWaitMs` defaults to 2s (used by
+   * back/forward, which always navigate); a smaller bound is passed for
+   * click, where most invocations don't navigate at all. Returns whether the
+   * URL actually changed, so callers can tell "navigated" from "timed out
+   * without navigating". */
+  private async waitForUrlChange(page: BrowserPageHandle, previousUrl: string, maxWaitMs = 2_000): Promise<boolean> {
+    const deadline = Date.now() + Math.min(this.timeoutMs, maxWaitMs);
+    while (page.getURL() === previousUrl && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    return page.getURL() !== previousUrl;
+  }
+
+  /** Polls until `page.isLoading()` goes false, bounded by `maxWaitMs` (and
+   * always by the overall command timeout). Used only once a navigation has
+   * actually been observed (see settleAfterClick) — a page that never
+   * navigated has no load to wait for. */
+  private async waitForLoadStop(page: BrowserPageHandle, maxWaitMs: number): Promise<void> {
+    const deadline = Date.now() + Math.min(this.timeoutMs, maxWaitMs);
+    while (page.isLoading() && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+
+  /** First phase of settleAfterClick's *fallback* path: polls (bounded,
+   * short) for *any* sign that the click started a navigation — `getURL()`
+   * moving, or `isLoading()` going true, whichever comes first. Checking
+   * `isLoading()` too (not just the URL) is what makes CLICK_SETTLE_TIMEOUT_MS's
+   * short bound viable for a real, slow-to-commit navigation — see its doc
+   * comment. Returns whether a navigation was observed at all.
+   *
+   * Wave 1 speed: only used when `armNavigationWatcher` can't use
+   * `onNavigationEvent` (every unit-test fake) — a real desktop page settles
+   * event-driven instead, see that method. */
+  private async waitForNavigationStart(page: BrowserPageHandle, previousUrl: string, maxWaitMs: number): Promise<boolean> {
+    const deadline = Date.now() + Math.min(this.timeoutMs, maxWaitMs);
+    const navigating = () => page.getURL() !== previousUrl || page.isLoading();
+    while (!navigating() && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    return navigating();
+  }
+
+  /** Wave 1 speed: a navigation-start watcher, armed *before* the action that
+   * might navigate runs (a click's CLICK_JS call, a press's key dispatch,
+   * `reload()`) — arming after the action risks missing an event that fires
+   * synchronously inside it. `wait()` resolves `true` as soon as any
+   * navigation-lifecycle event fires on the tab, or `false` once
+   * NAV_START_GRACE_MS passes with none — replacing the old fixed
+   * CLICK_SETTLE_TIMEOUT_MS (300ms) polling probe with an event-driven one
+   * roughly 4x shorter for the common non-navigating case. Falls back to the
+   * original `getURL()`/`isLoading()` polling (unarmed — there is nothing to
+   * arm) when `page.onNavigationEvent` is absent, so every existing
+   * unit-test fake (and any future `BrowserTarget` that doesn't implement
+   * it) behaves exactly as before this change. `dispose()` must be called
+   * once `wait()` has resolved (or is no longer needed) to release the
+   * subscription/timer. */
+  private armNavigationWatcher(page: BrowserPageHandle, previousUrl: string): { wait(): Promise<boolean>; dispose(): void } {
+    if (!page.onNavigationEvent) {
+      return {
+        wait: () => this.waitForNavigationStart(page, previousUrl, CLICK_SETTLE_TIMEOUT_MS),
+        dispose: () => {},
+      };
+    }
+    let settled = false;
+    let resolveWait!: (value: boolean) => void;
+    const waitPromise = new Promise<boolean>((resolve) => {
+      resolveWait = resolve;
+    });
+    const unsubscribe = page.onNavigationEvent(() => {
+      if (settled) return;
+      settled = true;
+      resolveWait(true);
+    });
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolveWait(false);
+    }, Math.min(this.timeoutMs, NAV_START_GRACE_MS));
+    return {
+      wait: () => waitPromise,
+      dispose: () => {
+        unsubscribe();
+        clearTimeout(timer);
+      },
+    };
+  }
+
+  /** Wave 1 speed: waits for this tab's network activity, tracked since
+   * `baselineGeneration` (a `networkStats().generation` snapshot taken
+   * *before* the action — see call sites), to go quiet — see
+   * NETWORK_QUIET_WINDOW_MS's doc comment for what "quiet" means and why
+   * that window. Returns immediately (no wait at all) when `networkStats` is
+   * unavailable (no CDP session) or when nothing has started since the
+   * baseline and nothing is currently pending — the "no-network action must
+   * not pay for this" requirement: a click's settle already spent
+   * NAV_START_GRACE_MS finding out there was no navigation, and by that same
+   * moment any `fetch()`/`XMLHttpRequest` a click handler kicked off
+   * synchronously has already been observed by `Network.requestWillBeSent`,
+   * so no *additional* grace period is needed here — this is a plain
+   * snapshot check, not another timed wait. */
+  private async waitForNetworkQuiet(page: BrowserPageHandle, baselineGeneration: number): Promise<void> {
+    if (!page.networkStats) return;
+    // Code review finding 2: scope `pending` to requests that started AFTER
+    // `baselineGeneration` — a request already in flight before the action
+    // ran (Pinterest-style lazy images loading from an earlier scroll, say)
+    // must not make a no-network action wait for it. `initial.pending` is
+    // therefore already 0 whenever nothing new started, so the old combined
+    // `generation === baseline && pending === 0` check collapses to a plain
+    // `pending === 0` — a generation-only comparison can no longer disagree
+    // with the (now baseline-scoped) pending count.
+    const initial = page.networkStats(NETWORK_REQUEST_DROP_MS, baselineGeneration);
+    if (initial.pending === 0) return;
+
+    const deadline = Date.now() + NETWORK_QUIET_HARD_CAP_MS;
+    let zeroStreakStart: number | null = null;
+    while (Date.now() < deadline) {
+      const stats = page.networkStats(NETWORK_REQUEST_DROP_MS, baselineGeneration);
+      if (stats.pending === 0) {
+        if (zeroStreakStart === null) zeroStreakStart = Date.now();
+        if (Date.now() - zeroStreakStart >= NETWORK_QUIET_WINDOW_MS) return;
+      } else {
+        zeroStreakStart = null;
+      }
+      await new Promise((resolve) => setTimeout(resolve, NETWORK_POLL_INTERVAL_MS));
+    }
+  }
+
+  /** Addendum F ("Load, not commit"): waits for a click's navigation, if any,
+   * to actually finish loading — not merely for `getURL()` to change at
+   * commit. First waits (bounded, short) to see whether the click started a
+   * navigation at all; only if it did does it then wait (bounded, longer)
+   * for that navigation to finish loading. A click that never navigates goes
+   * through the network-quiet settle instead (Wave 1 speed) — an action that
+   * triggers a `fetch()`/XHR without a full navigation (the common SPA case)
+   * previously got no wait at all beyond the fixed probe, so a following
+   * read routinely raced a still-in-flight request.
+   *
+   * `navWatcher` must already be armed (via `armNavigationWatcher`) *before*
+   * the action ran; `networkBaseline` is `page.networkStats?.(...).
+   * generation` captured at the same time — see call sites (runClick,
+   * runPress, performUnlocked's CLICK branch, the `reload` action). */
+  private async settleAfterClick(
+    page: BrowserPageHandle,
+    navWatcher: { wait(): Promise<boolean>; dispose(): void },
+    networkBaseline: number | undefined,
+  ): Promise<void> {
+    const navigated = await navWatcher.wait();
+    navWatcher.dispose();
+    if (navigated) {
+      await this.waitForLoadStop(page, CLICK_LOAD_SETTLE_TIMEOUT_MS);
+      return;
+    }
+    if (networkBaseline === undefined) return;
+    await this.waitForNetworkQuiet(page, networkBaseline);
+  }
+
+  /** `page.networkStats?.(...).generation` captured up front, or `undefined`
+   * when the page has no CDP session — the baseline `waitForNetworkQuiet`
+   * compares against to tell "nothing new since the action" from "something
+   * started". Factored out since every settleAfterClick call site needs to
+   * capture it at the same moment it arms the navigation watcher (before the
+   * action runs). */
+  private captureNetworkBaseline(page: BrowserPageHandle): number | undefined {
+    return page.networkStats?.(NETWORK_REQUEST_DROP_MS).generation;
+  }
+
+  private async withCommandTimeout(
+    fn: (deadlineAt: number) => Promise<BrowserCommandResult>,
+    budgetMs?: number,
+  ): Promise<BrowserCommandResult> {
+    const ms = budgetMs ?? this.timeoutMs;
+    // Handed to `fn` (not stored on the controller): an abandoned command's
+    // work keeps running after the next command starts, and must only ever
+    // see ITS OWN deadline.
+    const deadlineAt = Date.now() + ms;
+    // Review finding 6: both captured *before* fn() runs, not after — a
+    // command can itself close the tab it acted on (`tabs({action:"close"})`,
+    // or a click whose handler navigates the whole window away and it gets
+    // torn down), and each `BrowserPageHandle` here is a plain object closing
+    // over its own dialog queue array, so draining it after the fact is safe
+    // even once the underlying tab is gone — but only if we grabbed the
+    // handle while the tab still existed.
+    const actedPage = this.target.currentPage();
+    const pageHandles = await this.listPageHandlesSafe();
+    let result: BrowserCommandResult;
+    const work = fn(deadlineAt);
+    try {
+      result = await withTimeout(work, ms, `Browser command timed out after ${ms}ms.`);
+    } catch (err) {
+      result = errorResult(toMessage(err));
+      // See `overrun`'s doc comment: keep the next queued command from
+      // starting while this one's abandoned work is still running.
+      const settled = work.then(
+        () => undefined,
+        () => undefined,
+      );
+      this.overrun = Promise.race([
+        settled,
+        new Promise<void>((resolve) => setTimeout(resolve, OVERRUN_GRACE_MS)),
+      ]);
+    }
+    return this.mergeDialogs(result, pageHandles, actedPage);
+  }
+
+  /** Best-effort `BrowserTarget.pageHandles()` call — `[]` when the target
+   * doesn't implement it (every unit-test fake, and any `BrowserTarget`
+   * predating review finding 6) or throws, so dialog draining degrades to
+   * `mergeDialogs`'s `actedPage`-only fallback rather than breaking the
+   * command it's piggybacking on. */
+  private async listPageHandlesSafe(): Promise<{ tabId: number; page: BrowserPageHandle }[]> {
+    if (!this.target.pageHandles) return [];
+    try {
+      return await this.target.pageHandles();
+    } catch {
+      return [];
+    }
+  }
+
+  /** Full browser use's dialog policy (CLAUDE.md): every command result gets
+   * whatever JS dialogs (`alert`/`confirm`/`prompt`/`beforeunload`) any
+   * browser tab's CDP session auto-handled since the last drain merged in as
+   * `{ dialogs }` (each entry tagged `tabId`) — centralized here (every
+   * public command routes through `withCommandTimeout`) rather than threaded
+   * through each command individually. Applied on both success and failure:
+   * a dialog raised by the very action that then errored out is still worth
+   * reporting.
+   *
+   * Review finding 6: this used to drain only `target.currentPage()` *after*
+   * the command ran — so a dialog on a tab other than the one a command acts
+   * on (a popup that raised its own dialog while the command ran elsewhere,
+   * or the tab the command itself just closed) was silently lost instead of
+   * surfacing on the next report. `pageHandles` (captured by
+   * `withCommandTimeout` before `fn()` ran) now covers every open browser
+   * tab; `actedPage` (also captured beforehand) is the fallback for a
+   * `BrowserTarget` that doesn't implement `pageHandles` at all.
+   *
+   * Second-pass review finding 6: `tabs({action:"new", url})` runs a nested
+   * `open()` call (see `tabs()`), which is itself wrapped in
+   * `withCommandTimeout` and so already drains and merges dialogs into its
+   * own `{ dialogs }` field before the outer `tabs()` call's
+   * `withCommandTimeout` ever sees the result. This method used to overwrite
+   * `result.dialogs` outright (`{ ...result, dialogs }`) whenever *this* call
+   * found anything of its own to drain — starting from an empty array
+   * instead of whatever `result.dialogs` already carried, so the inner
+   * call's dialogs were silently dropped the moment the outer call had any
+   * dialogs of its own. Seeding `dialogs` from `result.dialogs` (when
+   * present) fixes this without ever double-reporting: `drainDialogs()`
+   * clears each tab's queue on the call that drains it, so by the time the
+   * outer call's drain runs, every dialog the inner call already reported is
+   * gone from the queue and cannot be drained a second time. */
+  private mergeDialogs(
+    result: BrowserCommandResult,
+    pageHandles: { tabId: number; page: BrowserPageHandle }[],
+    actedPage: BrowserPageHandle | null,
+  ): BrowserCommandResult {
+    const dialogs: Record<string, unknown>[] = Array.isArray(result.dialogs)
+      ? [...(result.dialogs as Record<string, unknown>[])]
+      : [];
+    const drain = (page: BrowserPageHandle, tabId?: number) => {
+      if (!page.drainDialogs) return;
+      try {
+        const drained = page.drainDialogs();
+        for (const d of drained) dialogs.push(tabId === undefined ? { ...d } : { tabId, ...d });
+      } catch {
+        // A throwing drainDialogs degrades to "no dialogs from this tab"
+        // rather than breaking the command it's piggybacking on.
+      }
+    };
+    if (pageHandles.length > 0) {
+      for (const { tabId, page } of pageHandles) drain(page, tabId);
+    } else if (actedPage) {
+      drain(actedPage);
+    }
+    if (dialogs.length === 0) return result;
+    return { ...result, dialogs };
+  }
+}
+
+function normalizeNonNegativeNumber(
+  value: unknown,
+  fallback: number,
+): { value: number; error?: string } {
+  if (value === undefined) return { value: fallback };
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    return { value: fallback, error: "must be a non-negative number." };
+  }
+  return { value };
+}
+
+/** Review finding 4: CLICK_JS/TYPE_JS/PERFORM_JS (for CLICK/TYPE_TEXT/SELECT)
+ * embed the acted-on element's own before-signature in their result as an
+ * internal `__scopedBefore` field. This pulls it out for diffSignatures and
+ * deletes it from `result` in place, so it never leaks into the value a
+ * caller (the chat tool, ultimately) ends up seeing. */
+/** Upstream PR #58: CLICK_JS/TYPE_JS/PERFORM_JS report whether the action
+ * itself made the acted-on control busy. Like `__scopedBefore`, it is an
+ * internal field — pulled out here and deleted in place so it never reaches
+ * the chat tool's result. */
+function extractTargetSelfDisabled(result: BrowserCommandResult): boolean {
+  const raw = result.__targetSelfDisabled;
+  delete result.__targetSelfDisabled;
+  return raw === true;
+}
+
+/** A slider drive that failed after moving the slider (see
+ * `completeSliderResult`) marks its error result `__sliderPartial` so the
+ * caller still computes `{ changed, changes }`. Pulled out and deleted in
+ * place like the other internal fields. */
+function extractSliderPartial(result: BrowserCommandResult): boolean {
+  const raw = result.__sliderPartial;
+  delete result.__sliderPartial;
+  return raw === true;
+}
+
+function extractScopedBefore(result: BrowserCommandResult): ScopedSignature | null {
+  const raw = result.__scopedBefore;
+  delete result.__scopedBefore;
+  return isScopedSignature(raw) ? raw : null;
+}
+
+/** What a snapshot element table entry looked like when it was taken — see
+ * `lastSnapshot.fingerprints`. */
+interface ElementFingerprint {
+  tag: string;
+  label: string;
+  role?: string;
+}
+
+/** A top-document element's fingerprint from its element-table entry, or
+ * `null` when it must not have one: a scroll-container entry (`ops: []`), or
+ * an unlabelled element whose label is SNAPSHOT_JS's positional fallback
+ * `"<tag> #<index>"` (not a property of the node, so useless for matching). */
+function fingerprintOf(el: Record<string, unknown>): ElementFingerprint | null {
+  if (typeof el.index !== "number" || typeof el.tag !== "string" || typeof el.label !== "string") return null;
+  if (!Array.isArray(el.ops) || el.ops.length === 0) return null;
+  if (el.label === "" || el.label === `${el.tag} #${el.index}`) return null;
+  const fp: ElementFingerprint = { tag: el.tag, label: el.label };
+  if (typeof el.role === "string" && el.role !== "") fp.role = el.role;
+  return fp;
+}
+
+/** SNAPSHOT_JS's internal `__modalFrames` (only present when it scoped to a
+ * modal): the `{ url, name }` of each iframe inside that modal. `null` when
+ * the snapshot wasn't modal-scoped (merge every frame as usual). */
+function extractModalFrames(result: BrowserCommandResult): { url: string; name: string }[] | null {
+  if (typeof result.modal !== "string") return null;
+  const raw = result.__modalFrames;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(isRecord).map((r) => ({
+    url: typeof r.url === "string" ? r.url : "",
+    name: typeof r.name === "string" ? r.name : "",
+  }));
+}
+
+/** Wave 2 reliability: CLICK_RESOLVE_JS reports the resolved element's busy
+ * state *before* any action ran (it performs no action itself) as an
+ * internal `__busyBefore` field — pulled out here and deleted in place, same
+ * pattern as `extractScopedBefore`/`extractTargetSelfDisabled`, so it never
+ * reaches a caller. `dispatchClick`/`dispatchType` compare it against a
+ * fresh `TARGET_BUSY_JS` read taken right after the trusted action to
+ * compute `__targetSelfDisabled` themselves, since CLICK_RESOLVE_JS can't
+ * know the outcome of an action it never performs. */
+function extractBusyBefore(result: BrowserCommandResult): boolean {
+  const raw = result.__busyBefore;
+  delete result.__busyBefore;
+  return raw === true;
+}

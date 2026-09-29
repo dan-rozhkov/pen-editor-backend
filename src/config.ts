@@ -324,6 +324,19 @@ export const envSchema = z.object({
   // These operations are fast (5-15s) but must not hold a client connection
   // open forever if fal.ai hangs — same reasoning as IMAGE_GENERATION_TIMEOUT_MS.
   FAL_TIMEOUT_MS: z.coerce.number().default(60_000),
+  // --- Cloud browser (Steel), optional: browse_* tools for the WEB build ---
+  // Unset STEEL_API_KEY = the whole feature is off (routes 503, chat gate
+  // drops browse_* for cloud clients). Spec:
+  // docs/specs/2026-09-29-cloud-browser-steel-design.md. Zod only: this file
+  // is imported by the frontend, so no SDK may enter it.
+  STEEL_API_KEY: z.string().optional(),
+  // Steel's free tier allows 10 concurrent sessions.
+  CLOUD_BROWSER_MAX_SESSIONS: z.coerce.number().int().positive().default(5),
+  // 15 min is the free-tier maximum; passed to Steel as the session timeout.
+  CLOUD_BROWSER_SESSION_TIMEOUT_MS: z.coerce.number().int().positive().default(900_000),
+  CLOUD_BROWSER_IDLE_MS: z.coerce.number().int().positive().default(300_000),
+  // New sessions per UTC day, per userId and per IP independently.
+  CLOUD_BROWSER_DAILY_SESSIONS: z.coerce.number().int().positive().default(20),
   // --- TypeSafe AI "System One" (Jev) evaluation model (optional) ---
   // Unset TYPESAFE_API_KEY = the whole feature is off (see
   // src/services/systemone.ts's createSystemOne, mirroring createEmbedder's

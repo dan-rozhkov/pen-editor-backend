@@ -218,14 +218,16 @@ export interface PrepareChatTurnInput {
    */
   opencodeApiKey?: string;
   /**
-   * What the requesting client can actually do. Currently one flag:
-   * desktopBrowser — true only when the Electron shell's built-in browser
-   * bridge (window.penDesktop.browser) is present in that session. Threaded
+   * What the requesting client can actually do. Browser: `browser` is
+   * "desktop" (Electron shell bridge present) or "cloud" (the web build,
+   * served by the backend's Steel browser — only honoured when
+   * STEEL_API_KEY is set); the legacy `desktopBrowser` boolean means
+   * "desktop" when `browser` is absent. Threaded
    * straight from chatBodySchema.clientCapabilities (src/routes/chat.ts).
    * Undefined/false → the browse_* tools are dropped below, same as any
    * other caller (the showcase runner, tests) that never wires this.
    */
-  clientCapabilities?: { desktopBrowser?: boolean };
+  clientCapabilities?: { desktopBrowser?: boolean; browser?: "desktop" | "cloud" };
 }
 
 export interface PreparedChatTurn {
@@ -1166,10 +1168,11 @@ export async function prepareChatTurn(
 
     // Structural gate: browse_open/browse_snapshot/browse_screenshot/browse_act/
     // browse_tabs/browse_find_images/browse_task/browse_read are client-executed
-    // against a browser tab that only exists inside the Electron shell
-    // (pen-editor-desktop's BrowserController, driven over
-    // window.penDesktop.browser) — a browser-hosted session has no such
-    // bridge, so offering these there could only waste a tool-call step,
+    // against a browser the client can reach: the Electron shell's tab
+    // (pen-editor-desktop's BrowserController over window.penDesktop.browser)
+    // or, for the web build, the backend's Steel cloud browser
+    // (clientCapabilities.browser === "cloud" AND STEEL_API_KEY set). A client
+    // with neither could only waste a tool-call step,
     // the same reasoning as the attach_local_repo gate just above. The flag
     // is derived once at module scope on the frontend (useDesignChat.ts) so
     // it can't vary mid-conversation and invalidate the cached tool set.
@@ -1180,7 +1183,10 @@ export async function prepareChatTurn(
     // there too when this flag is true but the model/provider/VISION_MODEL
     // combination can't carry the image) — the two gates are independent
     // and either one deleting it is sufficient.
-    if (!input.clientCapabilities?.desktopBrowser) {
+    const browserKind =
+      input.clientCapabilities?.browser ?? (input.clientCapabilities?.desktopBrowser ? "desktop" : undefined);
+    const hasBrowser = browserKind === "desktop" || (browserKind === "cloud" && Boolean(config.STEEL_API_KEY));
+    if (!hasBrowser) {
       delete tools.browse_open;
       delete tools.browse_snapshot;
       delete tools.browse_screenshot;

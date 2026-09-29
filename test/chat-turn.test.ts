@@ -399,6 +399,24 @@ describe("prepareChatTurn", () => {
       expect(turn.tools.browse_read).toBeUndefined();
     });
 
+    it.each([
+      ["browser:'desktop'", { browser: "desktop" as const }, undefined, true],
+      ["browser:'cloud' with STEEL_API_KEY", { browser: "cloud" as const }, "steel-key", true],
+      ["browser:'cloud' without STEEL_API_KEY", { browser: "cloud" as const }, undefined, false],
+      ["legacy desktopBrowser:true (no browser)", { desktopBrowser: true }, undefined, true],
+      ["browser:'cloud' overrides legacy desktopBrowser:true without a key", { browser: "cloud" as const, desktopBrowser: true }, undefined, false],
+    ])("browse_open gate: %s", async (_label, caps, steelKey, expected) => {
+      const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+      const turn = await prepareChatTurn({
+        config: makeConfig({ STEEL_API_KEY: steelKey }),
+        messages: [userMessage("find some reference images")],
+        clientCapabilities: caps,
+        modelOverride: "google/gemini-2.5-flash",
+      });
+      expect(turn.tools.browse_open !== undefined).toBe(expected);
+      expect(turn.tools.browse_act !== undefined).toBe(expected);
+    });
+
     it("is present when desktopBrowser is true", async () => {
       const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
 

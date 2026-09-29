@@ -5,11 +5,13 @@ import vitest from "@vitest/eslint-plugin";
 import { defineConfig, globalIgnores } from "eslint/config";
 
 export default defineConfig([
+  // src/browser/vendor is generated foreign code (pen-editor-desktop's controller,
+  // linted in desktop's CI) — see scripts/sync-browser-vendor.mjs.
   // .stryker-tmp holds a full sandboxed copy of the repo (its own
   // package.json/tsconfig.json) while `npm run test:mutation` is running —
   // without this, typescript-eslint's project auto-detection finds two
   // candidate tsconfig roots and every file fails to parse.
-  globalIgnores(["dist", "coverage", ".stryker-tmp"]),
+  globalIgnores(["dist", "coverage", ".stryker-tmp", "src/browser/vendor"]),
   {
     files: ["**/*.ts"],
     extends: [js.configs.recommended, tseslint.configs.recommended],

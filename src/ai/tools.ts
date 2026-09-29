@@ -1882,20 +1882,19 @@ Returns the created/updated style ids and names (with a created|updated status) 
     }),
   }),
 
-  // ── Built-in browser (desktop only) ────────────────────────────────
-  // Client-executed, and only useful inside the Electron shell: the browser
-  // tab lives in the desktop app's main process, driven over
-  // window.penDesktop.browser (see pen-editor's toolHandlers). A
-  // browser-hosted agent has no such bridge, so prepareChatTurn
-  // (src/ai/chatTurn.ts) deletes all of these unless the request's
-  // clientCapabilities.desktopBrowser flag says the bridge is actually
+  // ── Built-in browser (desktop shell or web cloud browser) ────────────────────────────────
+  // Client-executed: the browser is either the Electron shell's tab
+  // (window.penDesktop.browser, see pen-editor's toolHandlers) or, in the
+  // web build, a Steel cloud browser reached through /api/browser/*.
+  // prepareChatTurn (src/ai/chatTurn.ts) deletes all of these unless the
+  // request's clientCapabilities.browser says one of those is actually
   // there — same structural-gate shape as attach_local_repo above. They
   // stay in penTools (with no execute) purely so pen-editor's cross-repo
   // tool-name contract has a schema to check the frontend handler against.
 
   browse_open: tool({
     description:
-      "Open the built-in browser tab (a REAL browser tab in the desktop app, running on the user's OWN logged-in session — cookies and all) and navigate it to `url`, waiting for the page to finish loading. Returns `{ url, title }` with the FINAL url after any redirects, plus `snapshot` (the same shape browse_snapshot returns — `{ snapshotId, elements, scroll, truncated? }`) taken once the page has settled, so you usually don't need a separate browse_snapshot call right after opening. May also carry `botCheck: true` when the loaded page looks like a CAPTCHA/anti-bot wall (\"just a moment\", \"verify you are human\", captcha, cloudflare…) — when set, hand the task back to the user instead of trying to click through it. This is how you reach outside references the canvas can't otherwise see: a Pinterest search URL " +
+      "Open the built-in browser tab (a REAL browser tab — in the desktop app it runs on the user's OWN logged-in session, cookies and all; in the web app it is a fresh cloud browser with no logins) and navigate it to `url`, waiting for the page to finish loading. Returns `{ url, title }` with the FINAL url after any redirects, plus `snapshot` (the same shape browse_snapshot returns — `{ snapshotId, elements, scroll, truncated? }`) taken once the page has settled, so you usually don't need a separate browse_snapshot call right after opening. May also carry `botCheck: true` when the loaded page looks like a CAPTCHA/anti-bot wall (\"just a moment\", \"verify you are human\", captcha, cloudflare…) — when set, hand the task back to the user instead of trying to click through it. This is how you reach outside references the canvas can't otherwise see: a Pinterest search URL " +
       '(e.g. "https://www.pinterest.com/search/pins/?q=minimal%20fintech%20app%20ui") is the worked example — search results load as an infinite-scroll image grid you then read with browse_find_images. Once open, act on the returned `snapshot` directly with browse_act (by index or selector); take a fresh browse_snapshot/browse_screenshot only if it\'s missing or the page has since changed.',
     inputSchema: z.object({
       url: z.string().describe("The URL to navigate the browser tab to."),
@@ -2019,7 +2018,7 @@ Returns the created/updated style ids and names (with a created|updated status) 
 
   browse_tabs: tool({
     description:
-      "List, switch, close, or open browser tabs in the desktop app's browser strip. `action: \"list\"` returns every open browser tab; `\"switch\"` (needs `tabId`) makes that tab your current one for browse_act/browse_snapshot/browse_screenshot/browse_read; `\"close\"` (needs `tabId`) closes a browser tab (not the app itself); `\"new\"` opens a fresh browser tab, optionally navigating it to `url`, and makes it current. Returns `{ tabs: [{ tabId, url, title, current }], current }`. A browse_act click that opens a popup already makes that popup current (see browse_act's `openedTab`); call this with `action: \"switch\"` when you want to go back to the tab you were on before.",
+      "List, switch, close, or open browser tabs in the built-in browser. `action: \"list\"` returns every open browser tab; `\"switch\"` (needs `tabId`) makes that tab your current one for browse_act/browse_snapshot/browse_screenshot/browse_read; `\"close\"` (needs `tabId`) closes a browser tab (not the app itself); `\"new\"` opens a fresh browser tab, optionally navigating it to `url`, and makes it current. Returns `{ tabs: [{ tabId, url, title, current }], current }`. A browse_act click that opens a popup already makes that popup current (see browse_act's `openedTab`); call this with `action: \"switch\"` when you want to go back to the tab you were on before.",
     inputSchema: z.object({
       action: z.enum(["list", "switch", "close", "new"]).describe("Which tab operation to perform."),
       tabId: z

@@ -29,9 +29,9 @@ Before running any search, check whether these tools are actually available to y
 - If they are not, but `web_search`/`fetch_url` are available, use those instead for the same purpose (broad web research on the same subject, brands, and patterns) and adapt the output format below accordingly — you will not have `mobbin_url` citations or inline preview images from Mobbin, so cite whatever source you used instead.
 - If neither is available, or every call errors, say so plainly and continue with the rest of the task using your own knowledge rather than stalling on research — never call a tool that is not in your tool set.
 
-## The Built-in Browser (Desktop Only)
+## The Built-in Browser
 
-`browse_open`/`browse_snapshot`/`browse_screenshot`/`browse_act`/`browse_tabs`/`browse_find_images`/`browse_read` are also **per-client, not always present**: they only exist in this turn's tool set inside the desktop app, when its built-in browser bridge is wired up (`browse_screenshot` additionally needs a vision-capable path — see its own tool description). When they ARE available, this is a REAL browser tab running on the user's own logged-in session — not a curated catalogue, the open web. Prefer it for open-web reference hunting once Mobbin's curated screens/flows/sections aren't enough, or when Mobbin isn't connected at all.
+`browse_open`/`browse_snapshot`/`browse_screenshot`/`browse_act`/`browse_tabs`/`browse_find_images`/`browse_read` are also **per-client, not always present**: they only exist in this turn's tool set when the client has a built-in browser (the desktop app, or a cloud browser in the web app) (`browse_screenshot` additionally needs a vision-capable path — see its own tool description). When they ARE available, this is a REAL browser tab (in the desktop app, the user's own logged-in session; in the web app, a fresh cloud browser with no logins) — not a curated catalogue, the open web. Prefer it for open-web reference hunting once Mobbin's curated screens/flows/sections aren't enough, or when Mobbin isn't connected at all.
 
 ### Which browsing tool to reach for
 

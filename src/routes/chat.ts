@@ -166,7 +166,12 @@ const chatBodySchema = z.object({
   // browse_* tools unless this is true (see chatTurn.ts's gate) — a
   // browser-hosted agent has no bridge to drive them with.
   clientCapabilities: z
-    .object({ desktopBrowser: z.boolean().optional() })
+    .object({
+      desktopBrowser: z.boolean().optional(),
+      // "desktop" = Electron bridge; "cloud" = backend-hosted Steel browser
+      // (honoured only when STEEL_API_KEY is set — see chatTurn.ts's gate).
+      browser: z.enum(["desktop", "cloud"]).optional(),
+    })
     .optional(),
 });
 

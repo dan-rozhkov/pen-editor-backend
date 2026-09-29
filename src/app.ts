@@ -10,6 +10,7 @@ import { chatRoutes } from "./routes/chat.js";
 import type { AgentRetryPolicy } from "./ai/retry.js";
 import { generateImageRoutes } from "./routes/generateImage.js";
 import { falRoutes } from "./routes/fal.js";
+import { cloudBrowserRoutes, type CloudBrowserRouteOptions } from "./routes/cloudBrowser.js";
 import { vectorRoutes } from "./routes/vector.js";
 import { mcpRoutes } from "./mcp/routes.js";
 import {
@@ -44,6 +45,8 @@ import type { TraceQueryable } from "./tracing/traceStore.js";
 import { createAnalyticsClient, type AnalyticsClient } from "./analytics/posthog.js";
 
 export interface BuildAppOptions {
+  // Test seams for the cloud browser routes: fake Steel client / CDP connector.
+  cloudBrowser?: CloudBrowserRouteOptions;
   logger?: FastifyServerOptions["logger"];
   // Test seam: inject a fake trace store. `undefined` = create from config,
   // `null` = explicitly disabled.
@@ -356,6 +359,7 @@ export async function buildApp(
   await uploadRoutes(app, config);
   await generateImageRoutes(app, config, analytics);
   await falRoutes(app, config, analytics);
+  await cloudBrowserRoutes(app, config, options.cloudBrowser);
   await vectorRoutes(app, config, analytics);
   await prototypeLinkRoutes(app, config);
   await browseStepRoutes(app, config);
