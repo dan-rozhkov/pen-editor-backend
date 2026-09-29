@@ -1,4 +1,4 @@
-// VENDORED from pen-editor-desktop/src/main/browser/pageScripts.ts @ 7121ea5.
+// VENDORED from pen-editor-desktop/src/main/browser/pageScripts.ts @ 0e2d585.
 // Do not edit: regenerate with `npm run browser:sync` (scripts/sync-browser-vendor.mjs).
 // ---- end of vendor header ----
 // Scripts injected into a browser tab's real page via
@@ -203,7 +203,23 @@ const INTERACTIVE_SELECTOR_JS = `
   var INTERACTIVE_SELECTOR =
     "a[href], button, input, select, textarea, [role='button'], [role='link'], " +
     "[role='checkbox'], [role='radio'], [role='tab'], [role='menuitem'], " +
-    "[role='combobox'], [role='slider'], [onclick], [contenteditable='true']";
+    "[role='combobox'], [role='slider'], [onclick], [contenteditable='true'], " +
+    // Custom dropdowns, menus and date pickers (Google Flights' trip-type
+    // list, every React Select, a calendar's day grid): without these the
+    // agent could open the list but never see what to pick. A gridcell only
+    // counts when it is focusable or selectable — a data table's cells are
+    // not controls.
+    "[role='option'], [role='menuitemradio'], [role='menuitemcheckbox'], " +
+    "[role='switch'], [role='treeitem'], [role='gridcell'][tabindex], [role='gridcell'][aria-selected]";
+
+  // Roles whose on/off state lives in aria-checked vs aria-selected. Reported
+  // as the element table's \`checked\`: without it "One way" and "Round trip"
+  // look identical, and the agent re-picks the option that is already on.
+  var PEN_ARIA_CHECKED_ROLES = { checkbox: 1, radio: 1, switch: 1, menuitemradio: 1, menuitemcheckbox: 1 };
+  var PEN_ARIA_SELECTED_ROLES = { option: 1, gridcell: 1, tab: 1, treeitem: 1 };
+  // A disabled option / past calendar day cannot be picked; listing it only
+  // spends the element cap and invites a click that does nothing.
+  var PEN_SKIP_WHEN_ARIA_DISABLED = { option: 1, gridcell: 1, menuitemradio: 1, menuitemcheckbox: 1, treeitem: 1 };
 `;
 
 /**
@@ -2070,6 +2086,8 @@ export const SNAPSHOT_JS = `(() => {
     // Likewise a native range the user cannot move (own attribute or a
     // disabled fieldset: :disabled matches both).
     if (penIsRange(el) && el.matches(":disabled")) continue;
+    var ariaRole = (el.getAttribute("role") || "").toLowerCase();
+    if (PEN_SKIP_WHEN_ARIA_DISABLED[ariaRole] && el.getAttribute("aria-disabled") === "true") continue;
     var box = el;
     if (!isVisible(el)) {
       box = penRangeProxy(el);
@@ -2079,7 +2097,17 @@ export const SNAPSHOT_JS = `(() => {
     var isPassword = tag === "input" && (el.getAttribute("type") || "").toLowerCase() === "password";
     var ops = opsFor(el, tag);
     var rect = box.getBoundingClientRect();
-    var distance = Math.abs((rect.top + rect.bottom) / 2 - window.innerHeight / 2);
+    // 0 for anything the user can see right now, else how far it is from
+    // the viewport edge. The old "distance from the viewport CENTRE" let a
+    // dense page (Hacker News: ~6 links per row) spend the whole cap on
+    // below-the-fold rows around the middle and drop the top rows — the
+    // first thing a user reads.
+    var distance =
+      rect.bottom > 0 && rect.top < window.innerHeight
+        ? 0
+        : rect.top >= window.innerHeight
+          ? rect.top - window.innerHeight
+          : -rect.bottom;
     var entry = {
       el: el,
       box: box,
@@ -2089,7 +2117,17 @@ export const SNAPSHOT_JS = `(() => {
       ops: ops,
       isPassword: isPassword,
       distance: distance,
+      top: rect.top,
+      left: rect.left,
     };
+    if (tag !== "input") {
+      var ariaState = PEN_ARIA_CHECKED_ROLES[ariaRole]
+        ? el.getAttribute("aria-checked")
+        : PEN_ARIA_SELECTED_ROLES[ariaRole]
+          ? el.getAttribute("aria-selected")
+          : null;
+      if (ariaState === "true" || ariaState === "false") entry.checked = ariaState === "true";
+    }
     // Checked state of a checkbox/radio — without it a filter that is
     // already on looks exactly like one that is off, and the only way to
     // tell was a screenshot.
@@ -2300,13 +2338,20 @@ export const SNAPSHOT_JS = `(() => {
   // is both slow and expensive. The covered check runs lazily in that order,
   // stopping once maxElements survivors are found, so it never hit-tests the
   // long tail that would be capped away anyway.
+  function penReadingOrder(a, b) {
+    return a.top - b.top || a.left - b.left;
+  }
   found.sort(function (a, b) {
-    return a.distance - b.distance;
+    return a.distance - b.distance || penReadingOrder(a, b);
   });
   var capped = [];
   for (var cf = 0; cf < found.length && capped.length < maxElements; cf++) {
     if (!penIsCovered(found[cf].el, found[cf].box)) capped.push(found[cf]);
   }
+  // Priority decides WHAT survives the cap; the table itself follows the
+  // page, top to bottom and left to right, so "the first result" in the
+  // table is the first result on the page.
+  capped.sort(penReadingOrder);
 
   var elements = [];
   for (var idx = 0; idx < capped.length; idx++) {
