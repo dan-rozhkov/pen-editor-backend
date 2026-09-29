@@ -92,8 +92,14 @@ export function buildSystemPrompt(
 // review run (ai/selfimprove/review.ts) reuses this same `system` with its
 // own messages appended after it. A model told to look at the final message
 // would find no canvas context there and conclude there is none.
+// Constant text on purpose (prompt-cache invariant): describes the optional
+// `likedReferences` key of the canvas context, never renders its contents.
+const LIKED_REFERENCES_RULE =
+  "The canvas context may carry a `likedReferences` array (present only when non-empty): `[{ url, sourceUrl?, tool? }]` — images the user explicitly liked with the heart button in the chat, `url` being the image, `sourceUrl` its citation (e.g. a `mobbin_url`), `tool` the tool that found it. **Liked references are the user's chosen references.** They take priority over any other references you found: use them first, and for each one name the ONE quality you take from it (and one thing you leave behind) — do not average them. Do NOT ask the user which references to use or to confirm references — the likes ARE the confirmation, so carry on to generation (this replaces only questions about references; any brief your workflow asks for still applies). When likes already cover the need, skip or shrink further reference search. If a liked image is no longer visible in the conversation (tool-result images are elided after a few steps), look at it with `analyze_image` on its `url` if that tool is in your tool list; otherwise work from what you saw earlier and its `sourceUrl` — either way, do not ask the user. Unliked images remain secondary candidates.";
+
 const CANVAS_CONTEXT_POINTER =
-  "The current state of the canvas is delivered as a `<canvas_context>` block in the conversation below, not here. Always read the canvas state from the LAST such block — it is refreshed on every request, so an earlier `<canvas_context>` block, or anything stated about the canvas earlier in the conversation, may be stale. That block is usually NOT the final message: your own tool calls and their results come after it.";
+  "The current state of the canvas is delivered as a `<canvas_context>` block in the conversation below, not here. Always read the canvas state from the LAST such block — it is refreshed on every request, so an earlier `<canvas_context>` block, or anything stated about the canvas earlier in the conversation, may be stale. That block is usually NOT the final message: your own tool calls and their results come after it.\n\n" +
+  LIKED_REFERENCES_RULE;
 
 function renderSkillCatalog(skills: SkillCatalogEntry[]): string {
   const lines = skills

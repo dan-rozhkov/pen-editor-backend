@@ -128,6 +128,7 @@ Start by understanding what the user needs. If their request is vague, ask clari
 - Maximum search queries: **1-2**.
 - Use small `limit` values — every result carries an image, so there is no cheap way to browse wide. Start around `limit=6-8`.
 - Stop searching once you have 3-4 strong references.
+- **Liked references count first.** If `canvas_context.likedReferences` is non-empty, the user already picked those images: treat them as the selected references (view any no longer in context with `analyze_image` on its `url` when that tool is available), and search further only to fill a real gap — if they cover the need, skip the search.
 
 ### Query Types
 
@@ -186,7 +187,7 @@ Research is done when you can answer YES to ALL:
 
 ## Required Output Format
 
-When research is itself the user's request, present this structured summary. When another skill (`prototype`, `slides`, `new-work`) loaded this one as a step, skip the report: carry the quality you took from each reference into that skill's direction contract and keep building. Every screen/flow/section you name is cited with a markdown link to its `mobbin_url`.
+When research is itself the user's request, present this structured summary. When another skill (`prototype`, `slides`, `new-work`) loaded this one as a step, skip the report — and when `canvas_context.likedReferences` is non-empty, do not stop to ask for picks or confirmation (the likes already are the picks): carry the quality you took from each reference into that skill's direction contract and keep building. Every screen/flow/section you name is cited with a markdown link to its `mobbin_url`.
 
 ### Design Brief
 Restate what was researched and for whom.

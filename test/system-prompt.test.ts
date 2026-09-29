@@ -141,6 +141,17 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("not here");
   });
 
+  it("teaches the likedReferences channel with constant text — never interpolated per request", () => {
+    const a = buildSystemPrompt([], { canvasContextDelivered: true });
+    const b = buildSystemPrompt([], { canvasContextDelivered: true });
+    expect(a).toContain("likedReferences");
+    expect(a).toContain("analyze_image");
+    expect(a).toMatch(/Do NOT ask the user which references/);
+    expect(a).toBe(b);
+    // Not rendered at all when no canvas context is delivered.
+    expect(buildSystemPrompt()).not.toContain("likedReferences");
+  });
+
   it("omits the canvas-context pointer entirely when no context is delivered this turn", () => {
     const prompt = buildSystemPrompt();
     expect(prompt).not.toContain("## Current Canvas Context");
