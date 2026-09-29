@@ -39,6 +39,8 @@ export const elementSchema = z
     // field is already filled, which is the whole reason `value` was dropped.
     hasValue: z.boolean().optional(),
     checked: z.boolean().optional(),
+    // aria-expanded of a combobox/menu button: whether its list is open.
+    expanded: z.boolean().optional(),
     isPassword: z.boolean().optional(),
     // Browse-speed contract (2026-09-24), scroll containers: a scroll
     // container entry (`{index, tag, label, ops: [], scrollable: true}`) has

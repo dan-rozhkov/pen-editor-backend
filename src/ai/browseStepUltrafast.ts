@@ -62,6 +62,8 @@ const NEXT_ACTION_RULES = [
   "For date pickers, CLICK the field, the date, then the confirmation.",
   "Set every requested filter/control; a matching result alone does not prove a requested filter was set.",
   "Do not toggle a checkbox, switch, or radio already in the requested state.",
+  "A dropdown whose current_value already shows the requested choice is set; do not open it again.",
+  "When a list is open (expanded), CLICK the wanted option in it; clicking the dropdown itself again only closes it.",
   "Submit populated search fields (CLICK the search button, or PRESS_ENTER right after typing) before opening a result; a populated field alone is not an applied search.",
   "WAIT only when the needed control is absent/disabled, or submitted results are still loading.",
   "If Search/Submit is visible and the required fields are ready, CLICK it immediately.",
@@ -181,7 +183,8 @@ function stateElement(el: BrowseStepElement): Record<string, unknown> {
     operations: el.ops,
   };
   if (el.checked !== undefined) out.checked = el.checked;
-  else if (el.ops.includes("TYPE_TEXT") || el.ops.includes("SELECT")) out.value = currentValue(el);
+  else if (el.value !== undefined || el.ops.includes("TYPE_TEXT") || el.ops.includes("SELECT")) out.value = currentValue(el);
+  if (el.expanded !== undefined) out.expanded = el.expanded;
   if (el.isPassword) out.password = true;
   if (el.frame) out.frame = truncateLabel(el.frame, 40);
   return out;
@@ -194,6 +197,7 @@ function targetCriterion(el: BrowseStepElement, option?: string): Record<string,
   };
   if (el.checked !== undefined) out.checked = el.checked;
   else out.current_value = currentValue(el);
+  if (el.expanded !== undefined) out.expanded = el.expanded;
   return out;
 }
 

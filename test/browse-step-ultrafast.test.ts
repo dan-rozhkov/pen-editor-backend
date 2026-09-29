@@ -81,6 +81,19 @@ describe("buildUltrafastQuestions", () => {
     expect(clickTargets["4"]).toMatchObject({ checked: false });
   });
 
+  it("shows a custom dropdown's current choice and whether its list is open", () => {
+    const withCombo = buildUltrafastQuestions(
+      "the goal",
+      [{ index: 7, tag: "div", role: "combobox", label: "One way", ops: ["CLICK"], value: "One way", expanded: true }],
+      { y: 0, height: 900, atBottom: true },
+    );
+    const clickTargets = withCombo.questions.click_target.type === "choice" ? withCombo.questions.click_target.criteria : {};
+    expect(clickTargets["7"]).toMatchObject({ current_value: "One way", expanded: true });
+    const rules = JSON.stringify(withCombo.questions.operation.instructions);
+    expect(rules).toContain("already shows the requested choice is set");
+    expect(rules).toContain("When a list is open (expanded)");
+  });
+
   it("makes every unselected, non-empty <select> option its own target", () => {
     const selectTargets = built.questions.select_target.type === "choice" ? built.questions.select_target.criteria : {};
     expect(Object.keys(selectTargets)).toEqual(["3:1", "3:3"]);

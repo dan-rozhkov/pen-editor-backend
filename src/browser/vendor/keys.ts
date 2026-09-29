@@ -1,4 +1,4 @@
-// VENDORED from pen-editor-desktop/src/main/browser/keys.ts @ 0e2d585.
+// VENDORED from pen-editor-desktop/src/main/browser/keys.ts @ 2be5be8.
 // Do not edit: regenerate with `npm run browser:sync` (scripts/sync-browser-vendor.mjs).
 // ---- end of vendor header ----
 // Pure key-name parsing for `browse_act`'s "press" action (design doc

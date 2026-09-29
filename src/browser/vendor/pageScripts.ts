@@ -1,4 +1,4 @@
-// VENDORED from pen-editor-desktop/src/main/browser/pageScripts.ts @ 0e2d585.
+// VENDORED from pen-editor-desktop/src/main/browser/pageScripts.ts @ 2be5be8.
 // Do not edit: regenerate with `npm run browser:sync` (scripts/sync-browser-vendor.mjs).
 // ---- end of vendor header ----
 // Scripts injected into a browser tab's real page via
@@ -362,6 +362,17 @@ const LABEL_HELPER_JS = `
     }
 
     var text = (el.textContent || "").trim().replace(/\\s+/g, " ");
+    // A calendar day or a numbered cell reads "14" (or "14$34" with a price)
+    // while its real name — "Saturday, November 14, 2026" — sits on a child.
+    // Bare digits there made every month's 14th the same label, and the
+    // agent picked the wrong month's day.
+    if (text && !/\\p{L}{3,}/u.test(text)) {
+      var namedKids = el.querySelectorAll("[aria-label]");
+      for (var nk = 0; nk < namedKids.length; nk++) {
+        var kidName = (namedKids[nk].getAttribute("aria-label") || "").trim();
+        if (/\\p{L}{3,}/u.test(kidName)) return kidName;
+      }
+    }
     if (text) return text;
 
     var placeholder = el.getAttribute("placeholder");
@@ -2069,10 +2080,47 @@ export const SNAPSHOT_JS = `(() => {
       ) {
         return ["CLICK"];
       }
-      return ["TYPE_TEXT"];
+      // A text field is also clicked: many open a date picker or a
+      // suggestion list on click and carry no attribute saying so (Google
+      // Flights' "Departure"). Offered only TYPE_TEXT, a "click the date
+      // field" decision had no such target and landed on a neighbour.
+      if (type === "range" || type === "password") return ["TYPE_TEXT"];
+      return ["TYPE_TEXT", "CLICK"];
     }
     if (el.isContentEditable) return ["TYPE_TEXT"];
     return ["CLICK"];
+  }
+
+  var PEN_CELL_ROLES = { option: 1, gridcell: 1, menuitemradio: 1, menuitemcheckbox: 1, treeitem: 1 };
+  function penInsideSelectableCell(el) {
+    var node = el.parentElement;
+    for (var up = 0; node && up < 4; up++) {
+      if (PEN_CELL_ROLES[(node.getAttribute("role") || "").toLowerCase()]) return true;
+      node = node.parentElement;
+    }
+    return false;
+  }
+
+  // How far a box is scrolled out of its nearest scrolling ancestor (0 when
+  // it shows inside it). Scroll-ness is cached per ancestor: a year-long
+  // date picker is hundreds of candidates under the same few ancestors.
+  var penScrollableCache = new Map();
+  function penCachedScrollable(node) {
+    if (!penScrollableCache.has(node)) penScrollableCache.set(node, isScrollableContainer(node));
+    return penScrollableCache.get(node);
+  }
+  function penClippedDistance(el, rect) {
+    var node = el.parentElement;
+    while (node && node !== document.body && node !== document.documentElement) {
+      if (penCachedScrollable(node)) {
+        var cr = node.getBoundingClientRect();
+        if (rect.bottom <= cr.top) return cr.top - rect.bottom + 1;
+        if (rect.top >= cr.bottom) return rect.top - cr.bottom + 1;
+        return 0;
+      }
+      node = node.parentElement;
+    }
+    return 0;
   }
 
   // Wave 3 reliability, item 1: pierces open shadow roots.
@@ -2088,6 +2136,13 @@ export const SNAPSHOT_JS = `(() => {
     if (penIsRange(el) && el.matches(":disabled")) continue;
     var ariaRole = (el.getAttribute("role") || "").toLowerCase();
     if (PEN_SKIP_WHEN_ARIA_DISABLED[ariaRole] && el.getAttribute("aria-disabled") === "true") continue;
+    // The page itself says this control is not there (a past calendar day,
+    // an inert copy of a menu).
+    if (el.getAttribute("aria-hidden") === "true") continue;
+    // The clickable child of a listed cell/option (a day cell wrapping a
+    // role=button) would list the same day twice; the cell carries the
+    // selection state and a click on it lands on the child anyway.
+    if (penInsideSelectableCell(el)) continue;
     var box = el;
     if (!isVisible(el)) {
       box = penRangeProxy(el);
@@ -2108,6 +2163,10 @@ export const SNAPSHOT_JS = `(() => {
         : rect.top >= window.innerHeight
           ? rect.top - window.innerHeight
           : -rect.bottom;
+    // Inside the window but scrolled out of its own panel (a date picker
+    // renders a whole year in a scrolling list): not visible either. Without
+    // this the months above and below the shown one ate the cap.
+    distance = Math.max(distance, penClippedDistance(box, rect));
     var entry = {
       el: el,
       box: box,
@@ -2117,9 +2176,24 @@ export const SNAPSHOT_JS = `(() => {
       ops: ops,
       isPassword: isPassword,
       distance: distance,
+      // A day or a list option is one of many near-identical siblings: at the
+      // same visibility it yields to one-off controls, or an open calendar's
+      // days crowd its own confirm button out of the cap.
+      cell: !!PEN_CELL_ROLES[ariaRole],
       top: rect.top,
       left: rect.left,
     };
+    // Open or closed: without it "click the dropdown" and "pick from the
+    // open list" look the same, and the agent toggled a list open and shut.
+    var expandedAttr = el.getAttribute("aria-expanded");
+    if (expandedAttr === "true" || expandedAttr === "false") entry.expanded = expandedAttr === "true";
+    // A custom (non-input) combobox shows its current choice as its text —
+    // report it as the value, or "One way" reads as an unset control that
+    // still needs setting.
+    if (ariaRole === "combobox" && tag !== "input" && tag !== "select" && tag !== "textarea") {
+      var shown = (el.textContent || "").trim().replace(/\\s+/g, " ");
+      if (shown) entry.value = shown.slice(0, 100);
+    }
     if (tag !== "input") {
       var ariaState = PEN_ARIA_CHECKED_ROLES[ariaRole]
         ? el.getAttribute("aria-checked")
@@ -2342,7 +2416,7 @@ export const SNAPSHOT_JS = `(() => {
     return a.top - b.top || a.left - b.left;
   }
   found.sort(function (a, b) {
-    return a.distance - b.distance || penReadingOrder(a, b);
+    return a.distance - b.distance || Number(a.cell) - Number(b.cell) || penReadingOrder(a, b);
   });
   var capped = [];
   for (var cf = 0; cf < found.length && capped.length < maxElements; cf++) {
@@ -2372,6 +2446,7 @@ export const SNAPSHOT_JS = `(() => {
     // rule is absolute, so the signal carrying it has to leave the page.
     if (item.isPassword) out.isPassword = true;
     if (item.checked !== undefined) out.checked = item.checked;
+    if (item.expanded !== undefined) out.expanded = item.expanded;
     elements.push(out);
   }
 
