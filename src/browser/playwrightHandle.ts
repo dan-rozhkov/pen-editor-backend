@@ -29,6 +29,7 @@ class PwPage implements BrowserPageHandle {
   }
 
   private fireNav() {
+    this.titleDirty = true;
     for (const cb of this.navCbs) {
       try { cb(); } catch { /* ignore */ }
     }
@@ -101,7 +102,14 @@ class PwPage implements BrowserPageHandle {
   // change the title re-reads it from the live page before resolving (loadURL,
   // executeJavaScript); the cache is only what getTitle() falls back to when that read
   // fails mid-navigation.
+  //
+  // Only after a navigation, though: page.title() is a full round trip to the remote
+  // browser, and paying it after EVERY script doubled the cost of each command on a
+  // real Steel session (a perform is ~10 scripts, ~0.3-0.5 s per trip). fireNav() — every
+  // main-frame navigation, same-document ones included — marks the cached title stale.
+  private titleDirty = true;
   private async refreshTitle(): Promise<void> {
+    this.titleDirty = false;
     try {
       this.title = await this.page.title();
     } catch { /* navigating / closed: keep the last known title */ }
@@ -142,7 +150,7 @@ class PwPage implements BrowserPageHandle {
     try {
       return await this.page.evaluate(code);
     } finally {
-      await this.refreshTitle();
+      if (this.titleDirty) await this.refreshTitle();
     }
   }
   getURL() { return this.page.url(); }

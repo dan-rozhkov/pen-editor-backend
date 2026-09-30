@@ -58,6 +58,27 @@ describe("PlaywrightTarget", () => {
     await tick();
     expect([h.canGoBack(), h.canGoForward()]).toEqual([false, true]);
   });
+
+  it("re-reads the title after a script only when the page navigated since the last read", async () => {
+    const cdp = new FakeCdp();
+    const page = fakePage();
+    let title = "First";
+    const titleCalls = vi.fn(async () => title);
+    Object.assign(page, { title: titleCalls, evaluate: async () => 1 });
+    const target = new PlaywrightTarget(fakeContext(async () => cdp, [page]) as never);
+    const h = await target.ensurePage();
+    await h.executeJavaScript("1");
+    const afterFirst = titleCalls.mock.calls.length;
+    // Every script used to cost a second round trip to the remote browser
+    // for page.title(); with no navigation there is nothing new to read.
+    await h.executeJavaScript("1");
+    await h.executeJavaScript("1");
+    expect(titleCalls.mock.calls.length).toBe(afterFirst);
+    title = "Second";
+    cdp.emit("Page.navigatedWithinDocument", { frameId: "main" });
+    await h.executeJavaScript("1");
+    expect(h.getTitle()).toBe("Second");
+  });
 });
 
 describe("connectOverCdp", () => {
