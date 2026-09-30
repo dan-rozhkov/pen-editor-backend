@@ -537,7 +537,7 @@ export interface BrowseStepResult {
  * (never its label) for "select", and the chosen CANDIDATE'S INDEX (never
  * its text — `"none"` is a valid pick) for "text". */
 export interface BrowseStepGateDiag {
-  head: "op" | "target" | "select" | "text";
+  head: "op" | "target" | "select" | "text" | "suggestion";
   peak: number;
   threshold: number;
   jevPick: string;

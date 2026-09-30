@@ -8,6 +8,7 @@ import {
   MAX_SNAPSHOT_ELEMENTS,
   type BrowseStepInput,
 } from "../ai/browseStep.js";
+import { botWallResult, detectBotWall } from "../ai/browseCaptcha.js";
 
 // POST /api/browse/step — the backend half of the browse_task loop (see
 // docs/superpowers/specs/2026-09-18-browse-task-jev-loop-design.md §2).
@@ -181,8 +182,11 @@ export async function browseStepRoutes(
         scroll: body.scroll,
         pageText: body.pageText,
       };
-      const result =
-        config.BROWSE_STEP_POLICY === "ultrafast"
+      // Deterministic CAPTCHA guard, before either policy (no Jev call).
+      const wall = detectBotWall(input);
+      const result = wall
+        ? botWallResult(wall)
+        : config.BROWSE_STEP_POLICY === "ultrafast"
           ? await decideBrowseStepUltrafast(client, config, input)
           : await decideBrowseStep(client, config, input);
       // One line per decision so a stuck browse_task can be diagnosed from

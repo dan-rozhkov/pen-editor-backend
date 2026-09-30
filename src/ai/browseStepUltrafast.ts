@@ -72,6 +72,7 @@ const NEXT_ACTION_RULES = [
   'A recent action marked "(no effect)" changed nothing; do not repeat it unchanged.',
   "DONE requires visible evidence that ALL requirements are satisfied. If asked to open a result, a matching link is not enough.",
   "Before DONE, check that every value the goal asks for is visibly applied in the page's fields or results; a field still showing its empty placeholder means the task is not done.",
+  "Never click or interact with a CAPTCHA or an \"I'm not a robot\" check; answer BLOCKED instead.",
   "BLOCKED means no supported operation can make progress, or the page needs credentials the user must enter themselves.",
 ].join("\n");
 
@@ -226,6 +227,55 @@ function buildTargets(elements: BrowseStepElement[]): Record<TargetHead, Map<str
     }
   }
   return targets;
+}
+
+const TYPED_LABEL_RE = /^TYPE_TEXT "(.*)" into "(.*)"$/s;
+
+/** The suggestions of a field the loop JUST typed into. Typed text without a
+ * picked suggestion is discarded by sites with autocomplete, and Jev kept
+ * moving to the next field instead (live, Google Flights: typed the
+ * destination, clicked "Departure", destination stayed empty). Fires only
+ * when the newest history entry is a landed TYPE_TEXT whose field is open
+ * (aria-expanded) and the page offers role=option CLICK targets. */
+function pendingSuggestions(
+  elements: BrowseStepElement[],
+  history: BrowseStepInput["history"],
+  clickTargets: Map<string, Target>,
+): { typed: string; options: BrowseStepElement[] } | null {
+  const last = history[history.length - 1];
+  if (!last || !last.ok || last.operation !== "TYPE_TEXT") return null;
+  const parts = TYPED_LABEL_RE.exec(last.label);
+  const typed = parts?.[1] ?? "";
+  const fieldLabel = parts ? normalize(parts[2]) : "";
+  const editable = (el: BrowseStepElement) =>
+    el.expanded === true &&
+    (el.ops.includes("TYPE_TEXT") || el.role === "combobox" || el.tag === "input" || el.tag === "textarea");
+  const open = elements.filter(editable);
+  const field =
+    (last.index !== undefined ? open.find((el) => el.index === last.index) : undefined) ??
+    (fieldLabel ? open.find((el) => normalize(el.label) === fieldLabel) : undefined);
+  if (!field) return null;
+  const options = elements.filter((el) => el.role === "option" && clickTargets.has(String(el.index)));
+  return options.length > 0 ? { typed, options } : null;
+}
+
+/** The option to click: Jev's most probable click_target among the options,
+ * else the first option containing the typed text, else the first option. */
+function pickSuggestion(
+  pending: { typed: string; options: BrowseStepElement[] },
+  clickAnswer: SystemOneChoiceAnswer | null,
+): { el: BrowseStepElement; probability?: number } {
+  if (clickAnswer) {
+    let best: { el: BrowseStepElement; probability: number } | undefined;
+    for (const el of pending.options) {
+      const probability = clickAnswer.probabilities[String(el.index)] ?? 0;
+      if (probability > 0 && (!best || probability > best.probability)) best = { el, probability };
+    }
+    if (best) return best;
+  }
+  const needle = normalize(pending.typed);
+  const match = needle ? pending.options.find((el) => normalize(el.label).includes(needle)) : undefined;
+  return { el: match ?? pending.options[0] };
 }
 
 const TARGET_QUESTION_ID: Record<TargetHead, string> = {
@@ -414,6 +464,32 @@ export async function decideBrowseStepUltrafast(
     return finish(
       blocked("refusing to press Enter while a password field is present on the page — the user must log in themselves", model, confidence),
     );
+  }
+
+  // Pending-suggestion gate: right after typing into a field that now shows
+  // suggestions, only a suggestion click (or Enter / WAIT) may follow.
+  const pending = pendingSuggestions(elements, input.history, targets.CLICK);
+  if (pending && operation !== "PRESS_ENTER" && operation !== "WAIT") {
+    const clickAnswer = choiceAnswer(answers[TARGET_QUESTION_ID.CLICK]);
+    const jevTarget = operation === "CLICK" ? clickAnswer?.choice : undefined;
+    const jevIsOption = jevTarget !== undefined && pending.options.some((el) => String(el.index) === jevTarget);
+    if (!jevIsOption) {
+      const picked = pickSuggestion(pending, clickAnswer);
+      gates.push({
+        head: "suggestion",
+        peak: picked.probability ?? 0,
+        threshold: 0,
+        jevPick: operation === "CLICK" ? (jevTarget ?? "none") : operation,
+      });
+      return finish({
+        outcome: "act",
+        operation: "CLICK",
+        index: picked.el.index,
+        confidence: picked.probability ?? confidence,
+        model,
+        reason: "picked the suggestion for the text just typed",
+      });
+    }
   }
 
   const head = targetHeadFor(operation);

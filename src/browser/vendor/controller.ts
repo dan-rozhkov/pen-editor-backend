@@ -1,4 +1,4 @@
-// VENDORED from pen-editor-desktop/src/main/browser/controller.ts @ 2be5be8.
+// VENDORED from pen-editor-desktop/src/main/browser/controller.ts @ 318303f.
 // Do not edit: regenerate with `npm run browser:sync` (scripts/sync-browser-vendor.mjs).
 // ---- end of vendor header ----
 // The built-in browser's command surface (design doc
@@ -38,6 +38,8 @@ import {
   SIGNATURE_JS,
   READ_JS,
   TARGET_BUSY_JS,
+  AUTOCOMPLETE_STATE_JS,
+  DISMISS_DIALOG_STATE_JS,
   CURSOR_JS,
   MARKS_JS,
   REMOVE_MARKS_JS,
@@ -64,6 +66,8 @@ const SCRIPT_TEMPLATES = {
   PERFORM_JS,
   READ_JS,
   TARGET_BUSY_JS,
+  AUTOCOMPLETE_STATE_JS,
+  DISMISS_DIALOG_STATE_JS,
   CURSOR_JS,
   MARKS_JS,
   REMOVE_MARKS_JS,
@@ -200,6 +204,38 @@ function isPageSignature(value: unknown): value is PageSignature {
  * dead one both reported changed: false. Short, because unlike a click
  * there is no navigation to wait for, just a paint/reflow. */
 const NON_CLICK_SETTLE_MS = 50;
+
+/** After a type into an autocomplete-style field (role=combobox,
+ * aria-autocomplete, aria-haspopup=listbox): the suggestions are fetched
+ * asynchronously behind a debounce, so the 50ms settle above returns before
+ * any `role=option` exists and the next snapshot never offers the
+ * suggestion (Google Flights "Where to?"). `settleAutocomplete` polls every
+ * AUTOCOMPLETE_POLL_INTERVAL_MS until the visible options are present and
+ * unchanged across two polls, bounded by AUTOCOMPLETE_SETTLE_MS (and the
+ * command's own deadline) so a field that never suggests anything costs at
+ * most that much. Plain fields pay one cheap probe and no wait. */
+export const AUTOCOMPLETE_SETTLE_MS = 2_000;
+const AUTOCOMPLETE_POLL_INTERVAL_MS = 100;
+
+/** A click whose effect lands after the settle: the site animates the
+ * change behind a CSS transition / `setTimeout` (Google Flights' calendar
+ * "Done" hides its dialog ~300 ms after the click), so the after-capture
+ * taken at ~540 ms saw nothing and the step was recorded "(no effect)".
+ * When a same-URL click diffs as `changed: false`, `captureClickEffect`
+ * re-captures every LATE_CLICK_POLL_MS until something changed or
+ * LATE_CLICK_EFFECT_MS elapsed (also bounded by the command deadline). A
+ * click that changes anything at once pays no extra wait. */
+export const LATE_CLICK_EFFECT_MS = 800;
+const LATE_CLICK_POLL_MS = 150;
+
+/** After a click on a dialog-dismissing control (REVEAL_TARGET_JS's
+ * `dismissDialog`), `settleDialogDismiss` polls every DIALOG_DISMISS_POLL_MS
+ * until the dialog is hidden/detached, capped by DIALOG_DISMISS_SETTLE_MS:
+ * while a closing dialog is still mounted the next snapshot scopes to it as
+ * `modal` and hides the page behind it. A click that dismisses nothing (a
+ * day cell, anything outside a dialog) never polls. */
+export const DIALOG_DISMISS_SETTLE_MS = 1_000;
+const DIALOG_DISMISS_POLL_MS = 100;
 
 /** Spec `2026-09-18-browse-task-jev-loop-design.md` §1: the element table is
  * the whole request payload for /api/browse/step, so an uncapped snapshot on
@@ -1398,7 +1434,7 @@ export class BrowserController {
         this.timeoutMs + this.cursorBudgetMs,
       );
     }
-    return this.withCommandTimeout(() => this.runClick(target), this.timeoutMs + this.cursorBudgetMs);
+    return this.withCommandTimeout((deadlineAt) => this.runClick(target, deadlineAt), this.timeoutMs + this.cursorBudgetMs);
   }
 
   /** Wave 2 reliability, item 1: performs a click via trusted CDP mouse
@@ -1463,11 +1499,67 @@ export class BrowserController {
   private async revealTarget(
     page: BrowserPageHandle,
     locateArgs: { target?: string; index?: number; snapshotId?: string },
-  ): Promise<void> {
+  ): Promise<boolean> {
     try {
-      await this.executeScript(page, "REVEAL_TARGET_JS", locateArgs);
+      const revealed = await this.executeScript(page, "REVEAL_TARGET_JS", locateArgs);
+      return revealed.dismissDialog === true;
     } catch {
       // Best-effort.
+      return false;
+    }
+  }
+
+  /** Waits for the dialog a dismissing click (REVEAL_TARGET_JS's
+   * `dismissDialog`) is closing — see DIALOG_DISMISS_SETTLE_MS. Probes at
+   * once (an already-closed dialog costs one probe), then every
+   * DIALOG_DISMISS_POLL_MS. Best-effort: a throwing/malformed probe, the cap
+   * or the command deadline just ends the wait. Returns true only when the
+   * probe saw the dialog closed — the caller then reports that as the click's
+   * effect (the dismissed button's own signature rarely moves once hidden). */
+  private async settleDialogDismiss(page: BrowserPageHandle, deadlineAt: number): Promise<boolean> {
+    const until = Math.min(Date.now() + DIALOG_DISMISS_SETTLE_MS, deadlineAt);
+    while (true) {
+      try {
+        const state = await this.executeScript(page, "DISMISS_DIALOG_STATE_JS", {});
+        if ("error" in state) return false;
+        if (state.closed !== false) return state.closed === true;
+      } catch {
+        return false;
+      }
+      if (Date.now() + DIALOG_DISMISS_POLL_MS >= until) return false;
+      await new Promise((resolve) => setTimeout(resolve, DIALOG_DISMISS_POLL_MS));
+    }
+  }
+
+  /** The click's after-capture + diff, with the late-effect re-check (see
+   * LATE_CLICK_EFFECT_MS). The first capture is a `keep` peek whenever the
+   * click stayed on the same URL, so SIGNATURE_JS's MutationObserver keeps
+   * accumulating dom/text evidence across re-checks; the last capture (the
+   * one that found a change, or the final poll at the cap) is non-`keep`
+   * and tears it down. `dialogClosed` (settleDialogDismiss saw the dismissed
+   * dialog go away) is itself the effect: the capture is then final, and a
+   * diff that found nothing else is reported `changed` with a "dialog" entry. A click that already changed something, or navigated,
+   * returns after the single capture it always did — and leaves the observer
+   * running only until the next "before" capture replaces it. */
+  private async captureClickEffect(
+    page: BrowserPageHandle,
+    before: PageSignature | null,
+    previousUrl: string,
+    scopedBefore: ScopedSignature | null,
+    deadlineAt: number,
+    dialogClosed = false,
+  ): Promise<EffectEvidence> {
+    const until = Math.min(Date.now() + LATE_CLICK_EFFECT_MS, deadlineAt);
+    while (true) {
+      const currentUrl = page.getURL();
+      const keep = !dialogClosed && currentUrl === previousUrl && Date.now() + LATE_CLICK_POLL_MS < until;
+      const after = await this.captureSignature(page, "after", keep);
+      const evidence = this.diffSignatures(before, after, { previousUrl, currentUrl: page.getURL(), scopedBefore });
+      if (dialogClosed && !evidence.changed) return { ...evidence, changed: true, changes: [...evidence.changes, "dialog"] };
+      // No "before" (or "after") evidence to re-compare against: nothing a
+      // re-check could add.
+      if (evidence.changed || !keep || !before || !after) return evidence;
+      await new Promise((resolve) => setTimeout(resolve, LATE_CLICK_POLL_MS));
     }
   }
 
@@ -1550,6 +1642,12 @@ export class BrowserController {
    * (TYPE_JS/PERFORM_JS's TYPE_TEXT branch) otherwise — mirrors
    * `dispatchClick`'s structure and reasoning.
    *
+   * Typing follows the focus the click moved: when the trusted click opens
+   * an overlay and focuses a *different* editable, SELECT_ALL_CONTENT_JS
+   * (`followFocus`) and READ_TARGET_VALUE_JS re-stamp that field as the
+   * target instead of pulling focus back; the result then carries
+   * `retargeted: true` (still `via: "cdp"`, no legacy fallback).
+   *
    * Focus is attempted two ways in sequence, not either/or: a trusted CDP
    * click at the resolved point (when the hit-test passed and a CDP session
    * exists) *and then* `SELECT_ALL_CONTENT_JS`'s own `el.focus()` — the CDP
@@ -1602,9 +1700,14 @@ export class BrowserController {
       return this.legacyTypeFallback(page, locateArgs, text, deadlineAt);
     }
 
-    const scopedBefore = extractScopedBefore(located);
+    let scopedBefore = extractScopedBefore(located);
     const busyBefore = extractBusyBefore(located);
 
+    // "Typing follows the focus the click moved": only a click that really
+    // landed can have moved focus (e.g. opened an overlay with its own
+    // input), so only then may SELECT_ALL_CONTENT_JS / the verify adopt a
+    // different focused field. Without a trusted click behaviour is unchanged.
+    let clickDispatched = false;
     if (located.hitOk === true) {
       try {
         const x = located.x as number;
@@ -1612,6 +1715,7 @@ export class BrowserController {
         await page.sendCdp("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "none" });
         await page.sendCdp("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
         await page.sendCdp("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
+        clickDispatched = true;
       } catch {
         // Fall through — SELECT_ALL_CONTENT_JS's own el.focus() below is
         // still attempted even if the trusted click itself failed.
@@ -1620,11 +1724,17 @@ export class BrowserController {
 
     let selectResult: BrowserCommandResult;
     try {
-      selectResult = await this.executeScript(page, "SELECT_ALL_CONTENT_JS", {});
+      selectResult = await this.executeScript(page, "SELECT_ALL_CONTENT_JS", { followFocus: clickDispatched });
     } catch (err) {
       return errorResult(`Failed to focus target before typing: ${toMessage(err)}`);
     }
     if ("error" in selectResult) return selectResult;
+    // The click opened a different field and focus is there: the stamp moved
+    // with it, so the change is measured against THAT field's own
+    // before-signature (the original's is meaningless for the diff).
+    let retargeted = selectResult.retargeted === true;
+    const retargetedBefore = extractScopedBefore(selectResult);
+    if (retargeted && retargetedBefore) scopedBefore = retargetedBefore;
     if (selectResult.editable !== true) {
       return this.legacyTypeFallback(page, locateArgs, text, deadlineAt);
     }
@@ -1648,6 +1758,14 @@ export class BrowserController {
     if ("error" in verify || verify.matches !== true) {
       return this.legacyTypeFallback(page, locateArgs, text, deadlineAt);
     }
+    // Focus moved AFTER the select step (slow overlay): the text landed in
+    // the new field and the verify adopted it — same outcome, no legacy
+    // fallback (which would write into the original covered field too).
+    if (verify.retargeted === true) {
+      retargeted = true;
+      const verifyBefore = extractScopedBefore(verify);
+      if (verifyBefore) scopedBefore = verifyBefore;
+    }
 
     let busyAfter = busyBefore;
     try {
@@ -1662,6 +1780,7 @@ export class BrowserController {
       title: page.getTitle(),
       matched: located.matched,
       via: "cdp",
+      ...(retargeted ? { retargeted: true } : {}),
       __scopedBefore: scopedBefore,
       __targetSelfDisabled: !busyBefore && busyAfter,
     };
@@ -2100,7 +2219,7 @@ export class BrowserController {
    * so diffSignatures can compare it against the same element's after
    * state, the real evidence on a page whose whole-document dom/text moves
    * on its own. */
-  private async runClick(target: string): Promise<BrowserCommandResult> {
+  private async runClick(target: string, deadlineAt: number): Promise<BrowserCommandResult> {
     const page = this.target.currentPage();
     if (!page) return errorResult("No browser tab is open — call browse_open first.");
     const previousUrl = page.getURL();
@@ -2112,7 +2231,7 @@ export class BrowserController {
     // Before the before-signature capture, deliberately — see CURSOR_JS's
     // doc comment (pageScripts.ts) for why the overlay's own DOM/scroll
     // footprint must never land between the two evidence-of-effect captures.
-    await this.revealTarget(page, { target });
+    const dismissDialog = await this.revealTarget(page, { target });
     await this.moveCursor(page, { action: "click", target });
     const before = await this.captureSignature(page, "before");
     // Armed/captured before CLICK_JS runs — Wave 1 speed: a navigation, or a
@@ -2137,14 +2256,15 @@ export class BrowserController {
       // here. It returns immediately when nothing is loading.
       await this.waitForLoadStop(page, CLICK_LOAD_SETTLE_TIMEOUT_MS);
     }
-    const after = await this.captureSignature(page, "after");
+    const dialogClosed = dismissDialog && (await this.settleDialogDismiss(page, deadlineAt));
+    const evidence = await this.captureClickEffect(page, before, previousUrl, scopedBefore, deadlineAt, dialogClosed);
     const currentUrl = page.getURL();
     const openedTab = await this.detectOpenedTab(tabsBefore);
     const merged: BrowserCommandResult = {
       ...result,
       url: currentUrl,
       title: page.getTitle(),
-      ...this.diffSignatures(before, after, { previousUrl, currentUrl, scopedBefore }),
+      ...evidence,
     };
     if (openedTab) merged.openedTab = openedTab;
     return merged;
@@ -2949,7 +3069,8 @@ export class BrowserController {
         // the same treatment as a target-based one.
         const tabsBefore = await this.listPagesSafe();
         // Before the before-signature capture — see runClick's comment.
-        if (frameRoute.frameId === null) await this.revealTarget(page, { index, snapshotId });
+        const dismissDialog =
+          frameRoute.frameId === null ? await this.revealTarget(page, { index, snapshotId }) : false;
         await this.moveCursor(page, { action: "click", snapshotId, index, point: cursorPoint });
         const before = await this.captureSignature(page, "before");
         // Armed/captured before the click runs — see runClick's comment.
@@ -2978,14 +3099,15 @@ export class BrowserController {
           // See runClick: the navigation can start after the busy wait.
           await this.waitForLoadStop(page, CLICK_LOAD_SETTLE_TIMEOUT_MS);
         }
-        const after = await this.captureSignature(page, "after");
+        const dialogClosed = dismissDialog && (await this.settleDialogDismiss(page, deadlineAt));
+        const evidence = await this.captureClickEffect(page, before, previousUrl, scopedBefore, deadlineAt, dialogClosed);
         const currentUrl = page.getURL();
         const openedTab = await this.detectOpenedTab(tabsBefore);
         const merged: BrowserCommandResult = {
           ...result,
           url: currentUrl,
           title: page.getTitle(),
-          ...this.diffSignatures(before, after, { previousUrl, currentUrl, scopedBefore }),
+          ...evidence,
         };
         if (openedTab) merged.openedTab = openedTab;
         return merged;
@@ -3008,6 +3130,7 @@ export class BrowserController {
         const scopedBefore = extractScopedBefore(result);
         const selfDisabled = extractTargetSelfDisabled(result);
         await this.settleShort();
+        await this.settleAutocomplete(page, frameRoute.frameId, deadlineAt);
         if (selfDisabled) await this.settleWhileTargetBusy(page);
         const after = await this.captureSignature(page, "after");
         return { ...result, ...this.diffSignatures(before, after, { scopedBefore }) };
@@ -3110,9 +3233,43 @@ export class BrowserController {
     const scopedBefore = extractScopedBefore(result);
     const selfDisabled = extractTargetSelfDisabled(result);
     await this.settleShort();
+    await this.settleAutocomplete(page, null, deadlineAt);
     if (selfDisabled) await this.settleWhileTargetBusy(page);
     const after = await this.captureSignature(page, "after");
     return { ...result, ...this.diffSignatures(before, after, { scopedBefore }) };
+  }
+
+  /** Waits for an autocomplete field's suggestions after a successful type —
+   * see AUTOCOMPLETE_SETTLE_MS. Probes the stamped target
+   * (`AUTOCOMPLETE_STATE_JS`; after "typing follows the focus" that is the
+   * field the text actually landed in) and returns at once for anything that
+   * is not autocomplete-style. Otherwise polls until the visible option
+   * count + label hash is non-zero and equal across two consecutive polls —
+   * one poll can still be the stale pre-typing list, two equal ones with
+   * the debounce elapsed rarely are. Best-effort: a throwing or malformed
+   * script, the cap, or the command deadline just ends the wait (the type
+   * itself already succeeded), and nothing is added to the result. */
+  private async settleAutocomplete(page: BrowserPageHandle, frameId: number | null, deadlineAt: number): Promise<void> {
+    const until = Math.min(Date.now() + AUTOCOMPLETE_SETTLE_MS, deadlineAt);
+    let previous: string | null = null;
+    while (true) {
+      let state: BrowserCommandResult;
+      try {
+        state =
+          frameId === null
+            ? await this.executeScript(page, "AUTOCOMPLETE_STATE_JS", {})
+            : await this.executeScriptInFrame(page, frameId, "AUTOCOMPLETE_STATE_JS", {});
+      } catch {
+        return;
+      }
+      if ("error" in state || state.autocomplete !== true) return;
+      const options = typeof state.options === "number" ? state.options : 0;
+      const key = `${options}:${String(state.hash)}`;
+      if (options > 0 && key === previous) return;
+      previous = key;
+      if (Date.now() + AUTOCOMPLETE_POLL_INTERVAL_MS >= until) return;
+      await new Promise((resolve) => setTimeout(resolve, AUTOCOMPLETE_POLL_INTERVAL_MS));
+    }
   }
 
   /** Wave 3 reliability, item 4: runs BOT_CHECK_JS after `open` settles and
@@ -3329,10 +3486,16 @@ export class BrowserController {
    * Review finding 4: SIGNATURE_JS now takes `phase` (via ARGS_MARKER, like
    * every other script here) — it needs to know "before" from "after" to
    * coordinate the `data-pen-sig-mainimg`/`data-pen-sig-target` identity
-   * markers across the two calls (see SIGNATURE_JS's doc comment). */
-  private async captureSignature(page: BrowserPageHandle, phase: "before" | "after"): Promise<PageSignature | null> {
+   * markers across the two calls (see SIGNATURE_JS's doc comment). `keep`
+   * (an "after" peek, see captureClickEffect) leaves the dom/text observer
+   * and its state running for a later capture. */
+  private async captureSignature(
+    page: BrowserPageHandle,
+    phase: "before" | "after",
+    keep = false,
+  ): Promise<PageSignature | null> {
     try {
-      const code = SIGNATURE_JS.replace(ARGS_MARKER, () => JSON.stringify({ phase }));
+      const code = SIGNATURE_JS.replace(ARGS_MARKER, () => JSON.stringify(keep ? { phase, keep } : { phase }));
       const result = await page.executeJavaScript(code);
       return isPageSignature(result) ? result : null;
     } catch {

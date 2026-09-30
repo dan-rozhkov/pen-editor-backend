@@ -218,3 +218,92 @@ describe("decideBrowseStepUltrafast", () => {
     expect(result.reason).toContain("boom");
   });
 });
+
+describe("pending-suggestion gate", () => {
+  const SUGGEST: BrowseStepElement[] = [
+    { index: 0, tag: "input", role: "combobox", label: "Where to?", ops: ["TYPE_TEXT", "CLICK"], value: "Barcelona", expanded: true },
+    { index: 1, tag: "input", label: "Departure", ops: ["CLICK", "TYPE_TEXT"], value: "" },
+    { index: 2, tag: "li", role: "option", label: "Madrid, Spain", ops: ["CLICK"] },
+    { index: 3, tag: "li", role: "option", label: "Barcelona, Spain", ops: ["CLICK"] },
+    { index: 4, tag: "li", role: "option", label: "Barcelona-El Prat Airport (BCN)", ops: ["CLICK"] },
+  ];
+  const TYPED = [{ operation: "TYPE_TEXT", label: 'TYPE_TEXT "Barcelona" into "Where to?"', ok: true, index: 0 }];
+  const probs = { "0": 0.05, "1": 0.4, "2": 0.05, "3": 0.3, "4": 0.2 };
+  const run = (answers: Record<string, SystemOneAnswer>, overrides: Partial<BrowseStepInput> = {}) =>
+    decide(answers, { elements: SUGGEST, history: TYPED, ...overrides });
+
+  it("overrides a click on another field with the best-scoring suggestion", async () => {
+    const { result } = await run({
+      operation: choice("CLICK", 0.5),
+      click_target: choice("1", 0.4, { probabilities: probs }),
+    });
+    expect(result).toMatchObject({ outcome: "act", operation: "CLICK", index: 3, confidence: 0.3 });
+    expect(result.reason).toContain("suggestion");
+    expect(result.diag?.gates).toContainEqual(expect.objectContaining({ head: "suggestion", jevPick: "1" }));
+  });
+
+  it("overrides a non-click operation too", async () => {
+    const { result } = await run({
+      operation: choice("SCROLL_DOWN", 0.6),
+      click_target: choice("1", 0.4, { probabilities: probs }),
+    });
+    expect(result).toMatchObject({ operation: "CLICK", index: 3 });
+  });
+
+  it("falls back to the option containing the typed text when probabilities are unusable", async () => {
+    const { result } = await run({
+      operation: choice("CLICK", 0.5),
+      click_target: choice("1", 0.4, { probabilities: { "1": 1 } }),
+    });
+    expect(result).toMatchObject({ operation: "CLICK", index: 3 });
+  });
+
+  it("leaves a suggestion pick alone", async () => {
+    const { result } = await run({
+      operation: choice("CLICK", 0.5),
+      click_target: choice("4", 0.4, { probabilities: probs }),
+    });
+    expect(result).toMatchObject({ operation: "CLICK", index: 4 });
+    expect(result.diag?.gates.some((g) => g.head === "suggestion")).toBe(false);
+  });
+
+  it("lets PRESS_ENTER and WAIT through", async () => {
+    for (const op of ["PRESS_ENTER", "WAIT"]) {
+      const { result } = await run({ operation: choice(op, 0.6), click_target: choice("1", 0.4, { probabilities: probs }) });
+      expect(result).toMatchObject({ outcome: "act", operation: op });
+    }
+  });
+
+  it("does nothing when the last action was not a landed TYPE_TEXT", async () => {
+    const answers = { operation: choice("CLICK", 0.5), click_target: choice("1", 0.4, { probabilities: probs }) };
+    for (const history of [
+      [{ ...TYPED[0], ok: false }],
+      [{ operation: "CLICK", label: 'CLICK "Where to?"', ok: true, index: 0 }],
+      [...TYPED, { operation: "CLICK", label: 'CLICK "Departure"', ok: true, index: 1 }],
+    ]) {
+      const { result } = await run(answers, { history });
+      expect(result).toMatchObject({ operation: "CLICK", index: 1 });
+    }
+  });
+
+  it("does nothing without an expanded field or without options", async () => {
+    const answers = { operation: choice("CLICK", 0.5), click_target: choice("1", 0.4, { probabilities: probs }) };
+    const closed = SUGGEST.map((el) => (el.index === 0 ? { ...el, expanded: false } : el));
+    expect((await run(answers, { elements: closed })).result).toMatchObject({ index: 1 });
+    const noOptions = SUGGEST.filter((el) => el.role !== "option");
+    expect((await run(answers, { elements: noOptions })).result).toMatchObject({ index: 1 });
+  });
+
+  it("matches the typed field by label when the history carries no index", async () => {
+    const { result } = await run(
+      { operation: choice("CLICK", 0.5), click_target: choice("1", 0.4, { probabilities: probs }) },
+      { history: [{ operation: "TYPE_TEXT", label: 'TYPE_TEXT "Barcelona" into "Where to?"', ok: true }] },
+    );
+    expect(result).toMatchObject({ operation: "CLICK", index: 3 });
+  });
+
+  it("keeps the terminal gate semantics", async () => {
+    const { result } = await run({ operation: choice("DONE", 0.9), click_target: choice("1", 0.4, { probabilities: probs }) });
+    expect(result.outcome).toBe("done");
+  });
+});
