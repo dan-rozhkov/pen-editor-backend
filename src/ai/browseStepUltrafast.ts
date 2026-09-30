@@ -229,24 +229,68 @@ function buildTargets(elements: BrowseStepElement[]): Record<TargetHead, Map<str
   return targets;
 }
 
-const TYPED_LABEL_RE = /^TYPE_TEXT "(.*)" into "(.*)"$/s;
+/** Parses the frontend's history label (pen-editor browseTask.ts):
+ * `TYPE_TEXT "<text, cut to 60 chars with a trailing …>" into "<field label>"`
+ * followed by optional side-effect / `(page updated: "…")` suffixes — so
+ * nothing is anchored to the end of the string. The typed text ends at the
+ * first `" into "`; the field label at the first quote followed by
+ * whitespace or the end. A trailing "…" marks truncation (typed is a prefix). */
+function parseTypedLabel(label: string): { typed: string; truncated: boolean; fieldLabel: string } | null {
+  const head = /^TYPE_TEXT "/.exec(label);
+  if (!head) return null;
+  const sep = label.indexOf('" into "', head[0].length);
+  if (sep < 0) return null;
+  let typed = label.slice(head[0].length, sep);
+  const truncated = typed.endsWith("…");
+  if (truncated) typed = typed.slice(0, -1);
+  const rest = label.slice(sep + '" into "'.length);
+  const fieldLabel = /^(.*?)"(?=\s|$)/s.exec(rest)?.[1] ?? "";
+  return { typed, truncated, fieldLabel };
+}
+
+/** Lowercase, diacritics stripped, whitespace collapsed. */
+function fold(text: string): string {
+  return normalize(text.normalize("NFD").replace(/[\u0300-\u036f]/g, ""));
+}
+
+/** An option plausibly matches the typed text when its label contains the
+ * whole typed text, or any typed word of >= 3 chars (case/diacritic
+ * insensitive). Deliberately loose but never unrelated: "Madrid" does not
+ * match typed "Barcelona". */
+function matchesTyped(optionLabel: string, typed: string): boolean {
+  const needle = fold(typed);
+  if (!needle) return false;
+  const hay = fold(optionLabel);
+  if (hay.includes(needle)) return true;
+  return needle
+    .split(/[^\p{L}\p{N}]+/u)
+    .some((word) => word.length >= 3 && hay.includes(word));
+}
+
+interface PendingSuggestions {
+  typed: string;
+  field: BrowseStepElement;
+  /** Options that plausibly match the typed text, in snapshot order. */
+  options: BrowseStepElement[];
+}
 
 /** The suggestions of a field the loop JUST typed into. Typed text without a
  * picked suggestion is discarded by sites with autocomplete, and Jev kept
  * moving to the next field instead (live, Google Flights: typed the
  * destination, clicked "Departure", destination stayed empty). Fires only
  * when the newest history entry is a landed TYPE_TEXT whose field is open
- * (aria-expanded) and the page offers role=option CLICK targets. */
+ * (aria-expanded) and at least one role=option CLICK target matches the
+ * typed text — unrelated/persistent option lists never trigger the gate. */
 function pendingSuggestions(
   elements: BrowseStepElement[],
   history: BrowseStepInput["history"],
   clickTargets: Map<string, Target>,
-): { typed: string; options: BrowseStepElement[] } | null {
+): PendingSuggestions | null {
   const last = history[history.length - 1];
   if (!last || !last.ok || last.operation !== "TYPE_TEXT") return null;
-  const parts = TYPED_LABEL_RE.exec(last.label);
-  const typed = parts?.[1] ?? "";
-  const fieldLabel = parts ? normalize(parts[2]) : "";
+  const parts = parseTypedLabel(last.label);
+  if (!parts || !parts.typed) return null;
+  const fieldLabel = normalize(parts.fieldLabel);
   const editable = (el: BrowseStepElement) =>
     el.expanded === true &&
     (el.ops.includes("TYPE_TEXT") || el.role === "combobox" || el.tag === "input" || el.tag === "textarea");
@@ -255,14 +299,16 @@ function pendingSuggestions(
     (last.index !== undefined ? open.find((el) => el.index === last.index) : undefined) ??
     (fieldLabel ? open.find((el) => normalize(el.label) === fieldLabel) : undefined);
   if (!field) return null;
-  const options = elements.filter((el) => el.role === "option" && clickTargets.has(String(el.index)));
-  return options.length > 0 ? { typed, options } : null;
+  const options = elements.filter(
+    (el) => el.role === "option" && clickTargets.has(String(el.index)) && matchesTyped(el.label, parts.typed),
+  );
+  return options.length > 0 ? { typed: parts.typed, field, options } : null;
 }
 
-/** The option to click: Jev's most probable click_target among the options,
- * else the first option containing the typed text, else the first option. */
+/** The option to click among the (already matching) candidates: Jev's most
+ * probable click_target, else the first in snapshot order. */
 function pickSuggestion(
-  pending: { typed: string; options: BrowseStepElement[] },
+  pending: PendingSuggestions,
   clickAnswer: SystemOneChoiceAnswer | null,
 ): { el: BrowseStepElement; probability?: number } {
   if (clickAnswer) {
@@ -273,9 +319,7 @@ function pickSuggestion(
     }
     if (best) return best;
   }
-  const needle = normalize(pending.typed);
-  const match = needle ? pending.options.find((el) => normalize(el.label).includes(needle)) : undefined;
-  return { el: match ?? pending.options[0] };
+  return { el: pending.options[0] };
 }
 
 const TARGET_QUESTION_ID: Record<TargetHead, string> = {
@@ -467,13 +511,16 @@ export async function decideBrowseStepUltrafast(
   }
 
   // Pending-suggestion gate: right after typing into a field that now shows
-  // suggestions, only a suggestion click (or Enter / WAIT) may follow.
+  // matching suggestions, only PRESS_ENTER / WAIT / PRESS_ESCAPE, retyping
+  // into the SAME field, or a click on a matching suggestion may follow.
   const pending = pendingSuggestions(elements, input.history, targets.CLICK);
-  if (pending && operation !== "PRESS_ENTER" && operation !== "WAIT") {
+  if (pending && operation !== "PRESS_ENTER" && operation !== "WAIT" && operation !== "PRESS_ESCAPE") {
     const clickAnswer = choiceAnswer(answers[TARGET_QUESTION_ID.CLICK]);
     const jevTarget = operation === "CLICK" ? clickAnswer?.choice : undefined;
     const jevIsOption = jevTarget !== undefined && pending.options.some((el) => String(el.index) === jevTarget);
-    if (!jevIsOption) {
+    const typeAnswer = operation === "TYPE_TEXT" ? choiceAnswer(answers[TARGET_QUESTION_ID.TYPE_TEXT]) : null;
+    const retypesSameField = typeAnswer !== null && typeAnswer.choice === String(pending.field.index);
+    if (!jevIsOption && !retypesSameField) {
       const picked = pickSuggestion(pending, clickAnswer);
       gates.push({
         head: "suggestion",

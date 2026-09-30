@@ -12,10 +12,16 @@ import type { BrowseStepInput, BrowseStepResult } from "./browseStep.js";
 //  strong: URL host google.<tld> with path /sorry/…; URL path segment
 //          /cdn-cgi/challenge-platform;
 //          an interactive element labelled "I'm not a robot" / "I am not a
-//          robot" / "Verify you are human" / "Press and hold";
+//          robot" / "Verify you are human" — but ONLY on a wall-like page
+//          (<= WALL_MAX_ELEMENTS non-frame elements). Ordinary contact/signup
+//          forms embed the reCAPTCHA v2 checkbox; on a bigger page the same
+//          control is a weak signal that shares the "captcha-widget" name
+//          with the widget signal, so the embedded checkbox alone never
+//          reaches two distinct weak signals;
 //          page text "unusual traffic from your computer network" or
 //          "our systems have detected unusual traffic".
-//  weak:   URL path segment `captcha`/`recaptcha`/`hcaptcha` (weak because
+//  weak:   an element labelled "Press and hold" (voice-record buttons);
+//          URL path segment `captcha`/`recaptcha`/`hcaptcha` (weak because
 //          an article URL like /wiki/CAPTCHA is legitimate); page text "verify you are human", "complete the security check",
 //          "are you a robot", "checking your browser before accessing";
 //          title "Just a moment..." / "Attention Required! | Cloudflare";
@@ -24,8 +30,12 @@ import type { BrowseStepInput, BrowseStepResult } from "./browseStep.js";
 
 type BotWallInput = Pick<BrowseStepInput, "url" | "title" | "elements" | "pageText">;
 
-const STRONG_ELEMENT =
-  /\bi\s*(?:'|’)?\s*(?:am|m)\s+not\s+a\s+(?:robot|bot)\b|\bverify\s+(?:that\s+)?you(?:\s+are|'re|’re)\s+(?:a\s+)?human\b|\bpress\s*(?:&|and)\s*hold\b/i;
+const HUMAN_CHECK_ELEMENT =
+  /\bi\s*(?:'|’)?\s*(?:am|m)\s+not\s+a\s+(?:robot|bot)\b|\bverify\s+(?:that\s+)?you(?:\s+are|'re|’re)\s+(?:a\s+)?human\b/i;
+const PRESS_HOLD_ELEMENT = /\bpress\s*(?:&|and)\s*hold\b/i;
+/** A bot wall is nearly empty; a real page has many controls. Frame elements
+ * (the widget's own iframe contents) are not counted. */
+const WALL_MAX_ELEMENTS = 15;
 const STRONG_TEXT =
   /unusual traffic from your computer network|our systems have detected unusual traffic/i;
 const WEAK_TEXT: Array<[string, RegExp]> = [
@@ -67,14 +77,20 @@ export function detectBotWall(input: BotWallInput): string | null {
   const strongUrl = urlSignal(input.url);
   if (strongUrl) return strongUrl;
 
+  // Reasons use fixed signal names only — the route logs them, and raw page
+  // text must never reach the log.
+  const isWall = input.elements.filter((el) => !el.frame).length <= WALL_MAX_ELEMENTS;
+  const weak = new Set<string>();
   for (const el of input.elements) {
-    if (STRONG_ELEMENT.test(el.label)) return `"${el.label.slice(0, 60)}" control`;
+    if (HUMAN_CHECK_ELEMENT.test(el.label)) {
+      if (isWall) return `"I'm not a robot" control`;
+      weak.add("captcha-widget");
+    }
+    if (PRESS_HOLD_ELEMENT.test(el.label)) weak.add("press-and-hold-control");
   }
   const text = input.pageText ?? "";
-  const strongText = STRONG_TEXT.exec(text);
-  if (strongText) return `"${strongText[0].toLowerCase()}" text`;
+  if (STRONG_TEXT.test(text)) return "unusual-traffic text";
 
-  const weak = new Set<string>();
   for (const [name, re] of WEAK_TEXT) if (re.test(text)) weak.add(name);
   if (hasCaptchaSegment(input.url)) weak.add("captcha-url");
   if (WEAK_TITLE.test(input.title)) weak.add("challenge-title");

@@ -30,7 +30,25 @@ describe("detectBotWall", () => {
     expect(detectBotWall(page({ elements: [el("I'm not a robot")] }))).not.toBeNull();
     expect(detectBotWall(page({ elements: [el("I am not a robot")] }))).not.toBeNull();
     expect(detectBotWall(page({ elements: [el("Verify you are human")] }))).not.toBeNull();
-    expect(detectBotWall(page({ elements: [el("Press & Hold")] }))).not.toBeNull();
+  });
+  it("treats 'Press and hold' as weak, and never echoes page text in the reason", () => {
+    expect(detectBotWall(page({ elements: [el("Press & Hold")] }))).toBeNull();
+    expect(detectBotWall(page({ elements: [el("Press & Hold")], title: "Just a moment..." }))).not.toBeNull();
+    const reason = detectBotWall(page({ elements: [el("I'm not a robot — secret@mail.com")] }));
+    expect(reason).toBe(`"I'm not a robot" control`);
+    expect(detectBotWall(page({ pageText: "Our systems have detected unusual traffic from X" }))).toBe("unusual-traffic text");
+  });
+  it("does not block a normal form with an embedded reCAPTCHA checkbox or a record button", () => {
+    const form = Array.from({ length: 22 }, (_, i) => el(`Field ${i}`, { index: i + 10 }));
+    expect(
+      detectBotWall(
+        page({
+          url: "https://example.com/contact",
+          elements: [...form, el("I'm not a robot", { frame: "reCAPTCHA" }), el("reCAPTCHA", { index: 99 })],
+        }),
+      ),
+    ).toBeNull();
+    expect(detectBotWall(page({ elements: [...form, el("Press and hold to record")] }))).toBeNull();
   });
   it("flags the unusual-traffic text", () => {
     expect(

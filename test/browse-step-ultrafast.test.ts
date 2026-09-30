@@ -274,6 +274,67 @@ describe("pending-suggestion gate", () => {
     }
   });
 
+  it("never forces an unrelated option: no matching candidate means Jev's pick stands", async () => {
+    const unrelated = SUGGEST.filter((el) => el.index !== 3 && el.index !== 4);
+    const { result } = await run(
+      { operation: choice("CLICK", 0.5), click_target: choice("1", 0.4, { probabilities: probs }) },
+      { elements: unrelated },
+    );
+    expect(result).toMatchObject({ operation: "CLICK", index: 1 });
+    expect(result.diag?.gates.some((g) => g.head === "suggestion")).toBe(false);
+  });
+
+  it("matches diacritic-insensitively and by typed word", async () => {
+    const elements = [
+      SUGGEST[0],
+      SUGGEST[1],
+      { index: 2, tag: "li", role: "option", label: "Madrid, Spain", ops: ["CLICK" as const] },
+      { index: 3, tag: "li", role: "option", label: "Málaga Costa del Sol", ops: ["CLICK" as const] },
+    ];
+    const history = [{ operation: "TYPE_TEXT", label: 'TYPE_TEXT "malaga airport" into "Where to?"', ok: true, index: 0 }];
+    const { result } = await run(
+      { operation: choice("CLICK", 0.5), click_target: choice("1", 0.4, { probabilities: { "1": 0.4, "2": 0.5, "3": 0.1 } }) },
+      { elements, history },
+    );
+    expect(result).toMatchObject({ operation: "CLICK", index: 3 });
+  });
+
+  it("parses labels with side-effect suffixes and a truncated typed text", async () => {
+    const typed = "Barcelona-El Prat Airport international terminal number one and more";
+    const history = [
+      {
+        operation: "TYPE_TEXT",
+        label: `TYPE_TEXT "${typed.slice(0, 59)}…" into "Where to?" (page updated: "Suggestions: Barcelona")`,
+        ok: true,
+      },
+    ];
+    const { result } = await run(
+      { operation: choice("CLICK", 0.5), click_target: choice("1", 0.4, { probabilities: probs }) },
+      { history },
+    );
+    expect(result).toMatchObject({ operation: "CLICK", index: 3 });
+  });
+
+  it("lets retyping into the same field and PRESS_ESCAPE through", async () => {
+    const { result } = await run({
+      operation: choice("TYPE_TEXT", 0.6),
+      type_text_target: choice("0", 0.6),
+      click_target: choice("1", 0.4, { probabilities: probs }),
+    });
+    expect(result.diag?.gates.some((g) => g.head === "suggestion")).toBe(false);
+    const esc = await run({ operation: choice("PRESS_ESCAPE", 0.6), click_target: choice("1", 0.4, { probabilities: probs }) });
+    expect(esc.result).toMatchObject({ operation: "PRESS_ESCAPE" });
+  });
+
+  it("overrides typing into a different field", async () => {
+    const { result } = await run({
+      operation: choice("TYPE_TEXT", 0.6),
+      type_text_target: choice("1", 0.6),
+      click_target: choice("1", 0.4, { probabilities: probs }),
+    });
+    expect(result).toMatchObject({ operation: "CLICK", index: 3 });
+  });
+
   it("does nothing when the last action was not a landed TYPE_TEXT", async () => {
     const answers = { operation: choice("CLICK", 0.5), click_target: choice("1", 0.4, { probabilities: probs }) };
     for (const history of [

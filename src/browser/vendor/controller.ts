@@ -1,4 +1,4 @@
-// VENDORED from pen-editor-desktop/src/main/browser/controller.ts @ 318303f.
+// VENDORED from pen-editor-desktop/src/main/browser/controller.ts @ 278075f.
 // Do not edit: regenerate with `npm run browser:sync` (scripts/sync-browser-vendor.mjs).
 // ---- end of vendor header ----
 // The built-in browser's command surface (design doc
@@ -178,6 +178,17 @@ interface PageSignature {
    * defaults a missing value to false/[]. */
   pageChanged?: boolean;
   appeared?: string[];
+  /** Only on a "before" capture: the id SIGNATURE_JS minted for the observer
+   * state it just created. The matching "after" sends it back; a mismatch
+   * makes the page discard whatever state is stored (see SIGNATURE_JS). */
+  captureId?: string;
+}
+
+/** See BrowserController.autocompleteBaseline. */
+interface AutocompleteBaseline {
+  key: string | null;
+  taken: boolean;
+  take(): Promise<void>;
 }
 
 function isPageSignature(value: unknown): value is PageSignature {
@@ -192,6 +203,7 @@ function isPageSignature(value: unknown): value is PageSignature {
     typeof value.scrollY === "number" &&
     typeof value.focusedValueLength === "number" &&
     (value.scopedAfter === undefined || value.scopedAfter === null || isScopedSignature(value.scopedAfter)) &&
+    (value.captureId === undefined || typeof value.captureId === "string") &&
     (value.pageChanged === undefined || typeof value.pageChanged === "boolean") &&
     (value.appeared === undefined || (Array.isArray(value.appeared) && value.appeared.every((s) => typeof s === "string")))
   );
@@ -211,11 +223,24 @@ const NON_CLICK_SETTLE_MS = 50;
  * any `role=option` exists and the next snapshot never offers the
  * suggestion (Google Flights "Where to?"). `settleAutocomplete` polls every
  * AUTOCOMPLETE_POLL_INTERVAL_MS until the visible options are present and
- * unchanged across two polls, bounded by AUTOCOMPLETE_SETTLE_MS (and the
- * command's own deadline) so a field that never suggests anything costs at
- * most that much. Plain fields pay one cheap probe and no wait. */
+ * unchanged across two polls — and, when a list was already on screen
+ * BEFORE the text went in (Google Flights shows "popular destinations" on
+ * focus), different from that baseline, so the stale list is not taken for
+ * the settled suggestions. Bounded by AUTOCOMPLETE_SETTLE_MS (and the
+ * command deadline minus SETTLE_HEADROOM_MS) so a field that never suggests
+ * anything costs at most that much. Plain fields pay one baseline probe
+ * before and one probe after, and no wait. */
 export const AUTOCOMPLETE_SETTLE_MS = 2_000;
 const AUTOCOMPLETE_POLL_INTERVAL_MS = 100;
+
+/** The optional waits above (autocomplete, dialog dismissal, the late-click
+ * re-check) used to be capped by the command's own `deadlineAt`, so a wait
+ * that ran to its cap left nothing for what follows — the after-capture,
+ * `detectOpenedTab`, `settleWhileTargetBusy` — and `withCommandTimeout`
+ * reported a timeout for an action that had landed. They now stop at
+ * `deadlineAt - SETTLE_HEADROOM_MS` (and are skipped once already past it);
+ * the headroom covers those follow-ups on a slow page. */
+export const SETTLE_HEADROOM_MS = 1_500;
 
 /** A click whose effect lands after the settle: the site animates the
  * change behind a CSS transition / `setTimeout` (Google Flights' calendar
@@ -223,8 +248,10 @@ const AUTOCOMPLETE_POLL_INTERVAL_MS = 100;
  * taken at ~540 ms saw nothing and the step was recorded "(no effect)".
  * When a same-URL click diffs as `changed: false`, `captureClickEffect`
  * re-captures every LATE_CLICK_POLL_MS until something changed or
- * LATE_CLICK_EFFECT_MS elapsed (also bounded by the command deadline). A
- * click that changes anything at once pays no extra wait. */
+ * LATE_CLICK_EFFECT_MS elapsed (also bounded by the command deadline minus
+ * SETTLE_HEADROOM_MS). A click that changes anything at once — or shows any
+ * other effect the browse_task loop counts (`pageChanged`, an opened tab) —
+ * pays no extra wait. */
 export const LATE_CLICK_EFFECT_MS = 800;
 const LATE_CLICK_POLL_MS = 150;
 
@@ -1517,7 +1544,8 @@ export class BrowserController {
    * probe saw the dialog closed — the caller then reports that as the click's
    * effect (the dismissed button's own signature rarely moves once hidden). */
   private async settleDialogDismiss(page: BrowserPageHandle, deadlineAt: number): Promise<boolean> {
-    const until = Math.min(Date.now() + DIALOG_DISMISS_SETTLE_MS, deadlineAt);
+    const until = Math.min(Date.now() + DIALOG_DISMISS_SETTLE_MS, deadlineAt - SETTLE_HEADROOM_MS);
+    if (Date.now() >= until) return false;
     while (true) {
       try {
         const state = await this.executeScript(page, "DISMISS_DIALOG_STATE_JS", {});
@@ -1540,7 +1568,9 @@ export class BrowserController {
    * dialog go away) is itself the effect: the capture is then final, and a
    * diff that found nothing else is reported `changed` with a "dialog" entry. A click that already changed something, or navigated,
    * returns after the single capture it always did — and leaves the observer
-   * running only until the next "before" capture replaces it. */
+   * running only until the next "before" capture replaces it. `hasOtherEffect`
+   * (an opened tab) is consulted before each re-poll, so a click that
+   * already opened a tab never starts the late loop. */
   private async captureClickEffect(
     page: BrowserPageHandle,
     before: PageSignature | null,
@@ -1548,8 +1578,9 @@ export class BrowserController {
     scopedBefore: ScopedSignature | null,
     deadlineAt: number,
     dialogClosed = false,
+    hasOtherEffect?: () => Promise<boolean>,
   ): Promise<EffectEvidence> {
-    const until = Math.min(Date.now() + LATE_CLICK_EFFECT_MS, deadlineAt);
+    const until = Math.min(Date.now() + LATE_CLICK_EFFECT_MS, deadlineAt - SETTLE_HEADROOM_MS);
     while (true) {
       const currentUrl = page.getURL();
       const keep = !dialogClosed && currentUrl === previousUrl && Date.now() + LATE_CLICK_POLL_MS < until;
@@ -1558,7 +1589,11 @@ export class BrowserController {
       if (dialogClosed && !evidence.changed) return { ...evidence, changed: true, changes: [...evidence.changes, "dialog"] };
       // No "before" (or "after") evidence to re-compare against: nothing a
       // re-check could add.
-      if (evidence.changed || !keep || !before || !after) return evidence;
+      // Anything the browse_task loop already counts as an effect ends the
+      // re-check too: `pageChanged` (a separate element updated), or an
+      // opened tab (`hasOtherEffect`, only asked when about to poll).
+      if (evidence.changed || evidence.pageChanged === true || !keep || !before || !after) return evidence;
+      if (hasOtherEffect && (await hasOtherEffect())) return evidence;
       await new Promise((resolve) => setTimeout(resolve, LATE_CLICK_POLL_MS));
     }
   }
@@ -1681,9 +1716,10 @@ export class BrowserController {
     locateArgs: { target?: string; index?: number; snapshotId?: string },
     text: string,
     deadlineAt: number,
+    baseline?: AutocompleteBaseline,
   ): Promise<BrowserCommandResult> {
     if (!page.sendCdp) {
-      return this.legacyTypeFallback(page, locateArgs, text, deadlineAt);
+      return this.legacyTypeFallback(page, locateArgs, text, deadlineAt, baseline);
     }
     const located = await this.executeScript(page, "CLICK_RESOLVE_JS", locateArgs);
     if ("error" in located) return located;
@@ -1697,7 +1733,7 @@ export class BrowserController {
     // the same "not a text field" style error TYPE_JS/PERFORM_JS always
     // have, without ever touching the mouse.
     if (located.editable !== true) {
-      return this.legacyTypeFallback(page, locateArgs, text, deadlineAt);
+      return this.legacyTypeFallback(page, locateArgs, text, deadlineAt, baseline);
     }
 
     let scopedBefore = extractScopedBefore(located);
@@ -1736,9 +1772,12 @@ export class BrowserController {
     const retargetedBefore = extractScopedBefore(selectResult);
     if (retargeted && retargetedBefore) scopedBefore = retargetedBefore;
     if (selectResult.editable !== true) {
-      return this.legacyTypeFallback(page, locateArgs, text, deadlineAt);
+      return this.legacyTypeFallback(page, locateArgs, text, deadlineAt, baseline);
     }
 
+    // Focus has settled (a focus-time suggestion list is on screen by now):
+    // the last moment to record what was visible before the text goes in.
+    await baseline?.take();
     try {
       if (text.length > 0) {
         const firstKey = resolveNamedKey(text[0]);
@@ -1746,17 +1785,17 @@ export class BrowserController {
       }
       await page.sendCdp("Input.insertText", { text });
     } catch {
-      return this.legacyTypeFallback(page, locateArgs, text, deadlineAt);
+      return this.legacyTypeFallback(page, locateArgs, text, deadlineAt, baseline);
     }
 
     let verify: BrowserCommandResult;
     try {
       verify = await this.executeScript(page, "READ_TARGET_VALUE_JS", { text });
     } catch {
-      return this.legacyTypeFallback(page, locateArgs, text, deadlineAt);
+      return this.legacyTypeFallback(page, locateArgs, text, deadlineAt, baseline);
     }
     if ("error" in verify || verify.matches !== true) {
-      return this.legacyTypeFallback(page, locateArgs, text, deadlineAt);
+      return this.legacyTypeFallback(page, locateArgs, text, deadlineAt, baseline);
     }
     // Focus moved AFTER the select step (slow overlay): the text landed in
     // the new field and the verify adopted it — same outcome, no legacy
@@ -1795,7 +1834,9 @@ export class BrowserController {
     locateArgs: { target?: string; index?: number; snapshotId?: string },
     text: string,
     deadlineAt: number,
+    baseline?: AutocompleteBaseline,
   ): Promise<BrowserCommandResult> {
+    await baseline?.take();
     if (locateArgs.target !== undefined) {
       const domResult = await this.executeScript(page, "TYPE_JS", { target: locateArgs.target, text });
       if ("error" in domResult) return domResult;
@@ -2257,7 +2298,9 @@ export class BrowserController {
       await this.waitForLoadStop(page, CLICK_LOAD_SETTLE_TIMEOUT_MS);
     }
     const dialogClosed = dismissDialog && (await this.settleDialogDismiss(page, deadlineAt));
-    const evidence = await this.captureClickEffect(page, before, previousUrl, scopedBefore, deadlineAt, dialogClosed);
+    const evidence = await this.captureClickEffect(page, before, previousUrl, scopedBefore, deadlineAt, dialogClosed, async () =>
+      (await this.detectOpenedTab(tabsBefore)) !== undefined,
+    );
     const currentUrl = page.getURL();
     const openedTab = await this.detectOpenedTab(tabsBefore);
     const merged: BrowserCommandResult = {
@@ -3100,7 +3143,9 @@ export class BrowserController {
           await this.waitForLoadStop(page, CLICK_LOAD_SETTLE_TIMEOUT_MS);
         }
         const dialogClosed = dismissDialog && (await this.settleDialogDismiss(page, deadlineAt));
-        const evidence = await this.captureClickEffect(page, before, previousUrl, scopedBefore, deadlineAt, dialogClosed);
+        const evidence = await this.captureClickEffect(page, before, previousUrl, scopedBefore, deadlineAt, dialogClosed, async () =>
+      (await this.detectOpenedTab(tabsBefore)) !== undefined,
+    );
         const currentUrl = page.getURL();
         const openedTab = await this.detectOpenedTab(tabsBefore);
         const merged: BrowserCommandResult = {
@@ -3122,15 +3167,19 @@ export class BrowserController {
         // PERFORM_JS's TYPE_TEXT branch internally — see dispatchType. Wave 3
         // reliability item 2: same frame-routing skip-trusted-CDP rule as
         // CLICK above.
-        const result =
-          frameRoute.frameId === null
-            ? await this.dispatchType(page, { index, snapshotId }, text!, deadlineAt)
-            : await this.frameClickOrType(page, frameRoute.frameId, "TYPE_TEXT", frameRoute.localIndex, snapshotId, deadlineAt, text);
+        const baseline = this.autocompleteBaseline(page, frameRoute.frameId);
+        let result: BrowserCommandResult;
+        if (frameRoute.frameId === null) {
+          result = await this.dispatchType(page, { index, snapshotId }, text!, deadlineAt, baseline);
+        } else {
+          await baseline.take();
+          result = await this.frameClickOrType(page, frameRoute.frameId, "TYPE_TEXT", frameRoute.localIndex, snapshotId, deadlineAt, text);
+        }
         if ("error" in result && !extractSliderPartial(result)) return result;
         const scopedBefore = extractScopedBefore(result);
         const selfDisabled = extractTargetSelfDisabled(result);
         await this.settleShort();
-        await this.settleAutocomplete(page, frameRoute.frameId, deadlineAt);
+        await this.settleAutocomplete(page, frameRoute.frameId, deadlineAt, baseline);
         if (selfDisabled) await this.settleWhileTargetBusy(page);
         const after = await this.captureSignature(page, "after");
         return { ...result, ...this.diffSignatures(before, after, { scopedBefore }) };
@@ -3228,15 +3277,46 @@ export class BrowserController {
     await this.revealTarget(page, locateArgs);
     await this.moveCursor(page, { action: "type", target: locateArgs.target, index: locateArgs.index, snapshotId: locateArgs.snapshotId });
     const before = await this.captureSignature(page, "before");
-    const result = await this.dispatchType(page, locateArgs, text, deadlineAt);
+    const baseline = this.autocompleteBaseline(page, null);
+    const result = await this.dispatchType(page, locateArgs, text, deadlineAt, baseline);
     if ("error" in result && !extractSliderPartial(result)) return result;
     const scopedBefore = extractScopedBefore(result);
     const selfDisabled = extractTargetSelfDisabled(result);
     await this.settleShort();
-    await this.settleAutocomplete(page, null, deadlineAt);
+    await this.settleAutocomplete(page, null, deadlineAt, baseline);
     if (selfDisabled) await this.settleWhileTargetBusy(page);
     const after = await this.captureSignature(page, "after");
     return { ...result, ...this.diffSignatures(before, after, { scopedBefore }) };
+  }
+
+  /** A one-shot "what options are visible right now" recorder for
+   * settleAutocomplete: `take()` (idempotent) runs AUTOCOMPLETE_STATE_JS's
+   * stamp-free `baseline` probe, document-wide, and keeps `docOptions:docHash`
+   * — or null when no option was visible (current behaviour) or the probe
+   * failed. The type paths call it after focus has settled and before the
+   * text goes in, so a focus-time list ("popular destinations") is what gets
+   * recorded. */
+  private autocompleteBaseline(page: BrowserPageHandle, frameId: number | null): AutocompleteBaseline {
+    const baseline: AutocompleteBaseline = {
+      key: null,
+      taken: false,
+      take: async () => {
+        if (baseline.taken) return;
+        baseline.taken = true;
+        try {
+          const state =
+            frameId === null
+              ? await this.executeScript(page, "AUTOCOMPLETE_STATE_JS", { baseline: true })
+              : await this.executeScriptInFrame(page, frameId, "AUTOCOMPLETE_STATE_JS", { baseline: true });
+          if (!("error" in state) && typeof state.docOptions === "number" && state.docOptions > 0) {
+            baseline.key = `${state.docOptions}:${String(state.docHash)}`;
+          }
+        } catch {
+          // Best-effort: no baseline ⇒ the plain "stable across two polls" rule.
+        }
+      },
+    };
+    return baseline;
   }
 
   /** Waits for an autocomplete field's suggestions after a successful type —
@@ -3246,11 +3326,23 @@ export class BrowserController {
    * is not autocomplete-style. Otherwise polls until the visible option
    * count + label hash is non-zero and equal across two consecutive polls —
    * one poll can still be the stale pre-typing list, two equal ones with
-   * the debounce elapsed rarely are. Best-effort: a throwing or malformed
-   * script, the cap, or the command deadline just ends the wait (the type
-   * itself already succeeded), and nothing is added to the result. */
-  private async settleAutocomplete(page: BrowserPageHandle, frameId: number | null, deadlineAt: number): Promise<void> {
-    const until = Math.min(Date.now() + AUTOCOMPLETE_SETTLE_MS, deadlineAt);
+   * the debounce elapsed rarely are — and, when `baseline` saw options
+   * before the text went in, until the document-wide options digest also
+   * differs from that baseline (a stale focus-time list is perfectly stable,
+   * so stability alone would end the wait ~150 ms in). A list that never
+   * changes from the baseline (the suggestions really equal it) waits out the
+   * cap. Best-effort: a throwing or malformed script, the cap, or the command
+   * deadline (minus SETTLE_HEADROOM_MS, skipped when already past it) just
+   * ends the wait (the type itself already succeeded), and nothing is added
+   * to the result. */
+  private async settleAutocomplete(
+    page: BrowserPageHandle,
+    frameId: number | null,
+    deadlineAt: number,
+    baseline?: AutocompleteBaseline,
+  ): Promise<void> {
+    const until = Math.min(Date.now() + AUTOCOMPLETE_SETTLE_MS, deadlineAt - SETTLE_HEADROOM_MS);
+    if (Date.now() >= until) return;
     let previous: string | null = null;
     while (true) {
       let state: BrowserCommandResult;
@@ -3265,7 +3357,9 @@ export class BrowserController {
       if ("error" in state || state.autocomplete !== true) return;
       const options = typeof state.options === "number" ? state.options : 0;
       const key = `${options}:${String(state.hash)}`;
-      if (options > 0 && key === previous) return;
+      const docKey = `${String(state.docOptions)}:${String(state.docHash)}`;
+      const fresh = baseline?.key == null || docKey !== baseline.key;
+      if (options > 0 && key === previous && fresh) return;
       previous = key;
       if (Date.now() + AUTOCOMPLETE_POLL_INTERVAL_MS >= until) return;
       await new Promise((resolve) => setTimeout(resolve, AUTOCOMPLETE_POLL_INTERVAL_MS));
@@ -3477,6 +3571,10 @@ export class BrowserController {
     return result;
   }
 
+  /** Per page: the capture id of the "before" SIGNATURE_JS state that an
+   * "after" may read (see PageSignature.captureId). */
+  private readonly signatureCaptureIds = new WeakMap<BrowserPageHandle, string>();
+
   /** Runs SIGNATURE_JS for the given phase and returns the parsed signature,
    * or `null` on any failure (a throwing/rejecting executeJavaScript, or a
    * malformed response) — evidence capture must never itself turn a
@@ -3488,16 +3586,29 @@ export class BrowserController {
    * coordinate the `data-pen-sig-mainimg`/`data-pen-sig-target` identity
    * markers across the two calls (see SIGNATURE_JS's doc comment). `keep`
    * (an "after" peek, see captureClickEffect) leaves the dom/text observer
-   * and its state running for a later capture. */
+   * and its state running for a later capture. A keep-peek's state is only
+   * readable by the "after" of the SAME "before" (capture id, see
+   * signatureCaptureIds), so a peek that ends up final cannot leak into a
+   * later action whose own "before" failed. */
   private async captureSignature(
     page: BrowserPageHandle,
     phase: "before" | "after",
     keep = false,
   ): Promise<PageSignature | null> {
+    // "before" forgets any id first: if the capture below fails, the "after"
+    // presents none and the page ignores whatever state is still stored.
+    if (phase === "before") this.signatureCaptureIds.delete(page);
     try {
-      const code = SIGNATURE_JS.replace(ARGS_MARKER, () => JSON.stringify(keep ? { phase, keep } : { phase }));
+      const captureId = phase === "after" ? this.signatureCaptureIds.get(page) : undefined;
+      const scriptArgs: Record<string, unknown> = { phase };
+      if (keep) scriptArgs.keep = true;
+      if (captureId !== undefined) scriptArgs.captureId = captureId;
+      const code = SIGNATURE_JS.replace(ARGS_MARKER, () => JSON.stringify(scriptArgs));
       const result = await page.executeJavaScript(code);
-      return isPageSignature(result) ? result : null;
+      if (!isPageSignature(result)) return null;
+      if (phase === "before" && result.captureId !== undefined) this.signatureCaptureIds.set(page, result.captureId);
+      if (phase === "after" && !keep) this.signatureCaptureIds.delete(page);
+      return result;
     } catch {
       return null;
     }

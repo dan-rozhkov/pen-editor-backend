@@ -1,4 +1,4 @@
-// VENDORED from pen-editor-desktop/src/main/browser/pageScripts.ts @ 318303f.
+// VENDORED from pen-editor-desktop/src/main/browser/pageScripts.ts @ 278075f.
 // Do not edit: regenerate with `npm run browser:sync` (scripts/sync-browser-vendor.mjs).
 // ---- end of vendor header ----
 // Scripts injected into a browser tab's real page via
@@ -1413,17 +1413,16 @@ const TARGET_BUSY_HELPER_JS = `
  * document (a popup portalled elsewhere). "Visible" = a non-empty rect, no
  * display:none / visibility:hidden, no aria-hidden ancestor. `hash` digests
  * the options' labels so the caller can tell a list that is still being
- * replaced from one that has settled. A plain field answers
- * `{ autocomplete: false }` and nothing else is computed.
+ * replaced from one that has settled. `docOptions`/`docHash` are the same
+ * digest over EVERY visible `role=option` in the document: settleAutocomplete
+ * compares it with the pre-typing baseline (`{ baseline: true }` — answers
+ * just `{ docOptions, docHash }`, needs no stamp) so a focus-time "popular"
+ * list that is still on screen is not mistaken for the settled suggestions.
+ * A plain field answers `{ autocomplete: false }`.
  */
 export const AUTOCOMPLETE_STATE_JS = `(() => {
+  var args = ${ARGS_MARKER};
   ${SIG_TARGET_HELPER_JS}
-  var el = penFindSigTarget();
-  if (!el) return { autocomplete: false };
-  var combo = el.closest ? el.closest('[role="combobox"]') : null;
-  var auto = (el.getAttribute("aria-autocomplete") || "").toLowerCase();
-  var popup = (el.getAttribute("aria-haspopup") || "").toLowerCase();
-  if (!combo && auto !== "list" && auto !== "both" && popup !== "listbox") return { autocomplete: false };
 
   function visible(node) {
     var r = node.getBoundingClientRect();
@@ -1432,6 +1431,34 @@ export const AUTOCOMPLETE_STATE_JS = `(() => {
     if (cs.display === "none" || cs.visibility === "hidden") return false;
     return !(node.closest && node.closest('[aria-hidden="true"]'));
   }
+
+  // Count + label digest of the visible options among \`nodes\`.
+  function digest(nodes) {
+    var count = 0;
+    var hash = 0;
+    for (var oi = 0; oi < nodes.length; oi++) {
+      if (!visible(nodes[oi])) continue;
+      count++;
+      var label = (nodes[oi].textContent || "").trim().slice(0, 80);
+      for (var li = 0; li < label.length; li++) hash = (hash * 31 + label.charCodeAt(li)) | 0;
+      hash = (hash * 31 + 7) | 0;
+    }
+    return { count: count, hash: hash };
+  }
+
+  var allOptions = Array.prototype.slice.call(document.querySelectorAll('[role="option"]'));
+  var docWide = digest(allOptions);
+
+  // args.baseline: the pre-typing probe — no stamp needed (focus/typing may
+  // still re-target), just what is visible document-wide right now.
+  if (args.baseline) return { docOptions: docWide.count, docHash: docWide.hash };
+
+  var el = penFindSigTarget();
+  if (!el) return { autocomplete: false };
+  var combo = el.closest ? el.closest('[role="combobox"]') : null;
+  var auto = (el.getAttribute("aria-autocomplete") || "").toLowerCase();
+  var popup = (el.getAttribute("aria-haspopup") || "").toLowerCase();
+  if (!combo && auto !== "list" && auto !== "both" && popup !== "listbox") return { autocomplete: false };
 
   var roots = [];
   var host = combo || el;
@@ -1447,18 +1474,10 @@ export const AUTOCOMPLETE_STATE_JS = `(() => {
     var inner = roots[ci].querySelectorAll('[role="option"]');
     for (var ii = 0; ii < inner.length; ii++) candidates.push(inner[ii]);
   }
-  if (!candidates.length) candidates = Array.prototype.slice.call(document.querySelectorAll('[role="option"]'));
+  if (!candidates.length) candidates = allOptions;
 
-  var count = 0;
-  var hash = 0;
-  for (var oi = 0; oi < candidates.length; oi++) {
-    if (!visible(candidates[oi])) continue;
-    count++;
-    var label = (candidates[oi].textContent || "").trim().slice(0, 80);
-    for (var li = 0; li < label.length; li++) hash = (hash * 31 + label.charCodeAt(li)) | 0;
-    hash = (hash * 31 + 7) | 0;
-  }
-  return { autocomplete: true, options: count, hash: hash };
+  var scoped = candidates === allOptions ? docWide : digest(candidates);
+  return { autocomplete: true, options: scoped.count, hash: scoped.hash, docOptions: docWide.count, docHash: docWide.hash };
 })()`;
 
 /**
@@ -1866,7 +1885,8 @@ export const CLICK_RESOLVE_JS = `(() => {
  * dismisses when its accessible name (aria-label, else text/value/title,
  * trimmed, case-insensitive) equals or starts with done/close/apply/ok/save/
  * confirm/cancel (a word boundary — "Done, 2 adults" yes, "Okinawa" no), is a
- * bare x-glyph, or its aria-label contains "close". A day cell, a field or a
+ * bare x-glyph, or its aria-label contains the WORD "close" ("Closest airports" and "Show
+ * closed stores" do not). A day cell, a field or a
  * "Next month" button inside the same dialog is not. `penMarkDismissDialog`
  * stamps the dialog `data-pen-dismiss-dialog` (stale stamps cleared first)
  * and returns true; false leaves nothing stamped.
@@ -1895,7 +1915,7 @@ const DISMISS_DIALOG_HELPER_JS = `
   function penLooksDismissing(el) {
     var control = el.closest ? el.closest("button, [role='button'], a, input[type='button'], input[type='submit']") || el : el;
     var aria = (control.getAttribute("aria-label") || "").trim().toLowerCase();
-    if (aria.indexOf("close") !== -1) return true;
+    if (/(^|[^\\p{L}\\p{N}])close(?![\\p{L}\\p{N}])/u.test(aria)) return true;
     var name = (aria || control.value || control.textContent || control.getAttribute("title") || "")
       .toString().replace(/\\s+/g, " ").trim().toLowerCase();
     if (!name) return false;
@@ -1903,12 +1923,20 @@ const DISMISS_DIALOG_HELPER_JS = `
     return /^(done|close|apply|ok|okay|save|confirm|cancel)(?![\\p{L}\\p{N}])/u.test(name);
   }
 
+  // The stamp is the attribute AND a per-window reference
+  // (window.__penDismissDialog), like window.__penSigTarget: the reference
+  // reaches a dialog inside a shadow root, which document.querySelector
+  // cannot.
   function penMarkDismissDialog(el) {
+    var prev = window.__penDismissDialog;
+    if (prev && prev.removeAttribute) prev.removeAttribute("data-pen-dismiss-dialog");
+    window.__penDismissDialog = null;
     var stale = document.querySelectorAll("[data-pen-dismiss-dialog]");
     for (var si = 0; si < stale.length; si++) stale[si].removeAttribute("data-pen-dismiss-dialog");
     var dialog = penDialogOf(el);
     if (!dialog || !penLooksDismissing(el)) return false;
     dialog.setAttribute("data-pen-dismiss-dialog", "1");
+    window.__penDismissDialog = dialog;
     return true;
   }
 `;
@@ -1959,22 +1987,33 @@ export const REVEAL_TARGET_JS = `(() => {
 /**
  * Polled by controller.ts's settleDialogDismiss after a click
  * REVEAL_TARGET_JS flagged as dismissing a dialog: is the stamped dialog
- * gone? Closed = no longer in the document, `open` false on a <dialog>,
- * display:none / visibility:hidden, a zero rect, or no descendant with a
- * visible box left (a dialog shell whose content a CSS transition just
- * hid). `{ closed: true }` also when the stamp vanished. Read-only.
+ * gone? The dialog is found through `window.__penDismissDialog` (reaches a
+ * shadow root), else the attribute. Closed = no longer in the document,
+ * `open` false on a <dialog>, display:none on it or an ancestor,
+ * visibility:hidden, or no box left on it or any descendant (a dialog shell
+ * whose content a CSS transition just hid). A bare zero rect on the wrapper
+ * is not enough. `{ closed: true }` also when the stamp vanished. Read-only.
  */
 export const DISMISS_DIALOG_STATE_JS = `(() => {
-  var dialog = document.querySelector("[data-pen-dismiss-dialog]");
+  var dialog = window.__penDismissDialog || document.querySelector("[data-pen-dismiss-dialog]");
   if (!dialog || !dialog.isConnected) return { closed: true };
   if ((dialog.tagName || "").toLowerCase() === "dialog" && dialog.open === false) return { closed: true };
+  // display:none on the dialog or any ancestor (composed, so through shadow
+  // hosts), or visibility:hidden (inherited, so the dialog's own value).
+  for (var anc = dialog; anc; anc = anc.parentNode || anc.host || null) {
+    if (anc.nodeType !== 1) continue;
+    if (getComputedStyle(anc).display === "none") return { closed: true };
+  }
+  if (getComputedStyle(dialog).visibility === "hidden") return { closed: true };
   function boxVisible(node) {
     var r = node.getBoundingClientRect();
     if (r.width <= 0 || r.height <= 0) return false;
     var cs = getComputedStyle(node);
     return cs.display !== "none" && cs.visibility !== "hidden";
   }
-  if (!boxVisible(dialog)) return { closed: true };
+  // A zero rect alone is NOT closed: display:contents / height:0 role=dialog
+  // wrappers exist, their content still has boxes.
+  if (boxVisible(dialog)) return { closed: false };
   var inner = dialog.querySelectorAll("*");
   var limit = inner.length < 300 ? inner.length : 300;
   for (var i = 0; i < limit; i++) {
@@ -3129,8 +3168,26 @@ export const SIGNATURE_JS = `(() => {
   // helper below reads/writes \`window.__penSigState\` for that reason, so
   // both "the callback that's still running from 'before'" and "the manual
   // takeRecords() flush 'after' does" accumulate into the one shared object.
-  if (phase === "before" || !window.__penSigState) {
-    window.__penSigState = { domChanged: false, textChanged: false, pageChanged: false, appeared: [] };
+  // Capture id: "before" mints one (returned as \`captureId\`) and the
+  // controller hands it back with the "after". An "after" whose id does not
+  // match the stored state belongs to a DIFFERENT action (its own "before"
+  // failed, or a keep-peek left state behind): that evidence is treated as
+  // unavailable — observer torn down, state replaced by an empty one — so a
+  // stale change can never be reported as this action's effect.
+  var penSigCaptureId = "";
+  if (phase === "before") {
+    penSigCaptureId = Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
+    window.__penSigState = { id: penSigCaptureId, domChanged: false, textChanged: false, pageChanged: false, appeared: [] };
+  } else if (!window.__penSigState || window.__penSigState.id !== args.captureId) {
+    if (window.__penSigObserver) {
+      try {
+        window.__penSigObserver.disconnect();
+      } catch (e) {}
+      window.__penSigObserver = null;
+    }
+    if (window.__penSigTimer) clearTimeout(window.__penSigTimer);
+    window.__penSigTimer = null;
+    window.__penSigState = { id: null, domChanged: false, textChanged: false, pageChanged: false, appeared: [] };
   }
   var penSigState = window.__penSigState;
 
@@ -3305,6 +3362,17 @@ export const SIGNATURE_JS = `(() => {
         });
       }
       window.__penSigObserver = observer;
+      // Bound the observer's lifetime: if no "after" ever tears it down (a
+      // timed-out command, a final keep-peek) it must not keep processing
+      // mutations on a busy page. The state it accumulated stays readable.
+      if (window.__penSigTimer) clearTimeout(window.__penSigTimer);
+      window.__penSigTimer = setTimeout(function () {
+        try {
+          observer.disconnect();
+        } catch (e) {}
+        if (window.__penSigObserver === observer) window.__penSigObserver = null;
+        window.__penSigTimer = null;
+      }, 10000);
     } catch (e) {
       // No MutationObserver (shouldn't happen in Chromium) — "after" falls
       // back to reporting no dom/text change at all, same as a page that
@@ -3327,7 +3395,11 @@ export const SIGNATURE_JS = `(() => {
         // peek. The next "before" (or a later non-keep "after") tears it down.
         if (!args.keep) activeObserver.disconnect();
       } catch (e) {}
-      if (!args.keep) window.__penSigObserver = null;
+      if (!args.keep) {
+        window.__penSigObserver = null;
+        if (window.__penSigTimer) clearTimeout(window.__penSigTimer);
+        window.__penSigTimer = null;
+      }
     }
     textLength = penSigState.textChanged ? 1 : 0;
     hash = penSigState.textChanged ? 1 : 0;
@@ -3380,6 +3452,7 @@ export const SIGNATURE_JS = `(() => {
     pageChanged: phase === "after" && penSigState.pageChanged,
     appeared: phase === "after" ? penSigState.appeared : [],
   };
+  if (phase === "before") result.captureId = penSigCaptureId;
 
   if (phase === "after") {
     var targetEl = penFindSigTarget();
