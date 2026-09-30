@@ -8,6 +8,7 @@ vi.mock("../src/ai/provider.js", async (importOriginal) =>
 
 import { createModel, mockJsonModelOnce } from "./structuredModelFakes.js";
 import { choice, fakeClient } from "./browseFakes.js";
+import { containsWholeTyped, matchesTyped, pickSuggestion } from "../src/ai/browseStepUltrafast.js";
 import type { SystemOneAnswer, SystemOneEvaluateParams, SystemOneQuestion } from "../src/services/systemone.js";
 import type { BrowseStepElement, BrowseStepInput } from "../src/ai/browseStep.js";
 
@@ -300,17 +301,23 @@ describe("pending-suggestion gate", () => {
   });
 
   it("parses labels with side-effect suffixes and a truncated typed text", async () => {
-    const typed = "Barcelona-El Prat Airport international terminal number one and more";
+    const full = "Barcelona-El Prat Airport terminal one departures and arrivals hall";
+    const elements = [
+      SUGGEST[0],
+      SUGGEST[1],
+      { index: 2, tag: "li", role: "option", label: "Madrid, Spain", ops: ["CLICK" as const] },
+      { index: 3, tag: "li", role: "option", label: full, ops: ["CLICK" as const] },
+    ];
     const history = [
       {
         operation: "TYPE_TEXT",
-        label: `TYPE_TEXT "${typed.slice(0, 59)}…" into "Where to?" (page updated: "Suggestions: Barcelona")`,
+        label: `TYPE_TEXT "${full.slice(0, 59)}…" into "Where to?" (page updated: "Suggestions: Barcelona")`,
         ok: true,
       },
     ];
     const { result } = await run(
       { operation: choice("CLICK", 0.5), click_target: choice("1", 0.4, { probabilities: probs }) },
-      { history },
+      { elements, history },
     );
     expect(result).toMatchObject({ operation: "CLICK", index: 3 });
   });
@@ -366,5 +373,38 @@ describe("pending-suggestion gate", () => {
   it("keeps the terminal gate semantics", async () => {
     const { result } = await run({ operation: choice("DONE", 0.9), click_target: choice("1", 0.4, { probabilities: probs }) });
     expect(result.outcome).toBe("done");
+  });
+});
+
+describe("suggestion matching", () => {
+  it("does not match lookalike substrings or a bare place-kind word", () => {
+    expect(matchesTyped("Newark Liberty Intl", "New York")).toBe(false);
+    expect(matchesTyped("New Orleans", "New York")).toBe(false);
+    expect(matchesTyped("Madrid-Barajas Airport", "Barcelona airport")).toBe(false);
+    expect(matchesTyped("Madrid-Barajas Airport", "Barcelona-El Prat airport")).toBe(false);
+  });
+
+  it("matches the right airport, truncated typing and punctuation", () => {
+    expect(matchesTyped("Josep Tarradellas Barcelona-El Prat Airport (BCN)", "Barcelona airport")).toBe(true);
+    expect(matchesTyped("Barcelona, Spain", "Barcel")).toBe(true);
+    expect(matchesTyped("New York, NY", "new york")).toBe(true);
+    expect(matchesTyped("Málaga Costa del Sol", "malaga airport")).toBe(true);
+  });
+
+  it("only the LAST typed word may be a prefix", () => {
+    expect(matchesTyped("Barcelona, Spain", "Barcel airport")).toBe(false);
+    expect(matchesTyped("Barcelona, Spain", "Barcel Spain")).toBe(false);
+  });
+
+  it("prefers a whole-text match when probabilities are unusable", () => {
+    const options: BrowseStepElement[] = [
+      { index: 2, tag: "li", role: "option", label: "Barcelona, Spain", ops: ["CLICK"] },
+      { index: 3, tag: "li", role: "option", label: "Barcelona airport shuttle", ops: ["CLICK"] },
+    ];
+    const field = { index: 0, tag: "input", label: "To", ops: ["TYPE_TEXT"] } as BrowseStepElement;
+    const pending = { typed: "Barcelona airport", field, options };
+    expect(containsWholeTyped(options[1].label, pending.typed)).toBe(true);
+    expect(pickSuggestion(pending, null).el.index).toBe(3);
+    expect(pickSuggestion(pending, { probabilities: {} } as never).el.index).toBe(3);
   });
 });

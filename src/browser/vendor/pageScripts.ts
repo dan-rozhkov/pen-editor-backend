@@ -1,4 +1,4 @@
-// VENDORED from pen-editor-desktop/src/main/browser/pageScripts.ts @ 278075f.
+// VENDORED from pen-editor-desktop/src/main/browser/pageScripts.ts @ cd89000.
 // Do not edit: regenerate with `npm run browser:sync` (scripts/sync-browser-vendor.mjs).
 // ---- end of vendor header ----
 // Scripts injected into a browser tab's real page via
@@ -1446,12 +1446,47 @@ export const AUTOCOMPLETE_STATE_JS = `(() => {
     return { count: count, hash: hash };
   }
 
+  // The option nodes of the listbox(es) \`field\` names via aria-controls/
+  // aria-owns (on it or its combobox wrapper), or null when none resolves (an
+  // existing but still EMPTY listbox is an own list with zero options).
+  function penOwnOptions(field) {
+    var cb = field.closest ? field.closest('[role="combobox"]') : null;
+    var hostEl = cb || field;
+    var refs = ((hostEl.getAttribute("aria-controls") || "") + " " + (hostEl.getAttribute("aria-owns") || "") + " " +
+      (field.getAttribute("aria-controls") || "") + " " + (field.getAttribute("aria-owns") || "")).split(/\\s+/);
+    var found = [];
+    var resolved = false;
+    var seenRoots = [];
+    for (var ri = 0; ri < refs.length; ri++) {
+      var root = refs[ri] ? document.getElementById(refs[ri]) : null;
+      if (!root || seenRoots.indexOf(root) >= 0) continue;
+      seenRoots.push(root);
+      resolved = true;
+      if (root.getAttribute("role") === "option") found.push(root);
+      var inner = root.querySelectorAll('[role="option"]');
+      for (var ii = 0; ii < inner.length; ii++) found.push(inner[ii]);
+    }
+    return resolved ? found : null;
+  }
+
   var allOptions = Array.prototype.slice.call(document.querySelectorAll('[role="option"]'));
   var docWide = digest(allOptions);
 
   // args.baseline: the pre-typing probe — no stamp needed (focus/typing may
   // still re-target), just what is visible document-wide right now.
-  if (args.baseline) return { docOptions: docWide.count, docHash: docWide.hash };
+  if (args.baseline) {
+    var baseOut = { docOptions: docWide.count, docHash: docWide.hash };
+    var baseField = penFindSigTarget();
+    if (baseField) {
+      var own = penOwnOptions(baseField);
+      if (own) {
+        var ownDigest = digest(own);
+        baseOut.ownOptions = ownDigest.count;
+        baseOut.ownHash = ownDigest.hash;
+      }
+    }
+    return baseOut;
+  }
 
   var el = penFindSigTarget();
   if (!el) return { autocomplete: false };
@@ -1460,24 +1495,13 @@ export const AUTOCOMPLETE_STATE_JS = `(() => {
   var popup = (el.getAttribute("aria-haspopup") || "").toLowerCase();
   if (!combo && auto !== "list" && auto !== "both" && popup !== "listbox") return { autocomplete: false };
 
-  var roots = [];
-  var host = combo || el;
-  var refs = ((host.getAttribute("aria-controls") || "") + " " + (host.getAttribute("aria-owns") || "") + " " +
-    (el.getAttribute("aria-controls") || "") + " " + (el.getAttribute("aria-owns") || "")).split(/\\s+/);
-  for (var ri = 0; ri < refs.length; ri++) {
-    var root = refs[ri] ? document.getElementById(refs[ri]) : null;
-    if (root) roots.push(root);
-  }
-  var candidates = [];
-  for (var ci = 0; ci < roots.length; ci++) {
-    if (roots[ci].getAttribute("role") === "option") candidates.push(roots[ci]);
-    var inner = roots[ci].querySelectorAll('[role="option"]');
-    for (var ii = 0; ii < inner.length; ii++) candidates.push(inner[ii]);
-  }
-  if (!candidates.length) candidates = allOptions;
-
+  var own = penOwnOptions(el);
+  var candidates = own || allOptions;
   var scoped = candidates === allOptions ? docWide : digest(candidates);
-  return { autocomplete: true, options: scoped.count, hash: scoped.hash, docOptions: docWide.count, docHash: docWide.hash };
+  // ownList: the field names its own listbox, so the caller compares ONLY
+  // that list with its baseline (an unrelated always-visible option list
+  // elsewhere on the page must not hold the wait open).
+  return { autocomplete: true, options: scoped.count, hash: scoped.hash, docOptions: docWide.count, docHash: docWide.hash, ownList: !!own };
 })()`;
 
 /**
@@ -1990,9 +2014,9 @@ export const REVEAL_TARGET_JS = `(() => {
  * gone? The dialog is found through `window.__penDismissDialog` (reaches a
  * shadow root), else the attribute. Closed = no longer in the document,
  * `open` false on a <dialog>, display:none on it or an ancestor,
- * visibility:hidden, or no box left on it or any descendant (a dialog shell
- * whose content a CSS transition just hid). A bare zero rect on the wrapper
- * is not enough. `{ closed: true }` also when the stamp vanished. Read-only.
+ * visibility:hidden, or no descendant with a box left (a dialog shell whose
+ * content a CSS transition just hid, even though the shell stays laid out).
+ * A bare zero rect on the wrapper is not enough. `{ closed: true }` also when the stamp vanished. Read-only.
  */
 export const DISMISS_DIALOG_STATE_JS = `(() => {
   var dialog = window.__penDismissDialog || document.querySelector("[data-pen-dismiss-dialog]");
@@ -2012,14 +2036,18 @@ export const DISMISS_DIALOG_STATE_JS = `(() => {
     return cs.display !== "none" && cs.visibility !== "hidden";
   }
   // A zero rect alone is NOT closed: display:contents / height:0 role=dialog
-  // wrappers exist, their content still has boxes.
-  if (boxVisible(dialog)) return { closed: false };
+  // wrappers exist, their content still has boxes. And a wrapper that keeps
+  // its own box is NOT open by itself either: a CSS transition can hide all
+  // the content while the shell stays laid out. So either way the answer
+  // comes from the descendants: closed when none has a visible box.
   var inner = dialog.querySelectorAll("*");
   var limit = inner.length < 300 ? inner.length : 300;
   for (var i = 0; i < limit; i++) {
     if (boxVisible(inner[i])) return { closed: false };
   }
-  return { closed: inner.length > 0 };
+  // No visible descendant: closed, unless the dialog is an empty leaf whose
+  // own box is all there is (then it is still open).
+  return { closed: inner.length > 0 || !boxVisible(dialog) };
 })()`;
 
 /**
@@ -3366,13 +3394,16 @@ export const SIGNATURE_JS = `(() => {
       // timed-out command, a final keep-peek) it must not keep processing
       // mutations on a busy page. The state it accumulated stays readable.
       if (window.__penSigTimer) clearTimeout(window.__penSigTimer);
+      // args.ttlMs (from the controller) must outlive the command that owns
+      // this capture, so its final "after" still sees the whole evidence.
+      var sigTtl = typeof args.ttlMs === "number" && args.ttlMs > 0 ? args.ttlMs : 30000;
       window.__penSigTimer = setTimeout(function () {
         try {
           observer.disconnect();
         } catch (e) {}
         if (window.__penSigObserver === observer) window.__penSigObserver = null;
         window.__penSigTimer = null;
-      }, 10000);
+      }, sigTtl);
     } catch (e) {
       // No MutationObserver (shouldn't happen in Chromium) — "after" falls
       // back to reporting no dom/text change at all, same as a page that

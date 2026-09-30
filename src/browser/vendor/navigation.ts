@@ -1,4 +1,4 @@
-// VENDORED from pen-editor-desktop/src/main/navigation.ts @ 278075f.
+// VENDORED from pen-editor-desktop/src/main/navigation.ts @ cd89000.
 // Do not edit: regenerate with `npm run browser:sync` (scripts/sync-browser-vendor.mjs).
 // ---- end of vendor header ----
 /**

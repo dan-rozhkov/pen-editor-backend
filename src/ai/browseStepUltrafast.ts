@@ -253,18 +253,45 @@ function fold(text: string): string {
   return normalize(text.normalize("NFD").replace(/[\u0300-\u036f]/g, ""));
 }
 
+/** Words that say what KIND of place an option is, not which one: typing
+ * "Barcelona airport" must still match "Barcelona, Spain" but the word
+ * "airport" alone must never tie two unrelated airports together. */
+const TYPED_STOP_WORDS = new Set(["airport", "international", "intl", "station", "city", "the", "and"]);
+
+/** Folded, punctuation turned into spaces ("Madrid-Barajas" -> "madrid barajas"). */
+function foldWords(text: string): string {
+  return fold(text)
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
+}
+
+/** The option label contains the whole typed text (folded). */
+export function containsWholeTyped(optionLabel: string, typed: string): boolean {
+  const needle = foldWords(typed);
+  return needle !== "" && foldWords(optionLabel).includes(needle);
+}
+
 /** An option plausibly matches the typed text when its label contains the
- * whole typed text, or any typed word of >= 3 chars (case/diacritic
- * insensitive). Deliberately loose but never unrelated: "Madrid" does not
- * match typed "Barcelona". */
-function matchesTyped(optionLabel: string, typed: string): boolean {
-  const needle = fold(typed);
+ * whole typed text, or EVERY significant typed word (>= 3 chars, not a
+ * stop-word like "airport") appears in it as a whole word. The LAST typed
+ * word may match a word prefix, for truncated typing ("Barcel"). Case and
+ * diacritics are ignored. "New York" does not match "Newark", "Barcelona
+ * airport" does not match "Madrid-Barajas Airport". */
+export function matchesTyped(optionLabel: string, typed: string): boolean {
+  const needle = foldWords(typed);
   if (!needle) return false;
-  const hay = fold(optionLabel);
+  const hay = foldWords(optionLabel);
   if (hay.includes(needle)) return true;
-  return needle
-    .split(/[^\p{L}\p{N}]+/u)
-    .some((word) => word.length >= 3 && hay.includes(word));
+  const typedWords = needle.split(" ");
+  const hayWords = hay.split(" ");
+  const last = typedWords.length - 1;
+  const significant = typedWords
+    .map((word, i) => ({ word, i }))
+    .filter(({ word }) => word.length >= 3 && !TYPED_STOP_WORDS.has(word));
+  if (significant.length === 0) return false;
+  return significant.every(({ word, i }) =>
+    hayWords.some((h) => h === word || (i === last && h.startsWith(word))),
+  );
 }
 
 interface PendingSuggestions {
@@ -306,8 +333,9 @@ function pendingSuggestions(
 }
 
 /** The option to click among the (already matching) candidates: Jev's most
- * probable click_target, else the first in snapshot order. */
-function pickSuggestion(
+ * probable click_target, else one containing the whole typed text, else the
+ * first in snapshot order. */
+export function pickSuggestion(
   pending: PendingSuggestions,
   clickAnswer: SystemOneChoiceAnswer | null,
 ): { el: BrowseStepElement; probability?: number } {
@@ -319,7 +347,7 @@ function pickSuggestion(
     }
     if (best) return best;
   }
-  return { el: pending.options[0] };
+  return { el: pending.options.find((el) => containsWholeTyped(el.label, pending.typed)) ?? pending.options[0] };
 }
 
 const TARGET_QUESTION_ID: Record<TargetHead, string> = {
