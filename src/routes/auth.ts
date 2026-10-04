@@ -38,6 +38,8 @@ export async function authRoutes(
 
   app.get("/api/auth-config", async () => ({
     enabled: auth !== null,
+    // The page origin the browser must match before it sends credentials.
+    ...(auth !== null && { appOrigin: settings.appOrigin }),
     google: auth !== null && settings.google,
     emailEnabled: auth !== null && settings.emailEnabled,
   }));

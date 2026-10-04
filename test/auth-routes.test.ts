@@ -10,7 +10,7 @@ const app = useAuthApp({ GOOGLE_CLIENT_ID: "gid", GOOGLE_CLIENT_SECRET: "gsecret
 describe("GET /api/auth-config", () => {
   it("reports what is configured", async () => {
     const res = await fetch(`${app().url}/api/auth-config`);
-    expect(await res.json()).toEqual({ enabled: true, google: true, emailEnabled: false });
+    expect(await res.json()).toEqual({ enabled: true, appOrigin: APP_ORIGIN, google: true, emailEnabled: false });
   });
 });
 
