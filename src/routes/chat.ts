@@ -34,7 +34,8 @@ import {
 import { DEFAULT_AGENT_RETRY, type AgentRetryPolicy } from "../ai/retry.js";
 import type { MemoryStore } from "../ai/memory/store.js";
 import { runReviewSafe } from "../ai/selfimprove/review.js";
-import { isPlausibleUserId } from "../lib/userId.js";
+import { credentialHeaders, isCredentialedOrigin } from "../plugins/cors.js";
+import { resolveUserId } from "../auth/actor.js";
 import type { LearnedSkillStore } from "../ai/skills/learnedStore.js";
 import type { TraceQueryable } from "../tracing/traceStore.js";
 import type { UserSkillStore } from "../ai/skills/userStore.js";
@@ -257,7 +258,6 @@ export async function chatRoutes(
       canvasContext,
       model: requestedModel,
       agentMode = "edits",
-      userId: rawUserId,
       clientCapabilities,
     } = parsed.data;
 
@@ -271,7 +271,9 @@ export async function chatRoutes(
     // A shape-invalid userId (e.g. an older client, or a malformed value)
     // is treated as absent rather than rejected — see the field's doc
     // comment on chatBodySchema above.
-    const userId = rawUserId && isPlausibleUserId(rawUserId) ? rawUserId : undefined;
+    // With accounts on, a session cookie wins over the body's userId (see
+    // resolveActor); the id handed down is a plain string either way.
+    const userId = await resolveUserId(request);
 
     // Fastify lower-cases request header names. Read straight from headers,
     // never from the body — this credential must never land in `messages`
@@ -686,8 +688,13 @@ export async function chatRoutes(
     // Only reflect origins from the allowlist (empty allowlist = dev mode, allow any).
     const origin = request.headers.origin;
     reply.raw.setHeader("Vary", "Origin");
-    if (origin && isOriginAllowed(allowedOrigins, origin)) {
+    if (origin && (isOriginAllowed(allowedOrigins, origin) || isCredentialedOrigin(config, origin))) {
       reply.raw.setHeader("Access-Control-Allow-Origin", origin);
+      // The browser sends the session cookie with this request; it only hands
+      // the response to the page if credentials are explicitly allowed.
+      for (const [name, value] of Object.entries(credentialHeaders(config, origin))) {
+        reply.raw.setHeader(name, value);
+      }
     }
 
     // Transparently retries the whole turn (see ai/streamWithRetry.ts) as

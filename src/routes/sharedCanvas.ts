@@ -9,7 +9,7 @@ import { randomBytes } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { Config } from "../config.js";
-import { isPlausibleUserId } from "../lib/userId.js";
+import { requireUserId } from "../auth/actor.js";
 import type { SharedCanvasStore } from "../sharing/sharedCanvasStore.js";
 
 // Same 1..64 bound as chat.ts's/userSkillRoutes' userId field, and same
@@ -17,7 +17,9 @@ import type { SharedCanvasStore } from "../sharing/sharedCanvasStore.js";
 // "absent"): this route writes an internet-reachable, publicly-readable
 // document, so a shape-invalid id is rejected outright rather than quietly
 // treated as anonymous.
-const userIdSchema = z.string().min(1).max(64).refine(isPlausibleUserId);
+// Shape-checked by resolveActor (a session cookie wins and makes the body's
+// userId irrelevant), so only a coarse bound lives here.
+const userIdSchema = z.string().max(64).optional();
 
 // A document is an already-serialized PenDocument JSON string. 8,000,000
 // chars comfortably covers a large real canvas (well under the route's own
@@ -116,7 +118,9 @@ export async function sharedCanvasRoutes(
           error: parsed.error.issues[0]?.message ?? "Invalid request body",
         });
       }
-      const { userId, title, document, shareId, editToken } = parsed.data;
+      const { title, document, shareId, editToken } = parsed.data;
+      const userId = await requireUserId(request, reply, "Invalid request body");
+      if (!userId) return reply;
 
       if (!looksLikePenDocument(document)) {
         return reply

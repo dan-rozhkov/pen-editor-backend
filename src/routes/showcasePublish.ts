@@ -9,7 +9,7 @@ import { MAX_SHOWCASE_SCREENS } from "../showcase/runner.js";
 import { showcaseViewport, type ShowcasePlatform } from "../showcase/platform.js";
 import { resolveS3Target, uploadObject, type S3Target } from "../services/s3.js";
 import { sniffImageType } from "../services/imageTypes.js";
-import { isPlausibleUserId } from "../lib/userId.js";
+import { requireUserId } from "../auth/actor.js";
 import type { AnalyticsClient } from "../analytics/posthog.js";
 
 // POST /api/showcase/publish — the third caller of `publishScreens` (after
@@ -96,11 +96,11 @@ const publishBodySchema = z.object({
   screens: z.array(screenSchema).min(1).max(MAX_SHOWCASE_SCREENS),
   // Same anonymous client id `/api/chat`'s `chatBodySchema.userId` carries
   // (`pen-editor/src/lib/userId.ts`, min/max mirrored from there), but
-  // **required** here rather than optional. Bounded to 1..64 chars as the
-  // same coarse sanity/DoS guard chat.ts uses; the actual shape check
-  // (`isPlausibleUserId`) happens below, after parsing, so it can produce
-  // its own clear 400 rather than a generic Zod issue.
-  userId: z.string().min(1).max(64),
+  // **required** here (below, via requireUserId) rather than optional. Bounded
+  // to 64 chars as the same coarse sanity/DoS guard chat.ts uses; the actual
+  // shape check (`isPlausibleUserId`) lives in resolveActor, which lets a
+  // session cookie stand in for it and produces its own clear 400 below.
+  userId: z.string().max(64).optional(),
 });
 
 // Strict base64 charset + padding check. `Buffer.from(str, "base64")` never
@@ -214,11 +214,12 @@ export async function showcasePublishRoutes(
       // stray `curl` and a write to the public homepage, so silently
       // downgrading to "no id" would defeat the point of requiring one at
       // all. Fail loudly instead.
-      if (!isPlausibleUserId(body.userId)) {
-        return reply.status(400).send({
-          error: "userId is not a plausible client id (expected a UUID-shaped string)",
-        });
-      }
+      const userId = await requireUserId(
+        request,
+        reply,
+        "userId is not a plausible client id (expected a UUID-shaped string)",
+      );
+      if (!userId) return reply;
 
       if (body.coverIndex !== undefined && body.coverIndex > body.screens.length) {
         return reply.status(400).send({
@@ -421,7 +422,7 @@ export async function showcasePublishRoutes(
 
         analytics?.capture({
           event: "showcase_published",
-          distinctId: body.userId,
+          distinctId: userId,
           properties: { screen_count: published.length, platform },
         });
 

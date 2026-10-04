@@ -75,6 +75,8 @@ export interface PglitePool {
 }
 
 export interface PgliteHarness {
+  /** The raw PGlite instance, for adapters that need their own pool shape. */
+  pglite: PGlite;
   db: TraceQueryable;
   pool: PglitePool;
   reset(): Promise<void>;
@@ -104,6 +106,7 @@ export async function createPgliteHarness(
   };
 
   return {
+    pglite,
     db,
     pool: {
       connect: async () => client,

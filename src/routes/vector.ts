@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { credentialHeaders, isCredentialedOrigin } from "../plugins/cors.js";
 import { isOriginAllowed, parseEnvList, type Config } from "../config.js";
 import {
   isQuiverConfigured,
@@ -82,8 +83,8 @@ export async function vectorRoutes(
             // allowlist means dev mode and reflects any origin).
             const origin = request.headers.origin;
             const corsHeaders: Record<string, string> =
-              origin && isOriginAllowed(allowedOrigins, origin)
-                ? { "Access-Control-Allow-Origin": origin }
+              origin && (isOriginAllowed(allowedOrigins, origin) || isCredentialedOrigin(config, origin))
+                ? { "Access-Control-Allow-Origin": origin, ...credentialHeaders(config, origin) }
                 : {};
             reply.raw.writeHead(200, {
               "Content-Type": "text/event-stream",

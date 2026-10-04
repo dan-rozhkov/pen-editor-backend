@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { Config } from "../config.js";
 import type { MemoryStore } from "../ai/memory/store.js";
-import { isPlausibleUserId } from "../lib/userId.js";
+import { requireUserId } from "../auth/actor.js";
 
 // Same 1..64 bound as the chat route's `userId` field (locked interface,
 // self-improvement-loop spec) — a client-generated crypto.randomUUID(), not
@@ -12,7 +12,8 @@ import { isPlausibleUserId } from "../lib/userId.js";
 // "test" colliding across two different callers is exactly the leak this
 // guards against, and a 400 is the honest response, not a degraded 200.
 const querySchema = z.object({
-  userId: z.string().min(1).max(64).refine(isPlausibleUserId),
+  // Validated by resolveActor, which lets a session cookie replace it.
+  userId: z.string().max(64).optional(),
   sinceId: z.coerce.number().int().min(0).optional(),
 });
 
@@ -33,6 +34,8 @@ export async function memoryActivityRoutes(
     if (!parsed.success) {
       return reply.status(400).send({ error: "Invalid query parameters" });
     }
+    const userId = await requireUserId(request, reply, "Invalid query parameters");
+    if (!userId) return reply;
 
     // `memoryStore` itself is shared by both subsystems (app.ts builds it
     // whenever MEMORY_ENABLED || SELF_SKILLS_ENABLED is on — see that file's
@@ -46,7 +49,7 @@ export async function memoryActivityRoutes(
       return reply.send({ events: [], latestId: null });
     }
 
-    const { userId, sinceId } = parsed.data;
+    const { sinceId } = parsed.data;
     // This route is polled by the chat panel after every turn, so a
     // transient DB hiccup here must degrade to the same empty payload used
     // above for the disabled/missing-store case, not fall through to

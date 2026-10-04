@@ -2,7 +2,7 @@ import Fastify, {
   type FastifyInstance,
   type FastifyServerOptions,
 } from "fastify";
-import type { Config } from "./config.js";
+import { isAuthEnabled, type Config } from "./config.js";
 import { registerCors } from "./plugins/cors.js";
 import { registerMultipart } from "./plugins/multipart.js";
 import { registerRateLimit } from "./plugins/rateLimit.js";
@@ -31,7 +31,10 @@ import { showcasePublishRoutes } from "./routes/showcasePublish.js";
 import { uploadRoutes } from "./routes/upload.js";
 import { repoRoutes } from "./routes/repo.js";
 import { mobbinAuthRoutes } from "./routes/mobbinAuth.js";
-import { createTraceStore, type TraceStore } from "./tracing/traceStore.js";
+import { createPgPool, createTraceStore, type TraceStore } from "./tracing/traceStore.js";
+import { createAuth, type Auth, type AuthDatabase, type CreateAuthOptions } from "./auth/index.js";
+import type { ClaimPool } from "./auth/claim.js";
+import { authRoutes } from "./routes/auth.js";
 import type { ShowcaseStore } from "./showcase/store.js";
 import { createMemoryStore, type MemoryStore } from "./ai/memory/store.js";
 import { memoryActivityRoutes } from "./routes/memoryActivity.js";
@@ -89,6 +92,13 @@ export interface BuildAppOptions {
   // integration tests exercise the retry path without waiting out real
   // backoff delays.
   chatRetryPolicy?: Partial<AgentRetryPolicy>;
+  // Test seams for accounts. `auth: undefined` = build from config (only when
+  // isAuthEnabled), `null` = explicitly off, an instance = use it as-is.
+  auth?: Auth | null;
+  // Pg pool (or a Pool-shaped fake) Better Auth and /api/account/claim-anon
+  // run on; defaults to a pool on TRACE_DATABASE_URL.
+  authPool?: AuthDatabase & ClaimPool;
+  authOptions?: CreateAuthOptions;
 }
 
 // The MCP WS upgrade (GET /api/mcp/ws?token=...) carries the auth token in
@@ -161,6 +171,25 @@ export async function buildApp(
     // is private, which cannot happen for internet traffic.
     trustProxy: "loopback, linklocal, uniquelocal",
   });
+
+  // Accounts: `app.auth` is null when off (isAuthEnabled), and every consumer
+  // — resolveActor, the /api/auth routes — treats null as "anonymous only".
+  let authPool: (AuthDatabase & ClaimPool) | null = null;
+  let auth: Auth | null = null;
+  if (options.auth !== undefined) {
+    auth = options.auth;
+    authPool = options.authPool ?? null;
+  } else if (isAuthEnabled(config)) {
+    authPool = options.authPool ?? (createPgPool(config.TRACE_DATABASE_URL as string) as unknown as AuthDatabase & ClaimPool);
+    auth = createAuth(config, authPool, options.authOptions);
+  }
+  app.decorate("auth", auth);
+  if (authPool && !options.authPool) {
+    const owned = authPool as unknown as { end(): Promise<void> };
+    app.addHook("onClose", async () => {
+      await owned.end();
+    });
+  }
 
   await registerCors(app, config);
   await registerMultipart(app);
@@ -314,6 +343,10 @@ export async function buildApp(
     "/api/image-proxy",
     "/api/mcp",
     "/api/mcp/ws",
+    "/mcp",
+    // Session lookups and OAuth discovery: high-frequency plumbing, not
+    // product actions.
+    "/api/auth/*",
   ]);
   app.addHook("onResponse", async (request, reply) => {
     const route = request.routeOptions.url;
@@ -340,6 +373,7 @@ export async function buildApp(
     });
   });
 
+  await authRoutes(app, config, auth, authPool);
   await chatRoutes(
     app,
     config,

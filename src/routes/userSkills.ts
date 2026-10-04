@@ -10,7 +10,7 @@ import type { Config } from "../config.js";
 import { createModel } from "../ai/provider.js";
 import { ensureSkillsLoaded, getAllSkills } from "../ai/skills.js";
 import { penTools } from "../ai/tools.js";
-import { isPlausibleUserId } from "../lib/userId.js";
+import { requireUserId } from "../auth/actor.js";
 import {
   UserSkillExistsError,
   type UserSkill,
@@ -31,7 +31,9 @@ import {
 // to "no user": this route reads and writes a per-user skill library, so a
 // colliding low-entropy id (e.g. two callers both sending "test") is exactly
 // the leak isPlausibleUserId exists to reject outright.
-const userIdSchema = z.string().min(1).max(64).refine(isPlausibleUserId);
+// The shape check (isPlausibleUserId) now lives in resolveActor, which also lets
+// a session cookie replace the body/query userId entirely.
+const userIdSchema = z.string().max(64).optional();
 
 const listQuerySchema = z.object({ userId: userIdSchema });
 
@@ -138,6 +140,8 @@ export async function userSkillRoutes(
     if (!parsed.success) {
       return reply.status(400).send({ error: "Invalid or missing userId" });
     }
+    const userId = await requireUserId(request, reply);
+    if (!userId) return reply;
     // No store configured (no TRACE_DATABASE_URL) is a real, supported
     // deployment shape — never a 5xx for a read; the client just sees an
     // empty, unavailable feature, same stance as GET /api/memory/activity.
@@ -145,7 +149,7 @@ export async function userSkillRoutes(
       return reply.send({ skills: [], available: false });
     }
     try {
-      const skills = await store.list(parsed.data.userId);
+      const skills = await store.list(userId);
       return reply.send({ skills: skills.map(toPublic), available: true });
     } catch (err) {
       app.log.error({ err }, "[user-skills] list failed");
@@ -164,7 +168,9 @@ export async function userSkillRoutes(
       return reply.status(503).send({ error: "User skills are not available." });
     }
 
-    const { userId, source = "manual" } = parsed.data;
+    const { source = "manual" } = parsed.data;
+    const userId = await requireUserId(request, reply);
+    if (!userId) return reply;
 
     // Frontmatter (if present) fills in whatever the caller didn't supply
     // directly, and always supplies the actual body-after-frontmatter — a
@@ -258,7 +264,9 @@ export async function userSkillRoutes(
       return reply.status(503).send({ error: "User skills are not available." });
     }
 
-    const { userId, newName: rawNewName, description: rawDescription, body, enabled } = parsed.data;
+    const { newName: rawNewName, description: rawDescription, body, enabled } = parsed.data;
+    const userId = await requireUserId(request, reply);
+    if (!userId) return reply;
     // Same trim-before-validate-and-store rule as POST above: neither field
     // is trimmed by the schema, and validateUserSkillDescription only tested
     // the trimmed form while the untrimmed value used to reach the store.
@@ -313,18 +321,20 @@ export async function userSkillRoutes(
     if (!params.success || !query.success) {
       return reply.status(400).send({ error: "Invalid or missing userId" });
     }
+    const userId = await requireUserId(request, reply);
+    if (!userId) return reply;
     if (!store) {
       return reply.status(503).send({ error: "User skills are not available." });
     }
     try {
-      const deleted = await store.remove(query.data.userId, params.data.name);
+      const deleted = await store.remove(userId, params.data.name);
       if (!deleted) {
         return reply.status(404).send({ error: "Skill not found." });
       }
       // Same reasoning as the POST/PATCH handlers above: without this a
       // deleted skill keeps appearing in the system prompt's catalog for up
       // to CATALOG_TTL_MS after the API already reports it gone.
-      invalidateUserSkillCatalog(store, query.data.userId);
+      invalidateUserSkillCatalog(store, userId);
       return reply.send({ deleted: true });
     } catch (err) {
       app.log.error({ err }, "[user-skills] delete failed");
@@ -351,6 +361,7 @@ export async function userSkillRoutes(
         error: parsed.error.issues[0]?.message ?? "Invalid request body",
       });
     }
+    if (!(await requireUserId(request, reply))) return reply;
     // Draft generation never persists (the client reviews then POSTs
     // separately), so it needs no store at all — but userId is still
     // required and shape-checked, per this route family's blanket rule.

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { startKeepalive, KEEPALIVE_INTERVAL_MS } from "../src/mcp/routes.js";
+import { startKeepalive, startSessionRevalidation, KEEPALIVE_INTERVAL_MS, SESSION_REVALIDATE_INTERVAL_MS } from "../src/mcp/routes.js";
+import { registerSession, resetBridgeForTests, sessionCount } from "../src/mcp/bridge.js";
 
 // Minimal fake of the ws.WebSocket surface startKeepalive touches:
 // on("pong"|"close"), ping(), terminate().
@@ -71,5 +72,24 @@ describe("mcp WS keepalive", () => {
     vi.advanceTimersByTime(KEEPALIVE_INTERVAL_MS * 5);
     expect(socket.pings).toBe(0);
     expect(socket.terminated).toBe(false);
+  });
+});
+
+describe("mcp WS session revalidation timer", () => {
+  it("evicts a tab whose session ended on the interval and stops after close", async () => {
+    resetBridgeForTests();
+    let valid = true;
+    const socket = new FakeSocket() as FakeSocket & { readyState: number; send(): void; close(): void };
+    socket.readyState = 1;
+    socket.close = () => socket.emitClose();
+    registerSession(socket as never, "user-a", { expiresAt: Date.now() + 3_600_000, isValid: async () => valid });
+    startSessionRevalidation(socket as never);
+
+    await vi.advanceTimersByTimeAsync(SESSION_REVALIDATE_INTERVAL_MS);
+    expect(sessionCount()).toBe(1);
+    valid = false;
+    await vi.advanceTimersByTimeAsync(SESSION_REVALIDATE_INTERVAL_MS);
+    expect(sessionCount()).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

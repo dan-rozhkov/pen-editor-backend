@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { Config } from "../config.js";
-import { isPlausibleUserId } from "../lib/userId.js";
+import { requireUserId } from "../auth/actor.js";
 import { createSteelClient, type SteelClient } from "../services/steel.js";
 import { connectOverCdp } from "../browser/connect.js";
 import {
@@ -23,7 +23,9 @@ export interface CloudBrowserRouteOptions {
 }
 
 const identity = {
-  userId: z.string().min(1).max(64).refine(isPlausibleUserId, "invalid userId"),
+  // Shape-checked by resolveActor (a session cookie wins and makes this field
+  // irrelevant), so only a coarse bound lives in the schema.
+  userId: z.string().max(64).optional(),
   chatId: z.string().min(1).max(128),
 };
 const cmdBody = z.object({ ...identity, handle: z.string().min(1).max(512).optional(), args: z.unknown().optional() });
@@ -72,7 +74,9 @@ export async function cloudBrowserRoutes(
     }
     const parsed = cmdBody.safeParse(request.body);
     if (!parsed.success) return reply.status(400).send({ error: "Invalid userId, chatId, handle or args" });
-    const { userId, chatId, handle, args } = parsed.data;
+    const { chatId, handle, args } = parsed.data;
+    const userId = await requireUserId(request, reply, "Invalid userId, chatId, handle or args");
+    if (!userId) return reply;
     const command = name as CommandName;
 
     let outcome;
@@ -112,7 +116,9 @@ export async function cloudBrowserRoutes(
     if (!sessions) return reply.status(503).send({ error: DISABLED });
     const parsed = releaseBody.safeParse(request.body);
     if (!parsed.success) return reply.status(400).send({ error: "Invalid userId, chatId or handle" });
-    const out = await sessions.release(parsed.data.userId, parsed.data.chatId, parsed.data.handle);
+    const userId = await requireUserId(request, reply, "Invalid userId, chatId or handle");
+    if (!userId) return reply;
+    const out = await sessions.release(userId, parsed.data.chatId, parsed.data.handle);
     if ("forbidden" in out) return reply.status(403).send({ error: "Invalid browser handle" });
     return out;
   });

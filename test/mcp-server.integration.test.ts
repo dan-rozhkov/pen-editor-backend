@@ -1,10 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { WebSocket } from "ws";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { buildApp } from "../src/app.js";
-import { sessionCount } from "../src/mcp/bridge.js";
 import { makeConfig } from "./helpers.js";
+import { connectFakeEditor, waitForSessionCount } from "./mcpEditorHelpers.js";
 
 const TEST_TOKEN = "a".repeat(32);
 
@@ -13,46 +12,6 @@ async function startServer(overrides: Parameters<typeof makeConfig>[0] = {}) {
   const app = await buildApp(config, { logger: false });
   const url = await app.listen({ port: 0, host: "127.0.0.1" });
   return { app, url };
-}
-
-function wsUrlFor(httpUrl: string, token: string | null): string {
-  const base = httpUrl.replace(/^http/, "ws");
-  return token ? `${base}/api/mcp/ws?token=${encodeURIComponent(token)}` : `${base}/api/mcp/ws`;
-}
-
-// Connects a fake editor tab and answers every tool_call with a canned
-// result recognizable by tool name, so tests can assert the round trip
-// without a real browser.
-function connectFakeEditor(
-  httpUrl: string,
-  token: string,
-  resultOverrides: Record<string, string> = {},
-): Promise<WebSocket> {
-  return new Promise((resolve, reject) => {
-    const socket = new WebSocket(wsUrlFor(httpUrl, token));
-    socket.on("open", () => resolve(socket));
-    socket.on("error", reject);
-    socket.on("message", (raw) => {
-      const message = JSON.parse(raw.toString()) as { id: string; type: string; tool: string };
-      if (message.type !== "tool_call") return;
-      const result =
-        resultOverrides[message.tool] ??
-        (message.tool === "get_editor_state"
-          ? JSON.stringify({ file: "demo.pen" })
-          : "{}");
-      socket.send(JSON.stringify({ id: message.id, type: "tool_result", result }));
-    });
-  });
-}
-
-async function waitForSessionCount(target: number, timeoutMs = 2000): Promise<void> {
-  const start = Date.now();
-  while (sessionCount() !== target) {
-    if (Date.now() - start > timeoutMs) {
-      throw new Error(`Timed out waiting for session count ${target}, got ${sessionCount()}`);
-    }
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
 }
 
 async function connectMcpClient(url: string, token: string): Promise<Client> {

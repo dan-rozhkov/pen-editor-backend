@@ -22,7 +22,7 @@ import {
   editEmbedHtmlInputShape,
   findEmptySpaceOnCanvasInputShape,
 } from "../ai/tools.js";
-import { callTool as callBridgedTool } from "./bridge.js";
+import { callTool as callBridgedTool, type BridgeOwner } from "./bridge.js";
 import { ensureSkillsLoaded, getAllSkills, getSkill } from "../ai/skills.js";
 import {
   getSkillSurfaceNotice,
@@ -37,6 +37,16 @@ import { BRIDGED_TOOL_NAMES, SKILL_TOOL_NAMES, STATIC_TOOL_NAMES } from "./toolN
 // them without a circular import back onto this module.
 export { BRIDGED_TOOL_NAMES, STATIC_TOOL_NAMES, SKILL_TOOL_NAMES };
 
+// Who this server instance acts for. `owner` null = the legacy static-token
+// surface (/api/mcp); a user id = an authenticated /mcp caller, whose bridged
+// calls only ever reach that user's own editor tabs.
+export interface McpContext {
+  owner: BridgeOwner;
+  appOrigin: string;
+}
+
+export const LEGACY_MCP_CONTEXT: McpContext = { owner: null, appOrigin: "" };
+
 function textResult(text: string) {
   return { content: [{ type: "text" as const, text }] };
 }
@@ -49,9 +59,9 @@ function errorResult(message: string) {
 // any rejection (no session / timeout / mid-call disconnect / a handler
 // exception the tab reported as tool_error) into an MCP isError text result
 // instead of throwing — a bridge failure must never crash the MCP session.
-async function callBridged(tool: string, args: Record<string, unknown>) {
+async function callBridgedFor(ctx: McpContext, tool: string, args: Record<string, unknown>) {
   try {
-    const result = await callBridgedTool(tool, args);
+    const result = await callBridgedTool(ctx.owner, tool, args, ctx.appOrigin);
     const errorMessage = bridgedErrorMessage(result);
     return errorMessage !== undefined ? errorResult(errorMessage) : textResult(result);
   } catch (err) {
@@ -87,7 +97,8 @@ const GET_SCREENSHOT_DESCRIPTION =
   "Take a screenshot of a node for visual verification — enabled only for MCP clients (not the built-in chat agent). " +
   "Omit nodeId to screenshot the current selection (errors if none or more than one node is selected). Returns a PNG image.";
 
-export function buildMcpServer(): McpServer {
+export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer {
+  const callBridged = (tool: string, args: Record<string, unknown>) => callBridgedFor(ctx, tool, args);
   const server = new McpServer({ name: "pen-editor", version: "1.0.0" });
 
   server.registerTool(
@@ -140,7 +151,7 @@ export function buildMcpServer(): McpServer {
     async (args) => {
       let raw: string;
       try {
-        raw = await callBridgedTool("get_screenshot", args);
+        raw = await callBridgedTool(ctx.owner, "get_screenshot", args, ctx.appOrigin);
       } catch (err) {
         return errorResult(err instanceof Error ? err.message : String(err));
       }

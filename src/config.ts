@@ -35,6 +35,11 @@ export const DEFAULT_SCENARIO_CONFIRM_THRESHOLD = 3;
 // Exported so tests can pull the real shipped default for a given var (e.g.
 // CHAT_MODEL) without hardcoding it a second time — see
 // test/provider-routing.test.ts and test/provider-reasoning.test.ts.
+// Blank env var == unset, for the optional account vars below.
+function optionalEnvString<T extends z.ZodTypeAny>(schema: T) {
+  return z.preprocess((v) => (v === "" ? undefined : v), schema.optional());
+}
+
 export const envSchema = z.object({
   PORT: z.coerce.number().default(3001),
   HOST: z.string().default("0.0.0.0"),
@@ -232,6 +237,29 @@ export const envSchema = z.object({
     .string()
     .min(16, "MCP_AUTH_TOKEN must be at least 16 characters")
     .optional(),
+  // --- Accounts (Better Auth) — all optional ---
+  // Auth is ON iff BETTER_AUTH_SECRET and TRACE_DATABASE_URL are both set
+  // (isAuthEnabled below). Off = every account route answers 503
+  // `auth_disabled` and the app behaves exactly as it did anonymous-only.
+  // Empty strings count as unset: a blank Render env var must not turn into
+  // "set but invalid". Spec: docs/superpowers/specs/2026-10-04-accounts-and-remote-mcp-design.md.
+  BETTER_AUTH_SECRET: optionalEnvString(z.string().min(32, "BETTER_AUTH_SECRET must be at least 32 characters")),
+  // Public backend origin (OAuth issuer base), e.g. https://api.sideform.pro.
+  BETTER_AUTH_URL: optionalEnvString(z.string().url()),
+  // Frontend origin: trustedOrigins, redirects, sign-in/consent page URLs.
+  APP_ORIGIN: optionalEnvString(z.string().url()),
+  // e.g. "sideform.pro" -> one session cookie for app.* and api.*. Unset =
+  // host-only cookie (localhost).
+  AUTH_COOKIE_DOMAIN: optionalEnvString(z.string()),
+  GOOGLE_CLIENT_ID: optionalEnvString(z.string()),
+  GOOGLE_CLIENT_SECRET: optionalEnvString(z.string()),
+  // Both unset = emails are logged to stdout and /api/auth-config reports
+  // emailEnabled:false.
+  RESEND_API_KEY: optionalEnvString(z.string()),
+  EMAIL_FROM: optionalEnvString(z.string()),
+  // Canonical protected-resource URL of the remote MCP endpoint. Default
+  // `${BETTER_AUTH_URL}/mcp` (see src/auth/settings.ts).
+  MCP_RESOURCE_URL: optionalEnvString(z.string().url()),
   // --- Self-improvement loop (phase 1: persistent per-user memory) ---
   // Kill switch for the memory snapshot + `memory` tool + background review.
   // Same "true"/"1"-only transform as ENABLE_AGENT_LOGGING: z.coerce.boolean()
@@ -595,6 +623,14 @@ export function loadConfig(): Config {
     process.exit(1);
   }
   return result.data;
+}
+
+// Accounts are opt-in: both the secret and a Postgres URL are required, since
+// Better Auth's tables live in the same database as everything else.
+export function isAuthEnabled(
+  config: Pick<Config, "BETTER_AUTH_SECRET" | "TRACE_DATABASE_URL">,
+): boolean {
+  return Boolean(config.BETTER_AUTH_SECRET && config.TRACE_DATABASE_URL);
 }
 
 export function parseEnvList(value: string | undefined): string[] {

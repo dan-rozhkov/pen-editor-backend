@@ -6,12 +6,16 @@ import {
   sessionCount,
   resetBridgeForTests,
   NO_SESSION_MESSAGE,
+  SESSION_ENDED_CLOSE_CODE,
+  revalidateSession,
   type EditorSocket,
+  type SessionCredential,
 } from "../src/mcp/bridge.js";
 
 class FakeSocket implements EditorSocket {
   readyState = 1; // OPEN
   sent: string[] = [];
+  closedWith: [number | undefined, string | undefined] | null = null;
   private messageListeners: Array<(data: unknown) => void> = [];
   private closeListeners: Array<() => void> = [];
 
@@ -22,6 +26,11 @@ class FakeSocket implements EditorSocket {
   on(event: "message" | "close", listener: (data?: unknown) => void): void {
     if (event === "message") this.messageListeners.push(listener as (data: unknown) => void);
     else this.closeListeners.push(listener as () => void);
+  }
+
+  close(code?: number, reason?: string): void {
+    this.closedWith = [code, reason];
+    this.emitClose();
   }
 
   emitMessage(data: unknown): void {
@@ -48,14 +57,14 @@ afterEach(() => {
 
 describe("mcp bridge", () => {
   it("rejects immediately with no connected session", async () => {
-    await expect(callTool("get_editor_state", {})).rejects.toThrow(NO_SESSION_MESSAGE);
+    await expect(callTool(null, "get_editor_state", {})).rejects.toThrow(NO_SESSION_MESSAGE);
   });
 
   it("routes a call to the only session and resolves on tool_result", async () => {
     const socket = new FakeSocket();
     registerSession(socket);
 
-    const promise = callTool("get_editor_state", { include_schema: false });
+    const promise = callTool(null, "get_editor_state", { include_schema: false });
     const call = socket.lastCall();
     expect(call.tool).toBe("get_editor_state");
     expect(call.args).toEqual({ include_schema: false });
@@ -69,7 +78,7 @@ describe("mcp bridge", () => {
     const socket = new FakeSocket();
     registerSession(socket);
 
-    const promise = callTool("batch_design", { operations: 'D("x")' });
+    const promise = callTool(null, "batch_design", { operations: 'D("x")' });
     const call = socket.lastCall();
     socket.emitMessage(JSON.stringify({ id: call.id, type: "tool_error", error: "node not found" }));
 
@@ -80,7 +89,7 @@ describe("mcp bridge", () => {
     const socket = new FakeSocket();
     registerSession(socket);
 
-    const promise = callTool("get_editor_state", {});
+    const promise = callTool(null, "get_editor_state", {});
     const call = socket.lastCall();
     socket.emitMessage(JSON.stringify({ id: call.id, type: "unknown_type" }));
 
@@ -91,7 +100,7 @@ describe("mcp bridge", () => {
     const socket = new FakeSocket();
     registerSession(socket);
 
-    const promise = callTool("get_editor_state", {});
+    const promise = callTool(null, "get_editor_state", {});
     const call = socket.lastCall();
     socket.emitMessage(JSON.stringify({ type: "activity" }));
     socket.emitMessage(JSON.stringify({ id: "not-the-real-id", type: "tool_result", result: "wrong" }));
@@ -112,7 +121,7 @@ describe("mcp bridge", () => {
     vi.setSystemTime(3000);
     older.emitMessage(JSON.stringify({ type: "activity" }));
 
-    void callTool("get_editor_state", {});
+    void callTool(null, "get_editor_state", {});
     expect(older.sent).toHaveLength(1);
     expect(newer.sent).toHaveLength(0);
   });
@@ -121,7 +130,7 @@ describe("mcp bridge", () => {
     const socket = new FakeSocket();
     registerSession(socket);
 
-    const promise = callTool("get_editor_state", {});
+    const promise = callTool(null, "get_editor_state", {});
     socket.emitClose();
 
     await expect(promise).rejects.toThrow("disconnected mid-call");
@@ -132,7 +141,7 @@ describe("mcp bridge", () => {
     const socket = new FakeSocket();
     registerSession(socket);
 
-    const promise = callTool("get_editor_state", {});
+    const promise = callTool(null, "get_editor_state", {});
     vi.advanceTimersByTime(30_000);
 
     await expect(promise).rejects.toThrow("did not respond");
@@ -141,7 +150,7 @@ describe("mcp bridge", () => {
   it("unregisterSession rejects pending calls and drops the session", async () => {
     const socket = new FakeSocket();
     registerSession(socket);
-    const promise = callTool("get_editor_state", {});
+    const promise = callTool(null, "get_editor_state", {});
     unregisterSession(socket);
 
     await expect(promise).rejects.toThrow("disconnected mid-call");
@@ -156,7 +165,7 @@ describe("mcp bridge", () => {
       throw new Error("socket is closing");
     };
 
-    await expect(callTool("get_editor_state", {})).rejects.toThrow("socket is closing");
+    await expect(callTool(null, "get_editor_state", {})).rejects.toThrow("socket is closing");
 
     // The 30s call-timeout timer must have been cleared on the synchronous
     // send() failure — a leaked timer would otherwise fire later (a no-op
@@ -171,7 +180,90 @@ describe("mcp bridge", () => {
     registerSession(open);
     closed.emitClose(); // closed is now readyState 3, more recently "active" by wall clock but not OPEN
 
-    void callTool("get_editor_state", {});
+    void callTool(null, "get_editor_state", {});
     expect(open.sent).toHaveLength(1);
+  });
+});
+
+describe("mcp bridge owner isolation", () => {
+  const tab = (owner: string | null) => {
+    const socket = new FakeSocket();
+    registerSession(socket, owner);
+    return socket;
+  };
+
+  it("never routes a user's call to another owner's session", async () => {
+    const b = tab("user-b");
+    await expect(callTool("user-a", "get_editor_state", {}, "https://app.example")).rejects.toThrow(
+      "No Sideform editor is open for your account. Open https://app.example/app while signed in, then retry.",
+    );
+    expect(b.sent).toHaveLength(0);
+  });
+
+  it("serves legacy (null-owner) sessions only to legacy calls, and users only their own", async () => {
+    const legacy = tab(null);
+    const user = tab("user-a");
+    void callTool("user-a", "get_editor_state", {});
+    expect(user.sent).toHaveLength(1);
+    expect(legacy.sent).toHaveLength(0);
+    void callTool(null, "get_editor_state", {});
+    expect(legacy.sent).toHaveLength(1);
+    expect(user.sent).toHaveLength(1);
+    // A user with no tab does not fall back to the legacy session.
+    await expect(callTool("user-z", "get_editor_state", {})).rejects.toThrow("No Sideform editor is open");
+  });
+
+  it("picks the owner's most recently active session, and focus counts as activity", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const first = tab("user-a");
+    vi.setSystemTime(2_000);
+    const second = tab("user-a");
+    void callTool("user-a", "get_editor_state", {});
+    expect(second.sent).toHaveLength(1);
+
+    vi.setSystemTime(3_000);
+    first.emitMessage(JSON.stringify({ type: "focus" }));
+    void callTool("user-a", "get_editor_state", {});
+    expect(first.sent).toHaveLength(1);
+    expect(second.sent).toHaveLength(1);
+    expect(first.sent.every((line) => JSON.parse(line).type === "tool_call")).toBe(true);
+  });
+});
+
+describe("mcp bridge auth-session binding", () => {
+  const FAR = Date.now() + 3_600_000;
+  const bound = (owner: string, credential: SessionCredential) => {
+    const socket = new FakeSocket();
+    registerSession(socket, owner, credential);
+    return socket;
+  };
+
+  it("closes and drops a tab whose session is gone, then falls through to the valid tab", async () => {
+    const stale = bound("user-a", { expiresAt: FAR, isValid: async () => false });
+    const live = bound("user-a", { expiresAt: FAR, isValid: async () => true });
+    void callTool("user-a", "get_editor_state", {});
+    await vi.waitFor(() => expect(live.sent).toHaveLength(1));
+    expect(stale.closedWith).toEqual([SESSION_ENDED_CLOSE_CODE, "session ended"]);
+    expect(stale.sent).toHaveLength(0);
+    expect(live.sent).toHaveLength(1);
+    expect(sessionCount()).toBe(1);
+  });
+
+  it("answers the normal no-editor error once the only tab expired, without a lookup", async () => {
+    const isValid = vi.fn(async () => true);
+    const tab = bound("user-a", { expiresAt: Date.now() - 1, isValid });
+    await expect(callTool("user-a", "get_editor_state", {}, "https://app.example")).rejects.toThrow(
+      "No Sideform editor is open",
+    );
+    expect(isValid).not.toHaveBeenCalled();
+    expect(tab.closedWith?.[0]).toBe(SESSION_ENDED_CLOSE_CODE);
+  });
+
+  it("keeps the tab when the lookup itself fails", async () => {
+    const tab = bound("user-a", { expiresAt: FAR, isValid: async () => Promise.reject(new Error("db down")) });
+    await revalidateSession(tab);
+    expect(tab.closedWith).toBeNull();
+    expect(sessionCount()).toBe(1);
   });
 });

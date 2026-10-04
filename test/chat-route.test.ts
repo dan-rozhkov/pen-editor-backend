@@ -472,6 +472,8 @@ describe("POST /api/chat — CORS on the hijacked streaming reply", () => {
       "https://app.example.com",
     );
     expect(res.headers.get("vary")).toContain("Origin");
+    // The editor sends its session cookie with the stream request.
+    expect(res.headers.get("access-control-allow-credentials")).toBe("true");
     await res.text();
   });
 
@@ -496,6 +498,7 @@ describe("POST /api/chat — CORS on the hijacked streaming reply", () => {
     expect(res.headers.get("access-control-allow-origin")).toBe(
       "http://localhost:5173",
     );
+    expect(res.headers.get("access-control-allow-credentials")).toBeNull();
     await res.text();
   });
 });
