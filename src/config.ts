@@ -262,6 +262,10 @@ export const envSchema = z.object({
   // are set (isSupportMailEnabled). Signing secret is the `whsec_...` value.
   RESEND_WEBHOOK_SECRET: optionalEnvString(z.string()),
   SUPPORT_FORWARD_TO: optionalEnvString(z.string().email()),
+  // Resend only lets FULL-access keys read inbound mail; RESEND_API_KEY stays
+  // a send-only key. When set, this key is used just to fetch received
+  // messages and their attachments (falls back to RESEND_API_KEY).
+  RESEND_INBOUND_API_KEY: optionalEnvString(z.string()),
   // Comma-separated recipient addresses that count as support mail.
   SUPPORT_INBOX_ADDRESSES: z.string().default("support@sideform.pro,privacy@sideform.pro"),
   // Canonical protected-resource URL of the remote MCP endpoint. Default

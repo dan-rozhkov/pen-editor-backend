@@ -53,6 +53,9 @@ async function collectAttachments(
 export async function supportMailRoutes(app: FastifyInstance, config: Config, injected?: Resend): Promise<void> {
   const enabled = isSupportMailEnabled(config);
   const resend = enabled ? (injected ?? new Resend(config.RESEND_API_KEY)) : null;
+  // Reading inbound mail needs a full-access key; sending keeps the send-only one.
+  const reader =
+    enabled && !injected && config.RESEND_INBOUND_API_KEY ? new Resend(config.RESEND_INBOUND_API_KEY) : resend;
   const inboxes = new Set(parseEnvList(config.SUPPORT_INBOX_ADDRESSES).map((a) => a.toLowerCase()));
   const seen = new SeenIds();
 
@@ -95,9 +98,9 @@ export async function supportMailRoutes(app: FastifyInstance, config: Config, in
         // forward twice; release it on failure so Resend's retry can.
         seen.add(id);
         try {
-          const { data: mail, error } = await resend.emails.receiving.get(meta.email_id);
+          const { data: mail, error } = await (reader ?? resend).emails.receiving.get(meta.email_id);
           if (error || !mail) throw new Error(`fetch inbound email failed: ${error?.message ?? "empty"}`);
-          const { files, names } = await collectAttachments(resend, meta.email_id, mail.attachments);
+          const { files, names } = await collectAttachments(reader ?? resend, meta.email_id, mail.attachments);
 
           const label = inbox.split("@")[0];
           const note = names.length > 0 ? `Attachments not forwarded: ${names.join(", ")}` : "";
