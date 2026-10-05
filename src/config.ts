@@ -257,6 +257,13 @@ export const envSchema = z.object({
   // emailEnabled:false.
   RESEND_API_KEY: optionalEnvString(z.string()),
   EMAIL_FROM: optionalEnvString(z.string()),
+  // Inbound support mail (Resend Inbound -> POST /api/webhooks/resend ->
+  // forwarded to SUPPORT_FORWARD_TO). On iff RESEND_API_KEY + both of these
+  // are set (isSupportMailEnabled). Signing secret is the `whsec_...` value.
+  RESEND_WEBHOOK_SECRET: optionalEnvString(z.string()),
+  SUPPORT_FORWARD_TO: optionalEnvString(z.string().email()),
+  // Comma-separated recipient addresses that count as support mail.
+  SUPPORT_INBOX_ADDRESSES: z.string().default("support@sideform.pro,privacy@sideform.pro"),
   // Canonical protected-resource URL of the remote MCP endpoint. Default
   // `${BETTER_AUTH_URL}/mcp` (see src/auth/settings.ts).
   MCP_RESOURCE_URL: optionalEnvString(z.string().url()),
@@ -645,6 +652,12 @@ export function isAuthEnabled(
   config: Pick<Config, "BETTER_AUTH_SECRET" | "TRACE_DATABASE_URL">,
 ): boolean {
   return Boolean(config.BETTER_AUTH_SECRET && config.TRACE_DATABASE_URL);
+}
+
+export function isSupportMailEnabled(
+  config: Pick<Config, "RESEND_API_KEY" | "RESEND_WEBHOOK_SECRET" | "SUPPORT_FORWARD_TO">,
+): boolean {
+  return Boolean(config.RESEND_API_KEY && config.RESEND_WEBHOOK_SECRET && config.SUPPORT_FORWARD_TO);
 }
 
 export function parseEnvList(value: string | undefined): string[] {

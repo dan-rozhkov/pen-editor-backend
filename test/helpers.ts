@@ -95,6 +95,7 @@ export function makeConfig(overrides: Partial<Config> = {}): Config {
     TASTE_CHECK_MODE: envSchema.shape.TASTE_CHECK_MODE.parse(undefined),
     TASTE_CHECK_MIN_NOUL: envSchema.shape.TASTE_CHECK_MIN_NOUL.parse(undefined),
     TASTE_CHECK_TIMEOUT_MS: envSchema.shape.TASTE_CHECK_TIMEOUT_MS.parse(undefined),
+    SUPPORT_INBOX_ADDRESSES: "support@sideform.pro,privacy@sideform.pro",
     ...overrides,
   };
 }

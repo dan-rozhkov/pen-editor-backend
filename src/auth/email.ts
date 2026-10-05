@@ -29,7 +29,7 @@ export function createEmailSender(
   };
 }
 
-const escapeHtml = (value: string): string =>
+export const escapeHtml = (value: string): string =>
   value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
 function linkEmail(to: string, subject: string, intro: string, action: string, url: string): EmailMessage {

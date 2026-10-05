@@ -35,6 +35,8 @@ import { createPgPool, createTraceStore, type TraceStore } from "./tracing/trace
 import { createAuth, type Auth, type AuthDatabase, type CreateAuthOptions } from "./auth/index.js";
 import type { ClaimPool } from "./auth/claim.js";
 import { authRoutes } from "./routes/auth.js";
+import { supportMailRoutes } from "./routes/supportMail.js";
+import type { Resend } from "resend";
 import { openaiAppsChallengeRoutes } from "./routes/openaiAppsChallenge.js";
 import type { ShowcaseStore } from "./showcase/store.js";
 import { createMemoryStore, type MemoryStore } from "./ai/memory/store.js";
@@ -49,6 +51,8 @@ import type { TraceQueryable } from "./tracing/traceStore.js";
 import { createAnalyticsClient, type AnalyticsClient } from "./analytics/posthog.js";
 
 export interface BuildAppOptions {
+  // Test seam: the Resend client behind the inbound support-mail webhook.
+  supportMailResend?: Resend;
   // Test seams for the cloud browser routes: fake Steel client / CDP connector.
   cloudBrowser?: CloudBrowserRouteOptions;
   logger?: FastifyServerOptions["logger"];
@@ -348,6 +352,7 @@ export async function buildApp(
     // Session lookups and OAuth discovery: high-frequency plumbing, not
     // product actions.
     "/api/auth/*",
+    "/api/webhooks/resend",
     "/.well-known/openai-apps-challenge",
   ]);
   app.addHook("onResponse", async (request, reply) => {
@@ -376,6 +381,7 @@ export async function buildApp(
   });
 
   await authRoutes(app, config, auth, authPool);
+  await supportMailRoutes(app, config, options.supportMailResend);
   await openaiAppsChallengeRoutes(app, config);
   await chatRoutes(
     app,
