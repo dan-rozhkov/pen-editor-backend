@@ -286,8 +286,55 @@ export const batchDesignInputShape = {
   batch: z.string().optional(),
 };
 
-export function makeBatchDesignInputSchema(opts?: { embedOnly?: boolean }) {
+// For an `I(parent, {...})` statement, returns the literal first argument
+// (the parent) with whitespace and surrounding quotes stripped, or null for
+// anything that isn't an insert. R(path, ...) is deliberately excluded: its
+// first argument is the node being REPLACED, not a parent, so its depth is
+// unknowable from the statement alone.
+export function parentOfInsertOp(statement: string): string | null {
+  const trimmed = statement.trim();
+  const opMatch = trimmed.match(CREATE_OP_RE);
+  if (!opMatch || opMatch[1] !== "I") return null;
+  const [first] = splitTopLevelByComma(trimmed.slice(opMatch[0].length));
+  return first.trim().replace(/^["'`]|["'`]$/g, "");
+}
+
+// MCP-only guard: rejects a TOP-LEVEL (`I(document, ...)`) insert whose
+// effective type is not `embed`. Inserts into existing nodes stay allowed
+// (editing native designs). C() copies an existing node of unknown type and
+// R() replaces a node of unknown depth, so neither can be judged from the
+// statement text and both pass.
+// Only screen-like containers are rejected: other root-level types (text,
+// connector, line, path, polygon, ellipse, ref) are legitimate annotations,
+// and a `reusable: true` frame is a component definition.
+const SCREEN_LIKE_TYPES: ReadonlySet<string> = new Set(["frame", "group", "rect"]);
+const REUSABLE_TRUE_RE = /^\s*(?:"reusable"|'reusable'|reusable)\s*:\s*true\s*$/;
+
+function isReusableInsert(statement: string): boolean {
+  const trimmed = statement.trim();
+  const opMatch = trimmed.match(CREATE_OP_RE);
+  if (!opMatch) return false;
+  const objStart = findFirstTopLevelBrace(trimmed, opMatch[0].length);
+  if (objStart === -1) return false;
+  const objEnd = findMatchingBrace(trimmed, objStart);
+  if (objEnd === -1) return false;
+  return splitTopLevelByComma(trimmed.slice(objStart + 1, objEnd)).some((c) => REUSABLE_TRUE_RE.test(c));
+}
+
+export function findTopLevelNativeInsert(operations: string): string | null {
+  for (const statement of splitBatchDesignStatements(operations)) {
+    if (!isCreateOp(statement) || parentOfInsertOp(statement) !== "document") continue;
+    const effectiveType = nodeTypeOfCreateOp(statement) ?? "frame";
+    if (!SCREEN_LIKE_TYPES.has(effectiveType)) continue;
+    if (effectiveType === "frame" && isReusableInsert(statement)) continue;
+    return effectiveType;
+  }
+  return null;
+}
+
+export function makeBatchDesignInputSchema(opts?: { embedOnly?: boolean; topLevelEmbedOnly?: boolean }) {
   const embedOnly = opts?.embedOnly ?? false;
+  const topLevelEmbedOnly = opts?.topLevelEmbedOnly ?? false;
 
   return z
     .object(batchDesignInputShape)
@@ -328,6 +375,21 @@ export function makeBatchDesignInputSchema(opts?: { embedOnly?: boolean }) {
             });
             return z.NEVER;
           }
+        }
+      }
+
+      if (topLevelEmbedOnly) {
+        const nativeType = findTopLevelNativeInsert(operations);
+        if (nativeType) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message:
+              `Top-level screens must be embeds: batch_design may not insert a native "${nativeType}" node into the document root. ` +
+              `Create each screen as one top-level embed — I(document, {type: "embed", name: "...", width: ..., height: ..., htmlContent: "..."}) ` +
+              `(see load_skill("prototype")). To edit native designs, insert into an existing frame instead: I("existingFrameId", {...}).`,
+            path: ["operations"],
+          });
+          return z.NEVER;
         }
       }
 
@@ -583,6 +645,7 @@ export const setVariablesInputShape = {
 // same lookup without duplicating this content.
 const GUIDELINES: Record<string, string> = {
   "design-system":
+    "For NEW screens or pages, build each screen as one `embed` (prototype skill). The rules below apply when editing existing native frames.\n\n" +
     "## Sizing & Auto-Layout Rules\n" +
     "When creating frames with layout (vertical/horizontal), set width and height explicitly: " +
     "the default is a fixed pixel size, which breaks auto-layout.\n" +

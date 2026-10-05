@@ -96,6 +96,13 @@ describe("/mcp credentials", () => {
 });
 
 describe("/mcp API key", () => {
+  it("sends embed-first instructions in the initialize result", async () => {
+    const client = await connectClient((await createAccount()).apiKey);
+    expect(client.getInstructions()).toContain('load_skill("prototype")');
+    expect(client.getInstructions()).toContain("ONE top-level `embed`");
+    await client.close();
+  });
+
   it("lists tools and routes a bridged call to the key owner's own tab only", async () => {
     resetBridgeForTests();
     const [alice, bob, carol] = [await createAccount(), await createAccount(), await createAccount()];

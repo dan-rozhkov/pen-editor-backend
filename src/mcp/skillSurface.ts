@@ -170,10 +170,15 @@ export function getSkillSurfaceWarning(skill: Pick<Skill, "name" | "content">): 
   const lines = [
     `NOTE: this MCP server's tool surface is narrower than the built-in chat agent's.`,
   ];
+  const designSkill = skill.name === "prototype" || skill.name === "slides";
+  const substituted = designSkill ? ["ask_user", "generate_image"] : [];
+  const skippable = unavailableTools.filter((t) => !substituted.includes(t));
   if (unavailableTools.length > 0) {
     lines.push(
       `The following tools this skill's instructions call are NOT available here: ${unavailableTools.join(", ")}. ` +
-        `Skip any step that needs one of them and tell the user it was skipped instead of guessing at a substitute.`,
+        (skippable.length === unavailableTools.length
+          ? `Skip any step that needs one of them and tell the user it was skipped instead of guessing at a substitute.`
+          : `Skip any step that needs ${skippable.length ? skippable.join(", ") : "none of the others"} and tell the user it was skipped; ask_user and generate_image have the substitutes given below.`),
     );
   }
   if (policyDependent) {
@@ -184,7 +189,11 @@ export function getSkillSurfaceWarning(skill: Pick<Skill, "name" | "content">): 
             `equivalent credential on this MCP path, so research runs with NO reference tools here, silently, ` +
             `on top of whichever Mobbin tools above are unavailable. Treat this whole skill as unsupported unless ` +
             `Mobbin tools are genuinely reachable through this session.`
-        : `This skill also assumes the chat route's mode/policy routing (resolveTaskPolicy, embed-only ` +
+        : skill.name === "prototype" || skill.name === "slides"
+          ? `On this server the embed-only rule DOES apply, enforced on batch_design: a top-level insert I(document, {...}) must be type "embed" ` +
+            `(inserts into existing nodes stay allowed). ask_user is unavailable — ask in plain conversation if your client allows, otherwise pick sensible defaults. ` +
+            `generate_image is unavailable — use picsum (the skill's sanctioned fallback). Web/design research steps: skip and say so. Chat-route mode/policy routing (resolveTaskPolicy) does not exist here; ignore it.`
+          : `This skill also assumes the chat route's mode/policy routing (resolveTaskPolicy, embed-only ` +
             `batch_design) which does not exist on this MCP path — treat any instruction that depends on it as inapplicable.`,
     );
   }

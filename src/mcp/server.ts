@@ -30,6 +30,7 @@ import {
   getUnavailableToolsForSkill,
   POLICY_DEPENDENT_SKILL_NAMES,
 } from "./skillSurface.js";
+import { buildMcpInstructions } from "./instructions.js";
 import { registerCanvasWidget, type CanvasWidgetSettings } from "./canvasWidget.js";
 import { toolMeta } from "./toolAnnotations.js";
 import { BRIDGED_TOOL_NAMES, SKILL_TOOL_NAMES, STATIC_TOOL_NAMES } from "./toolNames.js";
@@ -105,7 +106,12 @@ const GET_SCREENSHOT_DESCRIPTION =
 
 export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer {
   const callBridged = (tool: string, args: Record<string, unknown>) => callBridgedFor(ctx, tool, args);
-  const server = new McpServer({ name: "sideform", version: "1.0.0" });
+  const server = new McpServer({ name: "sideform", version: "1.0.0" }, {
+    instructions: buildMcpInstructions({
+      hasCanvasWidget: Boolean(ctx.owner !== null && ctx.widget && ctx.credential),
+      appOrigin: ctx.appOrigin || undefined,
+    }),
+  });
 
   server.registerTool(
     "get_editor_state",
@@ -190,14 +196,14 @@ export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer 
     "batch_design",
     {
       ...toolMeta("batch_design"),
-      description: `${BATCH_DESIGN_DESCRIPTION}\n\nCall get_guidelines(topic: "design-system") first for auto-layout rules.`,
+      description: `${BATCH_DESIGN_DESCRIPTION}\n\nNew screens: one top-level embed per screen (see load_skill('prototype')). Native ops above are for editing existing native nodes. When editing existing native frames, call get_guidelines(topic: "design-system") first.`,
       inputSchema: batchDesignInputShape,
     },
     async (rawArgs) => {
       // Reuse the exact same alias-normalization validation the chat tool
       // uses, instead of duplicating it — registerTool's own raw-shape
       // validation can't run this schema's .transform() refinement.
-      const parsed = makeBatchDesignInputSchema().safeParse(rawArgs);
+      const parsed = makeBatchDesignInputSchema({ topLevelEmbedOnly: true }).safeParse(rawArgs);
       if (!parsed.success) {
         return errorResult(parsed.error.issues.map((issue) => issue.message).join("; "));
       }
