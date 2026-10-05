@@ -31,6 +31,7 @@ import {
   POLICY_DEPENDENT_SKILL_NAMES,
 } from "./skillSurface.js";
 import { registerCanvasWidget, type CanvasWidgetSettings } from "./canvasWidget.js";
+import { toolMeta } from "./toolAnnotations.js";
 import { BRIDGED_TOOL_NAMES, SKILL_TOOL_NAMES, STATIC_TOOL_NAMES } from "./toolNames.js";
 
 // Re-exported for existing importers (test/mcp-tools-contract.test.ts) — the
@@ -104,11 +105,12 @@ const GET_SCREENSHOT_DESCRIPTION =
 
 export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer {
   const callBridged = (tool: string, args: Record<string, unknown>) => callBridgedFor(ctx, tool, args);
-  const server = new McpServer({ name: "pen-editor", version: "1.0.0" });
+  const server = new McpServer({ name: "sideform", version: "1.0.0" });
 
   server.registerTool(
     "get_editor_state",
     {
+      ...toolMeta("get_editor_state"),
       description:
         "Get the current editor state: active .pen file, user selection, top-level nodes. Call this first — Figma's metadata-first pattern.",
       inputSchema: getEditorStateInputShape,
@@ -119,6 +121,7 @@ export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer 
   server.registerTool(
     "batch_get",
     {
+      ...toolMeta("batch_get"),
       description:
         "Retrieve nodes by id or search pattern, with depth control. Use to inspect structure before modifying.",
       inputSchema: batchGetInputShape,
@@ -129,6 +132,7 @@ export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer 
   server.registerTool(
     "snapshot_layout",
     {
+      ...toolMeta("snapshot_layout"),
       description:
         "Get computed layout rectangles (positions/sizes after the layout engine runs). Key for design-to-code fidelity — use to check placement, overlap, and clipping.",
       inputSchema: snapshotLayoutInputShape,
@@ -139,6 +143,7 @@ export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer 
   server.registerTool(
     "get_variables",
     {
+      ...toolMeta("get_variables"),
       description: "Read all design variables (tokens) and themes defined in the .pen file.",
       inputSchema: getVariablesInputShape,
     },
@@ -148,6 +153,7 @@ export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer 
   server.registerTool(
     "get_screenshot",
     {
+      ...toolMeta("get_screenshot"),
       description: GET_SCREENSHOT_DESCRIPTION,
       inputSchema: {
         nodeId: z.string().optional().describe("Node to screenshot. Omit to use the current selection."),
@@ -183,6 +189,7 @@ export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer 
   server.registerTool(
     "batch_design",
     {
+      ...toolMeta("batch_design"),
       description: `${BATCH_DESIGN_DESCRIPTION}\n\nCall get_guidelines(topic: "design-system") first for auto-layout rules.`,
       inputSchema: batchDesignInputShape,
     },
@@ -201,6 +208,7 @@ export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer 
   server.registerTool(
     "set_variables",
     {
+      ...toolMeta("set_variables"),
       description: "Add or update design variables and themes. Merges by default; replace=true overwrites all.",
       inputSchema: setVariablesInputShape,
     },
@@ -210,6 +218,7 @@ export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer 
   server.registerTool(
     "read_comments",
     {
+      ...toolMeta("read_comments"),
       description:
         "Read canvas comment threads (feedback pins). Each thread carries an order number, resolved state, and — when anchored to a node — that node's id and name. Pass threadId for a single thread, or omit it to list all threads.",
       inputSchema: readCommentsInputShape,
@@ -220,6 +229,7 @@ export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer 
   server.registerTool(
     "reply_comment",
     {
+      ...toolMeta("reply_comment"),
       description: "Append a reply to an existing comment thread, authored by you (the agent).",
       inputSchema: replyCommentInputShape,
     },
@@ -229,6 +239,7 @@ export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer 
   server.registerTool(
     "resolve_comment",
     {
+      ...toolMeta("resolve_comment"),
       description: "Mark a comment thread as resolved, after you've addressed what it asked for.",
       inputSchema: resolveCommentInputShape,
     },
@@ -238,6 +249,7 @@ export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer 
   server.registerTool(
     "leave_comment",
     {
+      ...toolMeta("leave_comment"),
       description:
         "Drop one or more comment pins authored by you (the agent), each starting a new thread. Pass a batch of 1-50 comments in one call. Each item needs nodeId (anchors to that node's center) or both x and y (a world-space canvas point). Returns the created thread numbers.",
       inputSchema: leaveCommentInputShape,
@@ -248,6 +260,7 @@ export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer 
   server.registerTool(
     "read_embed_html",
     {
+      ...toolMeta("read_embed_html"),
       description:
         "Read part of an existing embed node's HTML without pulling the whole document into context. `outline` (default) returns the tag structure with attributes intact and text/deep subtrees elided; `grep` returns lines matching a literal substring with surrounding context, for byte-exact anchors to feed edit_embed_html; `full` returns the entire HTML. Always read before editing.",
       // registerTool's declared inputSchema is a raw shape (the SDK needs
@@ -274,6 +287,7 @@ export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer 
   server.registerTool(
     "edit_embed_html",
     {
+      ...toolMeta("edit_embed_html"),
       description:
         "Apply targeted text edits to an existing embed node's HTML instead of rewriting the whole screen. Each edit replaces an exact substring (oldString) with newString; an empty newString deletes the match. Use this to change part of a screen that already exists; rewriting the whole htmlContent costs thousands of tokens and silently drifts parts you weren't asked to touch, so reserve that for replacing a screen wholesale with a different concept. Read the fragment with read_embed_html first.",
       inputSchema: editEmbedHtmlInputShape,
@@ -284,6 +298,7 @@ export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer 
   server.registerTool(
     "rename_layers",
     {
+      ...toolMeta("rename_layers"),
       description:
         "Rename one or more layers (nodes) to logical, human-readable names in a single undoable step. Read each layer's type, text content, and hierarchy first (via get_editor_state / batch_get) so the names reflect each layer's role.",
       inputSchema: renameLayersInputShape,
@@ -294,6 +309,7 @@ export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer 
   server.registerTool(
     "find_empty_space_on_canvas",
     {
+      ...toolMeta("find_empty_space_on_canvas"),
       description:
         "Find available empty space on the canvas in a given direction with the specified dimensions. Use before inserting new top-level frames to avoid overlapping.",
       inputSchema: findEmptySpaceOnCanvasInputShape,
@@ -304,6 +320,7 @@ export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer 
   server.registerTool(
     "list_skills",
     {
+      ...toolMeta("list_skills"),
       description:
         "List the curated skill catalog available on this server (name + description). Curated skills only — learned and per-user skills need a userId this MCP session doesn't have. " +
         "This server's tool surface is narrower than the built-in chat agent's, so some catalog entries carry an `unavailableTools` list — call load_skill on those to see the exact warning before relying on them.",
@@ -336,6 +353,7 @@ export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer 
   server.registerTool(
     "load_skill",
     {
+      ...toolMeta("load_skill"),
       description:
         "Load a curated skill's full instructions by name. Call this when the task matches a skill from list_skills.",
       inputSchema: {
@@ -359,6 +377,7 @@ export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer 
   server.registerTool(
     "get_guidelines",
     {
+      ...toolMeta("get_guidelines"),
       description: "Get design guidelines and rules for a topic (design-system, code, table, tailwind, landing-page).",
       inputSchema: { topic: z.enum(["code", "table", "tailwind", "landing-page", "design-system"]) },
     },
@@ -368,6 +387,7 @@ export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer 
   server.registerTool(
     "get_style_guide_tags",
     {
+      ...toolMeta("get_style_guide_tags"),
       description: "Get all available style guide tags. Call before get_style_guide to know which tags to use.",
       inputSchema: {},
     },
@@ -377,6 +397,7 @@ export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer 
   server.registerTool(
     "get_style_guide",
     {
+      ...toolMeta("get_style_guide"),
       description: "Get a style guide for design inspiration, by tags or by name.",
       inputSchema: { tags: z.array(z.string()).optional(), name: z.string().optional() },
     },

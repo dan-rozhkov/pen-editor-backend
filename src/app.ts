@@ -35,6 +35,7 @@ import { createPgPool, createTraceStore, type TraceStore } from "./tracing/trace
 import { createAuth, type Auth, type AuthDatabase, type CreateAuthOptions } from "./auth/index.js";
 import type { ClaimPool } from "./auth/claim.js";
 import { authRoutes } from "./routes/auth.js";
+import { openaiAppsChallengeRoutes } from "./routes/openaiAppsChallenge.js";
 import type { ShowcaseStore } from "./showcase/store.js";
 import { createMemoryStore, type MemoryStore } from "./ai/memory/store.js";
 import { memoryActivityRoutes } from "./routes/memoryActivity.js";
@@ -347,6 +348,7 @@ export async function buildApp(
     // Session lookups and OAuth discovery: high-frequency plumbing, not
     // product actions.
     "/api/auth/*",
+    "/.well-known/openai-apps-challenge",
   ]);
   app.addHook("onResponse", async (request, reply) => {
     const route = request.routeOptions.url;
@@ -374,6 +376,7 @@ export async function buildApp(
   });
 
   await authRoutes(app, config, auth, authPool);
+  await openaiAppsChallengeRoutes(app, config);
   await chatRoutes(
     app,
     config,

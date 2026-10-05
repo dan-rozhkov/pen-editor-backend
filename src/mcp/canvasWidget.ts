@@ -1,4 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { toolMeta } from "./toolAnnotations.js";
 import { RESOURCE_MIME_TYPE, registerAppResource, registerAppTool } from "@modelcontextprotocol/ext-apps/server";
 import { parseEnvList, type Config } from "../config.js";
 import type { SessionCredential } from "./bridge.js";
@@ -111,7 +112,7 @@ export function registerCanvasWidget(
     server,
     "open_canvas",
     {
-      title: "Open Sideform canvas",
+      ...toolMeta("open_canvas"),
       description:
         "Open the live Sideform canvas in this conversation. Call it once before the design tools when the client can display apps; afterwards the design tools edit this canvas.",
       inputSchema: {},
@@ -127,6 +128,7 @@ export function registerCanvasWidget(
     server,
     BRIDGE_TICKET_TOOL,
     {
+      ...toolMeta("sideform_bridge_ticket"),
       description: "Mint a fresh bridge ticket so the canvas widget can reconnect. Called by the widget, not the model.",
       inputSchema: {},
       _meta: { ui: { resourceUri: CANVAS_RESOURCE_URI, visibility: ["app"] } },

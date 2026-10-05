@@ -8,7 +8,7 @@ import { BRIDGE_TICKET_TTL_MS, mintBridgeTicket } from "../src/mcp/bridgeTickets
 import { CANVAS_RESOURCE_URI } from "../src/mcp/canvasWidget.js";
 import { makeConfig } from "./helpers.js";
 import { APP_ORIGIN, useAuthApp } from "./authHarness.js";
-import { connectFakeEditor, waitForSessionCount } from "./mcpEditorHelpers.js";
+import { connectFakeEditor, expectAnnotatedTools, waitForSessionCount } from "./mcpEditorHelpers.js";
 
 const LEGACY_TOKEN = "a-very-secret-token!";
 const ISSUER = "http://localhost:3001/api/auth";
@@ -393,6 +393,15 @@ describe("/mcp canvas widget", () => {
     await waitForSessionCount(0);
   });
 
+  it("annotates every tool (remote /mcp) and identifies as sideform", async () => {
+    const client = await connectClient((await createAccount()).apiKey);
+    expect(client.getServerVersion()?.name).toBe("sideform");
+    const tools = (await client.listTools()).tools;
+    expect(tools.map((t) => t.name)).toEqual(expect.arrayContaining(["open_canvas", "sideform_bridge_ticket"]));
+    expectAnnotatedTools(tools);
+    await client.close();
+  });
+
   it("is absent from the legacy /api/mcp surface", async () => {
     const legacy = new Client({ name: "legacy", version: "1.0.0" });
     await legacy.connect(
@@ -400,7 +409,10 @@ describe("/mcp canvas widget", () => {
         requestInit: { headers: { Authorization: `Bearer ${LEGACY_TOKEN}` } },
       }),
     );
-    const names = (await legacy.listTools()).tools.map((t) => t.name);
+    const legacyTools = (await legacy.listTools()).tools;
+    expect(legacy.getServerVersion()?.name).toBe("sideform");
+    expectAnnotatedTools(legacyTools);
+    const names = legacyTools.map((t) => t.name);
     expect(names).not.toContain("open_canvas");
     expect(names).not.toContain("sideform_bridge_ticket");
     await legacy.close();

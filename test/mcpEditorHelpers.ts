@@ -2,6 +2,9 @@
 // every tool_call with a canned result, so tests can assert a round trip (and
 // which tab answered) without a browser.
 import { WebSocket } from "ws";
+import { expect } from "vitest";
+import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import { TOOL_META, type McpToolName } from "../src/mcp/toolAnnotations.js";
 import { APP_ORIGIN } from "./authHarness.js";
 import { sessionCount } from "../src/mcp/bridge.js";
 
@@ -47,5 +50,26 @@ export async function waitForSessionCount(target: number, timeoutMs = 2000): Pro
       throw new Error(`Timed out waiting for session count ${target}, got ${sessionCount()}`);
     }
     await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+// Every listed tool must carry the annotations OpenAI app review checks, and
+// match the central TOOL_META table (so an unannotated new tool fails here).
+export function expectAnnotatedTools(tools: Tool[]): void {
+  expect(tools.length).toBeGreaterThan(0);
+  for (const tool of tools) {
+    const meta = TOOL_META[tool.name as McpToolName];
+    expect(meta, `${tool.name} missing from TOOL_META`).toBeDefined();
+    expect(tool.title, tool.name).toBeTruthy();
+    expect(tool.annotations?.readOnlyHint, tool.name).toBeTypeOf("boolean");
+    expect(tool.annotations?.openWorldHint, tool.name).toBe(false);
+    expect(tool.annotations, tool.name).toMatchObject(meta.annotations);
+  }
+  const byName = new Map(tools.map((t) => [t.name, t]));
+  for (const name of ["batch_design", "set_variables", "edit_embed_html", "rename_layers", "reply_comment", "resolve_comment", "leave_comment"]) {
+    const annotations = byName.get(name)?.annotations;
+    expect(annotations?.readOnlyHint, name).toBe(false);
+    expect(annotations?.idempotentHint, name).toBe(false);
+    expect(annotations?.destructiveHint, name).toBe(name === "batch_design" || name === "set_variables");
   }
 }

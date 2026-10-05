@@ -260,6 +260,12 @@ export const envSchema = z.object({
   // Canonical protected-resource URL of the remote MCP endpoint. Default
   // `${BETTER_AUTH_URL}/mcp` (see src/auth/settings.ts).
   MCP_RESOURCE_URL: optionalEnvString(z.string().url()),
+  // OpenAI plugin-directory domain verification: served verbatim at
+  // GET /.well-known/openai-apps-challenge. Blank == unset (route 404s).
+  OPENAI_APPS_CHALLENGE_TOKEN: z.preprocess(
+    (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+    z.string().trim().optional(),
+  ),
   // Extra origins (comma list, e.g. image CDNs) the Sideform canvas MCP App
   // widget may load from / connect to, on top of the app and API origins.
   MCP_APP_RESOURCE_DOMAINS: optionalEnvString(
