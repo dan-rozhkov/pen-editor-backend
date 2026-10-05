@@ -29,10 +29,35 @@ export interface SessionCredential {
 const OPEN = 1; // ws.WebSocket.OPEN
 const CALL_TIMEOUT_MS = 30_000;
 
-interface PendingCall {
+// Two-phase delivery for tabs that sent `hello` with "ack": the tool_call goes
+// out with `ack: true`, the tab replies `ack` WITHOUT executing, and only then
+// does the bridge send `go`. No ack within this window means the tab is stalled
+// or gone: the call is withdrawn from it (`cancel`) and re-routed, so exactly
+// one tab is ever told to execute. Injectable for tests.
+export const ACK_TIMEOUT_MS = 5_000;
+let ackTimeoutMs = ACK_TIMEOUT_MS;
+export function setAckTimeoutForTests(ms: number): void {
+  ackTimeoutMs = ms;
+}
+
+// One logical callTool(): spans every attempt (re-route) and owns the single
+// overall deadline.
+interface Call {
   resolve: (result: string) => void;
   reject: (error: Error) => void;
+  // Pre-go: bounds acks and re-routes. Restarted at `go` as the tab's
+  // execution budget.
   timer: ReturnType<typeof setTimeout>;
+  tool: string;
+  settled: boolean;
+  current: { session: Session; id: string } | null;
+}
+
+interface PendingCall {
+  call: Call;
+  /** False until the tab confirmed receipt; only matters for ack tabs. */
+  acked: boolean;
+  ackTimer?: ReturnType<typeof setTimeout>;
 }
 
 // Who owns a session / a call. A user id (cookie-authenticated tab, or the
@@ -46,11 +71,16 @@ interface Session {
   lastActiveAt: number;
   credential: SessionCredential | null;
   pending: Map<string, PendingCall>;
+  /** True once the tab said `hello` with the "ack" capability. */
+  supportsAck: boolean;
+  /** Missed an ack: not routed to until it sends any message again. */
+  suspect: boolean;
 }
 
 interface WireMessage {
   id?: string;
   type: string;
+  capabilities?: unknown;
   result?: string;
   error?: string;
 }
@@ -79,12 +109,29 @@ function parseMessage(data: unknown): WireMessage | null {
   }
 }
 
+function settle(call: Call, outcome: { result: string } | { error: Error }): void {
+  if (call.settled) return;
+  call.settled = true;
+  clearTimeout(call.timer);
+  call.current = null;
+  if ("error" in outcome) call.reject(outcome.error);
+  else call.resolve(outcome.result);
+}
+
 function rejectAllPending(session: Session, error: Error): void {
-  for (const call of session.pending.values()) {
-    clearTimeout(call.timer);
-    call.reject(error);
+  for (const pending of session.pending.values()) {
+    clearTimeout(pending.ackTimer);
+    settle(pending.call, { error });
   }
   session.pending.clear();
+}
+
+function sendQuietly(session: Session, message: object): void {
+  try {
+    session.socket.send(JSON.stringify(message));
+  } catch {
+    // Socket closing: the close handler settles whatever is pending.
+  }
 }
 
 // Registers a newly-connected editor tab. Wires message/close handlers that
@@ -95,32 +142,53 @@ export function registerSession(
   ownerUserId: BridgeOwner = null,
   credential: SessionCredential | null = null,
 ): void {
-  const session: Session = { socket, ownerUserId, lastActiveAt: Date.now(), credential, pending: new Map() };
+  const session: Session = { socket, ownerUserId, lastActiveAt: Date.now(), credential, pending: new Map(),
+    supportsAck: false,
+    suspect: false,
+  };
   sessions.set(socket, session);
 
   socket.on("message", (data) => {
     session.lastActiveAt = Date.now();
+    session.suspect = false; // any sign of life clears a missed ack
     const message = parseMessage(data);
     // "activity" / "focus" only refresh lastActiveAt (above); no reply.
     if (!message || message.type === "activity" || message.type === "focus") return;
+    if (message.type === "hello") {
+      if (Array.isArray(message.capabilities) && message.capabilities.includes("ack")) {
+        session.supportsAck = true;
+      }
+      return;
+    }
 
     const id = message.id;
     if (!id) return;
-    const pendingCall = session.pending.get(id);
-    if (!pendingCall) return;
+    const pending = session.pending.get(id);
+    if (message.type === "ack") {
+      if (pending && !pending.acked) {
+        pending.acked = true;
+        clearTimeout(pending.ackTimer);
+        pending.ackTimer = undefined;
+        sendQuietly(session, { id, type: "go" });
+        // The executing tab gets the full budget, whatever acks cost.
+        clearTimeout(pending.call.timer);
+        pending.call.timer = setTimeout(() => expire(pending.call), CALL_TIMEOUT_MS);
+      } else if (!pending) {
+        // Late ack for a call withdrawn from this tab: it must never execute.
+        sendQuietly(session, { id, type: "cancel" });
+      }
+      return;
+    }
+    if (!pending) return;
 
+    session.pending.delete(id);
+    clearTimeout(pending.ackTimer);
     if (message.type === "tool_result") {
-      session.pending.delete(id);
-      clearTimeout(pendingCall.timer);
-      pendingCall.resolve(message.result ?? "");
+      settle(pending.call, { result: message.result ?? "" });
     } else if (message.type === "tool_error") {
-      session.pending.delete(id);
-      clearTimeout(pendingCall.timer);
-      pendingCall.reject(new Error(message.error ?? "Tool call failed"));
+      settle(pending.call, { error: new Error(message.error ?? "Tool call failed") });
     } else {
-      session.pending.delete(id);
-      clearTimeout(pendingCall.timer);
-      pendingCall.reject(new Error(`Unexpected reply type: ${message.type}`));
+      settle(pending.call, { error: new Error(`Unexpected reply type: ${message.type}`) });
     }
   });
 
@@ -183,11 +251,12 @@ function hasCredentialedSession(owner: string): boolean {
 
 // THE isolation point: the only code that chooses a session for a call, and
 // it never looks at a session whose owner differs from the caller's.
-function pickSession(owner: BridgeOwner): Session | null {
+function pickSession(owner: BridgeOwner, except?: Session): Session | null {
   let best: Session | null = null;
   for (const session of sessions.values()) {
     if (session.ownerUserId !== owner) continue;
     if (session.socket.readyState !== OPEN) continue;
+    if (session.suspect || session === except) continue;
     if (!best || session.lastActiveAt > best.lastActiveAt) best = session;
   }
   return best;
@@ -211,39 +280,93 @@ export function callTool(
   return dispatchCall(owner, tool, args, appOrigin);
 }
 
+function expire(call: Call): void {
+  const { current } = call;
+  let neverAcked = false;
+  if (current) {
+    const pending = current.session.pending.get(current.id);
+    neverAcked = !!pending && !pending.acked;
+    clearTimeout(pending?.ackTimer);
+    current.session.pending.delete(current.id);
+    // Do not leave the tab holding a call nobody waits for.
+    if (neverAcked) sendQuietly(current.session, { id: current.id, type: "cancel" });
+  }
+  settle(call, {
+    error: new Error(
+      neverAcked
+        ? `Editor tab is not responding to "${call.tool}" (no acknowledgement within ${CALL_TIMEOUT_MS}ms).`
+        : `Editor did not respond to "${call.tool}" within ${CALL_TIMEOUT_MS}ms.`,
+    ),
+  });
+}
+
 function dispatchCall(
   owner: BridgeOwner,
   tool: string,
   args: Record<string, unknown>,
   appOrigin: string,
 ): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const call: Call = {
+      resolve,
+      reject,
+      settled: false,
+      current: null,
+      tool,
+      // ONE pre-go bound across every tab the call visits (see `go` above).
+      timer: setTimeout(() => expire(call), CALL_TIMEOUT_MS),
+    };
+    attempt(call, owner, tool, args, appOrigin);
+  });
+}
+
+function attempt(
+  call: Call,
+  owner: BridgeOwner,
+  tool: string,
+  args: Record<string, unknown>,
+  appOrigin: string,
+): void {
+  if (call.settled) return;
+  // Suspect sessions are skipped, so re-running pickSession after a missed
+  // ack naturally moves on (and still only ever looks at this owner).
   const session = pickSession(owner);
   if (!session) {
-    return Promise.reject(
-      new Error(owner === null ? NO_SESSION_MESSAGE : noUserSessionMessage(appOrigin)),
-    );
+    settle(call, {
+      error: new Error(owner === null ? NO_SESSION_MESSAGE : noUserSessionMessage(appOrigin)),
+    });
+    return;
   }
 
   const id = randomUUID();
-  return new Promise<string>((resolve, reject) => {
-    const timer = setTimeout(() => {
+  const pending: PendingCall = { call, acked: !session.supportsAck };
+  const wantsAck = session.supportsAck;
+  if (wantsAck) {
+    pending.ackTimer = setTimeout(() => {
+      // Nobody else to try: keep waiting on this (possibly just slow) tab and
+      // let the overall deadline decide, as before acks existed.
+      if (!pickSession(owner, session)) return;
+      // Withdraw the call from this tab but keep the tab: it may only be slow,
+      // and its already-acked calls keep running. `cancel` makes sure it
+      // never executes this one even if the frame is still queued.
       session.pending.delete(id);
-      reject(new Error(`Editor did not respond to "${tool}" within ${CALL_TIMEOUT_MS}ms.`));
-    }, CALL_TIMEOUT_MS);
-
-    session.pending.set(id, { resolve, reject, timer });
-    try {
-      session.socket.send(JSON.stringify({ id, type: "tool_call", tool, args }));
-    } catch (err) {
-      // A synchronous throw from send() (e.g. socket already closing) means
-      // the call never went out — clear the timer and pending entry so
-      // reject() below is the only settlement, instead of also firing the
-      // 30s timeout later.
-      clearTimeout(timer);
-      session.pending.delete(id);
-      reject(err instanceof Error ? err : new Error(String(err)));
-    }
-  });
+      session.suspect = true;
+      sendQuietly(session, { id, type: "cancel" });
+      call.current = null;
+      attempt(call, owner, tool, args, appOrigin);
+    }, ackTimeoutMs);
+  }
+  call.current = { session, id };
+  session.pending.set(id, pending);
+  try {
+    session.socket.send(JSON.stringify({ id, type: "tool_call", tool, args, ...(wantsAck && { ack: true }) }));
+  } catch (err) {
+    // A synchronous throw from send() (e.g. socket already closing) means
+    // the call never went out.
+    clearTimeout(pending.ackTimer);
+    session.pending.delete(id);
+    settle(call, { error: err instanceof Error ? err : new Error(String(err)) });
+  }
 }
 
 export function sessionCount(): number {
@@ -254,7 +377,11 @@ export function sessionCount(): number {
 // don't leak state into each other via the module-level registry.
 export function resetBridgeForTests(): void {
   for (const session of sessions.values()) {
-    for (const call of session.pending.values()) clearTimeout(call.timer);
+    for (const pending of session.pending.values()) {
+      clearTimeout(pending.ackTimer);
+      clearTimeout(pending.call.timer);
+    }
   }
   sessions.clear();
+  ackTimeoutMs = ACK_TIMEOUT_MS;
 }

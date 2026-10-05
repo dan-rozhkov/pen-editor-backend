@@ -8,6 +8,7 @@ import { claimAnonData, type ClaimPool } from "../auth/claim.js";
 import { isPlausibleUserId } from "../lib/userId.js";
 import { sendWebResponse, toWebRequest } from "../auth/webBridge.js";
 import type { Auth } from "../auth/index.js";
+import { patchRegistrationBody } from "../auth/dcr.js";
 
 // Issuer = `${BETTER_AUTH_URL}/api/auth` (Better Auth's baseURL includes its
 // basePath), so RFC 8414 puts the metadata at the origin root WITH the issuer
@@ -62,7 +63,21 @@ export async function authRoutes(
     for (const path of OPENID_METADATA_PATHS) scope.get(path, wellKnown(openId));
     for (const path of PROTECTED_RESOURCE_PATHS) scope.get(path, wellKnown(viaHandler));
 
-    scope.all("/api/auth/*", wellKnown(viaHandler));
+    scope.all("/api/auth/*", async (request, reply) => {
+      // DCR: loopback-only redirect URIs mean a native client (see auth/dcr.ts).
+      if (
+        request.method === "POST" &&
+        request.url.split("?", 1)[0] === "/api/auth/oauth2/register" &&
+        Buffer.isBuffer(request.body)
+      ) {
+        const patched = patchRegistrationBody(request.body);
+        if (patched !== request.body) {
+          request.body = patched;
+          request.headers["content-length"] = String(patched.length);
+        }
+      }
+      return wellKnown(viaHandler)(request, reply);
+    });
   });
 
   app.post("/api/account/claim-anon", async (request, reply) => {

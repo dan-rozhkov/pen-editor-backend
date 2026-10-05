@@ -8,6 +8,8 @@ import {
   NO_SESSION_MESSAGE,
   SESSION_ENDED_CLOSE_CODE,
   revalidateSession,
+  setAckTimeoutForTests,
+  ACK_TIMEOUT_MS,
   type EditorSocket,
   type SessionCredential,
 } from "../src/mcp/bridge.js";
@@ -40,6 +42,30 @@ class FakeSocket implements EditorSocket {
   emitClose(): void {
     this.readyState = 3; // CLOSED
     for (const l of this.closeListeners) l();
+  }
+
+  terminated = false;
+  terminate(): void {
+    this.terminated = true;
+    this.emitClose();
+  }
+
+  hello(): this {
+    this.emitMessage(JSON.stringify({ type: "hello", capabilities: ["ack"] }));
+    return this;
+  }
+
+  ack(id: string): void {
+    this.emitMessage(JSON.stringify({ id, type: "ack" }));
+  }
+
+  /** Frames the bridge sent, parsed. */
+  frames(): Array<{ id: string; type: string; ack?: boolean }> {
+    return this.sent.map((f) => JSON.parse(f));
+  }
+
+  ofType(type: string): string[] {
+    return this.frames().filter((f) => f.type === type).map((f) => f.id);
   }
 
   lastCall(): { id: string; tool: string; args: unknown } {
@@ -265,5 +291,182 @@ describe("mcp bridge auth-session binding", () => {
     await revalidateSession(tab);
     expect(tab.closedWith).toBeNull();
     expect(sessionCount()).toBe(1);
+  });
+});
+
+describe("mcp bridge two-phase ack", () => {
+  const result = (id: string, r = "ok") => JSON.stringify({ id, type: "tool_result", result: r });
+
+  function acking(owner: string | null): FakeSocket {
+    const socket = new FakeSocket();
+    registerSession(socket, owner);
+    return socket.hello();
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  it("asks for an ack only from tabs that said hello, and never to others", () => {
+    const old = new FakeSocket();
+    registerSession(old, "user-a");
+    void callTool("user-a", "get_editor_state", {}).catch(() => {});
+    expect(old.frames()[0].ack).toBeUndefined();
+
+    resetBridgeForTests();
+    const fresh = acking("user-a");
+    void callTool("user-a", "get_editor_state", {}).catch(() => {});
+    expect(fresh.frames()[0].ack).toBe(true);
+  });
+
+  it("sends go on ack and then resolves from the result", async () => {
+    const tab = acking("user-a");
+    const promise = callTool("user-a", "get_editor_state", {});
+    const { id } = tab.lastCall();
+    expect(tab.ofType("go")).toEqual([]);
+    tab.ack(id);
+    expect(tab.ofType("go")).toEqual([id]);
+    tab.emitMessage(result(id));
+    await expect(promise).resolves.toBe("ok");
+  });
+
+  it("exactly once: a missed ack re-routes to B, and A's late ack gets cancel, never go", async () => {
+    const a = acking("user-a");
+    vi.advanceTimersByTime(1);
+    const b = acking("user-a");
+    vi.advanceTimersByTime(1);
+    a.emitMessage(JSON.stringify({ type: "focus" })); // A is the most recent
+
+    const promise = callTool("user-a", "get_editor_state", {});
+    const idA = a.lastCall().id;
+    expect(b.sent).toHaveLength(0);
+
+    vi.advanceTimersByTime(ACK_TIMEOUT_MS);
+    expect(a.terminated).toBe(false);
+    expect(a.closedWith).toBeNull();
+    expect(b.sent).toHaveLength(1);
+
+    a.ack(idA); // late
+    expect(a.ofType("go")).toEqual([]);
+    expect(a.ofType("cancel")).toContain(idA);
+
+    const idB = b.lastCall().id;
+    b.ack(idB);
+    expect(b.ofType("go")).toEqual([idB]);
+    b.emitMessage(result(idB, "from-b"));
+    await expect(promise).resolves.toBe("from-b");
+  });
+
+  it("does not reject A's already-acked slow call when A is marked suspect", async () => {
+    const a = acking("user-a");
+    vi.advanceTimersByTime(1);
+    const b = acking("user-a");
+    vi.advanceTimersByTime(1);
+    a.emitMessage(JSON.stringify({ type: "focus" })); // A preferred
+    const slow = callTool("user-a", "slow", {});
+    const slowId = a.lastCall().id;
+    a.ack(slowId);
+    const second = callTool("user-a", "second", {});
+    expect(a.ofType("tool_call")).toHaveLength(2);
+    vi.advanceTimersByTime(ACK_TIMEOUT_MS); // second never acked by A: re-routed to B
+    expect(b.ofType("tool_call")).toHaveLength(1);
+    b.ack(b.lastCall().id);
+    b.emitMessage(result(b.lastCall().id, "b"));
+    await expect(second).resolves.toBe("b");
+    a.emitMessage(result(slowId, "slow-done"));
+    await expect(slow).resolves.toBe("slow-done");
+  });
+
+  it("keeps waiting on a single slow tab: no cancel, no suspect, success when it acks late", async () => {
+    const a = acking("user-a");
+    const promise = callTool("user-a", "x", {});
+    const { id } = a.lastCall();
+    vi.advanceTimersByTime(8_000); // past the ack timeout, still the only tab
+    expect(a.ofType("cancel")).toEqual([]);
+    a.ack(id);
+    expect(a.ofType("go")).toEqual([id]);
+    a.emitMessage(result(id, "late-but-ok"));
+    await expect(promise).resolves.toBe("late-but-ok");
+  });
+
+  it("says the tab is not responding (not no-editor) when a never-acked sole tab hits the deadline", async () => {
+    const a = acking("user-a");
+    const settled = expect(callTool("user-a", "x", {}, "https://app.example")).rejects.toThrow(
+      /Editor tab is not responding/,
+    );
+    vi.advanceTimersByTime(30_000);
+    await settled;
+    expect(a.ofType("go")).toEqual([]);
+  });
+
+  it("gives the executing tab a fresh 30s budget from go", async () => {
+    const a = acking("user-a");
+    const promise = callTool("user-a", "x", {});
+    const { id } = a.lastCall();
+    vi.advanceTimersByTime(20_000);
+    a.ack(id); // go at t=20s
+    vi.advanceTimersByTime(29_000); // t=49s: past the old 30s bound
+    a.emitMessage(result(id, "in-budget"));
+    await expect(promise).resolves.toBe("in-budget");
+  });
+
+  it("still times out 30s after go", async () => {
+    const a = acking("user-a");
+    const settled = expect(callTool("user-a", "x", {})).rejects.toThrow("within 30000ms");
+    a.ack(a.lastCall().id);
+    vi.advanceTimersByTime(30_000);
+    await settled;
+  });
+
+  it("clears suspect on any later message from the tab", () => {
+    const a = acking("user-a");
+    const b = acking("user-a");
+    void callTool("user-a", "x", {}).catch(() => {});
+    vi.advanceTimersByTime(ACK_TIMEOUT_MS); // a suspect, call moved to b
+    expect(b.ofType("tool_call")).toHaveLength(1);
+    void callTool("user-a", "y", {}).catch(() => {});
+    expect(a.ofType("tool_call")).toHaveLength(1); // suspect: not routed
+    a.emitMessage(JSON.stringify({ type: "activity" }));
+    void callTool("user-a", "z", {}).catch(() => {});
+    expect(a.ofType("tool_call")).toHaveLength(2);
+  });
+
+  it("never fails over to another owner's session", async () => {
+    const a = acking("user-a");
+    const other = acking("user-b");
+    const settled = expect(callTool("user-a", "x", {}, "https://app.example")).rejects.toThrow(/not responding/);
+    vi.advanceTimersByTime(30_000);
+    await settled;
+    expect(a.ofType("cancel")).toHaveLength(1); // withdrawn only at the deadline
+    expect(other.sent).toHaveLength(0);
+  });
+
+  it("applies one 30s deadline across re-routes", async () => {
+    setAckTimeoutForTests(20_000);
+    acking("user-a");
+    acking("user-a");
+    const settled = expect(callTool("user-a", "x", {})).rejects.toThrow(/not responding/);
+    vi.advanceTimersByTime(20_000); // first tab missed; second attempt starts at 20s
+    vi.advanceTimersByTime(10_000); // total 30s, NOT 50s
+    await settled;
+  });
+
+  it("keeps today's behaviour for a session that never said hello", async () => {
+    const legacy = new FakeSocket();
+    registerSession(legacy, "user-a");
+    const settled = expect(callTool("user-a", "x", {})).rejects.toThrow("within 30000ms");
+    vi.advanceTimersByTime(ACK_TIMEOUT_MS * 3);
+    expect(legacy.ofType("cancel")).toEqual([]);
+    vi.advanceTimersByTime(30_000);
+    await settled;
+  });
+
+  it("does not skip a healthy tab while a keepalive ping is in flight", () => {
+    // The bridge no longer tracks pong state: a registered, open tab is routable.
+    const tab = new FakeSocket();
+    registerSession(tab, "user-a");
+    vi.advanceTimersByTime(29_999);
+    void callTool("user-a", "x", {}).catch(() => {});
+    expect(tab.sent).toHaveLength(1);
   });
 });
