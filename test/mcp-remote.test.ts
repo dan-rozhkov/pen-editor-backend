@@ -4,6 +4,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { buildApp } from "../src/app.js";
 import { resetBridgeForTests } from "../src/mcp/bridge.js";
+import { BRIDGE_TICKET_TTL_MS, mintBridgeTicket } from "../src/mcp/bridgeTickets.js";
+import { CANVAS_RESOURCE_URI } from "../src/mcp/canvasWidget.js";
 import { makeConfig } from "./helpers.js";
 import { APP_ORIGIN, useAuthApp } from "./authHarness.js";
 import { connectFakeEditor, waitForSessionCount } from "./mcpEditorHelpers.js";
@@ -163,6 +165,20 @@ describe("/mcp OAuth access token", () => {
     await waitForSessionCount(0);
   });
 
+  it("evicts a ticket session when the OAuth client has no consent or refresh token", async () => {
+    resetBridgeForTests();
+    const account = await createAccount();
+    const client = await connectClient(await mint(account.userId, { azp: "revoked-client" }));
+    const result = (await client.callTool({ name: "open_canvas", arguments: {} })) as { _meta: Record<string, { ticket: string }> };
+    const tab = await connectFakeEditor(app().url, { ticket: result._meta["sideform/bridge"].ticket });
+    await waitForSessionCount(1);
+    const closed = new Promise<number>((resolve) => tab.on("close", resolve));
+    expect((await client.callTool({ name: "get_editor_state", arguments: { include_schema: false } })).isError).toBe(true);
+    expect(await closed).toBe(4401);
+    await client.close();
+    await waitForSessionCount(0);
+  });
+
   it("rejects a token minted for another audience", async () => {
     const res = await rawMcp("POST", { Authorization: `Bearer ${await mint("u", { aud: "http://localhost:3001/other" })}` });
     expect(res.status).toBe(401);
@@ -277,5 +293,116 @@ describe("/api/mcp/ws cookie upgrade", () => {
     expect(await closed).toBe(4401);
     await client.close();
     await waitForSessionCount(0);
+  });
+});
+
+describe("/mcp canvas widget", () => {
+  type Meta = Record<string, { ticket: string; wsUrl: string }>;
+  const openCanvas = async (client: Client) =>
+    (await client.callTool({ name: "open_canvas", arguments: {} })) as { content: unknown; _meta: Meta };
+
+  it("lists and reads the ui:// resource with the loader URL and CSP", async () => {
+    const client = await connectClient((await createAccount()).apiKey);
+    const listed = (await client.listResources()).resources.find((r) => r.uri === CANVAS_RESOURCE_URI);
+    expect(listed?.mimeType).toBe("text/html;profile=mcp-app");
+    const [content] = (await client.readResource({ uri: CANVAS_RESOURCE_URI })).contents;
+    expect(content.mimeType).toBe("text/html;profile=mcp-app");
+    expect(String(content.text)).toContain(`src="${APP_ORIGIN}/embed/loader.js"`);
+    const ui = (content._meta as { ui: { csp: Record<string, string[]>; prefersBorder: boolean } }).ui;
+    expect(ui.prefersBorder).toBe(false);
+    expect(ui.csp.resourceDomains).toEqual(expect.arrayContaining([APP_ORIGIN, "https://fonts.gstatic.com"]));
+    expect(ui.csp.connectDomains).toEqual(["http://localhost:3001", "ws://localhost:3001"]);
+    await client.close();
+  });
+
+  it("open_canvas returns the resource meta and a ticket for the caller; the app-only tool is flagged", async () => {
+    const client = await connectClient((await createAccount()).apiKey);
+    const tools = (await client.listTools()).tools;
+    const open = tools.find((t) => t.name === "open_canvas");
+    expect(open?._meta).toMatchObject({ ui: { resourceUri: CANVAS_RESOURCE_URI } });
+    expect(tools.find((t) => t.name === "sideform_bridge_ticket")?._meta).toMatchObject({ ui: { visibility: ["app"] } });
+    const result = await openCanvas(client);
+    expect(result._meta["sideform/bridge"].wsUrl).toBe("ws://localhost:3001/api/mcp/ws");
+    expect(result._meta["sideform/bridge"].ticket).toMatch(/^[\w-]{43}$/);
+    await client.close();
+  });
+
+  it("a ticket is single use, expires, and its WS tab only serves its owner", async () => {
+    resetBridgeForTests();
+    const [alice, bob] = [await createAccount(), await createAccount()];
+    const [aliceClient, bobClient] = [await connectClient(alice.apiKey), await connectClient(bob.apiKey)];
+    const { ticket } = (await openCanvas(aliceClient))._meta["sideform/bridge"];
+    const tab = await connectFakeEditor(app().url, { ticket }, { get_editor_state: '{"file":"widget.pen"}' });
+    await waitForSessionCount(1);
+    expect(await editorFile(aliceClient)).toContain("widget.pen");
+    expect((await bobClient.callTool({ name: "get_editor_state", arguments: { include_schema: false } })).isError).toBe(true);
+
+    await expect(connectFakeEditor(app().url, { ticket })).rejects.toThrow("HTTP 401");
+    await expect(connectFakeEditor(app().url, { ticket: "nope" })).rejects.toThrow("HTTP 401");
+    const stale = mintBridgeTicket(alice.userId, { expiresAt: Infinity, isValid: async () => true }, Date.now() - BRIDGE_TICKET_TTL_MS - 1);
+    await expect(connectFakeEditor(app().url, { ticket: stale })).rejects.toThrow("HTTP 401");
+
+    // The app-only tool mints a fresh, usable ticket.
+    const fresh = (await aliceClient.callTool({ name: "sideform_bridge_ticket", arguments: {} })) as { _meta: Meta; structuredContent?: unknown };
+    expect(fresh.structuredContent).toBeUndefined();
+    const again = await connectFakeEditor(app().url, { ticket: fresh._meta["sideform/bridge"].ticket });
+    await Promise.all([aliceClient.close(), bobClient.close()]);
+    tab.close();
+    again.close();
+    await waitForSessionCount(0);
+  });
+
+  const closeCode = (tab: WebSocket) => new Promise<number>((resolve) => tab.on("close", resolve));
+  const probe = (client: Client) => client.callTool({ name: "get_editor_state", arguments: { include_schema: false } });
+
+  it("evicts a ticket session once its API key is revoked", async () => {
+    resetBridgeForTests();
+    const account = await createAccount();
+    const client = await connectClient(account.apiKey);
+    const tab = await connectFakeEditor(app().url, { ticket: (await openCanvas(client))._meta["sideform/bridge"].ticket });
+    await waitForSessionCount(1);
+    // The revoked key can no longer call /mcp itself, so a second key of the
+    // same account triggers the owner's re-check.
+    const other = await app().fetchAuth("/api/auth/api-key/create", {
+      method: "POST",
+      headers: { Cookie: account.cookie },
+      body: JSON.stringify({ name: "second" }),
+    });
+    const otherClient = await connectClient((await other.json()).key);
+    expect((await probe(otherClient)).isError).toBeFalsy();
+    const closed = closeCode(tab);
+    await app().pglite.query(`DELETE FROM "apikey" WHERE "referenceId" = $1 AND "name" = 'codex'`, [account.userId]);
+    expect((await probe(otherClient)).isError).toBe(true);
+    expect(await closed).toBe(4401);
+    await Promise.all([client.close(), otherClient.close()]);
+    await waitForSessionCount(0);
+  });
+
+  it("evicts a ticket session once its minting credential expires", async () => {
+    resetBridgeForTests();
+    const account = await createAccount();
+    const client = await connectClient(account.apiKey);
+    const ticket = mintBridgeTicket(account.userId, { expiresAt: Date.now() + 100, isValid: async () => true });
+    const tab = await connectFakeEditor(app().url, { ticket });
+    await waitForSessionCount(1);
+    const closed = closeCode(tab);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect((await probe(client)).isError).toBe(true);
+    expect(await closed).toBe(4401);
+    await client.close();
+    await waitForSessionCount(0);
+  });
+
+  it("is absent from the legacy /api/mcp surface", async () => {
+    const legacy = new Client({ name: "legacy", version: "1.0.0" });
+    await legacy.connect(
+      new StreamableHTTPClientTransport(new URL(`${app().url}/api/mcp`), {
+        requestInit: { headers: { Authorization: `Bearer ${LEGACY_TOKEN}` } },
+      }),
+    );
+    const names = (await legacy.listTools()).tools.map((t) => t.name);
+    expect(names).not.toContain("open_canvas");
+    expect(names).not.toContain("sideform_bridge_ticket");
+    await legacy.close();
   });
 });

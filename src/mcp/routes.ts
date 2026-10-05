@@ -6,9 +6,11 @@ import { LEGACY_MCP_CONTEXT } from "./server.js";
 import { serveStreamable } from "./streamable.js";
 import { remoteMcpRoutes } from "./remoteRoutes.js";
 import { registerSession, revalidateSession, type BridgeOwner, type SessionCredential } from "./bridge.js";
+import type { ClaimPool } from "../auth/claim.js";
 import { readSession } from "../auth/actor.js";
 import type { AuthSession } from "../auth/index.js";
 import { constantTimeEqual, extractBearerToken } from "./auth.js";
+import { consumeBridgeTicket } from "./bridgeTickets.js";
 import { isLoopbackAddress, type McpAuthState } from "./autoToken.js";
 
 const MCP_DISABLED_MESSAGE = "MCP is not enabled on this server (MCP_AUTH_TOKEN unset).";
@@ -22,6 +24,7 @@ export async function mcpRoutes(
   app: FastifyInstance,
   config: Config,
   mcpAuth: McpAuthState,
+  pool: ClaimPool | null = null,
 ): Promise<void> {
   await app.register(websocketPlugin);
 
@@ -101,7 +104,15 @@ export async function mcpRoutes(
   async function authenticateUpgrade(
     request: FastifyRequest,
   ): Promise<{ owner: BridgeOwner; credential: SessionCredential | null } | { status: number; error: string }> {
-    const query = request.query as { token?: string };
+    const query = request.query as { token?: string; ticket?: string };
+    if (query.ticket) {
+      // The ticket is the credential: a one-time, 120 s, owner-bound secret
+      // minted over the authenticated /mcp channel. No Origin check — an MCP
+      // App iframe runs on a host-specific sandbox origin we cannot know, and
+      // unlike a cookie a ticket is never attached ambiently by the browser,
+      // so cross-site WebSocket hijacking has nothing to ride on.
+      return consumeBridgeTicket(query.ticket) ?? unauthorized;
+    }
     if (!query.token) {
       // A browser attaches cookies to a cross-site WebSocket upgrade, so the
       // cookie path demands an Origin we trust with credentials (CSWSH).
@@ -163,7 +174,7 @@ export async function mcpRoutes(
     },
   );
 
-  await remoteMcpRoutes(app, config);
+  await remoteMcpRoutes(app, config, pool);
 }
 
 export const KEEPALIVE_INTERVAL_MS = 30_000;

@@ -5,13 +5,15 @@ import { WebSocket } from "ws";
 import { APP_ORIGIN } from "./authHarness.js";
 import { sessionCount } from "../src/mcp/bridge.js";
 
-// A string is the legacy `?token=`; `{ cookie }` is a session-cookie upgrade.
+// A string is the legacy `?token=`; `{ cookie }` is a session-cookie upgrade;
+// `{ ticket }` is the MCP App widget's one-time `?ticket=` (no Origin sent).
 // `origin` defaults to the trusted app origin: a browser always sends one.
-export type EditorCredential = string | { cookie: string; origin?: string };
+export type EditorCredential = string | { cookie: string; origin?: string } | { ticket: string };
 
 function wsUrlFor(httpUrl: string, credential: EditorCredential | null): string {
   const base = `${httpUrl.replace(/^http/, "ws")}/api/mcp/ws`;
-  return typeof credential === "string" ? `${base}?token=${encodeURIComponent(credential)}` : base;
+  if (typeof credential === "string") return `${base}?token=${encodeURIComponent(credential)}`;
+  return credential && "ticket" in credential ? `${base}?ticket=${encodeURIComponent(credential.ticket)}` : base;
 }
 
 export function connectFakeEditor(
@@ -20,7 +22,7 @@ export function connectFakeEditor(
   resultOverrides: Record<string, string> = {},
 ): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
-    const headers = credential && typeof credential === "object"
+    const headers = credential && typeof credential === "object" && "cookie" in credential
         ? { Cookie: credential.cookie, Origin: credential.origin ?? APP_ORIGIN }
         : undefined;
     const socket = new WebSocket(wsUrlFor(httpUrl, credential), { headers });

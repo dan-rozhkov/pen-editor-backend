@@ -22,7 +22,7 @@ import {
   editEmbedHtmlInputShape,
   findEmptySpaceOnCanvasInputShape,
 } from "../ai/tools.js";
-import { callTool as callBridgedTool, type BridgeOwner } from "./bridge.js";
+import { callTool as callBridgedTool, type BridgeOwner, type SessionCredential } from "./bridge.js";
 import { ensureSkillsLoaded, getAllSkills, getSkill } from "../ai/skills.js";
 import {
   getSkillSurfaceNotice,
@@ -30,6 +30,7 @@ import {
   getUnavailableToolsForSkill,
   POLICY_DEPENDENT_SKILL_NAMES,
 } from "./skillSurface.js";
+import { registerCanvasWidget, type CanvasWidgetSettings } from "./canvasWidget.js";
 import { BRIDGED_TOOL_NAMES, SKILL_TOOL_NAMES, STATIC_TOOL_NAMES } from "./toolNames.js";
 
 // Re-exported for existing importers (test/mcp-tools-contract.test.ts) — the
@@ -43,6 +44,10 @@ export { BRIDGED_TOOL_NAMES, STATIC_TOOL_NAMES, SKILL_TOOL_NAMES };
 export interface McpContext {
   owner: BridgeOwner;
   appOrigin: string;
+  /** Set on the remote `/mcp` server only: registers the canvas MCP App widget. */
+  widget?: CanvasWidgetSettings;
+  /** The /mcp credential of this caller; ticket sessions are re-validated against it. */
+  credential?: SessionCredential;
 }
 
 export const LEGACY_MCP_CONTEXT: McpContext = { owner: null, appOrigin: "" };
@@ -377,6 +382,10 @@ export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer 
     },
     async (args) => textResult(JSON.stringify(await getStyleGuideImpl(args))),
   );
+
+  if (ctx.owner !== null && ctx.widget && ctx.credential) {
+    registerCanvasWidget(server, ctx.owner, ctx.credential, ctx.widget);
+  }
 
   return server;
 }

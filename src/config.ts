@@ -260,6 +260,14 @@ export const envSchema = z.object({
   // Canonical protected-resource URL of the remote MCP endpoint. Default
   // `${BETTER_AUTH_URL}/mcp` (see src/auth/settings.ts).
   MCP_RESOURCE_URL: optionalEnvString(z.string().url()),
+  // Extra origins (comma list, e.g. image CDNs) the Sideform canvas MCP App
+  // widget may load from / connect to, on top of the app and API origins.
+  MCP_APP_RESOURCE_DOMAINS: optionalEnvString(
+    z.string().refine(
+      (value) => value.split(",").every((item) => !item.trim() || URL.canParse(item.trim())),
+      "MCP_APP_RESOURCE_DOMAINS must be a comma list of origins",
+    ),
+  ),
   // --- Self-improvement loop (phase 1: persistent per-user memory) ---
   // Kill switch for the memory snapshot + `memory` tool + background review.
   // Same "true"/"1"-only transform as ENABLE_AGENT_LOGGING: z.coerce.boolean()
