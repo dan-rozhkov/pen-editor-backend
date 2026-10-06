@@ -1,4 +1,4 @@
-// VENDORED from pen-editor-desktop/src/main/browser/pageScripts.ts @ 09d87ed.
+// VENDORED from pen-editor-desktop/src/main/browser/pageScripts.ts @ 8814d93.
 // Do not edit: regenerate with `npm run browser:sync` (scripts/sync-browser-vendor.mjs).
 // ---- end of vendor header ----
 // Scripts injected into a browser tab's real page via
@@ -3544,18 +3544,44 @@ export const CURSOR_PLAN_JS = `
   // keeps the agent's per-action latency low.
   var ARRIVAL_CAP_MS = 700;
 
-  // cua motion.rs default_effects, per style.
+  // Heading rotation (cua trajectory.rs finish() / motion-lab applyHeading, MIT).
+  // The arrow art rests with its tip up-left: TIP_ANGLE in screen space (y down).
+  var TIP_ANGLE = -0.75 * Math.PI;
+  var HEADING_RATE = 22; // 1/s: rot relaxes toward the wanted angle with k = 1 - exp(-dt * rate)
+  var SETTLE_MAX_SAMPLES = 36;
+  var SETTLE_EPS = 0.002; // rad
+  // The arrow's hotspot inside its 22x26 viewBox: the point that lands on the
+  // planned target, and the pivot of every rotation/scale. The polygon is
+  // offset from here by half the stroke along the tip bisector, so the
+  // visible tip sits within ~1px of it.
+  var ARROW_PIVOT = { x: 0, y: 0 };
+  var ARROW_POINTS = "2.2,1.6 17.6,8.5 10.8,12.4 6.2,17.7";
+  // cua motion.rs default_effects, per style. rotates: the tip turns toward the
+  // direction of travel (cua heading Tangent); false = fixed, never chases a heading.
   var STYLE_EFFECTS = {
-    signature_arc: { trail: false, glow: true, magnet: false, ripple: true, squish: true },
-    spring_settle: { trail: false, glow: true, magnet: false, ripple: false, squish: true },
-    magnetic: { trail: false, glow: false, magnet: true, ripple: true, squish: false },
-    comet_swoop: { trail: true, glow: false, magnet: false, ripple: true, squish: false },
-    classic: { trail: false, glow: false, magnet: false, ripple: true, squish: true }
+    signature_arc: { trail: false, glow: true, magnet: false, ripple: true, squish: true, rotates: true },
+    spring_settle: { trail: false, glow: true, magnet: false, ripple: false, squish: true, rotates: true },
+    magnetic: { trail: false, glow: false, magnet: true, ripple: true, squish: false, rotates: false },
+    comet_swoop: { trail: true, glow: false, magnet: false, ripple: true, squish: false, rotates: true },
+    classic: { trail: false, glow: false, magnet: false, ripple: true, squish: true, rotates: false }
   };
-  var NO_EFFECTS = { trail: false, glow: false, magnet: false, ripple: false, squish: false };
+  var NO_EFFECTS = { trail: false, glow: false, magnet: false, ripple: false, squish: false, rotates: false };
 
   function clamp(v, lo, hi) {
     return Math.max(lo, Math.min(hi, v));
+  }
+
+  // Maps an angle into (-PI, PI].
+  function wrapAngle(a) {
+    var tau = 2 * Math.PI;
+    var r = a - tau * Math.floor((a + Math.PI) / tau);
+    return r === -Math.PI ? Math.PI : r;
+  }
+
+  // The one transform the arrow SVG gets: rotation then press squish, both
+  // about ARROW_PIVOT (set as transform-origin), so the hotspot never moves.
+  function arrowTransform(rot, scale) {
+    return "rotate(" + rot + "rad) scale(" + scale + ")";
   }
 
   function easeInOutCubic(t) {
@@ -3795,6 +3821,55 @@ export const CURSOR_PLAN_JS = `
     for (var i = 0; i < samples.length; i++) samples[i].t *= k;
   }
 
+  // Heading rotation, per sample (velocity from a +-2-sample window): above
+  // 40 px/s rot chases the travel heading along the SHORTEST arc,
+  //   target = wrapAngle(atan2(vy, vx) - TIP_ANGLE)
+  //   rot    = wrapAngle(rot + wrapAngle(target - rot) * k),  k = 1 - exp(-dt * 22)
+  // and below it rot is held. rot is always in (-PI, PI]. rot0 is where the
+  // previous move left off (only a move that had already ARRIVED hands one
+  // over: a mid-flight cancel snaps rot to 0), so a follow-up never snaps.
+  // DELIBERATE DIFFERENCE from cua: its speed-ramp formula flips at
+  // TIP_ANGLE + PI and spins on carried headings. After the last sample a
+  // settle tail eases rot home along the shortest arc (<= a half-turn) at
+  // DT_MS steps, only if rot has not reached 0 by the last sample; it only
+  // extends playback AFTER arrival. Styles with rotates:false never chase a
+  // heading: a carried rot0 just eases toward 0 during the move.
+  function applyHeading(samples, rotates, rot0, arrivalT) {
+    var n = samples.length;
+    var rot = wrapAngle(rot0 || 0);
+    for (var i = 0; i < n; i++) {
+      var step = i > 0 ? (samples[i].t - samples[i - 1].t) / 1000 : 0;
+      var kStep = 1 - Math.exp(-step * HEADING_RATE);
+      if (!rotates) {
+        // Fixed style: no heading, so a carried rot just eases toward 0
+        // during the move (same shortest-arc chase, target 0).
+        rot = wrapAngle(rot + wrapAngle(0 - rot) * kStep);
+      } else if (samples[i].t <= arrivalT) {
+        // The chase stops at arrival: the late overshoot/settle wobble must
+        // not swing the arrow around; from there rot is held until the tail.
+        var a = samples[Math.max(0, i - 2)];
+        var b = samples[Math.min(n - 1, i + 2)];
+        var dt = Math.max(1e-3, (b.t - a.t) / 1000);
+        var vx = (b.x - a.x) / dt;
+        var vy = (b.y - a.y) / dt;
+        if (Math.sqrt(vx * vx + vy * vy) > 40) {
+          var target = wrapAngle(Math.atan2(vy, vx) - TIP_ANGLE);
+          rot = wrapAngle(rot + wrapAngle(target - rot) * kStep);
+        }
+      }
+      samples[i].rot = rot;
+    }
+    var end = samples[n - 1];
+    var k = 1 - Math.exp(-(DT_MS / 1000) * HEADING_RATE);
+    var added = 0;
+    while (Math.abs(rot) >= SETTLE_EPS && added < SETTLE_MAX_SAMPLES) {
+      rot = wrapAngle(rot + wrapAngle(0 - rot) * k);
+      added++;
+      samples.push({ t: end.t + added * DT_MS, x: end.x, y: end.y, rot: rot });
+    }
+    samples[samples.length - 1].rot = 0;
+  }
+
   // Plans the whole move. opts: { style, from, to, w (target box smaller
   // side, or null for a bare point), reduce }.
   function planMove(opts) {
@@ -3851,7 +3926,19 @@ export const CURSOR_PLAN_JS = `
       if (snapT !== null) snapT *= k;
       arrivalT = ARRIVAL_CAP_MS;
     }
-    return { style: style, samples: samples, snapT: snapT, arrivalT: arrivalT, effects: effects };
+    // End of the motion proper (before the rotation settle tail): trail/glow
+    // lifetimes key off this, not off the tail.
+    var motionEndMs = samples[samples.length - 1].t;
+    // Reduced motion never rotates: a carried rot snaps to 0, no tail.
+    applyHeading(samples, effects.rotates, opts.reduce ? 0 : opts.rot0, arrivalT);
+    return {
+      style: style,
+      samples: samples,
+      snapT: snapT,
+      arrivalT: arrivalT,
+      motionEndMs: motionEndMs,
+      effects: effects
+    };
   }
 
   // Interpolated hotspot at time t (ms), clamped to the sample range.
@@ -3870,7 +3957,11 @@ export const CURSOR_PLAN_JS = `
     var b = samples[hi];
     var span = b.t - a.t || 1;
     var f = (t - a.t) / span;
-    return { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f };
+    return {
+      x: a.x + (b.x - a.x) * f,
+      y: a.y + (b.y - a.y) * f,
+      rot: wrapAngle(a.rot + wrapAngle(b.rot - a.rot) * f)
+    };
   }
   function velocityAt(samples, t) {
     var a = sampleAt(samples, t - 12);
@@ -3934,7 +4025,7 @@ export const CURSOR_JS = `(() => {
   // (https://github.com/trycua/cua): the whole move is planned once as timed
   // samples (120 Hz), then every animation frame interpolates by elapsed time.
   var args = ${ARGS_MARKER};
-  var CURSOR_VERSION = "4";
+  var CURSOR_VERSION = "5";
 
   ${FIND_BY_TEXT_JS}
 
@@ -4006,7 +4097,9 @@ export const CURSOR_JS = `(() => {
     var carrier = document.createElement("div");
     carrier.setAttribute("data-pen-cursor-carrier", "1");
     carrier.style.cssText =
-      "position:absolute;left:0;top:0;width:0;height:0;pointer-events:none;will-change:transform;z-index:2147483647;";
+      "position:absolute;left:0;top:0;width:0;height:0;pointer-events:none;will-change:transform;z-index:2147483647;" +
+      // The shadow lives on the NON-rotating carrier so it always falls downward.
+      "filter:drop-shadow(0 1px 2px rgba(0,0,0,.45));";
 
     var svgNS = "http://www.w3.org/2000/svg";
     var svg = document.createElementNS(svgNS, "svg");
@@ -4016,8 +4109,7 @@ export const CURSOR_JS = `(() => {
     svg.setAttribute("data-pen-cursor-arrow", "1");
     svg.style.cssText =
       "position:absolute;left:0;top:0;overflow:visible;pointer-events:none;" +
-      "transform-origin:0 0;" +
-      "filter:drop-shadow(0 1px 2px rgba(0,0,0,.45));";
+      "transform-origin:" + ARROW_PIVOT.x + "px " + ARROW_PIVOT.y + "px;";
     // The visual reference is NOT the thin-tailed macOS pointer: it is a
     // wide, heavily rounded arrow — tip up-left, a long edge out to the
     // right, and a concave notch pulling back in before the bottom point.
@@ -4041,7 +4133,6 @@ export const CURSOR_JS = `(() => {
     // rounded tip bulges outward past the corner it rounds, so an
     // unoffset polygon would land its visible point a few px beyond the
     // target rather than on it.
-    var ARROW_POINTS = "2.2,1.6 17.6,8.5 10.8,12.4 6.2,17.7";
     function arrowPolygon(colour, strokeWidth) {
       var poly = document.createElementNS(svgNS, "polygon");
       poly.setAttribute("points", ARROW_POINTS);
@@ -4074,6 +4165,7 @@ export const CURSOR_JS = `(() => {
       token: 0,
       raf: 0,
       abort: null,
+      rot: 0,
       glowOn: false
     };
     window.__penCursor = state;
@@ -4273,6 +4365,17 @@ export const CURSOR_JS = `(() => {
     // not replay the stale move when it becomes visible again; a cancel
     // (cancelAnim already bumped the token and cancelled the rAF) needs not.
     var plannedTarget = null;
+    // Every settle/error path must leave the arrow un-rotated.
+    function resetRot() {
+      var st = window.__penCursor;
+      if (!st) return;
+      try {
+        st.rot = 0;
+        st.svg.style.transform = arrowTransform(0, 1);
+      } catch (err) {
+        // cosmetic only
+      }
+    }
     function settleAtTarget(stopCurrent) {
       if (settled) return;
       var st = window.__penCursor;
@@ -4281,9 +4384,9 @@ export const CURSOR_JS = `(() => {
         cancelAnim(st);
       }
       var pos = plannedTarget || (st && st.pos ? st.pos : { x: 0, y: 0 });
+      resetRot();
       if (plannedTarget && st) {
         try {
-          st.svg.style.transform = "scale(1)";
           place(st, pos.x, pos.y);
         } catch (err) {
           // cosmetic only
@@ -4292,38 +4395,40 @@ export const CURSOR_JS = `(() => {
       finish({ moved: false, x: pos.x, y: pos.y });
     }
 
+    // True once THIS call has cancelled the previous animation and taken
+    // over; only then may the outer catch reset the arrow.
+    var owns = false;
+    // Never throws: a failed lookup just means "no target".
+    function safeResolveTarget() {
+      try {
+        return resolveTarget();
+      } catch (err) {
+        return null;
+      }
+    }
+
     try {
       var state = ensureOverlay();
-      // A new call stops whatever the previous one is still animating.
-      cancelAnim(state);
-      var myToken = state.token;
-      state.abort = abortMe;
       show(state);
 
       var reduceMotion = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
 
+      // Where the cursor rests right now. Re-read after a cancel: cancelling
+      // an in-flight move snaps state.pos to ITS target.
       var startX, startY;
-      if (state.pos) {
-        startX = state.pos.x;
-        startY = state.pos.y;
-      } else if (args.from && typeof args.from.x === "number" && typeof args.from.y === "number") {
-        startX = args.from.x;
-        startY = args.from.y;
-      } else {
-        startX = window.innerWidth * 0.12;
-        startY = window.innerHeight * 0.85;
+      function readStart() {
+        if (state.pos) {
+          startX = state.pos.x;
+          startY = state.pos.y;
+        } else if (args.from && typeof args.from.x === "number" && typeof args.from.y === "number") {
+          startX = args.from.x;
+          startY = args.from.y;
+        } else {
+          startX = window.innerWidth * 0.12;
+          startY = window.innerHeight * 0.85;
+        }
       }
-      // Reset effect elements left over from the previous move.
-      state.svg.style.transform = "scale(1)";
-      state.ring.style.opacity = "0";
-      state.magnet.style.opacity = "0";
-      clearTrail(state);
-      place(state, startX, startY);
-
-      if (args.action === "scroll") {
-        finish({ moved: false, x: startX, y: startY });
-        return;
-      }
+      readStart();
 
       // Wave 3 reliability, item 2: an explicit top-level-viewport point,
       // used for an element routed to a child frame — the cursor overlay
@@ -4333,16 +4438,50 @@ export const CURSOR_JS = `(() => {
       // content-box offset plus the element's local center, best effort —
       // see resolveVisibleFrames/moveCursor's doc comments) and passes it
       // as args.point instead of target/snapshotId+index.
-      if (args.point && typeof args.point.x === "number" && typeof args.point.y === "number") {
-        var px = clamp(args.point.x, 0, window.innerWidth);
-        var py = clamp(args.point.y, 0, window.innerHeight);
-        animateTo(px, py, null);
+      var hasPoint = !!(args.point && typeof args.point.x === "number" && typeof args.point.y === "number");
+      var el = null;
+      // Calls that will not move the cursor (scroll, unresolvable target):
+      // a previous move that has ALREADY ARRIVED (state.abort is null; only its
+      // settle tail is playing) is left to ease home on its own. One that has
+      // not arrived yet is cancelled as always (snapped to its target), so the
+      // x/y returned is always a point where the cursor actually rests.
+      var willMove = args.action !== "scroll";
+      if (willMove && !hasPoint) {
+        el = safeResolveTarget();
+        willMove = !!el;
+      }
+      if (!willMove) {
+        if (state.abort) cancelAnim(state);
+        readStart();
+        if (!state.pos) place(state, startX, startY);
+        finish({ moved: false, x: startX, y: startY });
         return;
       }
 
-      var el = resolveTarget();
-      if (!el) {
-        finish({ moved: false, x: startX, y: startY });
+      // A real move stops whatever the previous one is still animating, then
+      // starts from where that one rests.
+      cancelAnim(state);
+      readStart();
+      owns = true;
+      var myToken = state.token;
+      state.abort = abortMe;
+
+      // Reset effect elements left over from the previous move. Carry the
+      // previous move's current rotation (cua from_heading): no snap. Only
+      // an ARRIVED move still playing its settle tail gets here with
+      // rot != 0; a move cancelled mid-flight went through settleAtTarget,
+      // which snaps position AND rot to 0. (Reduced motion plans rot 0, so
+      // it snaps at its first sample.)
+      state.svg.style.transform = arrowTransform(state.rot || 0, 1);
+      state.ring.style.opacity = "0";
+      state.magnet.style.opacity = "0";
+      clearTrail(state);
+      place(state, startX, startY);
+
+      if (hasPoint) {
+        var px = clamp(args.point.x, 0, window.innerWidth);
+        var py = clamp(args.point.y, 0, window.innerHeight);
+        animateTo(px, py, null);
         return;
       }
 
@@ -4351,6 +4490,7 @@ export const CURSOR_JS = `(() => {
           style: args.style,
           from: { x: startX, y: startY },
           to: { x: targetX, y: targetY },
+          rot0: state.rot,
           w: rect ? Math.min(rect.width, rect.height) : null,
           reduce: reduceMotion
         });
@@ -4358,6 +4498,7 @@ export const CURSOR_JS = `(() => {
         var fx = plan.effects;
         var samples = plan.samples;
         var total = samples[samples.length - 1].t;
+        var motionEnd = plan.motionEndMs;
         var arrivalT = plan.arrivalT;
         var isClick = args.action === "click" || args.action === "select";
         var isType = args.action === "type";
@@ -4379,13 +4520,15 @@ export const CURSOR_JS = `(() => {
         state.ring.style.transform = "translate3d(" + targetX + "px," + targetY + "px,0)";
 
         var endMs = total;
-        if (fx.trail) endMs = Math.max(endMs, total + TRAIL_MS);
+        if (fx.trail) endMs = Math.max(endMs, motionEnd + TRAIL_MS);
         if (doRipple) endMs = Math.max(endMs, arrivalT + RIPPLE_MS);
         if (doSquish) endMs = Math.max(endMs, arrivalT + PRESS_HOLD_MS + PRESS_OUT_MS);
         if (doMagnet) endMs = Math.max(endMs, plan.snapT + MAGNET_MS);
 
         var t0 = null;
         var arrived = false;
+        var glowRested = false;
+        var trailCleared = false;
         function frame(ts) {
           state.raf = 0;
           if (state.token !== myToken) return;
@@ -4394,6 +4537,7 @@ export const CURSOR_JS = `(() => {
           var tm = Math.min(elapsed, total);
           var s = sampleAt(samples, tm);
           var v = velocityAt(samples, tm);
+          state.rot = s.rot;
 
           // Early arrival: resolve the moment the hotspot reaches the
           // target — follow-through, settle and click feedback keep
@@ -4409,8 +4553,23 @@ export const CURSOR_JS = `(() => {
           }
 
           state.carrier.style.transform = "translate3d(" + s.x + "px," + s.y + "px,0)";
-          if (state.glowOn) drawGlow(state, s.x, s.y, v.x, v.y);
-          if (fx.trail) drawTrail(state, samples, tm);
+          // Glow and trail follow the motion only; the rotation tail extends
+          // just the arrow transform.
+          if (state.glowOn) {
+            if (elapsed <= motionEnd) {
+              drawGlow(state, s.x, s.y, v.x, v.y);
+            } else if (!glowRested) {
+              glowRested = true;
+              drawGlow(state, targetX, targetY, 0, 0);
+            }
+          }
+          if (fx.trail) {
+            if (elapsed <= motionEnd + TRAIL_MS) drawTrail(state, samples, tm);
+            else if (!trailCleared) {
+              trailCleared = true;
+              clearTrail(state);
+            }
+          }
 
           if (doRipple) {
             var rk = (elapsed - arrivalT) / RIPPLE_MS;
@@ -4432,10 +4591,10 @@ export const CURSOR_JS = `(() => {
             state.magnet.style.opacity = elapsed >= plan.snapT ? String(mg) : "0";
           }
 
+          var pk = 0;
           if (doSquish) {
             // Press squish: quick in, springy out.
             var age = elapsed - arrivalT;
-            var pk = 0;
             if (age >= 0 && age < PRESS_HOLD_MS) {
               pk = squash * Math.min(1, age / PRESS_IN_MS);
             } else if (age >= PRESS_HOLD_MS) {
@@ -4445,15 +4604,16 @@ export const CURSOR_JS = `(() => {
                 Math.max(0, Math.cos(Math.min(1, a2 / PRESS_OUT_MS) * Math.PI * 1.5)) *
                 Math.max(0, 1 - a2 / PRESS_OUT_MS);
             }
-            state.svg.style.transform = "scale(" + (1 - pk) + ")";
           }
+          // One composed transform: rotate(heading) scale(squish), about the hotspot.
+          state.svg.style.transform = arrowTransform(s.rot, 1 - pk);
 
           if (elapsed < endMs) {
             state.raf = requestAnimationFrame(frame);
           } else {
             state.ring.style.opacity = "0";
             state.magnet.style.opacity = "0";
-            state.svg.style.transform = "scale(1)";
+            resetRot();
             if (fx.trail) clearTrail(state);
             place(state, targetX, targetY);
             if (!arrived) finish({ moved: true, x: targetX, y: targetY });
@@ -4476,11 +4636,13 @@ export const CURSOR_JS = `(() => {
             var targetY = clamp(rect.top + rect.height / 2, 0, window.innerHeight);
             animateTo(targetX, targetY, rect);
           } catch (err) {
+            resetRot();
             finish({ error: String((err && err.message) || err) });
           }
         });
       });
     } catch (err) {
+      if (owns) resetRot();
       finish({ error: String((err && err.message) || err) });
     }
   });
