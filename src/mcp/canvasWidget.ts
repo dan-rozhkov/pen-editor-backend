@@ -116,7 +116,12 @@ export function registerCanvasWidget(
       description:
         "Open the live Sideform canvas in this conversation. Call it once before the design tools when the client can display apps; afterwards the design tools edit this canvas.",
       inputSchema: {},
-      _meta: { ui: { resourceUri: CANVAS_RESOURCE_URI }, "openai/outputTemplate": CANVAS_RESOURCE_URI },
+      // Codex reads "openai/ui" to open the canvas fullscreen; the widget's own Expand/Collapse button still returns to inline.
+      _meta: {
+        ui: { resourceUri: CANVAS_RESOURCE_URI },
+        "openai/outputTemplate": CANVAS_RESOURCE_URI,
+        "openai/ui": { preferredModelDisplayMode: "fullscreen" },
+      },
     },
     async () => ({
       content: [{ type: "text" as const, text: `If your client displays apps, the Sideform canvas is now shown in the conversation and design tools edit it. Otherwise open ${settings.appOrigin}/app in a browser while signed in.` }],

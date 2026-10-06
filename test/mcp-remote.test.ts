@@ -326,7 +326,8 @@ describe("/mcp canvas widget", () => {
     const client = await connectClient((await createAccount()).apiKey);
     const tools = (await client.listTools()).tools;
     const open = tools.find((t) => t.name === "open_canvas");
-    expect(open?._meta).toMatchObject({ ui: { resourceUri: CANVAS_RESOURCE_URI } });
+    // Codex reads "openai/ui".preferredModelDisplayMode (codex-rs/core/src/mcp_tool_call.rs) to open the canvas fullscreen.
+    expect(open?._meta).toMatchObject({ ui: { resourceUri: CANVAS_RESOURCE_URI }, "openai/ui": { preferredModelDisplayMode: "fullscreen" } });
     expect(tools.find((t) => t.name === "sideform_bridge_ticket")?._meta).toMatchObject({ ui: { visibility: ["app"] } });
     const result = await openCanvas(client);
     expect(result._meta["sideform/bridge"].wsUrl).toBe("ws://localhost:3001/api/mcp/ws");
