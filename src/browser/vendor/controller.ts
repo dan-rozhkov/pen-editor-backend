@@ -1,4 +1,4 @@
-// VENDORED from pen-editor-desktop/src/main/browser/controller.ts @ cd89000.
+// VENDORED from pen-editor-desktop/src/main/browser/controller.ts @ 09d87ed.
 // Do not edit: regenerate with `npm run browser:sync` (scripts/sync-browser-vendor.mjs).
 // ---- end of vendor header ----
 // The built-in browser's command surface (design doc
@@ -43,6 +43,7 @@ import {
   CURSOR_JS,
   MARKS_JS,
   REMOVE_MARKS_JS,
+  CURSOR_VISIBILITY_JS,
   HOVER_TARGET_JS,
   FOCUS_JS,
   WAIT_TEXT_JS,
@@ -71,6 +72,7 @@ const SCRIPT_TEMPLATES = {
   CURSOR_JS,
   MARKS_JS,
   REMOVE_MARKS_JS,
+  CURSOR_VISIBILITY_JS,
   HOVER_TARGET_JS,
   FOCUS_JS,
   WAIT_TEXT_JS,
@@ -1038,13 +1040,23 @@ export class BrowserController {
       // that predecessor's abandoned work too (see `overrun`).
       const pendingOverrun = this.overrun;
       this.overrun = null;
-      const p = pendingOverrun ? pendingOverrun.then(fn) : fn();
+      // The latch is reset INSIDE the chained fn, after any pending overrun
+      // has settled — an abandoned (timed-out) command that is still running
+      // must not leave its latched value to this one, nor have this one reset
+      // it out from under it.
+      const run = (): Promise<T> => {
+        this.latchedCursorEnabled = null;
+        return fn();
+      };
+      const p = pendingOverrun ? pendingOverrun.then(run) : run();
       p.then(
         () => {
           this.mutexBusy = false;
+          this.latchedCursorEnabled = null;
         },
         () => {
           this.mutexBusy = false;
+          this.latchedCursorEnabled = null;
         },
       );
       return p;
@@ -1086,7 +1098,40 @@ export class BrowserController {
   // start point every command. Updated only when a cursor call reports
   // finite numeric x/y; a failed or no-op cursor call leaves it as-is.
   private cursorPosition: { x: number; y: number } | null = null;
-  private readonly cursorEnabled: boolean;
+  // Both options may be getters so a settings menu can change them at
+  // runtime: they are read per move / per command, never cached.
+  private readonly cursorEnabledSource: boolean | (() => boolean);
+  private readonly cursorMotionSource: string | undefined | (() => string | undefined);
+
+  // The enabled flag is latched on its FIRST read in a command (the budget
+  // read at command entry) and cleared when the command ends, so the budget
+  // and the cursor step that spends it always agree even if the user flips
+  // the setting mid-command. Commands are serialized (runExclusive), so one
+  // field is enough.
+  private latchedCursorEnabled: boolean | null = null;
+
+  private get cursorEnabled(): boolean {
+    if (this.latchedCursorEnabled !== null) return this.latchedCursorEnabled;
+    const src = this.cursorEnabledSource;
+    let value = true;
+    try {
+      value = typeof src === "function" ? src() : src;
+    } catch {
+      value = true;
+    }
+    this.latchedCursorEnabled = value;
+    return value;
+  }
+
+  private get cursorMotion(): string | undefined {
+    const src = this.cursorMotionSource;
+    try {
+      const v = typeof src === "function" ? src() : src;
+      return typeof v === "string" && v !== "" ? v : undefined;
+    } catch {
+      return undefined;
+    }
+  }
 
   /** The cursor step runs inside the command closure `withCommandTimeout`
    * bounds, so its own bound is added to that command's budget rather than
@@ -1099,7 +1144,14 @@ export class BrowserController {
 
   constructor(
     private readonly target: BrowserTarget,
-    opts?: { timeoutMs?: number; openTimeoutMs?: number; cursor?: boolean },
+    opts?: {
+      timeoutMs?: number;
+      openTimeoutMs?: number;
+      /** Cursor overlay on/off; a getter is re-read on every command. */
+      cursor?: boolean | (() => boolean);
+      /** CURSOR_JS motion style (see its doc comment); a getter is re-read on every move. */
+      cursorMotion?: string | undefined | (() => string | undefined);
+    },
   ) {
     this.timeoutMs = opts?.timeoutMs ?? BROWSER_COMMAND_TIMEOUT_MS;
     // An explicitly supplied timeoutMs bounds EVERY command including
@@ -1107,7 +1159,8 @@ export class BrowserController {
     // open only gets its own longer default when nothing was specified.
     this.openTimeoutMs =
       opts?.openTimeoutMs ?? opts?.timeoutMs ?? BROWSER_OPEN_TIMEOUT_MS;
-    this.cursorEnabled = opts?.cursor ?? true;
+    this.cursorEnabledSource = opts?.cursor ?? true;
+    this.cursorMotionSource = opts?.cursorMotion;
   }
 
   /** Runs CURSOR_JS to move the built-in browser's visible cursor overlay
@@ -1145,7 +1198,9 @@ export class BrowserController {
     if (!this.cursorEnabled) return;
     if (page.isVisible?.() === false) return;
     try {
-      const scriptArgs = { ...spec, from: this.cursorPosition };
+      const style = this.cursorMotion;
+      // `style` is omitted entirely when unset so CURSOR_JS applies its own default.
+      const scriptArgs = { ...spec, from: this.cursorPosition, ...(style ? { style } : {}) };
       // Bounded by the smaller of CURSOR_TIMEOUT_MS and this controller's
       // own configured timeoutMs — same convention as
       // settleWhileTargetBusy/waitForUrlChange/waitForLoadStop above, so a
@@ -1168,6 +1223,25 @@ export class BrowserController {
       }
     } catch {
       // Cosmetic only — see this method's doc comment.
+    }
+  }
+
+  /** Hides the agent-cursor overlay on the current browser page right away
+   * (the View menu's "Show Agent Cursor" was just unticked). Best effort and
+   * deliberately outside the command queue: it never throws, is bounded by a
+   * short timeout, and does nothing without a current page. The next cursor
+   * move's show() makes the overlay visible again if the cursor is re-enabled. */
+  async hideCursorOverlay(): Promise<void> {
+    try {
+      const page = this.target.currentPage();
+      if (!page) return;
+      await withTimeout(
+        this.executeScript(page, "CURSOR_VISIBILITY_JS", { hidden: true }),
+        Math.min(this.timeoutMs, 1000),
+        "Cursor hide timed out.",
+      );
+    } catch {
+      // cosmetic only
     }
   }
 
@@ -2903,6 +2977,30 @@ export class BrowserController {
       if (!page) return errorResult("No browser tab is open — call browse_open first.");
       if (!page.capture) return errorResult("Screenshot is not supported by this browser tab.");
 
+      // The agent cursor's effects (glow, trail, ripple) must not show up in
+      // a screenshot: hide the whole overlay root for the capture, restore
+      // after. Skipped entirely when the cursor is disabled for this command;
+      // best effort, never throws. A paint wait follows only when the overlay
+      // really changed (and, with annotate, one wait covers the marks too).
+      let cursorHidden = false;
+      const hideCursor = async (): Promise<void> => {
+        if (!this.cursorEnabled) return;
+        try {
+          const vis = await this.executeScript(page, "CURSOR_VISIBILITY_JS", { hidden: true });
+          cursorHidden = isRecord(vis) && vis.changed === true;
+        } catch {
+          // cosmetic only
+        }
+      };
+      const restoreCursor = async (): Promise<void> => {
+        if (!cursorHidden) return;
+        try {
+          await this.executeScript(page, "CURSOR_VISIBILITY_JS", { hidden: false });
+        } catch {
+          // best effort — the next cursor move's show() clears it too
+        }
+      };
+
       let snapshotId: string | undefined;
       let elements: unknown;
       if (annotate) {
@@ -2910,6 +3008,7 @@ export class BrowserController {
         if ("error" in snap) return snap;
         snapshotId = snap.snapshotId as string;
         elements = snap.elements;
+        await hideCursor();
         // Second-pass review finding 7: MARKS_JS's own result is checked
         // before proceeding — before this, a MARKS_JS failure (a throwing/
         // rejecting executeJavaScript, or a page-script `{ error }`) was
@@ -2924,6 +3023,7 @@ export class BrowserController {
           } catch {
             // Best-effort — see this method's `finally` block below.
           }
+          await restoreCursor();
           return marksResult;
         }
         // Second-pass review finding 7: capturing right after MARKS_JS
@@ -2936,6 +3036,9 @@ export class BrowserController {
         // never hang the whole command waiting for a paint that will never
         // come.
         await this.waitForPaint(page);
+      } else {
+        await hideCursor();
+        if (cursorHidden) await this.waitForPaint(page);
       }
       try {
         const captured = await page.capture();
@@ -2955,6 +3058,7 @@ export class BrowserController {
         }
         return result;
       } finally {
+        await restoreCursor();
         if (annotate) {
           try {
             await this.executeScript(page, "REMOVE_MARKS_JS", {});

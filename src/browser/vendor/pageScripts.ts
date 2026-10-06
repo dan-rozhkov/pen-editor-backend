@@ -1,4 +1,4 @@
-// VENDORED from pen-editor-desktop/src/main/browser/pageScripts.ts @ cd89000.
+// VENDORED from pen-editor-desktop/src/main/browser/pageScripts.ts @ 09d87ed.
 // Do not edit: regenerate with `npm run browser:sync` (scripts/sync-browser-vendor.mjs).
 // ---- end of vendor header ----
 // Scripts injected into a browser tab's real page via
@@ -3528,6 +3528,358 @@ export const SIGNATURE_JS = `(() => {
  * (text-only) `truncated` field.
  */
 /**
+ * The pure motion planner behind CURSOR_JS (cua-derived, MIT): constants,
+ * easing/profile/path math, `planMove`, `sampleAt`, `velocityAt`. No DOM, no
+ * `args`. CURSOR_JS embeds it the way it embeds FIND_BY_TEXT_JS, and
+ * test/cursorMotion.test.ts evaluates this fragment directly. Only
+ * `window.__penCursorBowSign` (classic's bow alternation) is touched.
+ */
+export const CURSOR_PLAN_JS = `
+  var DT_MS = 1000 / 120; // cua DT_MS: planning sample step
+  var DEFAULT_TARGET_PT = 24; // cua DEFAULT_TARGET_PT: box assumed for a bare point
+  var ARRIVAL_TOLERANCE = 1; // cua ARRIVAL_TOLERANCE_PT
+  var REDUCED_MOTION_MS = 120; // cua REDUCED_MOTION_MS
+  // Hard cap on the ARRIVAL moment. The 1150ms backstop below must never win
+  // in a visible tab: two rAFs for scrollIntoView come before the move. 700ms
+  // keeps the agent's per-action latency low.
+  var ARRIVAL_CAP_MS = 700;
+
+  // cua motion.rs default_effects, per style.
+  var STYLE_EFFECTS = {
+    signature_arc: { trail: false, glow: true, magnet: false, ripple: true, squish: true },
+    spring_settle: { trail: false, glow: true, magnet: false, ripple: false, squish: true },
+    magnetic: { trail: false, glow: false, magnet: true, ripple: true, squish: false },
+    comet_swoop: { trail: true, glow: false, magnet: false, ripple: true, squish: false },
+    classic: { trail: false, glow: false, magnet: false, ripple: true, squish: true }
+  };
+  var NO_EFFECTS = { trail: false, glow: false, magnet: false, ripple: false, squish: false };
+
+  function clamp(v, lo, hi) {
+    return Math.max(lo, Math.min(hi, v));
+  }
+
+  function easeInOutCubic(t) {
+    return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  }
+  function minJerk(t) {
+    return t * t * t * (10 - 15 * t + 6 * t * t);
+  }
+  function smootherstep(t) {
+    return t * t * t * (t * (6 * t - 15) + 10);
+  }
+  function easeOut(k) {
+    return 1 - Math.pow(1 - k, 3);
+  }
+  function dist(a, b) {
+    return Math.sqrt((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y));
+  }
+  function unitVec(a, b) {
+    var d = dist(a, b);
+    if (d === 0) d = 1;
+    return { x: (b.x - a.x) / d, y: (b.y - a.y) / d };
+  }
+
+  // bump_profile: base plus a smooth bump; over pushes past the end late and
+  // settles back. Fractions of the distance.
+  function bumpProfile(base, over, overAt) {
+    function bump(tau, at) {
+      var a = Math.max(at * 10, 1.5);
+      var b = Math.max((1 - at) * 10, 1.5);
+      var peak = Math.pow(a / (a + b), a) * Math.pow(b / (a + b), b);
+      return (Math.pow(tau, a) * Math.pow(1 - tau, b)) / peak;
+    }
+    return function (tau) {
+      return base(tau) + over * bump(tau, overAt);
+    };
+  }
+
+  // wobble_profile: damped wobble around the end from "start" on.
+  function wobbleProfile(base, amp, cycles, decay, start) {
+    return function (tau) {
+      if (tau <= start) return base(tau);
+      var u = (tau - start) / (1 - start);
+      var ramp = smootherstep(Math.min(u / 0.18, 1));
+      var norm = Math.max(Math.exp(-decay * 0.12) * 0.77, 1e-6);
+      return (
+        base(tau) +
+        (amp * ramp * Math.exp(-decay * u) * Math.sin(2 * Math.PI * cycles * u) * Math.pow(1 - u, 2)) / norm
+      );
+    };
+  }
+
+  // A parametric path with an arc-length table, so profiles act on distance.
+  // at(frac) extrapolates along the end tangents outside [0, 1].
+  function makePath(f, n) {
+    var us = [0];
+    var ss = [0];
+    var prev = f(0);
+    var total = 0;
+    for (var i = 1; i <= n; i++) {
+      var u = i / n;
+      var p = f(u);
+      total += Math.sqrt((p.x - prev.x) * (p.x - prev.x) + (p.y - prev.y) * (p.y - prev.y));
+      us.push(u);
+      ss.push(total);
+      prev = p;
+    }
+    var p0 = f(0);
+    var p1 = f(1);
+    var t0 = unitVec(f(1e-3), p0);
+    var t1 = unitVec(f(1 - 1e-3), p1);
+    return {
+      length: total,
+      at: function (frac) {
+        if (total < 1e-9) return f(clamp(frac, 0, 1));
+        if (frac > 1) return { x: p1.x + t1.x * (frac - 1) * total, y: p1.y + t1.y * (frac - 1) * total };
+        if (frac < 0) return { x: p0.x + t0.x * -frac * total, y: p0.y + t0.y * -frac * total };
+        var target = frac * total;
+        var lo = 0;
+        var hi = ss.length - 1;
+        while (hi - lo > 1) {
+          var mid = (lo + hi) >> 1;
+          if (ss[mid] < target) lo = mid;
+          else hi = mid;
+        }
+        var span = ss[hi] - ss[lo];
+        if (span === 0) span = 1;
+        return f(us[lo] + (us[hi] - us[lo]) * ((target - ss[lo]) / span));
+      }
+    };
+  }
+
+  // The cua bezier (bezier.rs build_motion_bezier) as a path.
+  function cuaPath(a, b, shape) {
+    var dx = b.x - a.x;
+    var dy = b.y - a.y;
+    var len = Math.max(Math.sqrt(dx * dx + dy * dy), 1);
+    var px = -dy / len;
+    var py = dx / len;
+    var deflection = len * shape.arcSize;
+    var flow = (shape.arcFlow + 1) / 2;
+    var c1d = deflection * (1 - 0.5 * flow);
+    var c2d = deflection * (1 - 0.5 * (1 - flow));
+    var c1 = { x: a.x + dx * shape.startHandle + px * c1d, y: a.y + dy * shape.startHandle + py * c1d };
+    var c2 = { x: b.x - dx * shape.endHandle + px * c2d, y: b.y - dy * shape.endHandle + py * c2d };
+    return makePath(function (u) {
+      var v = 1 - u;
+      var w0 = v * v * v;
+      var w1 = 3 * v * v * u;
+      var w2 = 3 * v * u * u;
+      var w3 = u * u * u;
+      return {
+        x: w0 * a.x + w1 * c1.x + w2 * c2.x + w3 * b.x,
+        y: w0 * a.y + w1 * c1.y + w2 * c2.y + w3 * b.y
+      };
+    }, 256);
+  }
+
+  // Gentle single-sided quadratic curve (paths.bow).
+  function bowPath(a, b, amount) {
+    var d = dist(a, b);
+    var un = unitVec(a, b);
+    var nx = -un.y;
+    var ny = un.x;
+    var c = { x: (a.x + b.x) / 2 + nx * amount * d, y: (a.y + b.y) / 2 + ny * amount * d };
+    return makePath(function (u) {
+      var v = 1 - u;
+      return {
+        x: v * v * a.x + 2 * v * u * c.x + u * u * b.x,
+        y: v * v * a.y + 2 * v * u * c.y + u * u * b.y
+      };
+    }, 256);
+  }
+
+  // Chord side that bends paths upward for horizontal moves (naturalSide).
+  function naturalSide(a, b) {
+    return unitVec(a, b).x >= 0 ? -1 : 1;
+  }
+
+  // Samples: [{ t (ms from move start), x, y }].
+  function sampleTimed(pos, durationMs) {
+    var n = Math.max(Math.ceil(durationMs / DT_MS), 2);
+    var out = [];
+    for (var i = 0; i <= n; i++) {
+      var tau = i / n;
+      var p = pos(tau);
+      out.push({ t: tau * durationMs, x: p.x, y: p.y });
+    }
+    return out;
+  }
+  function pinEnds(samples, from, aim) {
+    samples[0].x = from.x;
+    samples[0].y = from.y;
+    samples[samples.length - 1].x = aim.x;
+    samples[samples.length - 1].y = aim.y;
+    return samples;
+  }
+  function glide(from, aim, path, profile, durationMs) {
+    return pinEnds(
+      sampleTimed(function (tau) {
+        return path.at(profile(tau));
+      }, durationMs),
+      from,
+      aim
+    );
+  }
+
+  // Director's-cut duration (dc_ms): Fitts-aware, small targets slower.
+  function dcMs(d, w, scale) {
+    return clamp(150 + 120 * Math.log(d / w + 1) / Math.LN2, 300, 1000) * scale;
+  }
+
+  // magnetic(): bow 0.04, capture radius min(40, len/2), pull 0.45, enter
+  // speed 300. Returns the samples and the lock-on time in ms.
+  function magneticSamples(from, aim) {
+    var path = bowPath(from, aim, 0.04 * naturalSide(from, aim));
+    var len = path.length;
+    var radius = Math.min(40, len * 0.5);
+    var pull = 0.45;
+    var enterSpeed = 300;
+    var out = [{ t: 0, x: from.x, y: from.y }];
+    var s = 0;
+    var v = 0;
+    var t = 0;
+    var snapT = null;
+    var dt = DT_MS / 1000;
+    while (s < len && t < 4) {
+      var rem = len - s;
+      if (rem > radius) {
+        v = Math.min(1500, v + 7000 * dt, enterSpeed + 5.5 * (rem - radius));
+      } else {
+        if (snapT === null) snapT = t * 1000;
+        v += 26000 * pull * (radius / Math.max(rem, 6)) * dt;
+      }
+      s = Math.min(len, s + v * dt);
+      t += dt;
+      var q = path.at(s / len);
+      out.push({ t: t * 1000, x: q.x, y: q.y });
+    }
+    if (out.length < 2) out.push({ t: DT_MS, x: aim.x, y: aim.y });
+    return { samples: pinEnds(out, from, aim), snapT: snapT === null ? t * 1000 : snapT };
+  }
+
+  // The old behaviour, kept as the escape hatch: bowed quadratic, eased with
+  // easeInOutCubic, a tiny overshoot corrected a frame later.
+  function classicSamples(from, aim, d) {
+    var duration = Math.min(900, Math.max(260, 90 + d * 0.7));
+    var dx = aim.x - from.x;
+    var dy = aim.y - from.y;
+    var dd = d || 0.0001;
+    window.__penCursorBowSign = -(window.__penCursorBowSign || -1);
+    var bow = dd * (0.08 + Math.random() * 0.04) * window.__penCursorBowSign;
+    var midX = (from.x + aim.x) / 2 - (dy / dd) * bow;
+    var midY = (from.y + aim.y) / 2 + (dx / dd) * bow;
+    var over = Math.min(6, dd * 0.03);
+    var out = sampleTimed(function (tau) {
+      var e = easeInOutCubic(tau);
+      var m = 1 - e;
+      return {
+        x: m * m * from.x + 2 * m * e * midX + e * e * aim.x,
+        y: m * m * from.y + 2 * m * e * midY + e * e * aim.y
+      };
+    }, duration);
+    pinEnds(out, from, aim);
+    out.push({ t: duration + 8, x: aim.x + (dx / dd) * over, y: aim.y + (dy / dd) * over });
+    out.push({ t: duration + 25, x: aim.x, y: aim.y });
+    return out;
+  }
+
+  function arrivalIndex(samples, to) {
+    for (var i = 0; i < samples.length; i++) {
+      if (dist(samples[i], to) <= ARRIVAL_TOLERANCE) return i;
+    }
+    return samples.length - 1;
+  }
+
+  function retime(samples, k) {
+    for (var i = 0; i < samples.length; i++) samples[i].t *= k;
+  }
+
+  // Plans the whole move. opts: { style, from, to, w (target box smaller
+  // side, or null for a bare point), reduce }.
+  function planMove(opts) {
+    var from = opts.from;
+    var to = opts.to;
+    var d = dist(from, to);
+    var w = Math.max(4, opts.w === null || opts.w === undefined ? DEFAULT_TARGET_PT : opts.w);
+    var style = Object.prototype.hasOwnProperty.call(STYLE_EFFECTS, opts.style) ? opts.style : "signature_arc";
+    var samples;
+    var snapT = null;
+    var effects = STYLE_EFFECTS[style];
+    var side = naturalSide(from, to);
+    var big = Math.max(d, 1);
+
+    if (opts.reduce) {
+      // cua REDUCED_MOTION_MS: a short straight glide, no effects.
+      var line = makePath(function (u) {
+        return { x: from.x + (to.x - from.x) * u, y: from.y + (to.y - from.y) * u };
+      }, 8);
+      samples = glide(from, to, line, minJerk, REDUCED_MOTION_MS);
+      effects = NO_EFFECTS;
+    } else if (style === "classic") {
+      samples = classicSamples(from, to, d);
+    } else if (style === "magnetic") {
+      var mag = magneticSamples(from, to);
+      samples = mag.samples;
+      snapT = mag.snapT;
+    } else if (style === "spring_settle") {
+      var spPath = cuaPath(from, to, { startHandle: 0.3, endHandle: 0.3, arcSize: 0.12 * side, arcFlow: 0 });
+      var amp = Math.min(0.05, 6 / big);
+      var spProfile = wobbleProfile(
+        function (t) {
+          return minJerk(Math.min(t / 0.68, 1));
+        },
+        amp,
+        1.3,
+        2.6,
+        0.55
+      );
+      samples = glide(from, to, spPath, spProfile, dcMs(d, w, 1.35));
+    } else if (style === "comet_swoop") {
+      var coPath = cuaPath(from, to, { startHandle: 0.3, endHandle: 0.3, arcSize: 0.24 * side, arcFlow: 0.2 });
+      samples = glide(from, to, coPath, easeInOutCubic, dcMs(d, w, 1.15));
+    } else {
+      var sgPath = cuaPath(from, to, { startHandle: 0.3, endHandle: 0.3, arcSize: 0.16 * side, arcFlow: 0.15 });
+      var over = Math.min(0.018, 8 / big);
+      samples = glide(from, to, sgPath, bumpProfile(minJerk, over, 0.82), dcMs(d, w, 1.1));
+    }
+
+    var arrivalT = samples[arrivalIndex(samples, to)].t;
+    if (arrivalT > ARRIVAL_CAP_MS) {
+      var k = ARRIVAL_CAP_MS / arrivalT;
+      retime(samples, k);
+      if (snapT !== null) snapT *= k;
+      arrivalT = ARRIVAL_CAP_MS;
+    }
+    return { style: style, samples: samples, snapT: snapT, arrivalT: arrivalT, effects: effects };
+  }
+
+  // Interpolated hotspot at time t (ms), clamped to the sample range.
+  function sampleAt(samples, t) {
+    var last = samples.length - 1;
+    if (t <= samples[0].t) return samples[0];
+    if (t >= samples[last].t) return samples[last];
+    var lo = 0;
+    var hi = last;
+    while (hi - lo > 1) {
+      var mid = (lo + hi) >> 1;
+      if (samples[mid].t <= t) lo = mid;
+      else hi = mid;
+    }
+    var a = samples[lo];
+    var b = samples[hi];
+    var span = b.t - a.t || 1;
+    var f = (t - a.t) / span;
+    return { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f };
+  }
+  function velocityAt(samples, t) {
+    var a = sampleAt(samples, t - 12);
+    var b = sampleAt(samples, t + 12);
+    return { x: (b.x - a.x) / 0.024, y: (b.y - a.y) / 0.024 };
+  }
+`;
+
+/**
  * Drives the visible, human-like cursor overlay for the built-in browser tab
  * (design: a human-watched agent that clicks/types instantly and invisibly
  * looks broken even when it's working correctly). Unlike every other script
@@ -3556,6 +3908,15 @@ export const SIGNATURE_JS = `(() => {
  * click/type this bridge performs (its own and the user's, since a browser
  * tab has no preload to route around it).
  *
+ * Motion: the move is planned once as timed samples (120 Hz) and every
+ * animation frame interpolates by elapsed time, so it is frame-rate
+ * independent. `args.style` picks signature_arc (default), spring_settle,
+ * comet_swoop, magnetic or classic; the math is derived from trycua/cua's
+ * cursor-overlay trajectory.rs (MIT). The Promise resolves at *arrival* (the
+ * first sample within 1px of the target, capped at 700ms), while the
+ * follow-through, ripple and press squish keep animating; a new call cancels
+ * the previous animation and starts from its final point.
+ *
  * Never throws and always settles quickly: every code path is wrapped so a
  * failure resolves `{ error }` rather than rejecting, and a `finish()` guard
  * plus a hard backstop timer (~1.15s, comfortably under this repo's other
@@ -3563,37 +3924,47 @@ export const SIGNATURE_JS = `(() => {
  * `requestAnimationFrame` never fires again — which upstream findings in
  * this same repo (see get_screenshot's rAF-in-a-background-tab gotcha) show
  * does happen. The backstop is disarmed *only* inside `finish()` itself,
- * never by a caller ahead of time — including on the final "arrived, ripple
- * playing" leg, whose own settle is an unguarded `setTimeout` that a
- * throttled/hidden renderer can stretch past 1s — so the backstop stays live
- * and able to win that race for every settle path, not just the early-return
- * ones. `moveCursor` on the controller side wraps this in its own,
+ * never by a caller ahead of time, so it stays live and able to win that
+ * race for every settle path, not just the early-return ones. `moveCursor` on the controller side wraps this in its own,
  * slightly longer timeout and swallows every failure besides — the cursor
  * must never turn a working browser command into an error or a timeout.
  */
 export const CURSOR_JS = `(() => {
+  // Motion engine derived from trycua/cua cursor-overlay trajectory.rs, MIT
+  // (https://github.com/trycua/cua): the whole move is planned once as timed
+  // samples (120 Hz), then every animation frame interpolates by elapsed time.
   var args = ${ARGS_MARKER};
-  var CURSOR_VERSION = "3";
+  var CURSOR_VERSION = "4";
 
   ${FIND_BY_TEXT_JS}
 
-  function clamp(v, lo, hi) {
-    return Math.max(lo, Math.min(hi, v));
-  }
+  var TRAIL_MS = 240;
+  var RIPPLE_MS = 520;
+  var MAGNET_MS = 700;
+  var PRESS_HOLD_MS = 90;
+  var PRESS_IN_MS = 50;
+  var PRESS_OUT_MS = 220;
 
-  function easeInOutCubic(t) {
-    return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-  }
+  ${CURSOR_PLAN_JS}
 
   // Idempotent install, guarded by a version string so a reload of this
   // script (a code change while the tab stays open) replaces a stale
   // overlay instead of leaving two stacked on top of each other.
+  // Every element lives under the [data-pen-cursor] root, which is what
+  // SNAPSHOT_JS/FIND_IMAGES_JS skip, and every one is pointer-events:none.
   function ensureOverlay() {
     var existing = window.__penCursor;
     if (existing && existing.version === CURSOR_VERSION && existing.root && existing.root.isConnected) {
       return existing;
     }
     var priorPos = existing && existing.pos ? existing.pos : null;
+    if (existing) {
+      try {
+        cancelAnim(existing);
+      } catch (err) {
+        // ignore — a stale overlay from an older version
+      }
+    }
     if (existing && existing.root && existing.root.parentNode) {
       existing.root.parentNode.removeChild(existing.root);
     }
@@ -3602,7 +3973,40 @@ export const CURSOR_JS = `(() => {
     root.setAttribute("data-pen-cursor", "1");
     root.style.cssText =
       "position:fixed;left:0;top:0;width:0;height:0;z-index:2147483647;" +
-      "pointer-events:none;will-change:transform;";
+      "pointer-events:none;";
+
+    // Magnet: outline of the target rect when magnetic locks on.
+    var magnet = document.createElement("div");
+    magnet.setAttribute("data-pen-cursor-magnet", "1");
+    magnet.style.cssText =
+      "position:absolute;left:0;top:0;box-sizing:border-box;border-radius:16px;" +
+      "border:4px solid rgba(159,215,255,.9);box-shadow:0 0 40px rgba(13,153,255,.8);" +
+      "pointer-events:none;opacity:0;z-index:2147483647;";
+    root.appendChild(magnet);
+
+    // Glow: a soft radial fog behind the arrow (100px, scaled per frame).
+    var glow = document.createElement("div");
+    glow.setAttribute("data-pen-cursor-glow", "1");
+    glow.style.cssText =
+      "position:absolute;left:-50px;top:-50px;width:100px;height:100px;border-radius:50%;" +
+      "background:radial-gradient(circle closest-side,rgba(94,192,232,1),rgba(94,192,232,0));" +
+      "pointer-events:none;opacity:0;z-index:2147483647;";
+    root.appendChild(glow);
+
+    // Ripple ring: sized per frame.
+    var ring = document.createElement("div");
+    ring.setAttribute("data-pen-cursor-ring", "1");
+    ring.style.cssText =
+      "position:absolute;left:0;top:0;width:16px;height:16px;margin-left:-8px;margin-top:-8px;" +
+      "box-sizing:border-box;border-radius:50%;border:5px solid rgba(159,215,255,.75);" +
+      "box-shadow:0 0 0 1px rgba(13,153,255,.4);pointer-events:none;opacity:0;z-index:2147483647;";
+    root.appendChild(ring);
+
+    // The arrow rides in its own translated carrier.
+    var carrier = document.createElement("div");
+    carrier.setAttribute("data-pen-cursor-carrier", "1");
+    carrier.style.cssText =
+      "position:absolute;left:0;top:0;width:0;height:0;pointer-events:none;will-change:transform;z-index:2147483647;";
 
     var svgNS = "http://www.w3.org/2000/svg";
     var svg = document.createElementNS(svgNS, "svg");
@@ -3612,7 +4016,7 @@ export const CURSOR_JS = `(() => {
     svg.setAttribute("data-pen-cursor-arrow", "1");
     svg.style.cssText =
       "position:absolute;left:0;top:0;overflow:visible;pointer-events:none;" +
-      "transform-origin:0 0;transition:transform 140ms ease-out;" +
+      "transform-origin:0 0;" +
       "filter:drop-shadow(0 1px 2px rgba(0,0,0,.45));";
     // The visual reference is NOT the thin-tailed macOS pointer: it is a
     // wide, heavily rounded arrow — tip up-left, a long edge out to the
@@ -3651,21 +4055,48 @@ export const CURSOR_JS = `(() => {
     }
     svg.appendChild(arrowPolygon("#fff", 7.8));
     svg.appendChild(arrowPolygon("#0d99ff", 5.4));
-    root.appendChild(svg);
-
-    var ring = document.createElement("div");
-    ring.setAttribute("data-pen-cursor-ring", "1");
-    ring.style.cssText =
-      "position:absolute;left:0;top:0;width:24px;height:24px;margin-left:-12px;margin-top:-12px;" +
-      "border-radius:50%;border:2px solid rgba(255,255,255,.9);box-shadow:0 0 0 1px rgba(0,0,0,.35);" +
-      "pointer-events:none;opacity:0;transform:scale(0.4);";
-    root.appendChild(ring);
+    carrier.appendChild(svg);
+    root.appendChild(carrier);
 
     (document.documentElement || document.body).appendChild(root);
 
-    var state = { version: CURSOR_VERSION, root: root, svg: svg, ring: ring, pos: priorPos, hideTimer: null };
+    var state = {
+      version: CURSOR_VERSION,
+      root: root,
+      carrier: carrier,
+      svg: svg,
+      ring: ring,
+      glow: glow,
+      magnet: magnet,
+      canvas: null,
+      pos: priorPos,
+      hideTimer: null,
+      token: 0,
+      raf: 0,
+      abort: null,
+      glowOn: false
+    };
     window.__penCursor = state;
     return state;
+  }
+
+  // Stops a still-running animation (a previous move's follow-through, or
+  // a call still waiting on its scroll frames): bumps the token so every
+  // pending callback of that call bails out, cancels its rAF, and settles
+  // its Promise if it is still pending.
+  function cancelAnim(state) {
+    state.token = (state.token || 0) + 1;
+    if (state.raf) {
+      try {
+        cancelAnimationFrame(state.raf);
+      } catch (err) {
+        // ignore
+      }
+      state.raf = 0;
+    }
+    var ab = state.abort;
+    state.abort = null;
+    if (typeof ab === "function") ab();
   }
 
   // Idle auto-hide: every call re-shows the overlay and (re)arms an 8s
@@ -3674,15 +4105,37 @@ export const CURSOR_JS = `(() => {
   function show(state) {
     state.root.style.transition = "opacity 400ms";
     state.root.style.opacity = "1";
+    // A screenshot hides the root with visibility:hidden; if its restore
+    // call failed, the next move must make the cursor visible again.
+    state.root.style.visibility = "";
     if (state.hideTimer) clearTimeout(state.hideTimer);
     state.hideTimer = setTimeout(function () {
       state.root.style.opacity = "0";
     }, 8000);
   }
 
+  function drawGlow(state, x, y, vx, vy) {
+    var speed = Math.sqrt(vx * vx + vy * vy);
+    var off = Math.min(18, speed * 0.009);
+    var ux = speed > 1 ? vx / speed : 0;
+    var uy = speed > 1 ? vy / speed : 0;
+    var r = 34 * (1 + Math.min(0.44, speed * 0.00024));
+    // cua's alpha is min(0.5, 0.12 + speed * 0.00012); the 0.12 floor is
+    // ramped in by speed so the glow fades to ZERO at rest instead of
+    // lingering around a parked cursor.
+    var a = Math.min(0.5, 0.12 + speed * 0.00012) * clamp(speed / 60, 0, 1);
+    var gx = x + 8 - ux * off;
+    var gy = y + 11 - uy * off;
+    state.glow.style.transform = "translate3d(" + gx + "px," + gy + "px,0) scale(" + r / 50 + ")";
+    state.glow.style.opacity = String(a);
+  }
+
+  // Moves the arrow carrier. The glow follows only at rest here; during a
+  // move the frame loop positions it with the velocity offset.
   function place(state, x, y) {
-    state.root.style.transform = "translate3d(" + x + "px," + y + "px,0)";
+    state.carrier.style.transform = "translate3d(" + x + "px," + y + "px,0)";
     state.pos = { x: x, y: y };
+    if (state.glowOn) drawGlow(state, x, y, 0, 0);
   }
 
   function resolveTarget() {
@@ -3710,40 +4163,141 @@ export const CURSOR_JS = `(() => {
     return null;
   }
 
+  // Trail: anchored at the arrow's BODY, not its tip — the arrow is painted
+  // after the trail, so the body covers the start and the tip stays clean.
+  // The offset follows velocity, ramped in by speed (clamp((speed-40)/260)).
+  var TRAIL_BACK_PX = 10; // roughly the distance from the tip to the arrow body's centre
+  function drawTrail(state, samples, tEl) {
+    var canvas = state.canvas;
+    if (!canvas) {
+      // Created lazily, only for a style that draws a trail: ONE canvas,
+      // behind everything else in the overlay root.
+      canvas = document.createElement("canvas");
+      canvas.setAttribute("data-pen-cursor-trail", "1");
+      canvas.style.cssText = "position:absolute;left:0;top:0;pointer-events:none;z-index:2147483647;";
+      state.root.insertBefore(canvas, state.root.firstChild);
+      state.canvas = canvas;
+    }
+    var dpr = clamp(window.devicePixelRatio || 1, 1, 2);
+    var w = window.innerWidth;
+    var h = window.innerHeight;
+    if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+      canvas.width = Math.round(w * dpr);
+      canvas.height = Math.round(h * dpr);
+      canvas.style.width = w + "px";
+      canvas.style.height = h + "px";
+    }
+    var g = canvas.getContext("2d");
+    if (!g) return;
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, w, h);
+    var total = samples[samples.length - 1].t;
+    var steps = 26;
+    var pts = [];
+    var len = 0;
+    for (var i = 0; i <= steps; i++) {
+      var tt = clamp(tEl - TRAIL_MS + (TRAIL_MS * i) / steps, 0, total);
+      var q = sampleAt(samples, tt);
+      var v = velocityAt(samples, tt);
+      var sp = Math.sqrt(v.x * v.x + v.y * v.y);
+      var wgt = clamp((sp - 40) / 260, 0, 1);
+      var p =
+        sp > 1
+          ? { x: q.x - (v.x / sp) * TRAIL_BACK_PX * wgt, y: q.y - (v.y / sp) * TRAIL_BACK_PX * wgt }
+          : { x: q.x, y: q.y };
+      if (i) len += dist(p, pts[i - 1]);
+      pts.push(p);
+    }
+    var fade = Math.min(1, len / 60); // a very short trail (start, landing) fades out
+    if (fade <= 0) return;
+    g.lineCap = "round";
+    var prev = pts[0];
+    for (var j = 1; j <= steps; j++) {
+      var cur = pts[j];
+      var k = j / steps;
+      if (dist(prev, cur) > 0.3) {
+        g.strokeStyle = "rgba(159,215,255," + 0.45 * k * k * fade + ")";
+        g.lineWidth = 1.5 + 8 * k;
+        g.beginPath();
+        g.moveTo(prev.x, prev.y);
+        g.lineTo(cur.x, cur.y);
+        g.stroke();
+      }
+      prev = cur;
+    }
+  }
+
+  // Frees the backing store: a zero-sized canvas holds no pixel buffer.
+  function clearTrail(state) {
+    var c = state.canvas;
+    if (!c) return;
+    c.width = 0;
+    c.height = 0;
+  }
+
   return new Promise(function (resolve) {
     var settled = false;
     // finish() is the ONLY place the backstop is cleared (idempotent via
-    // \`settled\`) — every settle path, including the final unguarded
-    // setTimeout in arrive() below, must go through here rather than
-    // clearing the backstop itself ahead of time. An earlier version
-    // cleared it inside arrive() before scheduling that last 120ms timer,
-    // leaving that final leg unbounded: a hidden/throttled renderer clamps
-    // background timers to a ≥1s floor, so that "120ms" step could actually
-    // take well over a second with nothing left to catch it, breaking the
-    // "always settles within ~1.15s" invariant this script promises (and
-    // that moveCursor's own outer timeout then had to silently absorb
-    // instead). Routing every settle path through finish() keeps the
-    // backstop armed — and therefore able to win the race — right up until
-    // something has genuinely settled.
+    // the settled flag) — every settle path must go through here rather
+    // than clearing the backstop itself ahead of time, so the backstop
+    // stays armed, and able to win the race, until something has genuinely
+    // settled. A hidden/throttled renderer clamps background timers to a
+    // 1s-plus floor and stops requestAnimationFrame entirely, so nothing
+    // else bounds the Promise.
     function finish(value) {
       if (settled) return;
       settled = true;
       clearTimeout(backstop);
+      var st = window.__penCursor;
+      if (st && st.abort === abortMe) st.abort = null;
       resolve(value);
     }
     // Hard backstop: requestAnimationFrame can simply stop firing (a
     // backgrounded tab, per this repo's get_screenshot rAF findings), and
     // this script must settle regardless — "at most ~1.2s" from the design,
     // kept a little under that so moveCursor's own (longer) timeout on the
-    // controller side is never the thing that actually fires.
+    // controller side is never the thing that actually fires. Arrival is
+    // capped at 700ms, so in a visible tab this never wins.
     var backstop = setTimeout(function () {
-      var state = window.__penCursor;
-      var pos = state && state.pos ? state.pos : { x: 0, y: 0 };
-      finish({ moved: false, x: pos.x, y: pos.y });
+      settleAtTarget(true);
     }, 1150);
+    function abortMe() {
+      settleAtTarget(false);
+    }
+    // The backstop and a cancel both settle at the move's planned FINAL
+    // target (snapping the overlay there), never at a mid-path point, so the
+    // controller's next move and state.pos agree with where the action lands.
+    // Before the target is planned (still waiting on scroll frames) the
+    // current position is all there is. The backstop (stopCurrent = true) also
+    // cancels the pending animation first, so a throttled or hidden tab can
+    // not replay the stale move when it becomes visible again; a cancel
+    // (cancelAnim already bumped the token and cancelled the rAF) needs not.
+    var plannedTarget = null;
+    function settleAtTarget(stopCurrent) {
+      if (settled) return;
+      var st = window.__penCursor;
+      if (st && stopCurrent) {
+        if (st.abort === abortMe) st.abort = null;
+        cancelAnim(st);
+      }
+      var pos = plannedTarget || (st && st.pos ? st.pos : { x: 0, y: 0 });
+      if (plannedTarget && st) {
+        try {
+          st.svg.style.transform = "scale(1)";
+          place(st, pos.x, pos.y);
+        } catch (err) {
+          // cosmetic only
+        }
+      }
+      finish({ moved: false, x: pos.x, y: pos.y });
+    }
 
     try {
       var state = ensureOverlay();
+      // A new call stops whatever the previous one is still animating.
+      cancelAnim(state);
+      var myToken = state.token;
+      state.abort = abortMe;
       show(state);
 
       var reduceMotion = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
@@ -3759,6 +4313,11 @@ export const CURSOR_JS = `(() => {
         startX = window.innerWidth * 0.12;
         startY = window.innerHeight * 0.85;
       }
+      // Reset effect elements left over from the previous move.
+      state.svg.style.transform = "scale(1)";
+      state.ring.style.opacity = "0";
+      state.magnet.style.opacity = "0";
+      clearTrail(state);
       place(state, startX, startY);
 
       if (args.action === "scroll") {
@@ -3777,7 +4336,7 @@ export const CURSOR_JS = `(() => {
       if (args.point && typeof args.point.x === "number" && typeof args.point.y === "number") {
         var px = clamp(args.point.x, 0, window.innerWidth);
         var py = clamp(args.point.y, 0, window.innerHeight);
-        animateTo(px, py);
+        animateTo(px, py, null);
         return;
       }
 
@@ -3787,76 +4346,120 @@ export const CURSOR_JS = `(() => {
         return;
       }
 
-      function clickFeedback() {
-        if (args.action === "click" || args.action === "select") {
-          state.svg.style.transform = "scale(0.85)";
-          setTimeout(function () {
-            state.svg.style.transform = "scale(1)";
-          }, 140);
-          state.ring.style.transition = "none";
-          state.ring.style.opacity = "0.9";
-          state.ring.style.transform = "scale(0.4)";
-          void state.ring.offsetWidth; // force reflow so the transition below actually animates
-          state.ring.style.transition = "transform 380ms ease-out, opacity 380ms ease-out";
-          state.ring.style.transform = "scale(1.6)";
-          state.ring.style.opacity = "0";
-        } else if (args.action === "type") {
-          state.svg.style.transform = "scale(0.92)";
-          setTimeout(function () {
-            state.svg.style.transform = "scale(1)";
-          }, 100);
+      function animateTo(targetX, targetY, rect) {
+        var plan = planMove({
+          style: args.style,
+          from: { x: startX, y: startY },
+          to: { x: targetX, y: targetY },
+          w: rect ? Math.min(rect.width, rect.height) : null,
+          reduce: reduceMotion
+        });
+        plannedTarget = { x: targetX, y: targetY };
+        var fx = plan.effects;
+        var samples = plan.samples;
+        var total = samples[samples.length - 1].t;
+        var arrivalT = plan.arrivalT;
+        var isClick = args.action === "click" || args.action === "select";
+        var isType = args.action === "type";
+        // squash depth: click/select 0.88 (cua default), type a lighter 0.94
+        var squash = isClick ? 0.12 : isType ? 0.06 : 0;
+        var doRipple = fx.ripple && isClick;
+        var doSquish = fx.squish && squash > 0;
+        var doMagnet = fx.magnet && plan.snapT !== null && !!rect;
+
+        state.glowOn = fx.glow || fx.magnet; // cua fogs the magnet style too
+        if (!state.glowOn) state.glow.style.opacity = "0";
+        if (doMagnet) {
+          var ms = state.magnet.style;
+          ms.left = rect.left - 6 + "px";
+          ms.top = rect.top - 6 + "px";
+          ms.width = rect.width + 12 + "px";
+          ms.height = rect.height + 12 + "px";
         }
-      }
+        state.ring.style.transform = "translate3d(" + targetX + "px," + targetY + "px,0)";
 
-      function arrive(targetX, targetY) {
-        place(state, targetX, targetY);
-        clickFeedback();
-        // Not awaited on purpose — the ripple/press feedback keeps
-        // animating after this resolves, so the real action follows
-        // promptly instead of waiting out the full 380ms ripple.
-        setTimeout(function () {
-          finish({ moved: true, x: targetX, y: targetY });
-        }, 120);
-      }
+        var endMs = total;
+        if (fx.trail) endMs = Math.max(endMs, total + TRAIL_MS);
+        if (doRipple) endMs = Math.max(endMs, arrivalT + RIPPLE_MS);
+        if (doSquish) endMs = Math.max(endMs, arrivalT + PRESS_HOLD_MS + PRESS_OUT_MS);
+        if (doMagnet) endMs = Math.max(endMs, plan.snapT + MAGNET_MS);
 
-      function animateTo(targetX, targetY) {
-        if (reduceMotion) {
-          arrive(targetX, targetY);
-          return;
-        }
-        var dx = targetX - startX;
-        var dy = targetY - startY;
-        var distance = Math.sqrt(dx * dx + dy * dy) || 0.0001;
-        var duration = args.durationMs || Math.min(900, Math.max(260, 90 + distance * 0.7));
-        // Alternate the perpendicular bow's sign per call so consecutive
-        // moves don't all curve the same way.
-        window.__penCursorBowSign = -(window.__penCursorBowSign || -1);
-        var bow = distance * (0.08 + Math.random() * 0.04) * window.__penCursorBowSign;
-        var midX = (startX + targetX) / 2 - (dy / distance) * bow;
-        var midY = (startY + targetY) / 2 + (dx / distance) * bow;
-        var overshoot = Math.min(6, distance * 0.03);
+        var t0 = null;
+        var arrived = false;
+        function frame(ts) {
+          state.raf = 0;
+          if (state.token !== myToken) return;
+          if (t0 === null) t0 = ts;
+          var elapsed = ts - t0;
+          var tm = Math.min(elapsed, total);
+          var s = sampleAt(samples, tm);
+          var v = velocityAt(samples, tm);
 
-        var startTime = null;
-        function step(ts) {
-          if (startTime === null) startTime = ts;
-          var t = Math.min(1, (ts - startTime) / duration);
-          var e = easeInOutCubic(t);
-          var m = 1 - e;
-          var x = m * m * startX + 2 * m * e * midX + e * e * targetX;
-          var y = m * m * startY + 2 * m * e * midY + e * e * targetY;
-          if (t >= 1) {
-            // Small settle: a tiny overshoot past the target, corrected on
-            // the next frame, so the stop doesn't read as dead-on-arrival.
-            place(state, targetX + (dx / distance) * overshoot, targetY + (dy / distance) * overshoot);
-            requestAnimationFrame(function () {
-              arrive(targetX, targetY);
-            });
-            return;
+          // Early arrival: resolve the moment the hotspot reaches the
+          // target — follow-through, settle and click feedback keep
+          // playing while the real action proceeds. No extra post-arrival
+          // delay (the old 120ms): arrival is honest now, and the ripple
+          // and press are already underway when the click lands.
+          if (!arrived && elapsed >= arrivalT) {
+            arrived = true;
+            state.pos = { x: targetX, y: targetY };
+            finish({ moved: true, x: targetX, y: targetY });
+          } else if (!arrived) {
+            state.pos = { x: s.x, y: s.y };
           }
-          place(state, x, y);
-          requestAnimationFrame(step);
+
+          state.carrier.style.transform = "translate3d(" + s.x + "px," + s.y + "px,0)";
+          if (state.glowOn) drawGlow(state, s.x, s.y, v.x, v.y);
+          if (fx.trail) drawTrail(state, samples, tm);
+
+          if (doRipple) {
+            var rk = (elapsed - arrivalT) / RIPPLE_MS;
+            if (rk >= 0 && rk <= 1) {
+              var rr = 8 + 44 * easeOut(rk);
+              state.ring.style.width = rr * 2 + "px";
+              state.ring.style.height = rr * 2 + "px";
+              state.ring.style.marginLeft = -rr + "px";
+              state.ring.style.marginTop = -rr + "px";
+              state.ring.style.borderWidth = 4 * (1 - rk) + 1 + "px";
+              state.ring.style.opacity = String(1 - rk);
+            } else {
+              state.ring.style.opacity = "0";
+            }
+          }
+
+          if (doMagnet) {
+            var mg = Math.max(0, 1 - (elapsed - plan.snapT) / MAGNET_MS);
+            state.magnet.style.opacity = elapsed >= plan.snapT ? String(mg) : "0";
+          }
+
+          if (doSquish) {
+            // Press squish: quick in, springy out.
+            var age = elapsed - arrivalT;
+            var pk = 0;
+            if (age >= 0 && age < PRESS_HOLD_MS) {
+              pk = squash * Math.min(1, age / PRESS_IN_MS);
+            } else if (age >= PRESS_HOLD_MS) {
+              var a2 = age - PRESS_HOLD_MS;
+              pk =
+                squash *
+                Math.max(0, Math.cos(Math.min(1, a2 / PRESS_OUT_MS) * Math.PI * 1.5)) *
+                Math.max(0, 1 - a2 / PRESS_OUT_MS);
+            }
+            state.svg.style.transform = "scale(" + (1 - pk) + ")";
+          }
+
+          if (elapsed < endMs) {
+            state.raf = requestAnimationFrame(frame);
+          } else {
+            state.ring.style.opacity = "0";
+            state.magnet.style.opacity = "0";
+            state.svg.style.transform = "scale(1)";
+            if (fx.trail) clearTrail(state);
+            place(state, targetX, targetY);
+            if (!arrived) finish({ moved: true, x: targetX, y: targetY });
+          }
         }
-        requestAnimationFrame(step);
+        state.raf = requestAnimationFrame(frame);
       }
 
       try {
@@ -3866,10 +4469,15 @@ export const CURSOR_JS = `(() => {
       }
       requestAnimationFrame(function () {
         requestAnimationFrame(function () {
-          var rect = el.getBoundingClientRect();
-          var targetX = clamp(rect.left + rect.width / 2, 0, window.innerWidth);
-          var targetY = clamp(rect.top + rect.height / 2, 0, window.innerHeight);
-          animateTo(targetX, targetY);
+          if (state.token !== myToken) return;
+          try {
+            var rect = el.getBoundingClientRect();
+            var targetX = clamp(rect.left + rect.width / 2, 0, window.innerWidth);
+            var targetY = clamp(rect.top + rect.height / 2, 0, window.innerHeight);
+            animateTo(targetX, targetY, rect);
+          } catch (err) {
+            finish({ error: String((err && err.message) || err) });
+          }
         });
       });
     } catch (err) {
@@ -4093,6 +4701,19 @@ export const REMOVE_MARKS_JS = `(() => {
   var el = document.querySelector("[data-pen-marks]");
   if (el && el.parentNode) el.parentNode.removeChild(el);
   return { removed: !!el };
+})()`;
+
+/** Hides (or restores) the agent-cursor overlay root so a screenshot never
+ * shows its glow/trail/ripple. `changed` is true only when the overlay exists
+ * and its visibility actually flipped. Never throws. */
+export const CURSOR_VISIBILITY_JS = `(() => {
+  var args = ${ARGS_MARKER};
+  var root = document.querySelector("[data-pen-cursor]");
+  // No overlay, or already faded out by the idle auto-hide: nothing to hide.
+  if (!root || root.style.opacity === "0") return { changed: false };
+  var wasHidden = root.style.visibility === "hidden";
+  root.style.visibility = args.hidden ? "hidden" : "";
+  return { changed: wasHidden !== !!args.hidden };
 })()`;
 
 /**
