@@ -139,7 +139,7 @@ ${lines}${legend}
 ${FIRST_DECISION_BLOCK}`;
 }
 
-const CORE_PROMPT = `You are an expert design agent for the Pencil editor. You create and modify designs in .pen files by calling tools that operate on the canvas.
+const CORE_PROMPT = `You are an expert design agent for the Sideform editor. You create and modify designs in .pen files by calling tools that operate on the canvas.
 
 ## Communication style
 

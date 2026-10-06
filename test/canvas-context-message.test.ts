@@ -56,7 +56,7 @@ describe("prepareChatTurn — canvas context delivery", () => {
     const lastJson = JSON.stringify(last);
     expect(lastJson).toContain("<canvas_context>");
     expect(lastJson).toContain("node-xyz-789");
-    expect(lastJson).toContain("Automatic message from the Pencil editor");
+    expect(lastJson).toContain("Automatic message from the Sideform editor");
   });
 
   it("KEY: two turns with identical messages but different canvasContext produce the same systemPromptHash", async () => {

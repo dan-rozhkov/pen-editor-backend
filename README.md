@@ -1,6 +1,6 @@
 # pen-editor-backend
 
-The AI design-agent server for the Pencil editor — a Fastify service that streams
+The AI design-agent server for the Sideform editor — a Fastify service that streams
 LLM turns (via the Vercel AI SDK + OpenRouter) and exposes the design tools the
 browser executes against its local scene graph.
 

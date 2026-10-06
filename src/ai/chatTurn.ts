@@ -993,7 +993,7 @@ export async function prepareChatTurn(
   if (canvasContext) {
     modelMessages.push({
       role: "user",
-      content: `<canvas_context>\nAutomatic message from the Pencil editor (not from the user): the current state of the canvas.\n\n${canvasContext}\n</canvas_context>`,
+      content: `<canvas_context>\nAutomatic message from the Sideform editor (not from the user): the current state of the canvas.\n\n${canvasContext}\n</canvas_context>`,
     });
   }
 

@@ -10,7 +10,7 @@ describe("AGENT_MODES", () => {
 describe("buildSystemPrompt", () => {
   it("always returns the core prompt (no mode branching)", () => {
     const prompt = buildSystemPrompt();
-    expect(prompt).toContain("expert design agent for the Pencil editor");
+    expect(prompt).toContain("expert design agent for the Sideform editor");
     // Mode-specific prompt blocks no longer live in the system prompt.
     expect(prompt).not.toContain("## Agent Mode: prototype");
     expect(prompt).not.toContain("You are in PROTOTYPE mode");
