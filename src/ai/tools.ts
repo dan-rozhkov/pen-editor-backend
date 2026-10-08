@@ -1193,6 +1193,51 @@ export const readEmbedHtmlInputSchema = z
     message: "pattern is required when mode is 'grep'",
   });
 
+const componentKeySchema = z
+  .string()
+  .regex(/^[a-z][a-z0-9-]{0,39}$/, "key must be a lowercase slug: a-z, 0-9 and '-', start with a letter, max 40 characters")
+  .describe(
+    "Stable component key. A lowercase slug that starts with a letter (a-z, 0-9, '-'; max 40 characters). The key never changes after it is defined.",
+  );
+
+export const defineComponentInputShape = {
+  key: componentKeySchema,
+  name: z.string().describe("Display name of the component. You can change it later."),
+  html: z
+    .string()
+    .describe(
+      "Master HTML. Use one root element with data-c=\"KEY\". Mark each slot with data-c-slot=\"name\"; the content in the master is the default. " +
+        "Write variants as data-v-<axis>=\"value\" attributes on the root. Use one <style> block. Every selector in it must start with [data-c=\"KEY\"]. " +
+        "Use var(--token) for colors, radii and spacing.",
+    ),
+  variants: z
+    .record(z.array(z.string()))
+    .optional()
+    .describe('Allowed values for each variant axis. Example: {"kind": ["primary", "secondary"]}.'),
+  description: z.string().optional().describe("Short note on what the component is for."),
+  status: z.enum(["draft", "stable", "deprecated"]).optional().describe("Lifecycle status of the component."),
+};
+
+export const extractComponentInputShape = {
+  nodeId: z.string().describe("ID of the embed node that contains the element."),
+  selector: z.string().describe("CSS selector of the element in the embed HTML. The element becomes the component master."),
+  key: componentKeySchema,
+  name: z.string().describe("Display name of the new component."),
+  replaceSimilar: z
+    .boolean()
+    .optional()
+    .describe("If true, also replace structurally equal elements in other embeds with instances. Default false."),
+};
+
+export const detachInstanceInputShape = {
+  nodeId: z.string().describe("ID of the embed node that contains the instance."),
+  selector: z.string().describe("CSS selector of the instance element (it has a data-c attribute)."),
+};
+
+export const deleteComponentInputShape = {
+  key: componentKeySchema,
+};
+
 export const findEmptySpaceOnCanvasInputShape = {
   direction: z
     .enum(["top", "right", "bottom", "left"])
@@ -1333,6 +1378,49 @@ export const penTools = {
       "edit fails to match, nothing is changed. The call is also refused when the edits would leave a previously " +
       "well-formed screen with an unclosed tag, so open and close a tag in the SAME call, never across two.",
     inputSchema: z.object(editEmbedHtmlInputShape),
+  }),
+
+  define_component: tool({
+    description:
+      "Create a component, or update an existing one. Use it when the same element repeats across embed screens. " +
+      "A component master is an embed on the \"Components\" page. The tool creates the master from `html`, or updates it if the key exists. " +
+      "Write the master with one root element that has data-c=\"KEY\". " +
+      "Mark each slot with data-c-slot=\"name\". Write variants as data-v-<axis> attributes on the root. " +
+      "Every CSS selector in the master must start with [data-c=\"KEY\"]. Use var(--token) for colors, radii and spacing. " +
+      "To use a component in embed HTML, write <c-KEY kind=\"value\">content</c-KEY>. " +
+      "To fill a named slot, write <c-KEY><c-slot name=\"label\">text</c-slot></c-KEY>. " +
+      "The tool expands these tags on write into elements marked data-c=\"KEY\". " +
+      "A change to a master updates every instance on every page. " +
+      "You cannot edit the markup outside the slots inside an instance. Edit the master, or call detach_instance.",
+    inputSchema: z.object(defineComponentInputShape),
+  }),
+
+  extract_component: tool({
+    description:
+      "Turn an element of an existing embed into a component. " +
+      "The tool finds the element with `selector` in the embed `nodeId`. It saves the element as a component master on the \"Components\" page. " +
+      "It then replaces the element with an instance marked data-c=\"KEY\". " +
+      "Set `replaceSimilar` to true to also replace structurally equal elements in other embeds with instances. " +
+      "A change to the master later updates every instance. " +
+      "Use define_component instead when you write the master HTML yourself.",
+    inputSchema: z.object(extractComponentInputShape),
+  }),
+
+  detach_instance: tool({
+    description:
+      "Detach one component instance from its master. " +
+      "The tool finds the instance with `selector` in the embed `nodeId`. It removes the data-c markers from that element. " +
+      "The HTML stays as it is. After the detach, later changes to the master do not reach this element, and you can edit all of its markup. " +
+      "Use it when you must change markup outside the slots of an instance.",
+    inputSchema: z.object(detachInstanceInputShape),
+  }),
+
+  delete_component: tool({
+    description:
+      "Delete a component master by key. " +
+      "The tool first detaches every instance of the component, on every page. Then it deletes the master. " +
+      "The tool never erases instance markup. The HTML of each instance stays in its embed.",
+    inputSchema: z.object(deleteComponentInputShape),
   }),
 
   boolean_operation: tool({

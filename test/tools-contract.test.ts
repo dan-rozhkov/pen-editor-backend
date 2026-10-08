@@ -46,6 +46,10 @@ describe("penTools registry", () => {
         "rename_layers",
         "read_embed_html",
         "edit_embed_html",
+        "define_component",
+        "extract_component",
+        "detach_instance",
+        "delete_component",
         "replace_all_matching_properties",
         "search_all_unique_properties",
         "set_export_settings",
@@ -100,6 +104,10 @@ describe("penTools registry", () => {
       "rename_layers",
       "read_embed_html",
       "edit_embed_html",
+      "define_component",
+      "extract_component",
+      "detach_instance",
+      "delete_component",
       "generate_image",
       "generate_frame_image",
       "remove_background",
@@ -1481,4 +1489,40 @@ describe("attach_local_repo schema: name is optional", () => {
       schema.parse({ name: "my-repo", tree: ["package.json"], mode: "replace" }),
     ).not.toThrow();
   });
+});
+
+describe("component tool schemas", () => {
+  const schemaOf = (name: string) => (penTools[name] as { inputSchema: z.ZodTypeAny }).inputSchema;
+
+  it.each([
+    [
+      "define_component",
+      { key: "btn", name: "Button", html: '<button data-c="btn"></button>', variants: { kind: ["primary"] }, status: "stable" },
+      { key: "Btn", name: "Button", html: "<i></i>" },
+    ],
+    [
+      "extract_component",
+      { nodeId: "e1", selector: ".card", key: "card", name: "Card", replaceSimilar: true },
+      { nodeId: "e1", selector: ".card", key: "1card", name: "Card" },
+    ],
+    ["detach_instance", { nodeId: "e1", selector: '[data-c="btn"]' }, { nodeId: "e1" }],
+    ["delete_component", { key: "btn" }, { key: "a".repeat(41) }],
+  ])("%s accepts a valid input and rejects an invalid one", (name, valid, invalid) => {
+    const schema = schemaOf(name);
+    expect(() => schema.parse(valid)).not.toThrow();
+    expect(() => schema.parse(invalid)).toThrow();
+  });
+
+  it("define_component rejects an unknown status", () => {
+    expect(() =>
+      schemaOf("define_component").parse({ key: "btn", name: "B", html: "<i></i>", status: "beta" }),
+    ).toThrow();
+  });
+
+  it.each(["define_component", "extract_component", "detach_instance", "delete_component"])(
+    "%s is client-executed",
+    (name) => {
+      expect((penTools[name] as { execute?: unknown }).execute).toBeUndefined();
+    },
+  );
 });
