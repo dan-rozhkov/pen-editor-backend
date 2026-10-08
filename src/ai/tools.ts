@@ -603,19 +603,62 @@ export const snapshotLayoutInputShape = {
     ),
 };
 
-export const getVariablesInputShape = {};
+export const getVariablesInputShape = {
+  collection: z
+    .string()
+    .optional()
+    .describe(
+      "Collection name or id. Returns only the variables of that collection.",
+    ),
+  names: z
+    .array(z.string())
+    .optional()
+    .describe(
+      'Variable names to read. Each name may have a leading "--" or "$". Returns only these variables.',
+    ),
+  mode: z
+    .union([z.string(), z.record(z.string())])
+    .optional()
+    .describe(
+      'Limits the returned values to one mode. A string is a mode name of the Theme collection, for example "dark". An object maps collection names to mode names, for example {"Brand": "acme"}.',
+    ),
+};
 
 export const setVariablesInputShape = {
   variables: z
     .record(z.unknown())
     .describe(
-      "Variable definitions, as an object keyed by variable name. Simplest form — a plain hex string per name: " +
-        '`{"--brand-primary": "#3b82f6", "--brand-bg": "#ffffff"}`. ' +
-        "Full form — an object per name with `type` (\"color\" | \"number\" | \"string\", default \"color\") and `value`: " +
+      "Variable definitions, as an object keyed by variable name. Every old form stays valid. " +
+        'Simplest form: a plain hex string per name: `{"--brand-primary": "#3b82f6", "--brand-bg": "#ffffff"}`. ' +
+        'Full form: an object per name with `type` ("color" | "number" | "string", default "color") and `value`: ' +
         '`{"--radius-lg": {"type": "number", "value": "16"}}`. ' +
         "Per-theme values use `themeValues`: " +
         '`{"--brand-bg": {"type": "color", "value": "#ffffff", "themeValues": {"dark": "#0b0b0b"}}}`. ' +
-        "Names may be given with or without a leading `--`/`$`. Nested token groups (e.g. `{colors: {primary: {$type, $value}}}`) are also accepted.",
+        "Names may be given with or without a leading `--`/`$`. Nested token groups (e.g. `{colors: {primary: {$type, $value}}}`) are also accepted. " +
+        "New fields per variable: " +
+        '`valuesByMode` maps a mode name to a value: `{"--bg": {"valuesByMode": {"light": "#fff", "dark": "$--ink"}}}`. ' +
+        'A string value that starts with `$` is an alias to another variable, for example "$--ink". ' +
+        "`collection` is the collection name of the variable. " +
+        "`description` is a short text for people and agents. " +
+        '`scopes` is an array that limits where the variable applies. Allowed values: "fill", "stroke", "text", "radius", "spacing", "gap", "size", "fontSize", "fontFamily", "fontWeight", "opacity", "strokeWidth". ' +
+        '`deprecated` is `{since?, replacedBy?: "$--new", note?}`.',
+    ),
+  collections: z
+    .record(
+      z.object({
+        modes: z.array(z.string()).min(1),
+        defaultMode: z.string().optional(),
+      }),
+    )
+    .optional()
+    .describe(
+      'Collections to create or update, keyed by collection name. Each collection lists its mode names: `{"Brand": {"modes": ["acme", "globex"], "defaultMode": "acme"}}`. Define a collection here before a variable uses its modes.',
+    ),
+  collection: z
+    .string()
+    .optional()
+    .describe(
+      "Default collection name for the variables in this call. The collection is created if it does not exist. A `collection` field on one variable overrides it.",
     ),
   replace: z
     .boolean()
@@ -654,6 +697,9 @@ const GUIDELINES: Record<string, string> = {
     "- Form fields: vertical frame with `gap: 16`, inputs with `width: \"fill_container\"`.\n\n" +
     "## Design Tokens\n" +
     "- Reference colors, fonts and radii through `$--variable` tokens so a theme change propagates, using only names that `get_variables` actually returns.\n" +
+    "- Prefer semantic tokens over primitive tokens. Never bind a primitive token when a semantic token exists for that role.\n" +
+    "- Read a slice of the tokens with `get_variables` and its `names` or `collection` argument.\n" +
+    "- In embed HTML, reference a token as `var(--name)` with its `cssName`.\n" +
     "- If the document has no suitable tokens yet, create them with `set_variables` (e.g. background/foreground/primary/border colors, heading/body fonts, a radius scale) before referencing them.\n\n" +
     "## Spacing Reference\n" +
     "- Screen sections gap: 24-32. Card grid gap: 16-24. Form fields gap: 16.\n" +
@@ -1293,7 +1339,13 @@ export const penTools = {
 
   get_variables: tool({
     description:
-      "Read all design variables (tokens) and themes defined in the .pen file. Variables are colors, numbers, or strings, and may have different values per theme.",
+      "Read the design variables (tokens) in the .pen file. Variables are colors, numbers, or strings. " +
+      "Each variable has one value per mode. A collection groups variables and defines their modes. The Theme collection has the modes light and dark. " +
+      "Each variable returns its `name` (use it as `$--name` in native nodes), its `cssName` (use it as `var(--name)` in embed HTML), its raw and resolved value per mode, and optional `description`, `scopes`, and `deprecated`. " +
+      "A raw value that starts with `$` is an alias to another variable. " +
+      "Call it with no arguments to read everything. " +
+      "Pass `names` or `collection` to read a slice. Pass `mode` to read the values of one mode only. " +
+      "A filter that matches nothing returns an empty list and a hint, not an error.",
     inputSchema: z.object(getVariablesInputShape),
   }),
 
@@ -1351,7 +1403,14 @@ export const penTools = {
 
   set_variables: tool({
     description:
-      "Add or update design variables and themes. Variables can reference theme axes for different values per theme. By default merges with existing variables (matched by id or name); set replace=true to overwrite all.",
+      "Add or update design variables, collections, and modes. " +
+      "Use `collections` to define a collection and its modes. Use `collection` to set the default collection for the call. " +
+      "In `variables`, give one value per mode with `valuesByMode`, for example {light: \"#fff\", dark: \"$--ink\"}. " +
+      "A value that starts with `$` is an alias to another variable. Alias order inside one call does not matter. " +
+      "Add `description`, `scopes`, and `deprecated` {since, replacedBy, note} when they help. " +
+      "Create primitive variables first, then create semantic variables that alias them. " +
+      "The call is atomic. If any collection, mode, alias target, or type is wrong, the call returns an error and changes nothing. " +
+      "By default the call merges with existing variables (matched by id or name). Set replace=true to overwrite all.",
     inputSchema: z.object(setVariablesInputShape),
   }),
 

@@ -202,6 +202,7 @@ Write detailed, descriptive prompts. When a request clearly targets the selected
 - **Variables**: referenced with \`$\` prefix, e.g. \`fill: "$primary-color"\`
   - CRITICAL: always use the exact variable name returned by \`get_variables\` (usually with leading \`--\`), e.g. \`"$--ck-blue-500"\`
   - Never rewrite variable names (\`-\` to \`_\`, drop/add \`--\`, rename tokens)
+  - Prefer semantic tokens (aliases such as a surface or text role) over primitive tokens. Never bind a primitive token when a semantic token exists for that role.
   - This \`$--name\` syntax (built from the variable's \`name\` field) is for native-node properties (\`fill\`, \`stroke\`, ...) in \`batch_design\` only. Inside \`embed\` \`htmlContent\`, variables are plain CSS instead — \`var(--name)\` built from the variable's \`cssName\` field, never \`$--name\` or \`fill: "var(--x)"\`. See "Embed variables" below.
 
 ## batch_design Mini-Script
@@ -311,6 +312,7 @@ Follow this general workflow when designing:
 3a. **web_search / fetch_url** *(if available)* — when a task needs real-world content, references, data, or inspiration, search the internet with \`web_search\`, then read a specific page with \`fetch_url\`. These tools exist only when the server is configured for internet search; if a call returns an error, continue without it.
 4. **get_variables** — read design tokens (use variables, never hardcode colors/spacing)
    - Always copy variable names exactly as returned (example: \`$--ck-blue-500\`, not \`$ck_blue_500\`)
+   - To read a slice, pass \`names\` or \`collection\` to \`get_variables\`.
 4a. **get_text_styles** — read named text styles (typography tokens: font/size/weight/line-height/letter-spacing/transform). Apply an existing style with \`apply_text_style\` instead of setting typography properties by hand when one matches.
 5. **batch_get** — inspect existing nodes before modifying
 6. **snapshot_layout** — check current layout to understand positioning
@@ -338,7 +340,7 @@ This flow is the default ONLY for modifying native nodes that already exist. **I
 
 When you ARE editing existing native nodes, do steps 1–3 before any \`batch_design\`:
 1. **\`get_editor_state\`** — check the current file and selection.
-2. **\`get_variables\`** — read all design tokens. You MUST call this before any \`batch_design\`. Never hardcode colors or spacing when a matching variable exists — use \`$\` references (e.g. \`fill: "$--primary"\`).
+2. **\`get_variables\`** — read all design tokens. You MUST call this before any \`batch_design\`. Never hardcode colors or spacing when a matching variable exists — use \`$\` references (e.g. \`fill: "$--primary"\`). Prefer semantic tokens over primitives. In embed HTML, reference the token's \`cssName\` as \`var(--name)\`.
 3. **\`batch_get\`** — inspect existing nodes relevant to your task before modifying or adding anything.
 3b. **Placement of new top-level frames** — before inserting a brand-new top-level frame that is NOT a child of an existing node, call \`find_empty_space_on_canvas\` with its width/height and use the returned x/y as the frame's position, so it doesn't overlap existing canvas content. (Children added inside an existing frame are laid out by that frame — no need to find space for them.)
 4. **\`batch_design\`** — make changes using native canvas nodes.
