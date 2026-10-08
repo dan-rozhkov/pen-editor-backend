@@ -8,6 +8,7 @@ import type { PGlite } from "@electric-sql/pglite";
 import type { Config } from "../src/config.js";
 import type { BuildAppOptions } from "../src/app.js";
 import type { EmailMessage } from "../src/auth/email.js";
+import type { OrgAuditWriter } from "../src/auth/orgAudit.js";
 import { startApp, type RunningApp } from "./chatHarness.js";
 import { makeConfig } from "./helpers.js";
 import { createDsStore } from "../src/ds/dsStore.js";
@@ -39,9 +40,11 @@ export async function startAuthApp(
   options: Omit<BuildAppOptions, "logger" | "auth" | "authPool" | "authOptions" | "dsStore"> & {
     /** Wire a real DsStore on the harness's PGlite (design-system libraries). */
     withDsStore?: boolean;
+    /** Replaces the no-op organization audit writer. */
+    orgAudit?: OrgAuditWriter;
   } = {},
 ): Promise<AuthHarness> {
-  const { withDsStore, ...appOptions } = options;
+  const { withDsStore, orgAudit, ...appOptions } = options;
   const harness = await createPgliteHarness([]);
   const emails: EmailMessage[] = [];
   const config = makeConfig({
@@ -69,7 +72,7 @@ export async function startAuthApp(
       ? createDsStore("postgres://unused.invalid/db", { ...createPgliteAuthPool(harness.pglite), end: async () => {} })
       : null,
     authPool: createPgliteAuthPool(harness.pglite),
-    authOptions: { sendEmail: async (message) => void emails.push(message) },
+    authOptions: { sendEmail: async (message) => void emails.push(message), orgAudit },
   } as BuildAppOptions);
 
   const fetchAuth: AuthHarness["fetchAuth"] = (path, init = {}) =>

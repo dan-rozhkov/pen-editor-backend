@@ -52,3 +52,12 @@ export const magicLinkMessage = (to: string, url: string): EmailMessage =>
 
 export const resetPasswordMessage = (to: string, url: string): EmailMessage =>
   linkEmail(to, "Reset your Sideform password", "Use this link to choose a new Sideform password.", "Reset password", url);
+
+export const invitationMessage = (to: string, url: string, organizationName: string, inviter: string, role: string): EmailMessage =>
+  linkEmail(
+    to,
+    `${inviter} invited you to ${organizationName} on Sideform`,
+    `${inviter} invited you to join ${organizationName} on Sideform as ${role}.`,
+    "Accept invitation",
+    url,
+  );
