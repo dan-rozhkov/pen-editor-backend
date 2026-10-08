@@ -101,12 +101,12 @@ describe("bridged style, component and design-system tools", () => {
 });
 
 describe("MCP instructions", () => {
-  it("stay under 2500 characters and mention the design system and <c-key> tags", () => {
+  it("stay under 2500 characters and mention the design system and <c-KEY> tags", () => {
     for (const hasCanvasWidget of [true, false]) {
       const text = buildMcpInstructions({ hasCanvasWidget, appOrigin: "https://app.example.com" });
       expect(text.length).toBeLessThan(2500);
       expect(text).toContain("get_design_system");
-      expect(text).toContain("<c-key>");
+      expect(text).toContain("<c-KEY>");
     }
   });
 });
