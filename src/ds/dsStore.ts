@@ -20,6 +20,9 @@ import {
   listUsageDocuments,
   loadUsageSummary,
   parseUsageCursor,
+  lintOf,
+  regressedRule,
+  type UsageDocumentsCursor,
   type UsageDocuments,
   type UsageSort,
   type UsageSummary,
@@ -229,8 +232,8 @@ export interface DsStore {
   listUsageDocuments(
     libraryId: string,
     principal: Principal,
-    page: { limit: number; sort: UsageSort; cursor: string | null },
-  ): Promise<UsageDocuments | null | Forbidden>;
+    page: { limit: number; sort: UsageSort; cursor: UsageDocumentsCursor | null },
+  ): Promise<UsageDocuments | { kind: "invalid_cursor" } | null | Forbidden>;
   close(): Promise<void>;
 }
 
@@ -321,6 +324,8 @@ export function parseVersionCursor(cursor: string): Semver | null {
   return parts ? parseVersion(parts[0]) : null;
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 function uniqueViolation(err: unknown, constraintPart: string): boolean {
   const e = err as { code?: string; constraint?: string; message?: string } | null;
   if (e?.code !== "23505") return false;
@@ -406,6 +411,14 @@ export function createDsStore(connectionString: string | undefined, pool?: DsPoo
     };
     return { library, latest, versionCount: c.rows[0]?.count ?? 0 };
   };
+
+  /** A small indexed batch of one library's expired reports; the daily sweep covers the rest. */
+  const pruneLibraryUsage = (libraryId: string) =>
+    db.query(
+      `DELETE FROM ds_usage WHERE ctid = ANY(ARRAY(
+         SELECT ctid FROM ds_usage WHERE library_id = $1 AND reported_at < now() - make_interval(days => $2) ORDER BY reported_at LIMIT $3))`,
+      [libraryId, USAGE_RETENTION_DAYS, USAGE_PRUNE_BATCH],
+    );
 
   return {
     async createLibrary({ id, principal, orgId = null, name, description }) {
@@ -808,35 +821,33 @@ export function createDsStore(connectionString: string | undefined, pool?: DsPoo
         if (!v.rows[0]) return { kind: "unknown_version" };
         const unknown = countUnknownIds(metrics, v.rows[0].snapshot);
         if (unknown > 0) return { kind: "unknown_ids", count: unknown };
-        const total = lintTotal(metrics);
-        const prior = (await client.query(
-          "SELECT lint_total FROM ds_usage WHERE library_id = $1 AND document_key = $2 AND reporter_id = $3 FOR UPDATE",
-          [libraryId, documentKey, principal.userId],
-        )) as { rows: Array<{ lint_total: number }> };
-        // An identical re-report keeps prev_metrics, so a retry never erases the real "before".
-        await client.query(
+        // One statement, atomic with the row lock ON CONFLICT takes: `inserted` and the regression
+        // flag come from the upsert itself. prev_metrics rotates only on change, and an expired
+        // previous report counts as none (NULL), so the flag and the summary share one definition.
+        const r = (await client.query(
           `INSERT INTO ds_usage (library_id, document_key, reporter_id, version, metrics, token_coverage, component_coverage, lint_total)
            VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)
            ON CONFLICT (library_id, document_key, reporter_id) DO UPDATE SET
              version = EXCLUDED.version,
-             prev_metrics = CASE WHEN ds_usage.metrics = EXCLUDED.metrics THEN ds_usage.prev_metrics ELSE ds_usage.metrics END,
+             prev_metrics = CASE
+               WHEN ds_usage.reported_at < now() - make_interval(days => $9) THEN NULL
+               WHEN ds_usage.metrics = EXCLUDED.metrics THEN ds_usage.prev_metrics
+               ELSE ds_usage.metrics END,
              metrics = EXCLUDED.metrics,
              token_coverage = EXCLUDED.token_coverage,
              component_coverage = EXCLUDED.component_coverage,
              lint_total = EXCLUDED.lint_total,
-             reported_at = now()`,
-          [libraryId, documentKey, principal.userId, version, JSON.stringify(metrics), tokenCoverage(metrics), componentCoverage(metrics), total],
-        );
-        // Small opportunistic prune; the daily sweep (usageSweep.ts) covers every library.
-        await client.query(
-          `DELETE FROM ds_usage WHERE ctid IN (
-             SELECT ctid FROM ds_usage
-              WHERE library_id = $1 AND reported_at < now() - make_interval(days => $2)
-              LIMIT $3)`,
-          [libraryId, USAGE_RETENTION_DAYS, USAGE_PRUNE_BATCH],
-        );
-        const before = prior.rows[0];
-        return { kind: "ok", replaced: before !== undefined, regression: before !== undefined && metrics.lint !== null && total > before.lint_total };
+             reported_at = now()
+           RETURNING (xmax = 0) AS inserted,
+             EXISTS (SELECT 1 FROM jsonb_each_text(${lintOf("ds_usage.metrics")}) e WHERE ${regressedRule("e", "ds_usage.prev_metrics")}) AS regression`,
+          [libraryId, documentKey, principal.userId, version, JSON.stringify(metrics), tokenCoverage(metrics), componentCoverage(metrics), lintTotal(metrics), USAGE_RETENTION_DAYS],
+        )) as { rows: Array<{ inserted: boolean; regression: boolean }> };
+        const row = r.rows[0];
+        return { kind: "ok", replaced: row?.inserted === false, regression: row?.regression === true };
+      }).then(async (result) => {
+        // Housekeeping after the commit, off the reporting transaction (no lock held, no deadlock with a purge).
+        if (result.kind === "ok") await pruneLibraryUsage(libraryId).catch(() => undefined);
+        return result;
       });
     },
 
@@ -849,9 +860,9 @@ export function createDsStore(connectionString: string | undefined, pool?: DsPoo
         // The caller's own document key, or (admin only) a report id. No other key reveals that a row exists.
         const r = (await client.query(
           `DELETE FROM ds_usage WHERE library_id = $1
-             AND ((document_key = $2 AND reporter_id = $3) OR ($4::boolean AND id::text = $2))
+             AND ((document_key = $2 AND reporter_id = $3) OR id = $4::uuid)
            RETURNING 1`,
-          [libraryId, key, principal.userId, admin],
+          [libraryId, key, principal.userId, admin && UUID_RE.test(key) ? key : null],
         )) as { rows: unknown[] };
         return r.rows.length > 0 ? "deleted" : "not_found";
       });
@@ -862,7 +873,7 @@ export function createDsStore(connectionString: string | undefined, pool?: DsPoo
       if (!library) return null;
       const decision = decide(principal, library.role, "write");
       if (!decision.ok) return { kind: "forbidden", code: decision.code };
-      return listUsageDocuments(db, libraryId, library.latestVersion, { limit, sort, cursor: cursor ? parseUsageCursor(cursor, sort) : null });
+      return listUsageDocuments(db, libraryId, library.latestVersion, { limit, sort, cursor });
     },
 
     async getUsageSummary(libraryId, principal) {

@@ -7,6 +7,7 @@ import type { Principal } from "../src/ds/access.js";
 import { createDsStore, type DsStore, type NewVersion } from "../src/ds/dsStore.js";
 import type { Snapshot } from "../src/ds/snapshotSchema.js";
 import { USAGE_PRUNE_BATCH, usageMetricsSchema, type UsageMetrics } from "../src/ds/usage.js";
+import { parseUsageCursor, type UsageDocumentsCursor } from "../src/ds/usageQueries.js";
 import { pruneDsUsage } from "../src/ds/usageSweep.js";
 import { assert } from "./helpers.js";
 import { createPgliteAuthPool } from "./pgliteAuthPool.js";
@@ -170,6 +171,35 @@ describe("ds_usage store against PGlite", () => {
     expect(await report(doc(1), metrics({ lint: { "hardcoded-value": 1 } }))).toMatchObject({ regression: false });
   });
 
+  it("regression flag matches the summary: false after a null-lint or expired previous report, true on a per-rule increase", async () => {
+    await seed();
+    const summaryRegressions = async () =>
+      ((await store.getUsageSummary(lib, user("owner"))) as { regressions?: unknown[] }).regressions?.length ?? 0;
+    // previous report had lint null
+    await report(doc(1), metrics({ lint: null }));
+    expect(await report(doc(1), metrics({ lint: { "hardcoded-value": 5 } }))).toMatchObject({ regression: false });
+    expect(await summaryRegressions()).toBe(0);
+    // one rule up, another down: still a regression (per rule), same in the summary
+    await report(doc(2), metrics({ lint: { "hardcoded-value": 3, contrast: 5 } }));
+    expect(await report(doc(2), metrics({ lint: { "hardcoded-value": 4, contrast: 1 } }))).toMatchObject({ regression: true });
+    expect(await summaryRegressions()).toBe(1);
+    // an identical retry keeps the regression visible in both
+    expect(await report(doc(2), metrics({ lint: { "hardcoded-value": 4, contrast: 1 } }))).toMatchObject({ regression: true });
+    // expired previous report counts as none
+    await report(doc(3), metrics({ lint: { "hardcoded-value": 1 } }));
+    await harness.pglite.query("UPDATE ds_usage SET reported_at = now() - interval '91 days' WHERE document_key = $1", [doc(3)]);
+    expect(await report(doc(3), metrics({ lint: { "hardcoded-value": 9 } }))).toMatchObject({ kind: "ok", regression: false });
+    expect((await row(doc(3))).prev_metrics).toBeNull();
+    expect(await summaryRegressions()).toBe(1);
+  });
+
+  it("refuses a cursor that belongs to the other sort", async () => {
+    await seed();
+    await report(doc(1), metrics());
+    const cursor = parseUsageCursor(Buffer.from(JSON.stringify(["c", "", "x"]), "utf8").toString("base64url"), "coverage");
+    expect(await store.listUsageDocuments(lib, user("owner"), { limit: 5, sort: "reportedAt", cursor })).toEqual({ kind: "invalid_cursor" });
+  });
+
   it("pages the documents list by keyset in both sorts without skipping or repeating", async () => {
     await seed();
     for (let i = 1; i <= 7; i++) {
@@ -178,11 +208,11 @@ describe("ds_usage store against PGlite", () => {
     await report(doc(8), metrics({ tokens: { bindable: 0, bound: 0, boundToLibrary: 0, literal: 0, use: {} } }));
     for (const sort of ["reportedAt", "coverage"] as const) {
       const seen: string[] = [];
-      let cursor: string | null = null;
+      let cursor: UsageDocumentsCursor | null = null;
       do {
         const page = (await store.listUsageDocuments(lib, user("owner"), { limit: 3, sort, cursor })) as { items: Array<{ reportId: string }>; nextCursor: string | null };
         seen.push(...page.items.map((i) => i.reportId));
-        cursor = page.nextCursor;
+        cursor = page.nextCursor ? parseUsageCursor(page.nextCursor, sort) : null;
       } while (cursor);
       expect(seen, sort).toHaveLength(8);
       expect(new Set(seen).size, sort).toBe(8);

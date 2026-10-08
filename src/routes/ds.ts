@@ -504,9 +504,13 @@ export async function dsRoutes(
         const query = params && parse(usageDocumentsQuery, request.query, reply, "query");
         if (!params || !query) return reply;
         if (badCursor(query.cursor, (c) => parseUsageCursor(c, query.sort), reply)) return reply;
-        const page = await store.listUsageDocuments(params.id, principal, { limit: query.limit, sort: query.sort, cursor: query.cursor ?? null });
+        const cursor = query.cursor ? parseUsageCursor(query.cursor, query.sort) : null;
+        const page = await store.listUsageDocuments(params.id, principal, { limit: query.limit, sort: query.sort, cursor });
+        if (page !== null && "kind" in page && page.kind === "invalid_cursor") {
+          return send(reply, 400, "invalid_cursor", "The cursor is not valid. Start again without a cursor.");
+        }
         if (page === null) return notFound(reply);
-        if ("kind" in page) return forbidden(reply, page.code);
+        if ("code" in page) return forbidden(reply, page.code);
         return reply.send(page);
       }),
     );

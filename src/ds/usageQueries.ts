@@ -10,12 +10,20 @@ interface Queryable {
   query(sql: string, params?: unknown[]): Promise<{ rows: unknown[] }>;
 }
 
-const LIVE = `live AS (
+const LIVE = `live AS MATERIALIZED (
   SELECT DISTINCT ON (document_key) * FROM ds_usage
    WHERE library_id = $1 AND reported_at >= now() - make_interval(days => $2)
    ORDER BY document_key, reported_at DESC)`;
 const live = (sql: string) => `WITH ${LIVE} ${sql}`;
-const lintOf = (col: string) => `CASE WHEN jsonb_typeof(${col}->'lint') = 'object' THEN ${col}->'lint' ELSE '{}'::jsonb END`;
+export const lintOf = (col: string) => `CASE WHEN jsonb_typeof(${col}->'lint') = 'object' THEN ${col}->'lint' ELSE '{}'::jsonb END`;
+/**
+ * THE definition of a lint regression, shared by the summary and by the flag
+ * returned from a report: the previous report (kept in prev_metrics, NULL once
+ * it expired) had a lint object, and this rule's count is higher now. `e` is a
+ * jsonb_each_text row of the current lint object.
+ */
+export const regressedRule = (e: string, prevCol: string) =>
+  `jsonb_typeof(${prevCol}->'lint') = 'object' AND ${e}.value::int > COALESCE((${prevCol}->'lint'->>${e}.key)::int, 0)`;
 
 const MAX_UNUSED_TOKENS = 100;
 
@@ -26,35 +34,35 @@ export async function loadUsageSummary(
   latest: Snapshot | null,
   includeRegressions: boolean,
 ) {
-  const p = [libraryId, USAGE_RETENTION_DAYS];
-  const rows = async <T>(sql: string): Promise<T[]> => ((await db.query(live(sql), p)) as { rows: T[] }).rows;
-
-  const [totals] = await rows<{
-    total: number; last: string | Date | null; t_avg: number | null; t_p50: number | null; c_avg: number | null; c_p50: number | null;
-  }>(`SELECT count(*)::int AS total, max(reported_at) AS last,
-             avg(token_coverage) AS t_avg, percentile_cont(0.5) WITHIN GROUP (ORDER BY token_coverage) AS t_p50,
-             avg(component_coverage) AS c_avg, percentile_cont(0.5) WITHIN GROUP (ORDER BY component_coverage) AS c_p50
-        FROM live`);
-  const versions = await rows<{ version: string; n: number }>(`SELECT version, count(*)::int AS n FROM live GROUP BY version`);
-  const detached = await rows<{ key: string; n: number }>(
-    `SELECT e.key, sum(e.value::int)::float8 AS n FROM live, jsonb_each_text(metrics->'components'->'detachedByKey') e
-      GROUP BY e.key HAVING sum(e.value::int) > 0 ORDER BY n DESC, e.key LIMIT 10`,
-  );
-  const used = await rows<{ key: string }>(
-    `SELECT DISTINCT e.key FROM live, jsonb_each_text(metrics->'tokens'->'use') e WHERE e.value::int > 0`,
-  );
-  const lint = await rows<{ rule: string; n: number }>(
-    `SELECT e.key AS rule, sum(e.value::int)::float8 AS n FROM live, jsonb_each_text(${lintOf("live.metrics")}) e GROUP BY e.key`,
-  );
-  const regressions = includeRegressions
-    ? await rows<{ k: string; rule: string; delta: number }>(
-        `SELECT substr(u.document_key, 1, 8) AS k, e.key AS rule, (e.value::int - COALESCE((u.prev_metrics->'lint'->>e.key)::int, 0)) AS delta
+  // ONE statement: one snapshot for every number, and the live set is computed once (MATERIALIZED).
+  const r = (await db.query(
+    live(`SELECT
+      (SELECT jsonb_build_object('total', count(*), 'last', max(reported_at),
+              't_avg', avg(token_coverage), 't_p50', percentile_cont(0.5) WITHIN GROUP (ORDER BY token_coverage),
+              'c_avg', avg(component_coverage), 'c_p50', percentile_cont(0.5) WITHIN GROUP (ORDER BY component_coverage)) FROM live) AS totals,
+      (SELECT COALESCE(jsonb_object_agg(version, n), '{}'::jsonb) FROM (SELECT version, count(*)::int AS n FROM live GROUP BY version) v) AS versions,
+      (SELECT COALESCE(jsonb_agg(jsonb_build_object('key', key, 'n', n) ORDER BY n DESC, key), '[]'::jsonb) FROM (
+         SELECT e.key, sum(e.value::int)::float8 AS n FROM live, jsonb_each_text(metrics->'components'->'detachedByKey') e
+          GROUP BY e.key HAVING sum(e.value::int) > 0 ORDER BY n DESC, e.key LIMIT 10) d) AS detached,
+      (SELECT COALESCE(jsonb_agg(key), '[]'::jsonb) FROM (
+         SELECT DISTINCT e.key FROM live, jsonb_each_text(metrics->'tokens'->'use') e WHERE e.value::int > 0) u) AS used,
+      (SELECT COALESCE(jsonb_object_agg(rule, n), '{}'::jsonb) FROM (
+         SELECT e.key AS rule, sum(e.value::int)::float8 AS n FROM live, jsonb_each_text(${lintOf("live.metrics")}) e GROUP BY e.key) l) AS lint,
+      CASE WHEN $3::boolean THEN (SELECT COALESCE(jsonb_agg(jsonb_build_object('k', k, 'rule', rule, 'delta', delta) ORDER BY delta DESC, k, rule), '[]'::jsonb) FROM (
+         SELECT substr(u.document_key, 1, 8) AS k, e.key AS rule, (e.value::int - COALESCE((u.prev_metrics->'lint'->>e.key)::int, 0)) AS delta
            FROM live u, jsonb_each_text(${lintOf("u.metrics")}) e
-          WHERE jsonb_typeof(u.prev_metrics->'lint') = 'object'
-            AND e.value::int > COALESCE((u.prev_metrics->'lint'->>e.key)::int, 0)
-          ORDER BY delta DESC, k, rule LIMIT 20`,
-      )
-    : null;
+          WHERE ${regressedRule("e", "u.prev_metrics")}
+          ORDER BY delta DESC, k, rule LIMIT 20) g) END AS regressions
+      `),
+    [libraryId, USAGE_RETENTION_DAYS, includeRegressions],
+  )) as { rows: Array<Record<string, unknown>> };
+  const row = r.rows[0] ?? {};
+  const totals = (row.totals ?? {}) as { total?: number; last?: string | null; t_avg?: number | null; t_p50?: number | null; c_avg?: number | null; c_p50?: number | null };
+  const versions = Object.entries((row.versions ?? {}) as Record<string, number>).map(([version, n]) => ({ version, n }));
+  const detached = (row.detached ?? []) as Array<{ key: string; n: number }>;
+  const used = ((row.used ?? []) as string[]).map((key) => ({ key }));
+  const lintRows = Object.entries((row.lint ?? {}) as Record<string, number>).map(([rule, n]) => ({ rule, n }));
+  const regressions = row.regressions ? (row.regressions as Array<{ k: string; rule: string; delta: number }>) : null;
 
   const latestParsed = latestVersion ? parseVersion(latestVersion) : null;
   let behind = 0;
@@ -64,15 +72,15 @@ export async function loadUsageSummary(
   }
   const usedIds = new Set(used.map((u) => u.key));
   const unused = (latest?.variables ?? []).filter((v) => !usedIds.has(v.id));
-  const lintByRule = new Map(lint.map((l) => [l.rule, Number(l.n)]));
+  const lintByRule = new Map(lintRows.map((l) => [l.rule, Number(l.n)]));
   const stat = (avg: number | null, p50: number | null) => (avg === null || p50 === null ? null : { avg: round4(avg), p50: round4(p50) });
   return {
     documents: {
-      total: totals?.total ?? 0,
+      total: totals.total ?? 0,
       byVersion: Object.fromEntries(versions.map((v) => [v.version, v.n])),
       behind,
     },
-    coverage: { token: stat(totals?.t_avg ?? null, totals?.t_p50 ?? null), component: stat(totals?.c_avg ?? null, totals?.c_p50 ?? null) },
+    coverage: { token: stat(totals.t_avg ?? null, totals.t_p50 ?? null), component: stat(totals.c_avg ?? null, totals.c_p50 ?? null) },
     topDetached: detached.map((d) => ({ key: d.key, count: Number(d.n) })),
     unusedTokens: unused.slice(0, MAX_UNUSED_TOKENS).map((v) => ({ id: v.id, name: v.name })),
     // True when unusedTokens was cut at its cap; every count above covers all live rows.
@@ -80,7 +88,7 @@ export async function loadUsageSummary(
     lint: Object.fromEntries(LINT_RULES.map((r) => [r, lintByRule.get(r) ?? 0])),
     // Editors and owners only: viewers see counts.
     ...(regressions ? { regressions: regressions.map((r) => ({ documentKey: r.k, rule: r.rule, delta: r.delta })) } : {}),
-    lastReportedAt: totals?.last ? new Date(totals.last) : null,
+    lastReportedAt: totals.last ? new Date(totals.last) : null,
   };
 }
 
@@ -124,6 +132,8 @@ export async function listUsageDocuments(
 ) {
   const params: unknown[] = [libraryId, USAGE_RETENTION_DAYS];
   const c = opts.cursor;
+  // The route parsed the cursor for this sort; a mismatch is refused, never a silent restart.
+  if (c && c.sort !== opts.sort) return { kind: "invalid_cursor" as const };
   let where = "true";
   if (c) {
     if (opts.sort === "reportedAt") {
@@ -179,5 +189,5 @@ export async function listUsageDocuments(
         : null,
   };
 }
-export type UsageDocuments = Awaited<ReturnType<typeof listUsageDocuments>>;
+export type UsageDocuments = Exclude<Awaited<ReturnType<typeof listUsageDocuments>>, { kind: "invalid_cursor" }>;
 export type UsageSummary = Awaited<ReturnType<typeof loadUsageSummary>>;

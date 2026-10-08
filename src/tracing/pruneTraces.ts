@@ -24,6 +24,13 @@ export async function pruneRawTraces(
   return result.rowCount ?? 0;
 }
 
+/** One retention job on the shared daily schedule: `run` deletes and returns how many rows went. */
+export interface PruneJob {
+  name: string;
+  run(db: TraceQueryable): Promise<number>;
+  describe(deleted: number): string;
+}
+
 export interface TracePruneScheduleDeps {
   createPool: (connectionString: string) => TraceQueryable;
   setInterval: typeof setInterval;
@@ -46,20 +53,28 @@ const defaultDeps: TracePruneScheduleDeps = {
 export function startTracePruneSchedule(
   config: Config,
   deps: TracePruneScheduleDeps = defaultDeps,
+  /** More retention jobs sharing this schedule and its single pool (e.g. ds_usage). Each fails on its own. */
+  extraJobs: PruneJob[] = [],
 ): () => Promise<void> {
   if (!config.TRACE_DATABASE_URL) return async () => {};
 
   const db = deps.createPool(config.TRACE_DATABASE_URL);
+  const jobs: PruneJob[] = [
+    {
+      name: "trace-prune",
+      run: (q) => pruneRawTraces(q, config.TRACE_RAW_TTL_DAYS),
+      describe: (n) => `deleted ${n} raw trace row(s) older than ${config.TRACE_RAW_TTL_DAYS} day(s)`,
+    },
+    ...extraJobs,
+  ];
   const runOnce = async () => {
-    try {
-      const deleted = await pruneRawTraces(db, config.TRACE_RAW_TTL_DAYS);
-      if (deleted > 0) {
-        console.log(
-          `[trace-prune] deleted ${deleted} raw trace row(s) older than ${config.TRACE_RAW_TTL_DAYS} day(s)`,
-        );
+    for (const job of jobs) {
+      try {
+        const deleted = await job.run(db);
+        if (deleted > 0) console.log(`[${job.name}] ${job.describe(deleted)}`);
+      } catch (err) {
+        console.error(`[${job.name}] prune failed — will retry on the next tick:`, err);
       }
-    } catch (err) {
-      console.error("[trace-prune] prune failed — will retry on the next tick:", err);
     }
   };
 

@@ -3,7 +3,7 @@ import { loadConfig } from "./config.js";
 import { closeAllMCPClients } from "./ai/mcp.js";
 import { getAllSkills, loadSkills } from "./ai/skills.js";
 import { applyStartupMigrations } from "./startupMigrations.js";
-import { startDsUsageSweep } from "./ds/usageSweep.js";
+import { dsUsagePruneJob } from "./ds/usageSweep.js";
 import { startTracePruneSchedule } from "./tracing/pruneTraces.js";
 
 const config = loadConfig();
@@ -17,8 +17,7 @@ await applyStartupMigrations(config);
 
 // raw_traces has a TTL but nothing enforced it outside the unscheduled
 // analysis job — so the server enforces it itself, now and daily.
-const stopTracePrune = startTracePruneSchedule(config);
-const stopDsUsageSweep = startDsUsageSweep(config);
+const stopTracePrune = startTracePruneSchedule(config, undefined, [dsUsagePruneJob]);
 
 await loadSkills();
 if (getAllSkills().length === 0) {
@@ -38,7 +37,6 @@ const app = await buildApp(config, { publishHandshake: true });
 
 const shutdown = async () => {
   await stopTracePrune();
-  await stopDsUsageSweep();
   await closeAllMCPClients();
   await app.close();
   process.exit(0);
