@@ -73,6 +73,8 @@ export interface CreateAuthOptions {
   sendEmail?: EmailSender;
   /** Receives organization member changes (buildApp passes the audit_log writer unless a test overrides it). */
   orgAudit?: OrgAuditWriter;
+  /** Refuses organization deletion while it owns design-system libraries. */
+  orgHasLibraries?: (organizationId: string) => Promise<boolean>;
   /** Test seam: replaces the pinned-DNS metadata fetch used by CIMD. */
   fetchClientMetadataResource?: typeof fetchClientMetadataResource;
 }
@@ -159,6 +161,7 @@ export function createAuth(config: Config, database: AuthDatabase, options: Crea
         sendEmail,
         appOrigin: settings.appOrigin,
         audit: options.orgAudit ?? noopOrgAuditWriter,
+        hasLibraries: options.orgHasLibraries,
       }),
     ],
   });

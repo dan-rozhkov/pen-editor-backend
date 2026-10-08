@@ -28,3 +28,15 @@ export function createOrgAuditWriter(pool: AuditPool): OrgAuditWriter {
     },
   };
 }
+
+/** Whether any design-system library (live or archived) still belongs to the organization. */
+export function orgHasLibraries(pool: AuditPool): (organizationId: string) => Promise<boolean> {
+  return async (organizationId) => {
+    const client = await pool.connect();
+    try {
+      return (await client.query("SELECT 1 FROM ds_libraries WHERE org_id = $1 LIMIT 1", [organizationId])).rows.length > 0;
+    } finally {
+      client.release();
+    }
+  };
+}

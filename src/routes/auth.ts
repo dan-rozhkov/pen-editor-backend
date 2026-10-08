@@ -8,7 +8,6 @@ import { claimAnonData, type ClaimPool } from "../auth/claim.js";
 import { isPlausibleUserId } from "../lib/userId.js";
 import { sendWebResponse, toWebRequest } from "../auth/webBridge.js";
 import type { Auth } from "../auth/index.js";
-import { runWithAuthRequest } from "../auth/requestActor.js";
 import { patchRegistrationBody } from "../auth/dcr.js";
 
 // Issuer = `${BETTER_AUTH_URL}/api/auth` (Better Auth's baseURL includes its
@@ -77,7 +76,7 @@ export async function authRoutes(
           request.headers["content-length"] = String(patched.length);
         }
       }
-      return runWithAuthRequest(request, () => wellKnown(viaHandler)(request, reply));
+      return wellKnown(viaHandler)(request, reply);
     });
   });
 

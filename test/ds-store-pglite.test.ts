@@ -70,7 +70,7 @@ describe("ds store against PGlite", () => {
     await create("u1", "Kit");
     expect(await store.createLibrary({ id: "lib_x", principal: user("u1"), name: "kit", description: "" })).toEqual({ kind: "name_taken" });
     expect((await store.createLibrary({ id: "lib_y", principal: user("u2"), name: "Kit", description: "" })).kind).toBe("created");
-    expect(await store.archiveLibrary("lib_1", user("u1"))).toBe(true);
+    expect(await store.archiveLibrary("lib_1", user("u1"))).toBe("archived");
     expect((await store.createLibrary({ id: "lib_z", principal: user("u1"), name: "Kit", description: "" })).kind).toBe("created");
   });
 
@@ -165,7 +165,7 @@ describe("ds store against PGlite", () => {
     const lib = await create("u1", "Private");
     expect(await store.getLibrary(lib.id, "u2")).toBeNull();
     expect(await store.updateLibrary(lib.id, user("u2"), { name: "Mine" })).toEqual({ kind: "not_found" });
-    expect(await store.archiveLibrary(lib.id, user("u2"))).toBe(false);
+    expect(await store.archiveLibrary(lib.id, user("u2"))).toBe("not_found");
     expect(await store.getPublishContext(lib.id, "u2")).toBeNull();
     expect(await store.listVersions(lib.id, "u2", { limit: 10, cursor: null })).toBeNull();
     expect(await store.getVersion(lib.id, "u2", "latest")).toEqual({ kind: "no_library" });
@@ -314,10 +314,11 @@ describe("ds store against PGlite", () => {
       expect(await store.createLibrary({ id: "lib_v", principal: user("v1"), orgId: "org_t", name: "V", description: "" })).toEqual({ kind: "forbidden" });
       expect(await store.createLibrary({ id: "lib_s", principal: user("u1"), orgId: "org_t", name: "S", description: "" })).toEqual({ kind: "org_not_found" });
       expect(await store.createLibrary({ id: "lib_a", principal: { userId: "e1", kind: "agent", scopes: [] }, orgId: "org_t", name: "A", description: "" })).toEqual({ kind: "forbidden" });
-      // Role too low (or too weak a kind) reads as not found inside the write.
-      expect(await store.updateLibrary("lib_org", user("v1"), { name: "Hijack" })).toEqual({ kind: "not_found" });
-      expect(await store.archiveLibrary("lib_org", user("e1"))).toBe(false);
-      expect(await store.archiveLibrary("lib_org", { userId: "o1", kind: "agent", scopes: [] })).toBe(false);
+      // Role too low (or too weak a kind) is refused inside the write; no role at all reads as not found.
+      expect(await store.updateLibrary("lib_org", user("u1"), { name: "Hijack" })).toEqual({ kind: "not_found" });
+      expect(await store.updateLibrary("lib_org", user("v1"), { name: "Hijack" })).toEqual({ kind: "forbidden", code: "forbidden" });
+      expect(await store.archiveLibrary("lib_org", user("e1"))).toEqual({ kind: "forbidden", code: "forbidden" });
+      expect(await store.archiveLibrary("lib_org", { userId: "o1", kind: "agent", scopes: [] })).toEqual({ kind: "forbidden", code: "forbidden" });
       expect((await store.updateLibrary("lib_org", user("e1"), { name: "Renamed" })).kind).toBe("updated");
       expect(await store.getPublishContext("lib_org", "u1")).toBeNull();
       // A role string outside owner / editor / viewer grants nothing.
@@ -326,6 +327,20 @@ describe("ds store against PGlite", () => {
       const visible = (await store.listLibraries("e1", { limit: 50, cursor: null })).items.map((l) => l.id);
       expect(visible).toContain("lib_org");
       expect((await store.listLibraries("v1", { limit: 50, cursor: null })).items.map((l) => l.id)).not.toContain("lib_org");
+    });
+
+    it("counts organization libraries per organization, not against the creator's personal quota", async () => {
+      await harness.pglite.exec(`
+        INSERT INTO "user" (id, name, email, "emailVerified", "createdAt", "updatedAt") VALUES ('q1', 'Q', 'q1@x.test', true, now(), now());
+        INSERT INTO organization (id, name, slug, "createdAt") VALUES ('org_q', 'Q', 'org-q', now());
+        INSERT INTO member (id, "organizationId", "userId", role, "createdAt") VALUES ('mq', 'org_q', 'q1', 'owner', now());`);
+      for (let i = 0; i < MAX_LIBRARIES_PER_OWNER; i++) {
+        expect((await store.createLibrary({ id: `lib_q${i}`, principal: user("q1"), orgId: "org_q", name: `Org ${i}`, description: "" })).kind).toBe("created");
+      }
+      // The organization is full ...
+      expect((await store.createLibrary({ id: "lib_qover", principal: user("q1"), orgId: "org_q", name: "Over", description: "" })).kind).toBe("limit");
+      // ... but the creator's personal quota is untouched, and personal libraries do not fill the org.
+      expect((await store.createLibrary({ id: "lib_qpers", principal: user("q1"), name: "Personal", description: "" })).kind).toBe("created");
     });
   });
 });

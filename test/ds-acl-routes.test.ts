@@ -89,8 +89,8 @@ describe("organization libraries: role x route matrix", () => {
     const id = await orgLibrary();
     const base = `/api/ds/libraries/${id}`;
     const rows: Array<[string, Account, number[]]> = [
-      // [who, account, [GET, PATCH, preview, publish, audit, archive]]
-      ["viewer", viewer, [200, 403, 200, 403, 403, 403]],
+      // [who, account, [GET, PATCH, preview (needs publish), publish, audit, archive]]
+      ["viewer", viewer, [200, 403, 403, 403, 403, 403]],
       ["stranger", stranger, [404, 404, 404, 404, 404, 404]],
     ];
     for (const [who, acct, expected] of rows) {
@@ -156,6 +156,19 @@ describe("organization libraries: role x route matrix", () => {
     // Removal: the library disappears.
     await orgPost(owner.cookie, "remove-member", { memberIdOrEmail: memberRowOf[promoted.userId], organizationId: orgId });
     expect(await status(call(as(promoted), "GET", `/api/ds/libraries/${id}`))).toBe(404);
+  });
+});
+
+describe("organization deletion", () => {
+  it("is refused with a clear 409 while the organization owns libraries, and works once they are purged", async () => {
+    const created = await json<{ id: string }>(await orgPost(owner.cookie, "create", { name: "Doomed", slug: `doomed-${randomUUID().slice(0, 6)}` }));
+    const lib = await json<{ id: string }>(await call(as(owner), "POST", "/api/ds/libraries", { name: "Kit", orgId: created.id }));
+    const refused = await orgPost(owner.cookie, "delete", { organizationId: created.id });
+    expect(refused.status).toBe(409);
+    expect(await json<{ message: string }>(refused)).toMatchObject({ message: expect.stringContaining("design-system libraries") });
+    await call(as(owner), "DELETE", `/api/ds/libraries/${lib.id}`);
+    await call(as(owner), "DELETE", `/api/ds/libraries/${lib.id}?purge=true`);
+    expect((await orgPost(owner.cookie, "delete", { organizationId: created.id })).status).toBe(200);
   });
 });
 

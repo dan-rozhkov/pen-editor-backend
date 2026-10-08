@@ -157,8 +157,17 @@ export async function dsRoutes(
 
     const notFound = (reply: FastifyReply, what = "Library") => send(reply, 404, "not_found", `${what} not found.`);
 
+    const forbidden = (reply: FastifyReply, code: "forbidden" | "agent_cannot_approve") =>
+      send(
+        reply,
+        403,
+        code,
+        code === "agent_cannot_approve" ? "An agent cannot publish or approve changes." : "Your role does not allow this action.",
+      );
+
     /**
-     * Role gate for one library: 404 when the caller has no role on it (it
+     * Role gate for reads that need more than "read" (preview, audit); writes
+     * are gated inside their transaction by the store. 404 when the caller has no role on it (it
      * may not exist), 403 when the role or the kind of caller is too low.
      * Null = reply already sent.
      */
@@ -176,12 +185,7 @@ export async function dsRoutes(
       }
       const decision = decide(principal, role, action);
       if (!decision.ok) {
-        await send(
-          reply,
-          403,
-          decision.code,
-          decision.code === "agent_cannot_approve" ? "An agent cannot publish or approve changes." : "Your role does not allow this action.",
-        );
+        await forbidden(reply, decision.code);
         return null;
       }
       return role;
@@ -240,9 +244,9 @@ export async function dsRoutes(
         const params = parse(idParam, request.params, reply, "path");
         const body = params && parse(patchBody, request.body, reply, "body");
         if (!params || !body) return reply;
-        if (!(await authorize(store, principal, params.id, "write", reply))) return reply;
         const result = await store.updateLibrary(params.id, principal, body);
         if (result.kind === "not_found") return notFound(reply);
+        if (result.kind === "forbidden") return forbidden(reply, result.code);
         if (result.kind === "archived") return send(reply, 409, "archived", "This library is archived.");
         if (result.kind === "name_taken") return send(reply, 409, "name_taken", "A library with this name already exists here.");
         return reply.send(libraryJson(result.library));
@@ -256,16 +260,18 @@ export async function dsRoutes(
         const params = parse(idParam, request.params, reply, "path");
         const query = params && parse(deleteQuery, request.query, reply, "query");
         if (!params || !query) return reply;
-        if (!(await authorize(store, principal, params.id, "admin", reply))) return reply;
         if (query.purge === "true") {
           // Hard delete, only after an archive: consumers had their chance to move.
           const purged = await store.purgeLibrary(params.id, principal);
+          if (typeof purged === "object") return forbidden(reply, purged.code);
           if (purged === "not_found") return notFound(reply);
           if (purged === "not_archived") return send(reply, 409, "not_archived", "Archive the library before deleting it for good.");
           return reply.status(204).send();
         }
         // Archive only: consumers stay pinned and old versions stay readable.
-        return (await store.archiveLibrary(params.id, principal)) ? reply.status(204).send() : notFound(reply);
+        const archived = await store.archiveLibrary(params.id, principal);
+        if (typeof archived === "object") return forbidden(reply, archived.code);
+        return archived === "archived" ? reply.status(204).send() : notFound(reply);
       }),
     );
 
@@ -278,6 +284,8 @@ export async function dsRoutes(
         const params = parse(idParam, request.params, reply, "path");
         const body = params && parse(previewBody, request.body, reply, "body");
         if (!params || !body) return reply;
+        // A preview is the first half of a publish: same permission.
+        if (!(await authorize(store, principal, params.id, "publish", reply))) return reply;
         const prepared = prepareSnapshot(body.snapshot);
         if (snapshotTooLarge(prepared, body.snapshot)) return send(reply, 413, "snapshot_too_large", "The snapshot is larger than 4 MB.");
         const ctx = await store.getPublishContext(params.id, principal.userId);
@@ -302,7 +310,6 @@ export async function dsRoutes(
       guarded(async ({ store, principal }, request, reply) => {
         const params = parse(idParam, request.params, reply, "path");
         if (!params) return reply;
-        if (!(await authorize(store, principal, params.id, "publish", reply))) return reply;
         const key = idempotencyKeySchema.safeParse(request.headers["idempotency-key"]);
         if (!key.success) {
           return send(reply, 400, "idempotency_key_required", "Send an Idempotency-Key header of 8 to 128 printable characters.");
@@ -331,6 +338,7 @@ export async function dsRoutes(
           }),
         );
         if (outcome.kind === "not_found") return notFound(reply);
+        if (outcome.kind === "forbidden") return forbidden(reply, outcome.code);
         if (outcome.kind === "reject") return send(reply, outcome.status, outcome.code, outcome.message, outcome.details);
 
         const location = `/api/ds/libraries/${params.id}/versions/${outcome.result.version}`;

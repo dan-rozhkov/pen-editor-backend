@@ -32,7 +32,7 @@ import { uploadRoutes } from "./routes/upload.js";
 import { repoRoutes } from "./routes/repo.js";
 import { mobbinAuthRoutes } from "./routes/mobbinAuth.js";
 import { createPgPool, createTraceStore, type TraceStore } from "./tracing/traceStore.js";
-import { createOrgAuditWriter } from "./auth/orgAuditWriter.js";
+import { createOrgAuditWriter, orgHasLibraries } from "./auth/orgAuditWriter.js";
 import { createAuth, type Auth, type AuthDatabase, type CreateAuthOptions } from "./auth/index.js";
 import type { ClaimPool } from "./auth/claim.js";
 import { authRoutes } from "./routes/auth.js";
@@ -195,6 +195,7 @@ export async function buildApp(
     auth = createAuth(config, authPool, {
       ...options.authOptions,
       orgAudit: options.authOptions?.orgAudit ?? createOrgAuditWriter(authPool),
+      orgHasLibraries: options.authOptions?.orgHasLibraries ?? orgHasLibraries(authPool),
     });
   }
   app.decorate("auth", auth);

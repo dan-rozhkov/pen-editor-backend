@@ -1,9 +1,8 @@
-import { APIError, createAuthMiddleware } from "better-auth/api";
+import { APIError, createAuthMiddleware, getSessionFromCtx } from "better-auth/api";
 import { organization } from "better-auth/plugins";
 import { createAccessControl } from "better-auth/plugins/access";
 import { defaultStatements, memberAc, ownerAc } from "better-auth/plugins/organization/access";
 import { noopOrgAuditWriter, type OrgAuditEvent, type OrgAuditWriter } from "./orgAudit.js";
-import { currentActorUserId } from "./requestActor.js";
 import { invitationMessage, type EmailSender } from "./email.js";
 
 // Actions on a design-system library (Phase 8). `admin` = manage members and
@@ -50,9 +49,11 @@ export interface OrganizationOptions {
   /** Origin the invitation link points at (the frontend). */
   appOrigin: string;
   audit?: OrgAuditWriter;
+  /** True when design-system libraries still belong to the organization (deleting it is then refused). */
+  hasLibraries?: (organizationId: string) => Promise<boolean>;
 }
 
-export function createOrganizationPlugin({ sendEmail, appOrigin, audit = noopOrgAuditWriter }: OrganizationOptions) {
+export function createOrganizationPlugin({ sendEmail, appOrigin, audit = noopOrgAuditWriter, hasLibraries }: OrganizationOptions) {
   // The change has already committed when an after* hook runs, so an audit
   // failure must not turn a successful API call into an error. Logged without
   // PII (no emails or names): action and ids only.
@@ -67,6 +68,8 @@ export function createOrganizationPlugin({ sendEmail, appOrigin, audit = noopOrg
   };
   // Members of an organization being deleted, captured before the cascade.
   const doomed = new Map<string, { userId: string; role: string }[]>();
+  // Role of a member before an update-member-role call, by member id.
+  const previousRoles = new Map<string, string>();
 
   const plugin = organization({
     ac,
@@ -82,13 +85,17 @@ export function createOrganizationPlugin({ sendEmail, appOrigin, audit = noopOrg
       const url = `${appOrigin}/app/accept-invitation?id=${encodeURIComponent(id)}`;
       await sendEmail(invitationMessage(email, url, org.name, inviter.user.name || inviter.user.email, role));
     },
-    // actorUserId: filled where the hook data names the actor. Hooks whose
-    // `user` is only the AFFECTED account (remove-member, update-member-role)
-    // read the actor from the request session (requestActor.ts).
+    // actorUserId: filled where the hook data names the actor. remove-member
+    // and update-member-role only hand their hooks the AFFECTED account, so
+    // those two are audited from the after-route hooks below, where the
+    // actor's session is at hand.
     organizationHooks: {
       beforeCreateInvitation: async ({ invitation }) => assertAllowedRole(invitation.role),
       beforeAddMember: async ({ member }) => assertAllowedRole(member.role),
-      beforeUpdateMemberRole: async ({ newRole }) => assertAllowedRole(newRole),
+      beforeUpdateMemberRole: async ({ member, newRole }) => {
+        assertAllowedRole(newRole);
+        previousRoles.set(member.id, member.role);
+      },
       afterCreateOrganization: async ({ organization: org, member, user }) => {
         await safeWrite({
           action: "member.add",
@@ -111,26 +118,12 @@ export function createOrganizationPlugin({ sendEmail, appOrigin, audit = noopOrg
           role: member.role,
         });
       },
-      afterRemoveMember: async ({ member, organization: org }) => {
-        await safeWrite({
-          action: "member.remove",
-          organizationId: org.id,
-          targetUserId: member.userId,
-          actorUserId: await currentActorUserId(),
-          role: member.role,
-        });
-      },
-      afterUpdateMemberRole: async ({ member, previousRole, organization: org }) => {
-        await safeWrite({
-          action: "member.role_change",
-          organizationId: org.id,
-          targetUserId: member.userId,
-          actorUserId: await currentActorUserId(),
-          role: member.role,
-          previousRole,
-        });
-      },
       beforeDeleteOrganization: async ({ organization: org }, ctx) => {
+        // 019 makes ds_libraries.org_id RESTRICT: say why instead of a 500.
+        if (hasLibraries && (await hasLibraries(org.id))) {
+          doomed.delete(org.id);
+          throw new APIError("CONFLICT", { message: "Purge or move the organization's design-system libraries first" });
+        }
         const rows = (await ctx?.context.adapter.findMany({
           model: "member",
           where: [{ field: "organizationId", value: org.id }],
@@ -153,13 +146,59 @@ export function createOrganizationPlugin({ sendEmail, appOrigin, audit = noopOrg
     },
   });
 
-  // /organization/leave has no hook of its own: audit it from an after-route
-  // hook. The endpoint returns the removed member; an error response is an
-  // APIError, which carries no userId and is skipped.
+  // Hooks that run after the route. /organization/leave has no organization
+  // hook of its own; remove-member and update-member-role get theirs here for
+  // the actor (organizationHooks only name the affected account). An error
+  // response is an APIError, which carries no member and is skipped. A call
+  // with no session behind it (server-side, never from HTTP today) records
+  // actor_kind "system" by design: the writer maps actorUserId null to it.
+  // remove-member returns {member}; update-member-role returns the member itself.
+  const returnedMember = (ctx: { context: { returned?: unknown } }) => {
+    const returned = ctx.context.returned as Record<string, unknown> | undefined;
+    if (!returned || returned instanceof Error) return null;
+    const m = (returned.member ?? returned) as { id?: unknown; userId?: unknown; organizationId?: unknown; role?: unknown };
+    return typeof m.userId === "string" && typeof m.organizationId === "string" && typeof m.role === "string"
+      ? { id: String(m.id), userId: m.userId, organizationId: m.organizationId, role: m.role }
+      : null;
+  };
+  const sessionUserId = async (ctx: Parameters<typeof getSessionFromCtx>[0]): Promise<string | null> =>
+    (await getSessionFromCtx(ctx).catch(() => null))?.user.id ?? null;
+
   return {
     ...plugin,
     hooks: {
       after: [
+        {
+          matcher: (context: { path?: string }) => context.path === "/organization/remove-member",
+          handler: createAuthMiddleware(async (ctx) => {
+            const member = returnedMember(ctx);
+            if (!member) return;
+            await safeWrite({
+              action: "member.remove",
+              organizationId: member.organizationId,
+              targetUserId: member.userId,
+              actorUserId: await sessionUserId(ctx),
+              role: member.role,
+            });
+          }),
+        },
+        {
+          matcher: (context: { path?: string }) => context.path === "/organization/update-member-role",
+          handler: createAuthMiddleware(async (ctx) => {
+            const member = returnedMember(ctx);
+            if (!member) return;
+            const previousRole = previousRoles.get(member.id);
+            previousRoles.delete(member.id);
+            await safeWrite({
+              action: "member.role_change",
+              organizationId: member.organizationId,
+              targetUserId: member.userId,
+              actorUserId: await sessionUserId(ctx),
+              role: member.role,
+              ...(previousRole ? { previousRole } : {}),
+            });
+          }),
+        },
         {
           matcher: (context: { path?: string }) => context.path === "/organization/leave",
           handler: createAuthMiddleware(async (ctx) => {

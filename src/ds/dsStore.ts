@@ -11,7 +11,7 @@
 // same client, so the row and the change commit or roll back together.
 import { createPgPool } from "../tracing/traceStore.js";
 import type { Migration, DiffSummary } from "./diff.js";
-import { can, isDsRole, type DsAction, type DsRole, type Principal } from "./access.js";
+import { can, decide, isDsRole, type DsAction, type DsRole, type Principal } from "./access.js";
 import { actorOf, insertAudit, listAudit, type AuditItem } from "./audit.js";
 import { parseVersion, type Semver } from "./semver.js";
 import type { Snapshot } from "./snapshotSchema.js";
@@ -132,6 +132,7 @@ export type PublishDecision = PublishRejection | { kind: "replay"; result: Publi
 
 export type PublishOutcome =
   | { kind: "not_found" }
+  | Forbidden
   | PublishRejection
   | { kind: "replay"; result: PublishedVersion }
   | { kind: "created"; result: PublishedVersion; summary: DiffSummary };
@@ -143,13 +144,24 @@ export type CreateLibraryResult =
   | { kind: "org_not_found" }
   | { kind: "forbidden" }
   | { kind: "limit"; live: number; total: number };
-export type PurgeLibraryResult = "purged" | "not_found" | "not_archived";
+/** The caller has a role on the library, but not one that allows the write. */
+export interface Forbidden {
+  kind: "forbidden";
+  code: "forbidden" | "agent_cannot_approve";
+}
+export type PurgeLibraryResult = "purged" | "not_found" | "not_archived" | Forbidden;
+export type ArchiveLibraryResult = "archived" | "not_found" | Forbidden;
 export type VersionLookup = { kind: "no_library" } | { kind: "no_version" } | { kind: "ok"; version: DsVersion };
 export type UpdatesLookup =
   | { kind: "no_library" }
   | { kind: "no_version" }
   | { kind: "ok"; latest: string | null; items: DsUpdateItem[]; hasMore: boolean };
-export type UpdateLibraryResult = { kind: "updated"; library: DsLibrary } | { kind: "not_found" } | { kind: "name_taken" } | { kind: "archived" };
+export type UpdateLibraryResult =
+  | { kind: "updated"; library: DsLibrary }
+  | { kind: "not_found" }
+  | { kind: "name_taken" }
+  | { kind: "archived" }
+  | Forbidden;
 
 export interface DsStore {
   /** `orgId` set = the library belongs to that organization (the caller needs write there). */
@@ -161,8 +173,8 @@ export interface DsStore {
   /** The caller's role on the library, or null when there is none (or no library). */
   getRole(id: string, userId: string): Promise<DsRole | null>;
   updateLibrary(id: string, principal: Principal, patch: { name?: string; description?: string }): Promise<UpdateLibraryResult>;
-  /** Idempotent: archiving an archived library is still true. False = not found (or role too low). */
-  archiveLibrary(id: string, principal: Principal): Promise<boolean>;
+  /** Idempotent: archiving an archived library is still "archived". */
+  archiveLibrary(id: string, principal: Principal): Promise<ArchiveLibraryResult>;
   /** Hard delete, only of an archived library (its versions go with it). */
   purgeLibrary(id: string, principal: Principal): Promise<PurgeLibraryResult>;
   /** One transaction: lock the library row, let `decide` rule, insert the version and its audit row. */
@@ -204,12 +216,11 @@ interface LibraryRow {
 // viewer (a legacy or multi-role string) grants nothing. `$u` is the
 // placeholder holding the caller's account id.
 const ROLE_RANK = `CASE role WHEN 'owner' THEN 0 WHEN 'editor' THEN 1 ELSE 2 END`;
-const libraryFrom = (u: string) => `ds_libraries l
-  LEFT JOIN LATERAL (
-    SELECT role FROM member
-     WHERE "organizationId" = l.org_id AND "userId" = ${u} AND role IN ('owner', 'editor', 'viewer')
-     ORDER BY ${ROLE_RANK} LIMIT 1
-  ) m ON true`;
+const DS_ROLES_SQL = `role IN ('owner', 'editor', 'viewer')`;
+/** The one place a `member` row becomes a library role: best valid role of `user` in `org`. */
+const memberRoleSql = (org: string, user: string) =>
+  `SELECT role FROM member WHERE "organizationId" = ${org} AND "userId" = ${user} AND ${DS_ROLES_SQL} ORDER BY ${ROLE_RANK} LIMIT 1`;
+const libraryFrom = (u: string) => `ds_libraries l LEFT JOIN LATERAL (${memberRoleSql("l.org_id", u)}) m ON true`;
 const roleSql = (u: string) => `(CASE WHEN l.org_id IS NULL THEN (CASE WHEN l.owner_id = ${u} THEN 'owner' END) ELSE m.role END)`;
 const LIBRARY_COLUMNS = (u: string) =>
   `l.id, l.owner_id, l.org_id, ${roleSql(u)} AS role, l.name, l.description, l.latest_version, l.latest_published_at, l.archived_at, l.created_at, l.updated_at`;
@@ -313,10 +324,17 @@ export function createDsStore(connectionString: string | undefined, pool?: DsPoo
     return r.rows[0] ? toLibrary(r.rows[0]) : null;
   };
 
-  /** Locks the library and requires `action` of the principal; anything less reads as "not found". */
-  const lockFor = async (client: DsClient, id: string, principal: Principal, action: DsAction): Promise<DsLibrary | null> => {
+  /** Locks the library and requires `action` of the principal: not found without any role, forbidden with too weak a one. */
+  const lockFor = async (
+    client: DsClient,
+    id: string,
+    principal: Principal,
+    action: DsAction,
+  ): Promise<{ library: DsLibrary } | { kind: "not_found" } | Forbidden> => {
     const library = await fetchLibrary(client, id, principal.userId, true);
-    return library && can(principal, library.role, action) ? library : null;
+    if (!library) return { kind: "not_found" };
+    const decision = decide(principal, library.role, action);
+    return decision.ok ? { library } : { kind: "forbidden", code: decision.code };
   };
 
   const inTransaction = async <T>(fn: (client: DsClient) => Promise<T>): Promise<T> => {
@@ -357,14 +375,12 @@ export function createDsStore(connectionString: string | undefined, pool?: DsPoo
         // READ COMMITTED lets two creates both count 19 and both insert. The
         // transaction-scoped lock queues an account's creates behind each other
         // (and is released by COMMIT/ROLLBACK, so a crash cannot leak it).
-        await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`ds_libraries:${principal.userId}`]);
+        // The quota scope is the organization for an org library and the
+        // creator's personal libraries otherwise, so the lock follows it.
+        await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [orgId === null ? `ds_libraries:${principal.userId}` : `ds_libraries:org:${orgId}`]);
         let role: DsRole = "owner";
         if (orgId !== null) {
-          const m = (await client.query(
-            `SELECT role FROM member WHERE "organizationId" = $1 AND "userId" = $2 AND role IN ('owner', 'editor', 'viewer')
-              ORDER BY ${ROLE_RANK} LIMIT 1`,
-            [orgId, principal.userId],
-          )) as { rows: Array<{ role: string }> };
+          const m = (await client.query(memberRoleSql("$1", "$2"), [orgId, principal.userId])) as { rows: Array<{ role: string }> };
           if (!m.rows[0] || !isDsRole(m.rows[0].role)) {
             await client.query("ROLLBACK");
             return { kind: "org_not_found" };
@@ -377,8 +393,8 @@ export function createDsStore(connectionString: string | undefined, pool?: DsPoo
         }
         const counts = (await client.query(
           `SELECT count(*) FILTER (WHERE archived_at IS NULL)::int AS live, count(*)::int AS total
-             FROM ds_libraries WHERE owner_id = $1`,
-          [principal.userId],
+             FROM ds_libraries WHERE ${orgId === null ? "org_id IS NULL AND owner_id = $1" : "org_id = $1"}`,
+          [orgId ?? principal.userId],
         )) as { rows: Array<{ live: number; total: number }> };
         const { live, total } = counts.rows[0] ?? { live: 0, total: 0 };
         if (live >= MAX_LIBRARIES_PER_OWNER || total >= MAX_TOTAL_LIBRARIES_PER_OWNER) {
@@ -412,7 +428,12 @@ export function createDsStore(connectionString: string | undefined, pool?: DsPoo
 
     async listLibraries(userId, { limit, cursor }) {
       const params: unknown[] = [userId];
-      let where = `${roleSql("$1")} IS NOT NULL AND l.archived_at IS NULL`;
+      // Index-friendly: personal libraries by owner, organization libraries
+      // by the organizations the caller belongs to; the role check stays as
+      // the authority on what is readable.
+      let where = `l.archived_at IS NULL AND ${roleSql("$1")} IS NOT NULL AND (
+        (l.org_id IS NULL AND l.owner_id = $1)
+        OR l.org_id IN (SELECT "organizationId" FROM member WHERE "userId" = $1 AND ${DS_ROLES_SQL}))`;
       const key = cursor ? parseLibraryCursor(cursor) : null;
       if (key) {
         params.push(key.createdAt, key.id);
@@ -463,11 +484,12 @@ export function createDsStore(connectionString: string | undefined, pool?: DsPoo
       const client = await db.connect();
       try {
         await client.query("BEGIN");
-        const library = await lockFor(client, id, principal, "write");
-        if (!library) {
+        const locked = await lockFor(client, id, principal, "write");
+        if (!("library" in locked)) {
           await client.query("ROLLBACK");
-          return { kind: "not_found" };
+          return locked;
         }
+        const { library } = locked;
         if (library.archivedAt) {
           await client.query("ROLLBACK");
           return { kind: "archived" };
@@ -498,9 +520,10 @@ export function createDsStore(connectionString: string | undefined, pool?: DsPoo
     },
 
     async archiveLibrary(id, principal) {
-      return inTransaction(async (client) => {
-        const library = await lockFor(client, id, principal, "admin");
-        if (!library) return false;
+      return inTransaction(async (client): Promise<ArchiveLibraryResult> => {
+        const locked = await lockFor(client, id, principal, "admin");
+        if (!("library" in locked)) return locked.kind === "forbidden" ? locked : "not_found";
+        const { library } = locked;
         // Idempotent: only the first archive changes anything, so only it is audited.
         if (!library.archivedAt) {
           await client.query("UPDATE ds_libraries SET archived_at = now(), updated_at = now() WHERE id = $1", [id]);
@@ -513,14 +536,15 @@ export function createDsStore(connectionString: string | undefined, pool?: DsPoo
             targetId: id,
           });
         }
-        return true;
+        return "archived";
       });
     },
 
     async purgeLibrary(id, principal) {
       return inTransaction(async (client): Promise<PurgeLibraryResult> => {
-        const library = await lockFor(client, id, principal, "admin");
-        if (!library) return "not_found";
+        const locked = await lockFor(client, id, principal, "admin");
+        if (!("library" in locked)) return locked.kind === "forbidden" ? locked : "not_found";
+        const { library } = locked;
         if (!library.archivedAt) return "not_archived";
         const versions = (await client.query("SELECT count(*)::int AS count FROM ds_versions WHERE library_id = $1", [id])) as {
           rows: Array<{ count: number }>;
@@ -544,11 +568,12 @@ export function createDsStore(connectionString: string | undefined, pool?: DsPoo
       const client = await db.connect();
       try {
         await client.query("BEGIN");
-        const library = await lockFor(client, libraryId, principal, "publish");
-        if (!library) {
+        const locked = await lockFor(client, libraryId, principal, "publish");
+        if (!("library" in locked)) {
           await client.query("ROLLBACK");
-          return { kind: "not_found" };
+          return locked;
         }
+        const { library } = locked;
         const base = await loadContext(client, library);
         const replayRows = (await client.query(
           `SELECT version, bump, published_at, published_by, snapshot_hash, request_hash

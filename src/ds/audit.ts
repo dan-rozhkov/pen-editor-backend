@@ -102,15 +102,22 @@ export async function listAudit(
   page: { limit: number; cursor: string | null; action: string | null },
 ): Promise<{ items: AuditItem[]; nextCursor: string | null }> {
   const after = page.cursor ? parseAuditCursor(page.cursor) : null;
+  // Two ordered, limited branches (the library's own rows, then its
+  // organization's membership rows), each served by its own partial index;
+  // the outer query merges them.
+  const cols = "a.id, a.at, a.action, a.actor_id, a.actor_kind, a.client_id, a.org_id, a.target_type, a.target_id, a.before_hash, a.after_hash, a.meta";
+  const filters = "($2::text IS NULL OR a.action = $2) AND ($3::bigint IS NULL OR a.id < $3::bigint)";
   const r = (await q.query(
-    `SELECT a.id::text AS id, a.at, a.action, a.actor_id, a.actor_kind, a.client_id, a.org_id,
-            a.target_type, a.target_id, a.before_hash, a.after_hash, a.meta
-       FROM ds_libraries l
-       JOIN audit_log a ON a.library_id = l.id OR (a.library_id IS NULL AND l.org_id IS NOT NULL AND a.org_id = l.org_id)
-      WHERE l.id = $1
-        AND ($2::text IS NULL OR a.action = $2)
-        AND ($3::bigint IS NULL OR a.id < $3::bigint)
-      ORDER BY a.id DESC LIMIT $4`,
+    `SELECT u.id::text AS id, u.at, u.action, u.actor_id, u.actor_kind, u.client_id, u.org_id,
+            u.target_type, u.target_id, u.before_hash, u.after_hash, u.meta
+       FROM (
+         (SELECT ${cols} FROM audit_log a WHERE a.library_id = $1 AND ${filters} ORDER BY a.id DESC LIMIT $4)
+         UNION ALL
+         (SELECT ${cols} FROM audit_log a
+           WHERE a.library_id IS NULL AND a.org_id = (SELECT org_id FROM ds_libraries WHERE id = $1) AND ${filters}
+           ORDER BY a.id DESC LIMIT $4)
+       ) u
+      ORDER BY u.id DESC LIMIT $4`,
     [libraryId, page.action, after, page.limit + 1],
   )) as { rows: AuditRow[] };
   const rows = r.rows.slice(0, page.limit);
