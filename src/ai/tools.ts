@@ -1366,6 +1366,12 @@ export const readEmbedHtmlInputShape = {
 
 export const editEmbedHtmlInputShape = {
   nodeId: z.string().describe("Id of the embed node to edit."),
+  view: z
+    .enum(["compact", "expanded"])
+    .optional()
+    .describe(
+      "Which text your anchors match. compact (default) is the read_embed_html compact view. expanded is the full managed markup.",
+    ),
   // Models sometimes emit `edits` as a JSON-encoded string instead of an array; the frontend
   // handler (editEmbedHtml.ts parseEdits) already tolerates that, so parse it here too rather
   // than rejecting the call before it reaches the browser. Non-JSON strings pass through
