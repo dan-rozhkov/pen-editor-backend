@@ -20,13 +20,13 @@ describe("findTopLevelNativeInsert", () => {
   it("allows a document-level embed", () => {
     expect(findTopLevelNativeInsert('s=I(document, {type: "embed", htmlContent: "<p>x</p>"})')).toBeNull();
   });
-  it("rejects group/rect but allows annotation types, embeds and reusable components at root", () => {
+  it("rejects group/rect/frame but allows annotation types and embeds at root", () => {
     expect(findTopLevelNativeInsert('I(document, {type: "group"})')).toBe("group");
     for (const t of ["connector", "text", "line", "path", "polygon", "ellipse", "ref", "embed"]) {
       expect(findTopLevelNativeInsert(`I(document, {type: "${t}"})`)).toBeNull();
     }
-    expect(findTopLevelNativeInsert('I(document, {type: "frame", reusable: true, name: "Button"})')).toBeNull();
-    expect(findTopLevelNativeInsert('I(document, {type: "frame", reusable: false})')).toBe("frame");
+    // Native components were removed (pen-editor f020802a): `reusable` no longer exempts a frame.
+    expect(findTopLevelNativeInsert('I(document, {type: "frame", reusable: true, name: "Button"})')).toBe("frame");
   });
   it("allows native children inside existing nodes or bindings", () => {
     expect(findTopLevelNativeInsert('I("existingFrameId", {type: "frame"})')).toBeNull();

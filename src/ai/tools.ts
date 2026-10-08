@@ -305,28 +305,14 @@ export function parentOfInsertOp(statement: string): string | null {
 // R() replaces a node of unknown depth, so neither can be judged from the
 // statement text and both pass.
 // Only screen-like containers are rejected: other root-level types (text,
-// connector, line, path, polygon, ellipse, ref) are legitimate annotations,
-// and a `reusable: true` frame is a component definition.
+// connector, line, path, polygon, ellipse) are legitimate annotations.
 const SCREEN_LIKE_TYPES: ReadonlySet<string> = new Set(["frame", "group", "rect"]);
-const REUSABLE_TRUE_RE = /^\s*(?:"reusable"|'reusable'|reusable)\s*:\s*true\s*$/;
-
-function isReusableInsert(statement: string): boolean {
-  const trimmed = statement.trim();
-  const opMatch = trimmed.match(CREATE_OP_RE);
-  if (!opMatch) return false;
-  const objStart = findFirstTopLevelBrace(trimmed, opMatch[0].length);
-  if (objStart === -1) return false;
-  const objEnd = findMatchingBrace(trimmed, objStart);
-  if (objEnd === -1) return false;
-  return splitTopLevelByComma(trimmed.slice(objStart + 1, objEnd)).some((c) => REUSABLE_TRUE_RE.test(c));
-}
 
 export function findTopLevelNativeInsert(operations: string): string | null {
   for (const statement of splitBatchDesignStatements(operations)) {
     if (!isCreateOp(statement) || parentOfInsertOp(statement) !== "document") continue;
     const effectiveType = nodeTypeOfCreateOp(statement) ?? "frame";
     if (!SCREEN_LIKE_TYPES.has(effectiveType)) continue;
-    if (effectiveType === "frame" && isReusableInsert(statement)) continue;
     return effectiveType;
   }
   return null;

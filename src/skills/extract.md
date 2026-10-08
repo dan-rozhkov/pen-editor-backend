@@ -14,7 +14,7 @@ Identify reusable patterns, components, and design tokens, then extract and cons
 
 ## Step 1: Discover the Design System
 
-Find the design system: read its variables with `get_variables`, its reusable components (frames marked `reusable: true`, used through `ref` instances), and the values that recur across the scene. Note its naming conventions for components and tokens.
+Find the design system: read its variables with `get_variables`, its text and fill/effect styles (`get_text_styles`, `get_styles`), the patterns repeated across screens, and the values that recur across the scene. Note its naming conventions for components and tokens.
 
 **CRITICAL**: If no design system exists, STOP and {{ask_instruction}} to clarify before creating one. Understand the preferred location and structure first.
 
