@@ -674,6 +674,164 @@ export const setVariablesInputShape = {
     ),
 };
 
+export const LINT_RULE_IDS = [
+  "hardcoded-value",
+  "off-scale-value",
+  "contrast",
+  "deprecated-token",
+  "deprecated-component",
+  "embed-literal",
+  "component-drift",
+] as const;
+
+// Style tool argument shapes. Exported (like getVariablesInputShape) so the
+// MCP server (src/mcp/server.ts) registers the exact same arguments.
+export const setTextStylesInputShape = {
+  textStyles: z
+    .union([
+      z.array(z.record(z.unknown())),
+      z.record(z.unknown()),
+    ])
+    .describe(
+      "Text style definitions to add or merge. Either an array of {name, fontFamily, fontSize, fontWeight, lineHeight, letterSpacing, textTransform} objects, or an object keyed by style name.",
+    ),
+  replace: z
+    .boolean()
+    .optional()
+    .describe(
+      "If true, replaces all existing text styles. Default is merge.",
+    ),
+};
+
+export const applyTextStyleInputShape = {
+  nodeIds: z
+    .array(z.string())
+    .min(1)
+    .describe("IDs of the text nodes to bind to the style."),
+  textStyleId: z.string().describe("The id of the text style to apply."),
+};
+
+export const setStylesInputShape = {
+  fillStyles: z
+    .array(z.record(z.unknown()))
+    .optional()
+    .describe(
+      "Fill style definitions to add or merge: [{id?, name, paint?: {...}, color?: '#hex'|'$--var'}].",
+    ),
+  effectStyles: z
+    .array(z.record(z.unknown()))
+    .optional()
+    .describe(
+      "Effect style definitions to add or merge: [{id?, name, effects: [...]}].",
+    ),
+  replace: z
+    .boolean()
+    .optional()
+    .describe(
+      "If true, replaces the existing set for each of fillStyles/effectStyles that was provided. Default is merge.",
+    ),
+};
+
+export const applyFillStyleInputShape = {
+  nodeIds: z
+    .array(z.string())
+    .min(1)
+    .describe("IDs of the nodes to bind to the fill style."),
+  styleId: z.string().describe("The id of the fill style to apply."),
+};
+
+export const applyEffectStyleInputShape = {
+  nodeIds: z
+    .array(z.string())
+    .min(1)
+    .describe("IDs of the nodes to bind to the effect style."),
+  styleId: z.string().describe("The id of the effect style to apply."),
+};
+
+const DESIGN_SYSTEM_COMPONENT_STATUSES = ["draft", "stable", "deprecated"] as const;
+// "library" joins this list in Phase 6 (shared libraries).
+const DESIGN_SYSTEM_INCLUDE = ["tokens", "components", "lint"] as const;
+
+// All fields optional, like getVariablesInputShape. penTools are not sent as
+// an OpenAI strict json_schema (only generateObject callers are), so
+// .optional() is the right pattern here; do not switch to .nullable().
+export const getDesignSystemInputShape = {
+  scope: z
+    .object({
+      saved: z
+        .string()
+        .optional()
+        .describe("Name or id of a saved scope. Its filters apply first. The other fields in this object narrow it further."),
+      collections: z
+        .array(z.string())
+        .optional()
+        .describe("Collection names or ids. Returns only the tokens of these collections."),
+      components: z
+        .array(z.string())
+        .optional()
+        .describe("Component keys. Returns only these components."),
+      componentStatus: z
+        .array(z.enum(DESIGN_SYSTEM_COMPONENT_STATUSES))
+        .optional()
+        .describe("Component lifecycle statuses. Returns only components with one of these statuses."),
+      tokenScopes: z
+        .array(z.string())
+        .optional()
+        .describe('Token scopes, for example "fill" or "radius". Returns only tokens that carry one of these scopes.'),
+      names: z
+        .array(z.string())
+        .optional()
+        .describe('Token name globs, for example "--color-*". They filter tokens only. Use `components` to filter components.'),
+    })
+    .optional()
+    .describe("Filters. Omit it to read the whole design system."),
+  mode: z
+    .union([z.string(), z.record(z.string())])
+    .optional()
+    .describe(
+      'Limits the returned values to one mode. A string is a mode name of the Theme collection, for example "dark". An object maps collection names to mode names, for example {"Brand": "B", "Theme": "dark"}. Omit it to use the mode context of the document.',
+    ),
+  include: z
+    .array(z.enum(DESIGN_SYSTEM_INCLUDE))
+    .optional()
+    .describe('Parts of the result to return. Omit it to get "tokens" and "components". Add "lint" to get the lint rule catalog and, when available, finding counts.'),
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(2000)
+    .optional()
+    .describe("Maximum number of tokens and of components to return. Default 400. The result sets `truncated` when it cuts items."),
+};
+
+export const lintDesignInputShape = {
+  nodeIds: z
+    .array(z.string())
+    .optional()
+    .describe("Node ids to check, with their descendants. Omit it to check the active page."),
+  rules: z
+    .array(z.enum(LINT_RULE_IDS))
+    .optional()
+    .describe("Rule ids to run. Omit it to run all rules."),
+  mode: z
+    .union([z.literal("all"), z.string(), z.record(z.string())])
+    .optional()
+    .describe(
+      'Checks the design in one mode context. A string is a mode name of the Theme collection, for example "dark". An object maps collection names to mode names. The string "all" checks every mode context of the document (at most 8). Omit it to check only the current mode context of the document.',
+    ),
+  severity: z
+    .enum(["error", "warning", "info"])
+    .optional()
+    .describe("Minimum severity to return. Omit it to return all findings."),
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(1000)
+    .optional()
+    .describe("Maximum number of findings to return. Default 100. The result sets `truncated` when it cuts findings."),
+};
+
 // The full instructional text for each topic — unchanged from the previous
 // inline `guidelines` record, only hoisted so both the chat tool's execute
 // and the MCP server's get_guidelines tool (src/mcp/server.ts) can call the
@@ -706,6 +864,8 @@ const GUIDELINES: Record<string, string> = {
     "- Prefer semantic tokens over primitive tokens. Never bind a primitive token when a semantic token exists for that role.\n" +
     "- Read a slice of the tokens with `get_variables` and its `names` or `collection` argument.\n" +
     "- In embed HTML, reference a token as `var(--name)` with its `cssName`.\n" +
+    "- Call `get_design_system` once before you design. It returns the tokens and the registered components together, with values resolved per mode.\n" +
+    "- Call `lint_design` after you edit. It reports raw values, low contrast, deprecated tokens and components, and component drift. Fix each finding, then run it again.\n" +
     "- If the document has no suitable tokens yet, create them with `set_variables` (e.g. background/foreground/primary/border colors, heading/body fonts, a radius scale) before referencing them.\n\n" +
     "## Spacing Reference\n" +
     "- Screen sections gap: 24-32. Card grid gap: 16-24. Form fields gap: 16.\n" +
@@ -1400,6 +1560,30 @@ export const penTools = {
     inputSchema: z.object(getVariablesInputShape),
   }),
 
+  get_design_system: tool({
+    description:
+      "Read the design system of the open document in one call: tokens and components. " +
+      "Use it before you design or edit, so you reuse what exists. " +
+      "Each token has `name` (use it as `$--name` in native nodes), `cssName` (use it as `var(--name)` in embed HTML), `collection`, `type`, `scopes`, `description`, `deprecated`, and a raw and resolved value per mode. " +
+      "Each component has `key` (use it as a <c-key> tag in embed HTML), `name`, `status`, `description`, `variants`, `slots`, `usage`, `tokenUses` (the tokens its CSS uses, resolved in the chosen mode), `deprecated`, and `warnings`. " +
+      "The result has no HTML. Read a master with read_embed_html when you need its markup. " +
+      "Pass `scope` to read a slice, `mode` to resolve values in one mode, `include` to choose the parts, and `limit` to cap the count. " +
+      "A filter that matches nothing returns empty lists and a hint, not an error. " +
+      "Prefer a semantic token over a primitive token. Do not bind a deprecated token or component.",
+    inputSchema: z.object(getDesignSystemInputShape),
+  }),
+
+  lint_design: tool({
+    description:
+      "Check the design against its design system. The tool only reads. It never changes the document. " +
+      "It runs seven rules: hardcoded-value (a raw value that equals a token), off-scale-value (a number that is near a token but not equal), contrast (text below the WCAG ratio), deprecated-token (a bound token marked deprecated), deprecated-component (an instance of a deprecated component), embed-literal (a raw color or size in embed HTML where a var(--token) fits), and component-drift (an instance that is out of date, orphaned, or detached from its master). " +
+      "Each finding has `rule`, `severity` (error, warning, or info), `nodeId`, `pageId`, `message`, and `fixHint`. " +
+      "Pass `nodeIds` to check a subtree, `rules` to choose rules, `mode` to check one mode context, `severity` to set a minimum severity, and `limit` to cap the count. " +
+      "Without `mode`, the tool checks only the current mode context of the document. Pass `mode: \"all\"` to check every mode context (at most 8). " +
+      "To fix a finding, use the existing tools: batch_design, replace_all_matching_properties, edit_embed_html, or define_component. Then run lint_design again.",
+    inputSchema: z.object(lintDesignInputShape),
+  }),
+
   // ── Modification ──────────────────────────────────────────────────
 
   batch_design: makeBatchDesignTool(),
@@ -1519,34 +1703,13 @@ export const penTools = {
   set_text_styles: tool({
     description:
       "Create or update named text styles. By default merges with existing styles by id/name (updating a style pushes the change to every text node bound to it, except locally-overridden properties); set replace=true to overwrite the whole set.",
-    inputSchema: z.object({
-      textStyles: z
-        .union([
-          z.array(z.record(z.unknown())),
-          z.record(z.unknown()),
-        ])
-        .describe(
-          "Text style definitions to add or merge. Either an array of {name, fontFamily, fontSize, fontWeight, lineHeight, letterSpacing, textTransform} objects, or an object keyed by style name.",
-        ),
-      replace: z
-        .boolean()
-        .optional()
-        .describe(
-          "If true, replaces all existing text styles. Default is merge.",
-        ),
-    }),
+    inputSchema: z.object(setTextStylesInputShape),
   }),
 
   apply_text_style: tool({
     description:
       "Bind one or more text nodes to a named text style (from get_text_styles / set_text_styles), copying the style's typography onto each node. Use instead of manually setting fontFamily/fontSize/etc. for design-system consistency.",
-    inputSchema: z.object({
-      nodeIds: z
-        .array(z.string())
-        .min(1)
-        .describe("IDs of the text nodes to bind to the style."),
-      textStyleId: z.string().describe("The id of the text style to apply."),
-    }),
+    inputSchema: z.object(applyTextStyleInputShape),
   }),
 
   get_styles: tool({
@@ -1562,50 +1725,19 @@ export const penTools = {
 - Effect style: \`{name, effects: [...]}\` — same shadow/layer-blur/background-blur/noise objects as a node's \`effects\` array in \`batch_design\`.
 
 Returns the created/updated style ids and names (with a created|updated status) — pass those ids straight to \`apply_fill_style\`/\`apply_effect_style\` without a \`get_styles\` round-trip.`,
-    inputSchema: z.object({
-      fillStyles: z
-        .array(z.record(z.unknown()))
-        .optional()
-        .describe(
-          "Fill style definitions to add or merge: [{id?, name, paint?: {...}, color?: '#hex'|'$--var'}].",
-        ),
-      effectStyles: z
-        .array(z.record(z.unknown()))
-        .optional()
-        .describe(
-          "Effect style definitions to add or merge: [{id?, name, effects: [...]}].",
-        ),
-      replace: z
-        .boolean()
-        .optional()
-        .describe(
-          "If true, replaces the existing set for each of fillStyles/effectStyles that was provided. Default is merge.",
-        ),
-    }),
+    inputSchema: z.object(setStylesInputShape),
   }),
 
   apply_fill_style: tool({
     description:
       "Bind one or more nodes' fill to a named fill style (from get_styles / set_styles) — sets the node's topmost paint layer (or adds one if it has none) to reference the style, so future edits to the style live-update the node. Use for design-system-consistent color/gradient/image fills instead of a raw fill value.",
-    inputSchema: z.object({
-      nodeIds: z
-        .array(z.string())
-        .min(1)
-        .describe("IDs of the nodes to bind to the fill style."),
-      styleId: z.string().describe("The id of the fill style to apply."),
-    }),
+    inputSchema: z.object(applyFillStyleInputShape),
   }),
 
   apply_effect_style: tool({
     description:
       "Bind one or more nodes' whole shadow/blur stack to a named effect style (from get_styles / set_styles) — replaces the node's own effects with a live reference to the style. Use for design-system-consistent shadows instead of raw effects values.",
-    inputSchema: z.object({
-      nodeIds: z
-        .array(z.string())
-        .min(1)
-        .describe("IDs of the nodes to bind to the effect style."),
-      styleId: z.string().describe("The id of the effect style to apply."),
-    }),
+    inputSchema: z.object(applyEffectStyleInputShape),
   }),
 
   set_export_settings: tool({

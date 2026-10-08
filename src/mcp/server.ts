@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import {
   BATCH_DESIGN_DESCRIPTION,
+  penTools,
   batchDesignInputShape,
   makeBatchDesignInputSchema,
   getEditorStateInputShape,
@@ -21,6 +22,17 @@ import {
   readEmbedHtmlInputSchema,
   editEmbedHtmlInputShape,
   findEmptySpaceOnCanvasInputShape,
+  getDesignSystemInputShape,
+  lintDesignInputShape,
+  setStylesInputShape,
+  setTextStylesInputShape,
+  applyFillStyleInputShape,
+  applyTextStyleInputShape,
+  applyEffectStyleInputShape,
+  defineComponentInputShape,
+  extractComponentInputShape,
+  detachInstanceInputShape,
+  deleteComponentInputShape,
 } from "../ai/tools.js";
 import { callTool as callBridgedTool, type BridgeOwner, type SessionCredential } from "./bridge.js";
 import { ensureSkillsLoaded, getAllSkills, getSkill } from "../ai/skills.js";
@@ -31,6 +43,7 @@ import {
   POLICY_DEPENDENT_SKILL_NAMES,
 } from "./skillSurface.js";
 import { buildMcpInstructions } from "./instructions.js";
+import { registerDesignSystemResources } from "./designSystemResources.js";
 import { registerCanvasWidget, type CanvasWidgetSettings } from "./canvasWidget.js";
 import { toolMeta } from "./toolAnnotations.js";
 import { BRIDGED_TOOL_NAMES, SKILL_TOOL_NAMES, STATIC_TOOL_NAMES } from "./toolNames.js";
@@ -98,6 +111,12 @@ function bridgedErrorMessage(raw: string): string | undefined {
     return (parsed as { error: string }).error;
   }
   return undefined;
+}
+
+// The newly bridged tools reuse the penTools text, so the MCP and chat
+// descriptions cannot drift. Append any MCP-only note here, not by rewriting.
+function sharedDescription(name: keyof typeof penTools): string {
+  return (penTools[name] as { description?: string }).description ?? "";
 }
 
 const GET_SCREENSHOT_DESCRIPTION =
@@ -324,6 +343,149 @@ export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer 
   );
 
   server.registerTool(
+    "get_design_system",
+    {
+      ...toolMeta("get_design_system"),
+      description:
+        sharedDescription("get_design_system"),
+      inputSchema: getDesignSystemInputShape,
+    },
+    (args) => callBridged("get_design_system", args),
+  );
+
+  server.registerTool(
+    "get_styles",
+    {
+      ...toolMeta("get_styles"),
+      description:
+        sharedDescription("get_styles"),
+      inputSchema: {},
+    },
+    (args) => callBridged("get_styles", args),
+  );
+
+  server.registerTool(
+    "get_text_styles",
+    {
+      ...toolMeta("get_text_styles"),
+      description:
+        sharedDescription("get_text_styles"),
+      inputSchema: {},
+    },
+    (args) => callBridged("get_text_styles", args),
+  );
+
+  server.registerTool(
+    "set_styles",
+    {
+      ...toolMeta("set_styles"),
+      description:
+        sharedDescription("set_styles"),
+      inputSchema: setStylesInputShape,
+    },
+    (args) => callBridged("set_styles", args),
+  );
+
+  server.registerTool(
+    "set_text_styles",
+    {
+      ...toolMeta("set_text_styles"),
+      description:
+        sharedDescription("set_text_styles"),
+      inputSchema: setTextStylesInputShape,
+    },
+    (args) => callBridged("set_text_styles", args),
+  );
+
+  server.registerTool(
+    "apply_fill_style",
+    {
+      ...toolMeta("apply_fill_style"),
+      description:
+        sharedDescription("apply_fill_style"),
+      inputSchema: applyFillStyleInputShape,
+    },
+    (args) => callBridged("apply_fill_style", args),
+  );
+
+  server.registerTool(
+    "apply_text_style",
+    {
+      ...toolMeta("apply_text_style"),
+      description:
+        sharedDescription("apply_text_style"),
+      inputSchema: applyTextStyleInputShape,
+    },
+    (args) => callBridged("apply_text_style", args),
+  );
+
+  server.registerTool(
+    "apply_effect_style",
+    {
+      ...toolMeta("apply_effect_style"),
+      description:
+        sharedDescription("apply_effect_style"),
+      inputSchema: applyEffectStyleInputShape,
+    },
+    (args) => callBridged("apply_effect_style", args),
+  );
+
+  server.registerTool(
+    "define_component",
+    {
+      ...toolMeta("define_component"),
+      description:
+        sharedDescription("define_component"),
+      inputSchema: defineComponentInputShape,
+    },
+    (args) => callBridged("define_component", args),
+  );
+
+  server.registerTool(
+    "extract_component",
+    {
+      ...toolMeta("extract_component"),
+      description:
+        sharedDescription("extract_component"),
+      inputSchema: extractComponentInputShape,
+    },
+    (args) => callBridged("extract_component", args),
+  );
+
+  server.registerTool(
+    "detach_instance",
+    {
+      ...toolMeta("detach_instance"),
+      description:
+        sharedDescription("detach_instance"),
+      inputSchema: detachInstanceInputShape,
+    },
+    (args) => callBridged("detach_instance", args),
+  );
+
+  server.registerTool(
+    "delete_component",
+    {
+      ...toolMeta("delete_component"),
+      description:
+        sharedDescription("delete_component"),
+      inputSchema: deleteComponentInputShape,
+    },
+    (args) => callBridged("delete_component", args),
+  );
+
+  server.registerTool(
+    "lint_design",
+    {
+      ...toolMeta("lint_design"),
+      description:
+        sharedDescription("lint_design"),
+      inputSchema: lintDesignInputShape,
+    },
+    (args) => callBridged("lint_design", args),
+  );
+
+  server.registerTool(
     "list_skills",
     {
       ...toolMeta("list_skills"),
@@ -409,6 +571,8 @@ export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer 
     },
     async (args) => textResult(JSON.stringify(await getStyleGuideImpl(args))),
   );
+
+  registerDesignSystemResources(server, callBridged);
 
   if (ctx.owner !== null && ctx.widget && ctx.credential) {
     registerCanvasWidget(server, ctx.owner, ctx.credential, ctx.widget);
