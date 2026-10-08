@@ -11,7 +11,7 @@ import type { EmailMessage } from "../src/auth/email.js";
 import type { OrgAuditWriter } from "../src/auth/orgAudit.js";
 import { startApp, type RunningApp } from "./chatHarness.js";
 import { makeConfig } from "./helpers.js";
-import { createDsStore } from "../src/ds/dsStore.js";
+import { createDsStore, type DsStore } from "../src/ds/dsStore.js";
 import { createPgliteAuthPool } from "./pgliteAuthPool.js";
 import { createPgliteHarness, type PgliteHarness } from "./pgliteShowcaseHelpers.js";
 
@@ -44,11 +44,14 @@ export async function startAuthApp(
     orgAudit?: OrgAuditWriter;
     /** Runs before an email is captured; throw to simulate a failed send. */
     beforeSend?: (message: EmailMessage) => void;
+    /** Decorate the DsStore (fault injection). Only used together with `withDsStore`. */
+    wrapDsStore?: (store: DsStore) => DsStore;
   } = {},
 ): Promise<AuthHarness> {
-  const { withDsStore, orgAudit, beforeSend, ...appOptions } = options;
+  const { withDsStore, wrapDsStore, orgAudit, beforeSend, ...appOptions } = options;
   const harness = await createPgliteHarness([]);
   const emails: EmailMessage[] = [];
+  const wrapDs = (store: DsStore | null) => (store && wrapDsStore ? wrapDsStore(store) : store);
   const config = makeConfig({
     BETTER_AUTH_SECRET: randomBytes(24).toString("hex"),
     // Only has to be truthy: the stores below are injected, and the auth pool
@@ -70,9 +73,7 @@ export async function startAuthApp(
     // PGlite is one connection: the auth pool serializes connection leases, so
     // publish's BEGIN ... COMMIT cannot interleave. end() is a no-op because
     // the harness closes PGlite itself.
-    dsStore: withDsStore
-      ? createDsStore("postgres://unused.invalid/db", { ...createPgliteAuthPool(harness.pglite), end: async () => {} })
-      : null,
+    dsStore: withDsStore ? wrapDs(createDsStore("postgres://unused.invalid/db", { ...createPgliteAuthPool(harness.pglite), end: async () => {} })) : null,
     authPool: createPgliteAuthPool(harness.pglite),
     authOptions: { sendEmail: async (message) => {
         beforeSend?.(message);

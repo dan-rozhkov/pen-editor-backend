@@ -3,10 +3,13 @@
 // object implementing the interface, one module-level singleton for production
 // wiring. Unlike the other stores, publish needs a real transaction
 // (BEGIN / SELECT ... FOR UPDATE / INSERT / COMMIT), so the pool also exposes
-// connect(). Every method is scoped by owner id: a library that belongs to
-// somebody else is indistinguishable from one that does not exist.
+// connect(). Every method takes the owner id and filters on it in SQL (reads
+// join ds_libraries): a library that belongs to somebody else is
+// indistinguishable from one that does not exist, whatever the caller checked
+// before.
 import { createPgPool } from "../tracing/traceStore.js";
 import type { Migration, DiffSummary } from "./diff.js";
+import { parseVersion, type Semver } from "./semver.js";
 import type { Snapshot } from "./snapshotSchema.js";
 
 export interface DsClient {
@@ -22,7 +25,10 @@ export interface DsPool {
 
 const DS_POOL_CONNECTION_TIMEOUT_MS = 5_000;
 
+/** Live (not archived) libraries per owner. */
 export const MAX_LIBRARIES_PER_OWNER = 20;
+/** Live plus archived: archiving frees a live slot, only a purge frees storage. */
+export const MAX_TOTAL_LIBRARIES_PER_OWNER = 40;
 export const MAX_VERSIONS_PER_LIBRARY = 500;
 
 export interface DsLibrary {
@@ -87,7 +93,8 @@ export interface NewVersion {
   version: string;
   bump: "initial" | "major" | "minor" | "patch";
   baseVersion: string | null;
-  snapshot: Snapshot;
+  /** Canonical JSON of the validated snapshot: serialized once, hashed and stored as is. */
+  snapshotJson: string;
   snapshotHash: string;
   changelog: unknown;
   summary: DiffSummary;
@@ -119,9 +126,18 @@ export type PublishOutcome =
   | { kind: "not_found" }
   | PublishRejection
   | { kind: "replay"; result: PublishedVersion }
-  | { kind: "created"; result: PublishedVersion };
+  | { kind: "created"; result: PublishedVersion; summary: DiffSummary };
 
-export type CreateLibraryResult = { kind: "created"; library: DsLibrary } | { kind: "name_taken" } | { kind: "limit" };
+export type CreateLibraryResult =
+  | { kind: "created"; library: DsLibrary }
+  | { kind: "name_taken" }
+  | { kind: "limit"; live: number; total: number };
+export type PurgeLibraryResult = "purged" | "not_found" | "not_archived";
+export type VersionLookup = { kind: "no_library" } | { kind: "no_version" } | { kind: "ok"; version: DsVersion };
+export type UpdatesLookup =
+  | { kind: "no_library" }
+  | { kind: "no_version" }
+  | { kind: "ok"; latest: string | null; items: DsUpdateItem[]; hasMore: boolean };
 export type UpdateLibraryResult = { kind: "updated"; library: DsLibrary } | { kind: "not_found" } | { kind: "name_taken" } | { kind: "archived" };
 
 export interface DsStore {
@@ -132,6 +148,8 @@ export interface DsStore {
   updateLibrary(id: string, ownerId: string, patch: { name?: string; description?: string }): Promise<UpdateLibraryResult>;
   /** Idempotent: archiving an archived library is still true. False = not found. */
   archiveLibrary(id: string, ownerId: string): Promise<boolean>;
+  /** Hard delete, only of an archived library (its versions go with it). */
+  purgeLibrary(id: string, ownerId: string): Promise<PurgeLibraryResult>;
   /** One transaction: lock the library row, let `decide` rule, insert the version. */
   publish(
     input: { libraryId: string; ownerId: string; publishedBy: string; idempotencyKey: string },
@@ -139,11 +157,12 @@ export interface DsStore {
   ): Promise<PublishOutcome>;
   /** Read-only twin of publish's context, for preview. */
   getPublishContext(libraryId: string, ownerId: string): Promise<Omit<PublishContext, "replay"> | null>;
-  listVersions(libraryId: string, page: { limit: number; cursor: string | null }): Promise<Page<DsVersionListItem>>;
+  /** Null when the library does not exist or belongs to someone else. */
+  listVersions(libraryId: string, ownerId: string, page: { limit: number; cursor: string | null }): Promise<Page<DsVersionListItem> | null>;
   /** `version` may be "latest". */
-  getVersion(libraryId: string, version: string): Promise<DsVersion | null>;
-  /** Versions strictly after `from`, oldest first. Null = `from` is not a version of this library. */
-  listUpdates(libraryId: string, from: string, limit: number): Promise<{ items: DsUpdateItem[]; hasMore: boolean } | null>;
+  getVersion(libraryId: string, ownerId: string, version: string): Promise<VersionLookup>;
+  /** Versions strictly after `from`, oldest first. */
+  listUpdates(libraryId: string, ownerId: string, from: string, limit: number): Promise<UpdatesLookup>;
   close(): Promise<void>;
 }
 
@@ -185,7 +204,7 @@ export function encodeCursor(parts: string[]): string {
   return Buffer.from(JSON.stringify(parts), "utf8").toString("base64url");
 }
 
-export function decodeCursor(cursor: string, arity: number): string[] | null {
+function decodeCursor(cursor: string, arity: number): string[] | null {
   try {
     const parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as unknown;
     if (Array.isArray(parsed) && parsed.length === arity && parsed.every((p) => typeof p === "string")) return parsed as string[];
@@ -193,6 +212,28 @@ export function decodeCursor(cursor: string, arity: number): string[] | null {
     // fall through
   }
   return null;
+}
+
+// A year range Postgres accepts for sure, microsecond precision, always UTC.
+const CURSOR_TS_RE = /^((?:19|20|21)\d\d-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.\d{1,6})?Z$/;
+const CURSOR_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** The decoded library cursor, or null when it is not one this server could have issued. */
+export function parseLibraryCursor(cursor: string): { createdAt: string; id: string } | null {
+  const parts = decodeCursor(cursor, 2);
+  if (!parts) return null;
+  const [createdAt, id] = parts;
+  const m = CURSOR_TS_RE.exec(createdAt);
+  if (!m || !CURSOR_ID_RE.test(id)) return null;
+  // Date.parse rolls Feb 31 over; the round trip does not.
+  const ms = Date.parse(`${m[1]}Z`);
+  if (Number.isNaN(ms) || new Date(ms).toISOString().slice(0, 19) !== m[1]) return null;
+  return { createdAt, id };
+}
+
+export function parseVersionCursor(cursor: string): Semver | null {
+  const parts = decodeCursor(cursor, 1);
+  return parts ? parseVersion(parts[0]) : null;
 }
 
 function uniqueViolation(err: unknown, constraintPart: string): boolean {
@@ -217,11 +258,6 @@ interface VersionRow {
   major?: number;
   minor?: number;
   patch?: number;
-}
-
-function parseVersionParts(version: string): [number, number, number] {
-  const [a, b, c] = version.split(".").map(Number);
-  return [a, b, c];
 }
 
 export function createDsStore(connectionString: string | undefined, pool?: DsPool): DsStore | null {
@@ -257,28 +293,44 @@ export function createDsStore(connectionString: string | undefined, pool?: DsPoo
 
   return {
     async createLibrary({ id, ownerId, name, description }) {
+      const client = await db.connect();
       try {
-        // One statement, so the per-owner cap cannot be raced past.
-        const r = (await db.query(
-          `INSERT INTO ds_libraries (id, owner_id, name, description)
-           SELECT $1, $2, $3, $4
-            WHERE (SELECT count(*) FROM ds_libraries WHERE owner_id = $2 AND archived_at IS NULL) < $5
-           RETURNING ${LIBRARY_COLUMNS}`,
-          [id, ownerId, name, description, MAX_LIBRARIES_PER_OWNER],
+        await client.query("BEGIN");
+        // READ COMMITTED lets two creates both count 19 and both insert. The
+        // transaction-scoped lock queues an owner's creates behind each other
+        // (and is released by COMMIT/ROLLBACK, so a crash cannot leak it).
+        await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`ds_libraries:${ownerId}`]);
+        const counts = (await client.query(
+          `SELECT count(*) FILTER (WHERE archived_at IS NULL)::int AS live, count(*)::int AS total
+             FROM ds_libraries WHERE owner_id = $1`,
+          [ownerId],
+        )) as { rows: Array<{ live: number; total: number }> };
+        const { live, total } = counts.rows[0] ?? { live: 0, total: 0 };
+        if (live >= MAX_LIBRARIES_PER_OWNER || total >= MAX_TOTAL_LIBRARIES_PER_OWNER) {
+          await client.query("ROLLBACK");
+          return { kind: "limit", live, total };
+        }
+        const r = (await client.query(
+          `INSERT INTO ds_libraries (id, owner_id, name, description) VALUES ($1, $2, $3, $4) RETURNING ${LIBRARY_COLUMNS}`,
+          [id, ownerId, name, description],
         )) as { rows: LibraryRow[] };
-        return r.rows[0] ? { kind: "created", library: toLibrary(r.rows[0]) } : { kind: "limit" };
+        await client.query("COMMIT");
+        return { kind: "created", library: toLibrary(r.rows[0]) };
       } catch (err) {
+        await client.query("ROLLBACK").catch(() => undefined);
         if (uniqueViolation(err, "owner_name")) return { kind: "name_taken" };
         throw err;
+      } finally {
+        client.release();
       }
     },
 
     async listLibraries(ownerId, { limit, cursor }) {
       const params: unknown[] = [ownerId];
       let where = "owner_id = $1 AND archived_at IS NULL";
-      const key = cursor ? decodeCursor(cursor, 2) : null;
+      const key = cursor ? parseLibraryCursor(cursor) : null;
       if (key) {
-        params.push(key[0], key[1]);
+        params.push(key.createdAt, key.id);
         where += " AND (created_at, id) < ($2::timestamptz, $3)";
       }
       params.push(limit + 1);
@@ -345,6 +397,15 @@ export function createDsStore(connectionString: string | undefined, pool?: DsPoo
       return r.rows.length > 0;
     },
 
+    async purgeLibrary(id, ownerId) {
+      const r = (await db.query(
+        "DELETE FROM ds_libraries WHERE id = $1 AND owner_id = $2 AND archived_at IS NOT NULL RETURNING id",
+        [id, ownerId],
+      )) as { rows: unknown[] };
+      if (r.rows.length > 0) return "purged";
+      return (await fetchLibrary(db, id, ownerId)) ? "not_archived" : "not_found";
+    },
+
     async publish({ libraryId, ownerId, publishedBy, idempotencyKey }, decide) {
       const client = await db.connect();
       try {
@@ -379,7 +440,9 @@ export function createDsStore(connectionString: string | undefined, pool?: DsPoo
           return decision;
         }
         const v = decision.version;
-        const [major, minor, patch] = parseVersionParts(v.version);
+        const parsed = parseVersion(v.version);
+        if (!parsed) throw new Error(`publish produced an invalid version "${v.version}"`);
+        const { major, minor, patch } = parsed;
         const inserted = (await client.query(
           `INSERT INTO ds_versions
              (library_id, version, major, minor, patch, bump, base_version, snapshot, snapshot_hash,
@@ -387,7 +450,7 @@ export function createDsStore(connectionString: string | undefined, pool?: DsPoo
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10::jsonb, $11::jsonb, $12::jsonb, $13, $14, $15, $16)
            RETURNING published_at`,
           [
-            libraryId, v.version, major, minor, patch, v.bump, v.baseVersion, JSON.stringify(v.snapshot), v.snapshotHash,
+            libraryId, v.version, major, minor, patch, v.bump, v.baseVersion, v.snapshotJson, v.snapshotHash,
             JSON.stringify(v.changelog), JSON.stringify(v.summary), JSON.stringify(v.migrations), v.notes, publishedBy,
             v.idempotencyKey, v.requestHash,
           ],
@@ -401,6 +464,7 @@ export function createDsStore(connectionString: string | undefined, pool?: DsPoo
         return {
           kind: "created",
           result: { version: v.version, bump: v.bump, publishedAt, publishedBy, snapshotHash: v.snapshotHash },
+          summary: v.summary,
         };
       } catch (err) {
         await client.query("ROLLBACK").catch(() => undefined);
@@ -419,22 +483,27 @@ export function createDsStore(connectionString: string | undefined, pool?: DsPoo
       return library ? loadContext(db, library) : null;
     },
 
-    async listVersions(libraryId, { limit, cursor }) {
-      const params: unknown[] = [libraryId];
-      let where = "library_id = $1";
-      const key = cursor ? decodeCursor(cursor, 1) : null;
-      const parts = key ? parseVersionParts(key[0]) : null;
-      if (parts) {
-        params.push(...parts);
-        where += " AND (major, minor, patch) < ($2, $3, $4)";
+    async listVersions(libraryId, ownerId, { limit, cursor }) {
+      const params: unknown[] = [libraryId, ownerId];
+      let on = "v.library_id = l.id";
+      const key = cursor ? parseVersionCursor(cursor) : null;
+      if (key) {
+        params.push(key.major, key.minor, key.patch);
+        on += " AND (v.major, v.minor, v.patch) < ($3, $4, $5)";
       }
       params.push(limit + 1);
+      // LEFT JOIN: an existing library with no (more) versions still yields a
+      // row, which is how "empty" differs from "not yours" in one query.
       const r = (await db.query(
-        `SELECT version, bump, summary, published_by, published_at FROM ds_versions
-          WHERE ${where} ORDER BY major DESC, minor DESC, patch DESC LIMIT $${params.length}`,
+        `SELECT v.version, v.bump, v.summary, v.published_by, v.published_at
+           FROM ds_libraries l LEFT JOIN ds_versions v ON ${on}
+          WHERE l.id = $1 AND l.owner_id = $2
+          ORDER BY v.major DESC, v.minor DESC, v.patch DESC LIMIT $${params.length}`,
         params,
-      )) as { rows: VersionRow[] };
-      const rows = r.rows.slice(0, limit);
+      )) as { rows: Array<Partial<VersionRow>> };
+      if (r.rows.length === 0) return null;
+      const found = r.rows.filter((row): row is VersionRow => row.version != null);
+      const rows = found.slice(0, limit);
       const last = rows[rows.length - 1];
       return {
         items: rows.map((row) => ({
@@ -444,56 +513,72 @@ export function createDsStore(connectionString: string | undefined, pool?: DsPoo
           publishedBy: row.published_by,
           summary: row.summary,
         })),
-        nextCursor: r.rows.length > limit && last ? encodeCursor([last.version]) : null,
+        nextCursor: found.length > limit && last ? encodeCursor([last.version]) : null,
       };
     },
 
-    async getVersion(libraryId, version) {
+    async getVersion(libraryId, ownerId, version) {
       const r = (await db.query(
         `SELECT v.version, v.bump, v.base_version, v.snapshot, v.snapshot_hash, v.changelog, v.summary,
                 v.migrations, v.notes, v.published_by, v.published_at
-           FROM ds_versions v JOIN ds_libraries l ON l.id = v.library_id
-          WHERE v.library_id = $1 AND v.version = ${version === "latest" ? "l.latest_version" : "$2"}`,
-        version === "latest" ? [libraryId] : [libraryId, version],
-      )) as { rows: VersionRow[] };
+           FROM ds_libraries l
+           LEFT JOIN ds_versions v ON v.library_id = l.id AND v.version = ${version === "latest" ? "l.latest_version" : "$3"}
+          WHERE l.id = $1 AND l.owner_id = $2`,
+        version === "latest" ? [libraryId, ownerId] : [libraryId, ownerId, version],
+      )) as { rows: Array<Partial<VersionRow>> };
       const row = r.rows[0];
-      if (!row) return null;
+      if (!row) return { kind: "no_library" };
+      if (row.version == null) return { kind: "no_version" };
+      const v = row as VersionRow;
       return {
-        version: row.version,
-        bump: row.bump,
-        baseVersion: row.base_version,
-        publishedAt: new Date(row.published_at),
-        publishedBy: row.published_by,
-        notes: row.notes,
-        snapshot: row.snapshot,
-        snapshotHash: row.snapshot_hash,
-        changelog: row.changelog,
-        summary: row.summary,
-        migrations: row.migrations,
+        kind: "ok",
+        version: {
+          version: v.version,
+          bump: v.bump,
+          baseVersion: v.base_version,
+          publishedAt: new Date(v.published_at),
+          publishedBy: v.published_by,
+          notes: v.notes,
+          snapshot: v.snapshot,
+          snapshotHash: v.snapshot_hash,
+          changelog: v.changelog,
+          summary: v.summary,
+          migrations: v.migrations,
+        },
       };
     },
 
-    async listUpdates(libraryId, from, limit) {
-      const exists = (await db.query("SELECT 1 FROM ds_versions WHERE library_id = $1 AND version = $2", [libraryId, from])) as {
-        rows: unknown[];
-      };
-      if (exists.rows.length === 0) return null;
-      const [major, minor, patch] = parseVersionParts(from);
+    async listUpdates(libraryId, ownerId, from, limit) {
+      const parts = parseVersion(from);
+      if (!parts) {
+        // Not a version of anything; still tell "not yours" apart.
+        return (await fetchLibrary(db, libraryId, ownerId)) ? { kind: "no_version" } : { kind: "no_library" };
+      }
       const r = (await db.query(
-        `SELECT version, bump, notes, changelog, migrations FROM ds_versions
-          WHERE library_id = $1 AND (major, minor, patch) > ($2, $3, $4)
-          ORDER BY major, minor, patch LIMIT $5`,
-        [libraryId, major, minor, patch, limit + 1],
-      )) as { rows: VersionRow[] };
+        `SELECT l.latest_version,
+                EXISTS (SELECT 1 FROM ds_versions f WHERE f.library_id = l.id AND f.version = $3) AS from_exists,
+                v.version, v.bump, v.notes, v.changelog, v.migrations
+           FROM ds_libraries l
+           LEFT JOIN ds_versions v ON v.library_id = l.id AND (v.major, v.minor, v.patch) > ($4, $5, $6)
+          WHERE l.id = $1 AND l.owner_id = $2
+          ORDER BY v.major, v.minor, v.patch LIMIT $7`,
+        [libraryId, ownerId, from, parts.major, parts.minor, parts.patch, limit + 1],
+      )) as { rows: Array<Partial<VersionRow> & { latest_version: string | null; from_exists: boolean }> };
+      const first = r.rows[0];
+      if (!first) return { kind: "no_library" };
+      if (!first.from_exists) return { kind: "no_version" };
+      const found = r.rows.filter((row): row is typeof row & VersionRow => row.version != null);
       return {
-        items: r.rows.slice(0, limit).map((row) => ({
+        kind: "ok",
+        latest: first.latest_version,
+        items: found.slice(0, limit).map((row) => ({
           version: row.version,
           bump: row.bump,
           notes: row.notes,
           changelog: row.changelog,
           migrations: row.migrations,
         })),
-        hasMore: r.rows.length > limit,
+        hasMore: found.length > limit,
       };
     },
 

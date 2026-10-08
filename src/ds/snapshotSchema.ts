@@ -3,6 +3,7 @@
 // zod strips unknown keys, so what is stored (and hashed) is exactly this
 // shape; integrity (ids, aliases, cycles, replacements) is checked on top.
 import { z } from "zod";
+import { containsNul } from "./nul.js";
 
 export const SUPPORTED_SCHEMA_VERSION = 1;
 export const THEME_COLLECTION_ID = "theme";
@@ -73,8 +74,6 @@ export type SnapshotValidation =
   | { ok: true; snapshot: Snapshot }
   | { ok: false; code: "invalid_snapshot" | "unsupported_schema"; message: string; issues: SnapshotIssue[] };
 
-const NUL = "\\u0000";
-
 function fail(issues: SnapshotIssue[]): SnapshotValidation {
   return { ok: false, code: "invalid_snapshot", message: "The snapshot is not valid.", issues };
 }
@@ -100,7 +99,7 @@ export function validateSnapshot(raw: unknown): SnapshotValidation {
     return fail([{ path: "schemaVersion", message: `schemaVersion must be ${SUPPORTED_SCHEMA_VERSION}` }]);
   }
   // jsonb refuses the NUL escape, which a text value can legitimately carry.
-  if (JSON.stringify(snapshot).includes(NUL)) {
+  if (containsNul(snapshot)) {
     return fail([{ path: "", message: "Strings may not contain U+0000." }]);
   }
   const issues = checkIntegrity(snapshot);

@@ -2,7 +2,7 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { beforeAll, describe, expect, it } from "vitest";
-import { createDsStore } from "../src/ds/dsStore.js";
+import { createDsStore, encodeCursor, type DsStore } from "../src/ds/dsStore.js";
 import type { Snapshot } from "../src/ds/snapshotSchema.js";
 import { APP_ORIGIN, useAuthApp } from "./authHarness.js";
 import { recordingAnalyticsClient, startApp } from "./chatHarness.js";
@@ -11,7 +11,16 @@ import { createPgliteAuthPool } from "./pgliteAuthPool.js";
 import { createPgliteHarness } from "./pgliteShowcaseHelpers.js";
 
 const analytics = recordingAnalyticsClient();
-const app = useAuthApp({}, { withDsStore: true, analytics });
+// Lets a test break the store's snapshot reads without touching its other methods.
+const fault = { getVersion: false };
+const wrapDsStore = (store: DsStore): DsStore => ({
+  ...store,
+  getVersion: (...args: Parameters<DsStore["getVersion"]>) => {
+    if (fault.getVersion) throw new Error("injected getVersion failure");
+    return store.getVersion(...args);
+  },
+});
+const app = useAuthApp({}, { withDsStore: true, analytics, wrapDsStore });
 
 const BASE = (
   JSON.parse(readFileSync(new URL("./fixtures/ds-diff/none-identical.json", import.meta.url), "utf8")) as { before: Snapshot }
@@ -208,10 +217,97 @@ describe("the Phase 6 exit sequence", () => {
     const cached = await call(cookieA, "GET", `/api/ds/libraries/${id}/versions/1.0.0`, undefined, { "If-None-Match": etag });
     expect([cached.status, await cached.text()]).toEqual([304, ""]);
 
+    expect(etag).toMatch(/^"1\.0\.0:[0-9a-f]{64}"$/);
     const latest = await call(cookieA, "GET", `/api/ds/libraries/${id}/versions/latest`);
     expect([latest.headers.get("etag"), latest.headers.get("cache-control")]).toEqual([etag, "private, no-cache"]);
     expect((await call(cookieA, "GET", `/api/ds/libraries/${id}/versions/9.9.9`)).status).toBe(404);
     expect((await call(cookieA, "GET", `/api/ds/libraries/${id}/versions/nope`)).status).toBe(404);
+  });
+});
+
+describe("ETag across a revert", () => {
+  it("does not 304 a stale body when a later version reverts to an earlier snapshot", async () => {
+    const id = await createLibrary(cookieA);
+    await publish(cookieA, id, { baseVersion: null, snapshot: BASE });
+    const edited = clone(BASE);
+    edited.variables[0].description = "temporary";
+    await publish(cookieA, id, { baseVersion: "1.0.0", bump: "patch", snapshot: edited });
+    expect((await publish(cookieA, id, { baseVersion: "1.0.1", bump: "patch", snapshot: BASE })).status).toBe(201);
+
+    const first = await call(cookieA, "GET", `/api/ds/libraries/${id}/versions/1.0.0`);
+    const revert = await call(cookieA, "GET", `/api/ds/libraries/${id}/versions/1.0.2`, undefined, { "If-None-Match": first.headers.get("etag") as string });
+    expect(revert.status).toBe(200);
+    expect(((await revert.json()) as { version: string }).version).toBe("1.0.2");
+  });
+});
+
+describe("library limits and purge", () => {
+  it("answers library_limit with the live and total counts", async () => {
+    const cookie = await app().signUp("ds-cap@example.test");
+    for (let i = 0; i < 20; i++) await createLibrary(cookie, `Cap ${i}`);
+    const over = await call(cookie, "POST", "/api/ds/libraries", { name: "One too many" });
+    expect([over.status, await errorOf(over)]).toMatchObject([422, { error: "library_limit", details: { live: 20, total: 20 } }]);
+  });
+
+  it("hard-deletes an archived library with ?purge=true, and only that", async () => {
+    const id = await createLibrary(cookieA);
+    await publish(cookieA, id, { baseVersion: null, snapshot: BASE });
+    const early = await call(cookieA, "DELETE", `/api/ds/libraries/${id}?purge=true`);
+    expect([early.status, (await errorOf(early)).error]).toEqual([409, "not_archived"]);
+    expect((await call(cookieB, "DELETE", `/api/ds/libraries/${id}?purge=true`)).status).toBe(404);
+    expect((await call(cookieA, "DELETE", `/api/ds/libraries/${id}`)).status).toBe(204);
+    expect((await call(cookieB, "DELETE", `/api/ds/libraries/${id}?purge=true`)).status).toBe(404);
+    expect((await call(cookieA, "DELETE", `/api/ds/libraries/${id}?purge=true`)).status).toBe(204);
+    expect((await call(cookieA, "GET", `/api/ds/libraries/${id}`)).status).toBe(404);
+    expect((await call(cookieA, "DELETE", `/api/ds/libraries/${id}?purge=true`)).status).toBe(404);
+    expect((await call(cookieA, "DELETE", `/api/ds/libraries/${id}?purge=maybe`)).status).toBe(400);
+  });
+});
+
+describe("text fields", () => {
+  it("rejects a real NUL but accepts the literal text backslash-u0000", async () => {
+    const literal = "back\\u0000slash";
+    const lib = await call(cookieA, "POST", "/api/ds/libraries", { name: literal, description: literal });
+    expect(lib.status).toBe(201);
+    const id = ((await lib.json()) as { id: string }).id;
+    const snapshot = clone(BASE);
+    snapshot.variables[0].description = literal;
+    expect((await publish(cookieA, id, { baseVersion: null, snapshot, notes: literal })).status).toBe(201);
+    expect((await call(cookieA, "POST", "/api/ds/libraries", { name: "ok", description: "a\u0000b" })).status).toBe(400);
+  });
+});
+
+describe("cursors", () => {
+  it("answers 400 invalid_cursor for a decodable cursor with bad values", async () => {
+    const id = await createLibrary(cookieA);
+    const bad = [
+      ["/api/ds/libraries", encodeCursor(["not-a-timestamp", "lib_x"])],
+      ["/api/ds/libraries", encodeCursor(["2026-01-01T00:00:00.000001Z", "x'; --"])],
+      [`/api/ds/libraries/${id}/versions`, encodeCursor(["x.y.z"])],
+      [`/api/ds/libraries/${id}/versions`, encodeCursor(["99999999999.0.0"])],
+    ] as const;
+    for (const [path, cursor] of bad) {
+      const res = await call(cookieA, "GET", `${path}?cursor=${cursor}`);
+      expect([res.status, (await errorOf(res)).error]).toEqual([400, "invalid_cursor"]);
+    }
+    const ok = await call(cookieA, "GET", `/api/ds/libraries/${id}/versions?cursor=${encodeCursor(["1.0.0"])}`);
+    expect(ok.status).toBe(200);
+  });
+});
+
+describe("publish after commit", () => {
+  it("stays 201 with a summary in analytics even when the store cannot read the version back", async () => {
+    const id = await createLibrary(cookieA);
+    const before = analytics.events.length;
+    fault.getVersion = true;
+    try {
+      const res = await publish(cookieA, id, { baseVersion: null, snapshot: withVar(BASE, OLD) });
+      expect(res.status).toBe(201);
+    } finally {
+      fault.getVersion = false;
+    }
+    const event = analytics.events.slice(before).find((e) => e.event === "ds_published");
+    expect(event?.properties).toEqual({ bump: "initial", added: 0, changed: 0, deprecated: 0, removed: 0 });
   });
 });
 
