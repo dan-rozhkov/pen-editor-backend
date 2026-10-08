@@ -53,11 +53,19 @@ export const magicLinkMessage = (to: string, url: string): EmailMessage =>
 export const resetPasswordMessage = (to: string, url: string): EmailMessage =>
   linkEmail(to, "Reset your Sideform password", "Use this link to choose a new Sideform password.", "Reset password", url);
 
+// Names and roles are user-controlled: drop control characters (CR/LF would
+// split lines in the text part), collapse whitespace, cap the length. HTML is
+// escaped by linkEmail. The subject never carries user text.
+const NAME_LIMIT = 80;
+const cleanName = (value: string): string =>
+  // eslint-disable-next-line no-control-regex
+  value.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, " ").replace(/\s+/g, " ").trim().slice(0, NAME_LIMIT);
+
 export const invitationMessage = (to: string, url: string, organizationName: string, inviter: string, role: string): EmailMessage =>
   linkEmail(
     to,
-    `${inviter} invited you to ${organizationName} on Sideform`,
-    `${inviter} invited you to join ${organizationName} on Sideform as ${role}.`,
+    "You are invited to a Sideform organization",
+    `${cleanName(inviter)} invited you to join ${cleanName(organizationName)} on Sideform as ${cleanName(role)}.`,
     "Accept invitation",
     url,
   );

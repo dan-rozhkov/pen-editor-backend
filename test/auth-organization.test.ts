@@ -21,7 +21,8 @@ describe("organization plugin", () => {
     expect(invited.status).toBe(200);
     const { id: invitationId } = (await invited.json()) as { id: string };
     const mail = app().emails.findLast((m) => m.to === "ed@example.test")!;
-    expect(mail.subject).toContain("Acme");
+    expect(mail.subject).toBe("You are invited to a Sideform organization");
+    expect(mail.text).toContain("Acme");
     expect(mail.text).toContain(`/accept-invitation?id=${invitationId}`);
 
     const editor = await app().signUp("ed@example.test");

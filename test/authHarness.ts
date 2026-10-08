@@ -42,9 +42,11 @@ export async function startAuthApp(
     withDsStore?: boolean;
     /** Replaces the no-op organization audit writer. */
     orgAudit?: OrgAuditWriter;
+    /** Runs before an email is captured; throw to simulate a failed send. */
+    beforeSend?: (message: EmailMessage) => void;
   } = {},
 ): Promise<AuthHarness> {
-  const { withDsStore, orgAudit, ...appOptions } = options;
+  const { withDsStore, orgAudit, beforeSend, ...appOptions } = options;
   const harness = await createPgliteHarness([]);
   const emails: EmailMessage[] = [];
   const config = makeConfig({
@@ -72,7 +74,11 @@ export async function startAuthApp(
       ? createDsStore("postgres://unused.invalid/db", { ...createPgliteAuthPool(harness.pglite), end: async () => {} })
       : null,
     authPool: createPgliteAuthPool(harness.pglite),
-    authOptions: { sendEmail: async (message) => void emails.push(message), orgAudit },
+    authOptions: { sendEmail: async (message) => {
+        beforeSend?.(message);
+        emails.push(message);
+      },
+      orgAudit },
   } as BuildAppOptions);
 
   const fetchAuth: AuthHarness["fetchAuth"] = (path, init = {}) =>
