@@ -323,3 +323,54 @@ describe("resolveTailwindTokenReferences", () => {
     expect(notes.some((n) => n.includes("--primary"))).toBe(true);
   });
 });
+
+describe("dark token extraction", () => {
+  it("parses shadcn :root + .dark, normalizing HSL triplets", () => {
+    const css = `
+      :root { --background: 0 0% 100%; --primary: 222 47% 11%; --radius: 0.5rem; }
+      .dark { --background: 222 47% 4%; --primary: 210 40% 98%; }
+    `;
+    const tokens = extractCssCustomPropertyTokens(css);
+    expect(tokens.colors.background).toBe("hsl(0 0% 100%)");
+    expect(tokens.dark?.colors).toEqual({
+      background: "hsl(222 47% 4%)",
+      primary: "hsl(210 40% 98%)",
+    });
+  });
+
+  it("parses Tailwind v4 @theme + .dark, resolving var() against the merged map", () => {
+    const css = `
+      @custom-variant dark (&:is(.dark *));
+      @theme inline { --color-surface: var(--surface); }
+      :root { --surface: #ffffff; --ink: #111111; }
+      .dark { --surface: #0a0a0a; --accent: var(--ink); }
+      .dark .card { --ignored: #123456; }
+    `;
+    const tokens = extractCssCustomPropertyTokens(css);
+    expect(tokens.dark?.colors.surface).toBe("#0a0a0a");
+    expect(tokens.dark?.colors.accent).toBe("#111111");
+    expect(tokens.dark?.colors.ignored).toBeUndefined();
+  });
+
+  it("parses [data-theme=\"dark\"] and prefers-color-scheme media blocks", () => {
+    const css = `
+      :root { --bg: #fff; --fg: #000; }
+      [data-theme="dark"] { --bg: #101010; }
+      @media (prefers-color-scheme: dark) { :root { --fg: #eeeeee; } }
+    `;
+    const tokens = extractCssCustomPropertyTokens(css);
+    expect(tokens.dark?.colors).toEqual({ bg: "#101010", fg: "#eeeeee" });
+  });
+
+  it("leaves dark undefined when there is no dark block", () => {
+    const tokens = extractCssCustomPropertyTokens(`:root { --bg: #fff; }`);
+    expect(tokens.dark).toBeUndefined();
+  });
+
+  it("bounds the number of dark colors", () => {
+    const decls = Array.from({ length: 400 }, (_, i) => `--c${i}: #000;`).join(" ");
+    const tokens = extractCssCustomPropertyTokens(`:root { ${decls} } .dark { ${decls} }`);
+    expect(Object.keys(tokens.dark?.colors ?? {}).length).toBe(300);
+    expect(tokens.notes.some((n) => /dark/i.test(n))).toBe(true);
+  });
+});

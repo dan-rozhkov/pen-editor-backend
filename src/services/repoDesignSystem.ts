@@ -31,6 +31,10 @@ export interface DesignTokens {
   spacing: Record<string, string>;
   borderRadius: Record<string, string>;
   boxShadow: Record<string, string>;
+  // Dark-scheme color overrides (`.dark {}`, `[data-theme="dark"] {}`,
+  // `@media (prefers-color-scheme: dark) { :root {} }`), resolved against the
+  // merged light+dark custom-property map. Absent when the CSS has none.
+  dark?: { colors: Record<string, string> };
   // Escalation notes produced while resolving values — e.g. an unresolved
   // var(--x) reference that had to be kept raw. Never silently dropped:
   // buildDesignBrief folds these into the brief's top-level `notes`.
@@ -65,6 +69,7 @@ export interface DesignBrief {
 }
 
 const MAX_COMPONENTS = 200;
+const MAX_DARK_COLORS = 300;
 
 function emptyTokens(): DesignTokens {
   return {
@@ -552,6 +557,74 @@ function normalizeColorValue(value: string): string {
   return trimmed;
 }
 
+// Selector list made only of dark-scheme selectors (optionally on :root/html/body).
+const DARK_SELECTOR_RE = /^(?::root|html|body)?(?:\.dark|\[data-theme\s*=\s*["']?dark["']?\])$/;
+const ROOT_SELECTOR_RE = /^(?::root|html)$/;
+
+function isDarkSelectorList(prelude: string): boolean {
+  const parts = prelude.split(",").map((p) => p.trim());
+  return parts.length > 0 && parts.every((p) => DARK_SELECTOR_RE.test(p));
+}
+
+// Walks top-level rules (recursing into @layer and dark @media) and returns
+// the declaration text of every dark-scheme block. Descendant selectors such
+// as `.dark .card` never match, so component-scoped rules stay out.
+function collectDarkBlocks(css: string, inDarkMedia = false): string[] {
+  const out: string[] = [];
+  let pos = 0;
+  while (pos < css.length) {
+    const open = css.indexOf("{", pos);
+    if (open === -1) break;
+    const close = findMatchingBrace(css, open);
+    if (close === -1) break;
+    const prelude = css.slice(pos, open).split(";").pop()!.trim();
+    const body = css.slice(open + 1, close);
+    if (/^@media[^{]*prefers-color-scheme\s*:\s*dark/.test(prelude)) {
+      out.push(...collectDarkBlocks(body, true));
+    } else if (/^@layer\b/.test(prelude)) {
+      out.push(...collectDarkBlocks(body, inDarkMedia));
+    } else if (isDarkSelectorList(prelude)) {
+      out.push(body);
+    } else if (inDarkMedia && prelude.split(",").every((p) => ROOT_SELECTOR_RE.test(p.trim()))) {
+      out.push(body);
+    }
+    pos = close + 1;
+  }
+  return out;
+}
+
+function extractDarkColors(
+  css: string,
+  lightRaw: Record<string, string>,
+  notes: string[],
+): Record<string, string> | undefined {
+  const darkRaw: Record<string, string> = {};
+  for (const block of collectDarkBlocks(stripCssComments(css))) {
+    const re = new RegExp(CSS_CUSTOM_PROPERTY_RE.source, "g");
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(block))) {
+      const value = m[2].trim();
+      if (value) darkRaw[m[1]] = value;
+    }
+  }
+  const merged = { ...lightRaw, ...darkRaw };
+  const colors: Record<string, string> = {};
+  let dropped = 0;
+  for (const name of Object.keys(darkRaw)) {
+    const { category, key } = categorizeCssVar(name);
+    if (category !== "colors") continue;
+    if (Object.keys(colors).length >= MAX_DARK_COLORS && !(key in colors)) {
+      dropped++;
+      continue;
+    }
+    colors[key] = normalizeColorValue(resolveCssVarReferences(darkRaw[name], merged, notes, `--${name} (dark)`));
+  }
+  if (dropped > 0) {
+    notes.push(`Dark color overrides capped at ${MAX_DARK_COLORS} entries — ${dropped} more were dropped.`);
+  }
+  return Object.keys(colors).length > 0 ? colors : undefined;
+}
+
 /**
  * Extracts design tokens from CSS custom properties declared in a `:root {}`
  * block and/or a Tailwind v4 `@theme {}` block. Property names are
@@ -575,6 +648,8 @@ export function extractCssCustomPropertyTokens(css: string): DesignTokens {
     const resolved = resolveCssVarReferences(rawByName[name], rawByName, tokens.notes, `--${name}`);
     tokens[category][key] = category === "colors" ? normalizeColorValue(resolved) : resolved;
   }
+  const dark = extractDarkColors(css, rawByName, tokens.notes);
+  if (dark) tokens.dark = { colors: dark };
   return tokens;
 }
 
@@ -613,6 +688,8 @@ function mergeTokens(base: DesignTokens, extra: DesignTokens): DesignTokens {
   for (const category of TOKEN_CATEGORIES) {
     merged[category] = { ...base[category], ...extra[category] };
   }
+  const dark = { ...base.dark?.colors, ...extra.dark?.colors };
+  if (Object.keys(dark).length > 0) merged.dark = { colors: dark };
   return merged;
 }
 
