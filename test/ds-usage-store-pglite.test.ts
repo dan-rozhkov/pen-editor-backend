@@ -7,6 +7,7 @@ import type { Principal } from "../src/ds/access.js";
 import { createDsStore, type DsStore, type NewVersion } from "../src/ds/dsStore.js";
 import type { Snapshot } from "../src/ds/snapshotSchema.js";
 import { USAGE_PRUNE_BATCH, usageMetricsSchema, type UsageMetrics } from "../src/ds/usage.js";
+import { pruneDsUsage } from "../src/ds/usageSweep.js";
 import { assert } from "./helpers.js";
 import { createPgliteAuthPool } from "./pgliteAuthPool.js";
 import { createPgliteHarness, type PgliteHarness } from "./pgliteShowcaseHelpers.js";
@@ -54,6 +55,13 @@ describe("ds_usage store against PGlite", () => {
       [documentKey],
     )).rows[0];
 
+  // A second reporter on a personal library has no role; the row is written directly (the ACL has its own HTTP tests).
+  const insertOther = (documentKey: string, who = "other", m: UsageMetrics = metrics()) =>
+    harness.pglite.query(
+      `INSERT INTO ds_usage (library_id, document_key, reporter_id, version, metrics, token_coverage, lint_total) VALUES ($1, $2, $3, '1.0.0', $4::jsonb, 0.8, 2)`,
+      [lib, documentKey, who, JSON.stringify(m)],
+    );
+
   beforeAll(async () => {
     harness = await createPgliteHarness(["ds_libraries"]);
     store = createDsStore("postgres://x", { ...createPgliteAuthPool(harness.pglite), end: async () => {} })!;
@@ -74,10 +82,10 @@ describe("ds_usage store against PGlite", () => {
 
   it("upserts per (library, document): one row, replaced flag, prev_metrics rotates only on change", async () => {
     await seed();
-    expect(await report(doc(1), metrics())).toEqual({ kind: "ok", replaced: false });
+    expect(await report(doc(1), metrics())).toMatchObject({ kind: "ok", replaced: false });
     expect((await row(doc(1))).prev_metrics).toBeNull();
     // An identical retry changes nothing: the real "before" is not erased.
-    expect(await report(doc(1), metrics())).toEqual({ kind: "ok", replaced: true });
+    expect(await report(doc(1), metrics())).toMatchObject({ kind: "ok", replaced: true });
     expect((await row(doc(1))).prev_metrics).toBeNull();
     const next = metrics({ lint: { "hardcoded-value": 5 } });
     await report(doc(1), next);
@@ -108,6 +116,9 @@ describe("ds_usage store against PGlite", () => {
       { ...metrics(), nodes: -1 },
       { ...metrics(), nodes: 1.5 },
       { ...metrics(), nodes: 10_000_001 },
+      { ...metrics(), tokens: { ...metrics().tokens, bound: 11 } },
+      { ...metrics(), tokens: { ...metrics().tokens, boundToLibrary: 9 } },
+      { ...metrics(), components: { ...metrics().components, detached: 5 } },
     ]) {
       expect(usageMetricsSchema.safeParse(poisoned).success).toBe(false);
     }
@@ -122,25 +133,78 @@ describe("ds_usage store against PGlite", () => {
     expect((await store.reportUsage({ libraryId: lib, principal: agent, documentKey: doc(2), version: "1.0.0", metrics: metrics() })).kind).toBe("ok");
   });
 
-  it("prunes at most 50 reports older than 90 days per write and the summary ignores them", async () => {
+  it("prunes a small batch per write; the daily sweep removes the rest; reads ignore expired rows", async () => {
     await seed();
+    const count = async () => Number((await harness.pglite.query<{ n: number }>("SELECT count(*)::int AS n FROM ds_usage")).rows[0].n);
     for (let i = 0; i < USAGE_PRUNE_BATCH + 5; i++) await report(doc(i + 1), metrics());
     await harness.pglite.query(`UPDATE ds_usage SET reported_at = now() - interval '91 days'`);
     expect((await store.getUsageSummary(lib, user("owner")) as { documents: { total: number } }).documents.total).toBe(0);
     await report(doc(900), metrics());
-    expect(Number((await harness.pglite.query<{ n: number }>("SELECT count(*)::int AS n FROM ds_usage")).rows[0].n)).toBe(55 + 1 - USAGE_PRUNE_BATCH);
-    await report(doc(901), metrics());
-    expect(Number((await harness.pglite.query<{ n: number }>("SELECT count(*)::int AS n FROM ds_usage")).rows[0].n)).toBe(2);
+    expect(await count()).toBe(USAGE_PRUNE_BATCH + 5 + 1 - USAGE_PRUNE_BATCH);
+    expect(await pruneDsUsage(harness.db, 90, 3)).toBe(5);
+    expect(await count()).toBe(1);
   });
 
-  it("lets the reporter or an admin delete a report; another reader may not; absent is idempotent", async () => {
+  it("keeps one row per reporter: nobody overwrites another's report, and a document counts once (latest report)", async () => {
+    await seed();
+    await report(doc(1), metrics(), "owner");
+    await insertOther(doc(1));
+    expect((await harness.pglite.query("SELECT 1 FROM ds_usage")).rows).toHaveLength(2);
+    const s = (await store.getUsageSummary(lib, user("owner"))) as { documents: { total: number } };
+    expect(s.documents.total).toBe(1);
+  });
+
+  it("refuses to report or delete on an archived library", async () => {
     await seed();
     await report(doc(1), metrics());
-    const input = (who: string) => ({ libraryId: lib, principal: user(who), documentKey: doc(1) });
-    expect(await store.deleteUsage(input("stranger"))).toBe("not_found");
-    expect(await store.deleteUsage(input("owner"))).toBe("deleted");
+    await store.archiveLibrary(lib, user("owner"));
+    expect(await report(doc(1), metrics())).toEqual({ kind: "archived" });
+    expect(await store.deleteUsage({ libraryId: lib, principal: user("owner"), key: doc(1) })).toBe("archived");
+  });
+
+  it("flags a regression only when the lint total grew over the same reporter's previous report", async () => {
+    await seed();
+    expect(await report(doc(1), metrics())).toMatchObject({ regression: false });
+    expect(await report(doc(1), metrics())).toMatchObject({ regression: false });
+    expect(await report(doc(1), metrics({ lint: { "hardcoded-value": 9 } }))).toMatchObject({ regression: true });
+    expect(await report(doc(1), metrics({ lint: { "hardcoded-value": 1 } }))).toMatchObject({ regression: false });
+  });
+
+  it("pages the documents list by keyset in both sorts without skipping or repeating", async () => {
+    await seed();
+    for (let i = 1; i <= 7; i++) {
+      await report(doc(i), metrics({ tokens: { bindable: 10, bound: i % 3 === 0 ? 0 : i, boundToLibrary: 0, literal: 0, use: {} } }));
+    }
+    await report(doc(8), metrics({ tokens: { bindable: 0, bound: 0, boundToLibrary: 0, literal: 0, use: {} } }));
+    for (const sort of ["reportedAt", "coverage"] as const) {
+      const seen: string[] = [];
+      let cursor: string | null = null;
+      do {
+        const page = (await store.listUsageDocuments(lib, user("owner"), { limit: 3, sort, cursor })) as { items: Array<{ reportId: string }>; nextCursor: string | null };
+        seen.push(...page.items.map((i) => i.reportId));
+        cursor = page.nextCursor;
+      } while (cursor);
+      expect(seen, sort).toHaveLength(8);
+      expect(new Set(seen).size, sort).toBe(8);
+    }
+    const byCoverage = (await store.listUsageDocuments(lib, user("owner"), { limit: 10, sort: "coverage", cursor: null })) as { items: Array<{ tokenCoverage: number | null }> };
+    expect(byCoverage.items.map((i) => i.tokenCoverage)).toEqual([0, 0, 0.1, 0.2, 0.4, 0.5, 0.7, null].sort((a, b) => (a ?? 2) - (b ?? 2)));
+  });
+
+  it("deletes your own report by document key; any other key is not_found (no oracle); an admin deletes by reportId", async () => {
+    await seed();
+    await insertOther(doc(1));
+    const del = (who: string, key: string) => store.deleteUsage({ libraryId: lib, principal: user(who), key });
+    expect(await del("stranger", doc(1))).toBe("not_found");
+    expect(await del("owner", doc(1))).toBe("not_found");
+    expect(await del("owner", doc(2))).toBe("not_found");
+    const { items } = (await store.listUsageDocuments(lib, user("owner"), { limit: 5, sort: "reportedAt", cursor: null })) as { items: Array<{ reportId: string }> };
+    expect(await del("owner", items[0].reportId)).toBe("deleted");
+    await insertOther(doc(1));
+    expect(await del("other", doc(1))).toBe("not_found"); // a stranger to the library
+    await harness.pglite.query("UPDATE ds_usage SET reporter_id = 'owner' WHERE document_key = $1", [doc(1)]);
+    expect(await del("owner", doc(1))).toBe("deleted");
     expect(await row(doc(1))).toBeUndefined();
-    expect(await store.deleteUsage(input("owner"))).toBe("deleted");
   });
 
   it("summarizes: documents, behind, coverage, top detached, unused tokens, lint and regressions", async () => {

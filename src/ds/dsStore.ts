@@ -15,17 +15,17 @@ import { can, decide, isDsRole, type DsAction, type DsRole, type Principal } fro
 import { actorOf, insertAudit, listAudit, type AuditItem } from "./audit.js";
 import { parseVersion, type Semver } from "./semver.js";
 import type { Snapshot } from "./snapshotSchema.js";
+import { componentCoverage, countUnknownIds, lintTotal, tokenCoverage, USAGE_PRUNE_BATCH, USAGE_RETENTION_DAYS, type UsageMetrics } from "./usage.js";
 import {
-  countUnknownIds,
   listUsageDocuments,
-  summarizeUsage,
-  USAGE_PRUNE_BATCH,
-  USAGE_RETENTION_DAYS,
-  USAGE_SUMMARY_ROW_CAP,
-  type UsageMetrics,
-  type UsageRow,
+  loadUsageSummary,
+  parseUsageCursor,
+  type UsageDocuments,
   type UsageSort,
-} from "./usage.js";
+  type UsageSummary,
+} from "./usageQueries.js";
+
+export { parseUsageCursor };
 
 export interface DsClient {
   query(sql: string, params?: unknown[]): Promise<{ rows: unknown[] }>;
@@ -175,14 +175,14 @@ export type UpdateLibraryResult =
   | Forbidden;
 
 export type ReportUsageResult =
-  | { kind: "ok"; replaced: boolean }
+  | { kind: "ok"; replaced: boolean; regression: boolean }
   | { kind: "not_found" }
+  | { kind: "archived" }
   | { kind: "unknown_version" }
   | { kind: "unknown_ids"; count: number }
   | Forbidden;
-export type DeleteUsageResult = "deleted" | "not_found" | Forbidden;
-export type UsageSummary = ReturnType<typeof summarizeUsage>;
-export type UsageDocuments = ReturnType<typeof listUsageDocuments>;
+export type DeleteUsageResult = "deleted" | "not_found" | "archived" | Forbidden;
+export type { UsageDocuments, UsageSort, UsageSummary };
 
 export interface DsStore {
   /** `orgId` set = the library belongs to that organization (the caller needs write there). */
@@ -213,7 +213,7 @@ export interface DsStore {
   listUpdates(libraryId: string, userId: string, from: string, limit: number): Promise<UpdatesLookup>;
   /** The library's audit history, newest first. The caller checks the admin role first. */
   listAudit(libraryId: string, page: { limit: number; cursor: string | null; action: string | null }): Promise<Page<AuditItem>>;
-  /** Upsert the caller's latest report of one document. Needs `read` (consumers report); idempotent per (library, document). */
+  /** Upsert the caller's own report of one document (rows are per reporter). Needs `read`; refused on an archived library. */
   reportUsage(input: {
     libraryId: string;
     principal: Principal;
@@ -221,15 +221,15 @@ export interface DsStore {
     version: string;
     metrics: UsageMetrics;
   }): Promise<ReportUsageResult>;
-  /** Removes a report: its reporter, or an admin of the library. Absent = still "deleted". */
-  deleteUsage(input: { libraryId: string; principal: Principal; documentKey: string }): Promise<DeleteUsageResult>;
-  /** Aggregates of the last 90 days. Needs `read`; null when the caller has no role. */
+  /** `key` is the caller's own document key, or (admin) a reportId. Anything else is "not_found", same as absent. */
+  deleteUsage(input: { libraryId: string; principal: Principal; key: string }): Promise<DeleteUsageResult>;
+  /** Aggregates of the last 90 days over all rows. Needs `read`; regressions only when the caller can write. Null without a role. */
   getUsageSummary(libraryId: string, principal: Principal): Promise<UsageSummary | null | Forbidden>;
-  /** Single reports of the last 90 days. Needs `write` (editor/owner); null when the caller has no role. `cursor` is an offset. */
+  /** One row per document (latest report), keyset-paged. Needs `write`. */
   listUsageDocuments(
     libraryId: string,
     principal: Principal,
-    page: { limit: number; offset: number; sort: UsageSort },
+    page: { limit: number; sort: UsageSort; cursor: string | null },
   ): Promise<UsageDocuments | null | Forbidden>;
   close(): Promise<void>;
 }
@@ -353,11 +353,11 @@ export function createDsStore(connectionString: string | undefined, pool?: DsPoo
   // on a second end().
   let closed = false;
 
-  /** The library, when `userId` holds any role on it. `lock` takes the row lock (FOR UPDATE OF l). */
-  const fetchLibrary = async (q: Pick<DsPool, "query">, id: string, userId: string, lock = false): Promise<DsLibrary | null> => {
+  /** The library, when `userId` holds any role on it. `lock` takes the row lock: FOR UPDATE OF l, or the weaker FOR KEY SHARE (blocks a purge, not other readers). */
+  const fetchLibrary = async (q: Pick<DsPool, "query">, id: string, userId: string, lock: boolean | "key_share" = false): Promise<DsLibrary | null> => {
     const r = (await q.query(
       `SELECT ${LIBRARY_COLUMNS("$2")} FROM ${libraryFrom("$2")}
-        WHERE l.id = $1 AND ${roleSql("$2")} IS NOT NULL${lock ? " FOR UPDATE OF l" : ""}`,
+        WHERE l.id = $1 AND ${roleSql("$2")} IS NOT NULL${lock === "key_share" ? " FOR KEY SHARE OF l" : lock ? " FOR UPDATE OF l" : ""}`,
       [id, userId],
     )) as { rows: LibraryRow[] };
     return r.rows[0] ? toLibrary(r.rows[0]) : null;
@@ -369,8 +369,9 @@ export function createDsStore(connectionString: string | undefined, pool?: DsPoo
     id: string,
     principal: Principal,
     action: DsAction,
+    mode: "update" | "key_share" = "update",
   ): Promise<{ library: DsLibrary } | { kind: "not_found" } | Forbidden> => {
-    const library = await fetchLibrary(client, id, principal.userId, true);
+    const library = await fetchLibrary(client, id, principal.userId, mode === "key_share" ? "key_share" : true);
     if (!library) return { kind: "not_found" };
     const decision = decide(principal, library.role, action);
     return decision.ok ? { library } : { kind: "forbidden", code: decision.code };
@@ -404,24 +405,6 @@ export function createDsStore(connectionString: string | undefined, pool?: DsPoo
       rows: Array<{ count: number }>;
     };
     return { library, latest, versionCount: c.rows[0]?.count ?? 0 };
-  };
-
-  const loadUsageRows = async (libraryId: string): Promise<UsageRow[]> => {
-    const rows = (await db.query(
-      `SELECT document_key, version, metrics, prev_metrics, reported_at FROM ds_usage
-        WHERE library_id = $1 AND reported_at >= now() - make_interval(days => $2)
-        ORDER BY reported_at DESC, document_key LIMIT $3`,
-      [libraryId, USAGE_RETENTION_DAYS, USAGE_SUMMARY_ROW_CAP],
-    )) as {
-      rows: Array<{ document_key: string; version: string; metrics: UsageMetrics; prev_metrics: UsageMetrics | null; reported_at: string | Date }>;
-    };
-    return rows.rows.map((r) => ({
-      documentKey: r.document_key,
-      version: r.version,
-      metrics: r.metrics,
-      prevMetrics: r.prev_metrics,
-      reportedAt: new Date(r.reported_at),
-    }));
   };
 
   return {
@@ -815,65 +798,71 @@ export function createDsStore(connectionString: string | undefined, pool?: DsPoo
 
     async reportUsage({ libraryId, principal, documentKey, version, metrics }) {
       return inTransaction(async (client): Promise<ReportUsageResult> => {
-        const library = await fetchLibrary(client, libraryId, principal.userId);
-        if (!library) return { kind: "not_found" };
-        const decision = decide(principal, library.role, "read");
-        if (!decision.ok) return { kind: "forbidden", code: decision.code };
+        // A concurrent purge waits for this lock, so it ends in 404 here instead of an FK error.
+        const locked = await lockFor(client, libraryId, principal, "read", "key_share");
+        if (!("library" in locked)) return locked;
+        if (locked.library.archivedAt) return { kind: "archived" };
         const v = (await client.query("SELECT snapshot FROM ds_versions WHERE library_id = $1 AND version = $2", [libraryId, version])) as {
           rows: Array<{ snapshot: Snapshot }>;
         };
         if (!v.rows[0]) return { kind: "unknown_version" };
         const unknown = countUnknownIds(metrics, v.rows[0].snapshot);
         if (unknown > 0) return { kind: "unknown_ids", count: unknown };
+        const total = lintTotal(metrics);
+        const prior = (await client.query(
+          "SELECT lint_total FROM ds_usage WHERE library_id = $1 AND document_key = $2 AND reporter_id = $3 FOR UPDATE",
+          [libraryId, documentKey, principal.userId],
+        )) as { rows: Array<{ lint_total: number }> };
         // An identical re-report keeps prev_metrics, so a retry never erases the real "before".
-        const r = (await client.query(
-          `INSERT INTO ds_usage (library_id, document_key, reporter_id, version, metrics)
-           VALUES ($1, $2, $3, $4, $5::jsonb)
-           ON CONFLICT (library_id, document_key) DO UPDATE SET
-             reporter_id = EXCLUDED.reporter_id,
+        await client.query(
+          `INSERT INTO ds_usage (library_id, document_key, reporter_id, version, metrics, token_coverage, component_coverage, lint_total)
+           VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)
+           ON CONFLICT (library_id, document_key, reporter_id) DO UPDATE SET
              version = EXCLUDED.version,
              prev_metrics = CASE WHEN ds_usage.metrics = EXCLUDED.metrics THEN ds_usage.prev_metrics ELSE ds_usage.metrics END,
              metrics = EXCLUDED.metrics,
-             reported_at = now()
-           RETURNING (xmax = 0) AS inserted`,
-          [libraryId, documentKey, principal.userId, version, JSON.stringify(metrics)],
-        )) as { rows: Array<{ inserted: boolean }> };
+             token_coverage = EXCLUDED.token_coverage,
+             component_coverage = EXCLUDED.component_coverage,
+             lint_total = EXCLUDED.lint_total,
+             reported_at = now()`,
+          [libraryId, documentKey, principal.userId, version, JSON.stringify(metrics), tokenCoverage(metrics), componentCoverage(metrics), total],
+        );
+        // Small opportunistic prune; the daily sweep (usageSweep.ts) covers every library.
         await client.query(
-          `DELETE FROM ds_usage WHERE (library_id, document_key) IN (
-             SELECT library_id, document_key FROM ds_usage
+          `DELETE FROM ds_usage WHERE ctid IN (
+             SELECT ctid FROM ds_usage
               WHERE library_id = $1 AND reported_at < now() - make_interval(days => $2)
               LIMIT $3)`,
           [libraryId, USAGE_RETENTION_DAYS, USAGE_PRUNE_BATCH],
         );
-        return { kind: "ok", replaced: r.rows[0]?.inserted === false };
+        const before = prior.rows[0];
+        return { kind: "ok", replaced: before !== undefined, regression: before !== undefined && metrics.lint !== null && total > before.lint_total };
       });
     },
 
-    async deleteUsage({ libraryId, principal, documentKey }) {
+    async deleteUsage({ libraryId, principal, key }) {
       return inTransaction(async (client): Promise<DeleteUsageResult> => {
-        const library = await fetchLibrary(client, libraryId, principal.userId);
-        if (!library) return "not_found";
-        const decision = decide(principal, library.role, "read");
-        if (!decision.ok) return { kind: "forbidden", code: decision.code };
-        const row = (await client.query("SELECT reporter_id FROM ds_usage WHERE library_id = $1 AND document_key = $2 FOR UPDATE", [
-          libraryId,
-          documentKey,
-        ])) as { rows: Array<{ reporter_id: string }> };
-        if (!row.rows[0]) return "deleted";
-        if (row.rows[0].reporter_id !== principal.userId && !can(principal, library.role, "admin")) {
-          return { kind: "forbidden", code: "forbidden" };
-        }
-        await client.query("DELETE FROM ds_usage WHERE library_id = $1 AND document_key = $2", [libraryId, documentKey]);
-        return "deleted";
+        const locked = await lockFor(client, libraryId, principal, "read", "key_share");
+        if (!("library" in locked)) return locked.kind === "forbidden" ? locked : "not_found";
+        if (locked.library.archivedAt) return "archived";
+        const admin = can(principal, locked.library.role, "admin");
+        // The caller's own document key, or (admin only) a report id. No other key reveals that a row exists.
+        const r = (await client.query(
+          `DELETE FROM ds_usage WHERE library_id = $1
+             AND ((document_key = $2 AND reporter_id = $3) OR ($4::boolean AND id::text = $2))
+           RETURNING 1`,
+          [libraryId, key, principal.userId, admin],
+        )) as { rows: unknown[] };
+        return r.rows.length > 0 ? "deleted" : "not_found";
       });
     },
 
-    async listUsageDocuments(libraryId, principal, { limit, offset, sort }) {
+    async listUsageDocuments(libraryId, principal, { limit, sort, cursor }) {
       const library = await fetchLibrary(db, libraryId, principal.userId);
       if (!library) return null;
       const decision = decide(principal, library.role, "write");
       if (!decision.ok) return { kind: "forbidden", code: decision.code };
-      return listUsageDocuments(await loadUsageRows(libraryId), library.latestVersion, sort, offset, limit);
+      return listUsageDocuments(db, libraryId, library.latestVersion, { limit, sort, cursor: cursor ? parseUsageCursor(cursor, sort) : null });
     },
 
     async getUsageSummary(libraryId, principal) {
@@ -881,7 +870,6 @@ export function createDsStore(connectionString: string | undefined, pool?: DsPoo
       if (!library) return null;
       const decision = decide(principal, library.role, "read");
       if (!decision.ok) return { kind: "forbidden", code: decision.code };
-      const usage = await loadUsageRows(libraryId);
       let latest: Snapshot | null = null;
       if (library.latestVersion) {
         const v = (await db.query("SELECT snapshot FROM ds_versions WHERE library_id = $1 AND version = $2", [libraryId, library.latestVersion])) as {
@@ -889,7 +877,7 @@ export function createDsStore(connectionString: string | undefined, pool?: DsPoo
         };
         latest = v.rows[0]?.snapshot ?? null;
       }
-      return summarizeUsage(usage, library.latestVersion, latest);
+      return loadUsageSummary(db, libraryId, library.latestVersion, latest, can(principal, library.role, "write"));
     },
 
     async close() {

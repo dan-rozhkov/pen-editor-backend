@@ -15,7 +15,7 @@ import type { Config } from "../config.js";
 import { decide, type DsAction, type DsRole, type Principal } from "../ds/access.js";
 import { parseAuditCursor } from "../ds/audit.js";
 import { canonicalJson, sha256Hex } from "../ds/canonical.js";
-import { parseLibraryCursor, parseVersionCursor, type DsLibrary, type DsStore } from "../ds/dsStore.js";
+import { parseLibraryCursor, parseUsageCursor, parseVersionCursor, type DsLibrary, type DsStore } from "../ds/dsStore.js";
 import { containsNul } from "../ds/nul.js";
 import { analyze, checkBaseAndSnapshot, decidePublish, prepareSnapshot, type PreparedSnapshot } from "../ds/publish.js";
 import { parseVersion } from "../ds/semver.js";
@@ -71,7 +71,7 @@ const usageParams = z.object({ id: z.string().min(1).max(64), documentKey: z.str
 const usageBody = z.object({ version: versionString, metrics: usageMetricsSchema });
 const usageDocumentsQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
-  cursor: z.string().regex(/^\d{1,5}$/).optional(),
+  cursor: z.string().min(1).max(256).optional(),
   sort: z.enum(["reportedAt", "coverage"]).default("reportedAt"),
 });
 const USAGE_BODY_LIMIT = 128 * 1024;
@@ -449,6 +449,7 @@ export async function dsRoutes(
         });
         if (result.kind === "not_found") return notFound(reply);
         if (result.kind === "forbidden") return forbidden(reply, result.code);
+        if (result.kind === "archived") return send(reply, 409, "archived", "This library is archived.");
         if (result.kind === "unknown_version") return send(reply, 422, "unknown_version", "This library has no such version.");
         if (result.kind === "unknown_ids") {
           return send(reply, 422, "unknown_ids", "The report names variables or components that are not in this version.", { count: result.count });
@@ -458,7 +459,7 @@ export async function dsRoutes(
           analytics.capture({
             event: "ds_usage_reported",
             distinctId: principal.userId,
-            properties: { ...usageAnalytics(body.metrics), replaced: result.replaced },
+            properties: { ...usageAnalytics(body.metrics), replaced: result.replaced, has_regression_signal: result.regression },
           });
         } catch (err) {
           request.log.warn({ err }, "[ds] analytics capture failed");
@@ -473,8 +474,10 @@ export async function dsRoutes(
       guarded(async ({ store, principal }, request, reply) => {
         const params = parse(usageParams, request.params, reply, "path");
         if (!params) return reply;
-        const result = await store.deleteUsage({ libraryId: params.id, principal, documentKey: params.documentKey });
-        if (result === "not_found") return notFound(reply);
+        // The path key is the caller's document key or, for an admin, a reportId from the documents list.
+        const result = await store.deleteUsage({ libraryId: params.id, principal, key: params.documentKey });
+        if (result === "not_found") return notFound(reply, "Report");
+        if (result === "archived") return send(reply, 409, "archived", "This library is archived.");
         if (typeof result === "object") return forbidden(reply, result.code);
         return reply.status(204).send();
       }),
@@ -500,11 +503,8 @@ export async function dsRoutes(
         const params = parse(idParam, request.params, reply, "path");
         const query = params && parse(usageDocumentsQuery, request.query, reply, "query");
         if (!params || !query) return reply;
-        const page = await store.listUsageDocuments(params.id, principal, {
-          limit: query.limit,
-          offset: query.cursor ? Number(query.cursor) : 0,
-          sort: query.sort,
-        });
+        if (badCursor(query.cursor, (c) => parseUsageCursor(c, query.sort), reply)) return reply;
+        const page = await store.listUsageDocuments(params.id, principal, { limit: query.limit, sort: query.sort, cursor: query.cursor ?? null });
         if (page === null) return notFound(reply);
         if ("kind" in page) return forbidden(reply, page.code);
         return reply.send(page);

@@ -67,12 +67,19 @@ beforeAll(async () => {
   expect(pub.status).toBe(201);
 });
 
+async function publishedLibrary(name: string): Promise<string> {
+  const id = (await json<{ id: string }>(await call(as(owner), "POST", "/api/ds/libraries", { name, orgId }))).id;
+  await call(as(owner), "POST", `/api/ds/libraries/${id}/versions`, { baseVersion: null, bump: "minor", snapshot: BASE }, { "Idempotency-Key": randomUUID() });
+  return id;
+}
+
 describe("usage routes", () => {
   it("any reader reports (204), idempotently; a stranger gets 404; signed out gets 401", async () => {
     const key = doc();
     for (const who of [viewer, editor, owner]) expect((await put(as(who), key)).status).toBe(204);
     expect((await put(as(viewer), key)).status).toBe(204);
-    expect((await app().pglite.query("SELECT 1 FROM ds_usage WHERE document_key = $1", [key])).rows).toHaveLength(1);
+    // One row per reporter: three accounts, three rows, and the retry added none.
+    expect((await app().pglite.query("SELECT 1 FROM ds_usage WHERE document_key = $1", [key])).rows).toHaveLength(3);
     expect((await put(as(stranger), doc())).status).toBe(404);
     expect((await put({}, doc())).status).toBe(401);
     expect((await put(as(owner), doc(), undefined, "lib_missing")).status).toBe(404);
@@ -114,15 +121,55 @@ describe("usage routes", () => {
     expect((await call({}, "GET", `/api/ds/libraries/${lib}/usage/summary`)).status).toBe(401);
   });
 
-  it("delete: the reporter or the owner; another reader gets 403; a stranger 404", async () => {
+  it("two accounts reporting the same document keep separate reports; nobody overwrites the other", async () => {
+    const key = doc();
+    await put(as(viewer), key, { version: "1.0.0", metrics: { ...METRICS, nodes: 1 } });
+    await put(as(editor), key, { version: "1.0.0", metrics: { ...METRICS, nodes: 2 } });
+    const rows = (await app().pglite.query<{ reporter_id: string; metrics: { nodes: number } }>("SELECT reporter_id, metrics FROM ds_usage WHERE document_key = $1", [key])).rows;
+    expect(rows.map((r) => [r.reporter_id, r.metrics.nodes]).sort()).toEqual([[editor.userId, 2], [viewer.userId, 1]].sort());
+  });
+
+  it("delete: only your own document key (or, for an admin, a reportId); everything else is 404; no 403 oracle", async () => {
     const key = doc();
     await put(as(viewer), key);
-    expect((await call(as(editor), "DELETE", `/api/ds/libraries/${lib}/usage/${key}`)).status).toBe(403);
-    expect((await call(as(stranger), "DELETE", `/api/ds/libraries/${lib}/usage/${key}`)).status).toBe(404);
-    expect((await call(as(viewer), "DELETE", `/api/ds/libraries/${lib}/usage/${key}`)).status).toBe(204);
+    const del = (a: Account, k: string) => call(as(a), "DELETE", `/api/ds/libraries/${lib}/usage/${k}`);
+    expect((await del(editor, key)).status).toBe(404);
+    expect((await del(owner, key)).status).toBe(404);
+    expect((await del(stranger, key)).status).toBe(404);
+    expect((await del(viewer, doc())).status).toBe(404);
+    expect((await del(viewer, key)).status).toBe(204);
     await put(as(viewer), key);
-    expect((await call(as(owner), "DELETE", `/api/ds/libraries/${lib}/usage/${key}`)).status).toBe(204);
+    const list = await json<{ items: Array<{ reportId: string }> }>(await call(as(owner), "GET", `/api/ds/libraries/${lib}/usage/documents?limit=100`));
+    const reportId = (await app().pglite.query<{ id: string }>("SELECT id FROM ds_usage WHERE document_key = $1", [key])).rows[0].id;
+    expect(list.items.map((i) => i.reportId)).toContain(reportId);
+    expect((await del(editor, reportId)).status).toBe(404); // editors are not admins
+    expect((await del(owner, reportId)).status).toBe(204);
     expect((await app().pglite.query("SELECT 1 FROM ds_usage WHERE document_key = $1", [key])).rows).toHaveLength(0);
+  });
+
+  it("summary regressions are for editors and owners only", async () => {
+    const key = doc();
+    await put(as(editor), key, { version: "1.0.0", metrics: { ...METRICS, lint: { "hardcoded-value": 1 } } });
+    await put(as(editor), key, { version: "1.0.0", metrics: { ...METRICS, lint: { "hardcoded-value": 6 } } });
+    const sum = async (a: Account) => json<{ regressions?: Array<{ rule: string; delta: number }>; documents: { total: number } }>(await call(as(a), "GET", `/api/ds/libraries/${lib}/usage/summary`));
+    expect((await sum(viewer)).regressions).toBeUndefined();
+    expect((await sum(editor)).regressions?.[0]).toMatchObject({ rule: "hardcoded-value", delta: 5 });
+    expect((await sum(owner)).regressions?.length).toBeGreaterThan(0);
+    expect((await sum(viewer)).documents.total).toBeGreaterThan(0);
+  });
+
+  it("rejects inconsistent counts (bound > bindable)", async () => {
+    expect((await put(as(owner), doc(), { version: "1.0.0", metrics: { ...METRICS, tokens: { ...METRICS.tokens, bound: 11 } } })).status).toBe(400);
+  });
+
+  it("an archived library refuses reports and deletes with 409 archived", async () => {
+    const id = await publishedLibrary("Old");
+    const key = doc();
+    expect((await put(as(owner), key, undefined, id)).status).toBe(204);
+    await call(as(owner), "DELETE", `/api/ds/libraries/${id}`);
+    const res = await put(as(owner), key, undefined, id);
+    expect([res.status, (await json<{ error: string }>(res)).error]).toEqual([409, "archived"]);
+    expect((await call(as(owner), "DELETE", `/api/ds/libraries/${id}/usage/${key}`)).status).toBe(409);
   });
 
   it("accepts every lint rule id of the lint tool and nothing else", async () => {
@@ -131,19 +178,29 @@ describe("usage routes", () => {
     expect((await put(as(owner), doc(), { version: "1.0.0", metrics: { ...METRICS, lint: { ...all, "made-up": 1 } } })).status).toBe(400);
   });
 
-  it("documents list: editor and owner only, paginated, short key, both sorts", async () => {
+  it("documents list: editor and owner only, keyset-paged, short key, both sorts", async () => {
     const path = `/api/ds/libraries/${lib}/usage/documents`;
     expect((await call(as(viewer), "GET", path)).status).toBe(403);
     expect((await call(as(stranger), "GET", path)).status).toBe(404);
-    const first = await json<{ items: Array<{ documentKey: string; version: string; tokenCoverage: number | null; behind: boolean }>; nextCursor: string | null }>(
-      await call(as(editor), "GET", `${path}?limit=2`),
-    );
-    expect(first.items).toHaveLength(2);
-    expect(first.items[0].documentKey).toHaveLength(8);
-    expect(first.nextCursor).toBe("2");
-    const second = await json<{ items: unknown[] }>(await call(as(owner), "GET", `${path}?limit=2&cursor=${first.nextCursor}&sort=coverage`));
-    expect(second.items.length).toBeGreaterThan(0);
+    for (const sort of ["reportedAt", "coverage"]) {
+      const seen: string[] = [];
+      let cursor: string | null = null;
+      let first = true;
+      do {
+        const res = await call(as(first ? editor : owner), "GET", `${path}?limit=2&sort=${sort}${cursor ? `&cursor=${cursor}` : ""}`);
+        first = false;
+        const page: { items: Array<{ reportId: string; documentKey: string }>; nextCursor: string | null } = await json(res);
+        expect(page.items.length).toBeLessThanOrEqual(2);
+        for (const i of page.items) expect(i.documentKey).toHaveLength(8);
+        seen.push(...page.items.map((i) => i.reportId));
+        cursor = page.nextCursor;
+      } while (cursor);
+      expect(new Set(seen).size, sort).toBe(seen.length);
+      expect(seen.length, sort).toBeGreaterThan(2);
+    }
     expect((await call(as(owner), "GET", `${path}?cursor=abc`)).status).toBe(400);
+    const issued = (await json<{ nextCursor: string }>(await call(as(owner), "GET", `${path}?limit=1`))).nextCursor;
+    expect((await call(as(owner), "GET", `${path}?limit=1&sort=coverage&cursor=${issued}`)).status).toBe(400);
   });
 
   it("emits ds_usage_reported with buckets only", async () => {
@@ -155,8 +212,7 @@ describe("usage routes", () => {
   });
 
   it("purging the library removes its reports", async () => {
-    const id = (await json<{ id: string }>(await call(as(owner), "POST", "/api/ds/libraries", { name: "Temp", orgId }))).id;
-    await call(as(owner), "POST", `/api/ds/libraries/${id}/versions`, { baseVersion: null, bump: "minor", snapshot: BASE }, { "Idempotency-Key": randomUUID() });
+    const id = await publishedLibrary("Temp");
     const key = doc();
     expect((await put(as(owner), key, undefined, id)).status).toBe(204);
     await call(as(owner), "DELETE", `/api/ds/libraries/${id}`);

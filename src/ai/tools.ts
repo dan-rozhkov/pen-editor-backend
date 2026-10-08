@@ -1,5 +1,6 @@
 import { tool } from "ai";
 import { z } from "zod";
+import { LINT_RULE_IDS } from "./lintRules.js";
 import type { Config } from "../config.js";
 import { describeImage } from "../services/vision.js";
 import { screenshotOutputToContent } from "./screenshotOutput.js";
@@ -674,15 +675,7 @@ export const setVariablesInputShape = {
     ),
 };
 
-export const LINT_RULE_IDS = [
-  "hardcoded-value",
-  "off-scale-value",
-  "contrast",
-  "deprecated-token",
-  "deprecated-component",
-  "embed-literal",
-  "component-drift",
-] as const;
+export { LINT_RULE_IDS };
 
 // Style tool argument shapes. Exported (like getVariablesInputShape) so the
 // MCP server (src/mcp/server.ts) registers the exact same arguments.
