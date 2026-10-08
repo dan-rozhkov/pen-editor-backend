@@ -5,7 +5,7 @@ import { useAuthApp } from "./authHarness.js";
 
 const app = useAuthApp();
 
-describe("016_auth.sql", () => {
+describe("016_auth.sql + 018_auth_organization.sql", () => {
   // The committed SQL is the schema (Better Auth never migrates at runtime).
   // getMigrations() is the library's own planner: given the REAL auth config
   // (every plugin) and the database as our migrations left it, it must have
@@ -31,14 +31,18 @@ describe("016_auth.sql", () => {
         "oauthClient", "oauthAccessToken", "oauthRefreshToken", "oauthConsent", // mcp / oauth-provider
         "oauthClientResource", "oauthResource", "oauthClientAssertion",
         "apikey", "rateLimit",
+        "organization", "member", "invitation", // organization
         "anon_claims",
       ]),
     );
   });
 
   it("is idempotent SQL, so a re-run at startup is harmless", () => {
-    const sql = readFileSync(new URL("../src/analysis/migrations/016_auth.sql", import.meta.url), "utf8");
-    expect(sql.match(/^CREATE TABLE (?!IF NOT EXISTS)/gim)).toBeNull();
-    expect(sql.match(/^CREATE (UNIQUE )?INDEX (?!IF NOT EXISTS)/gim)).toBeNull();
+    for (const file of ["016_auth.sql", "018_auth_organization.sql"]) {
+      const sql = readFileSync(new URL(`../src/analysis/migrations/${file}`, import.meta.url), "utf8");
+      expect(sql.match(/^CREATE TABLE (?!IF NOT EXISTS)/gim), file).toBeNull();
+      expect(sql.match(/^CREATE (UNIQUE )?INDEX (?!IF NOT EXISTS)/gim), file).toBeNull();
+      expect(sql.match(/ADD COLUMN (?!IF NOT EXISTS)/gim), file).toBeNull();
+    }
   });
 });
