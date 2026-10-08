@@ -37,6 +37,10 @@ export function setMcpCorsHeaders(config: Config, request: FastifyRequest, reply
 }
 
 const MCP_EXPOSED_HEADERS = ["Mcp-Session-Id", "WWW-Authenticate"];
+// Design-system library API (/api/ds): ETag/If-None-Match for immutable
+// versions, Idempotency-Key on publish. A browser only reads a response header
+// that is named here; Retry-After is set by the rate limiter on 429.
+const DS_EXPOSED_HEADERS = ["ETag", "Location", "Idempotent-Replayed", "Retry-After"];
 
 export async function registerCors(app: FastifyInstance, config: Config) {
   const allowedOrigins = parseEnvList(config.CORS_ALLOWED_ORIGINS);
@@ -57,7 +61,8 @@ export async function registerCors(app: FastifyInstance, config: Config) {
       // mcpRoutes' own OPTIONS handler — ever runs, so this plugin-level
       // config is what a real cross-origin MCP client (e.g. the MCP
       // Inspector) actually sees on preflight.
-      methods: ["GET", "POST", "DELETE", "OPTIONS"],
+      // PATCH (library edit) and PUT (usage upsert) are for /api/ds.
+      methods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
       // Both extra headers carry a credential the BROWSER owns and the server
       // never stores, so each must be named explicitly — this is an allowlist,
       // not a wildcard, and a missing entry kills the cross-origin preflight
@@ -74,8 +79,10 @@ export async function registerCors(app: FastifyInstance, config: Config) {
         "Mcp-Session-Id",
         "X-OpenCode-Key",
         "X-Mobbin-Token",
+        "Idempotency-Key",
+        "If-None-Match",
       ],
-      exposedHeaders: MCP_EXPOSED_HEADERS,
+      exposedHeaders: [...MCP_EXPOSED_HEADERS, ...DS_EXPOSED_HEADERS],
     });
   };
   await app.register(cors, () => delegate);

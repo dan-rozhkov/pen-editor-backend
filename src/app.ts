@@ -46,6 +46,8 @@ import { getSharedUserSkillStore, type UserSkillStore } from "./ai/skills/userSt
 import { userSkillRoutes } from "./routes/userSkills.js";
 import { getSharedCanvasStore, type SharedCanvasStore } from "./sharing/sharedCanvasStore.js";
 import { sharedCanvasRoutes } from "./routes/sharedCanvas.js";
+import { getSharedDsStore, type DsStore } from "./ds/dsStore.js";
+import { dsRoutes } from "./routes/ds.js";
 import { getSharedAuditDb } from "./ai/selfimprove/auditDb.js";
 import type { TraceQueryable } from "./tracing/traceStore.js";
 import { createAnalyticsClient, type AnalyticsClient } from "./analytics/posthog.js";
@@ -75,6 +77,9 @@ export interface BuildAppOptions {
   // Test seam for the SharedCanvasStore backing /api/canvas/*, same
   // undefined/null contract as userSkillStore above.
   sharedCanvasStore?: SharedCanvasStore | null;
+  // Test seam for the DsStore backing /api/ds/* (design-system libraries),
+  // same undefined/null contract as sharedCanvasStore above.
+  dsStore?: DsStore | null;
   // Test seam: inject a fake analytics client (e.g. one that records
   // captures in memory). `undefined` = build the real one from config
   // (POSTHOG_API_KEY unset → a no-op client, same shape either way — unlike
@@ -310,6 +315,14 @@ export async function buildApp(
       await sharedCanvasStore.close();
     });
   }
+  // Design-system libraries: account-owned, so the routes themselves refuse
+  // anyone without a session; the store only needs Postgres.
+  const dsStore = options.dsStore !== undefined ? options.dsStore : getSharedDsStore(config.TRACE_DATABASE_URL);
+  if (dsStore) {
+    app.addHook("onClose", async () => {
+      await dsStore.close();
+    });
+  }
   // Product analytics (PostHog). Always a real object — never null — since
   // "disabled" is represented by createAnalyticsClient's own no-op client
   // rather than by a null test seam, unlike the stores above.
@@ -397,6 +410,7 @@ export async function buildApp(
   await memoryActivityRoutes(app, config, memoryStore);
   await userSkillRoutes(app, config, userSkillStore);
   await sharedCanvasRoutes(app, config, sharedCanvasStore);
+  await dsRoutes(app, dsStore, analytics);
   await modelsRoutes(app, config);
   await opencodeRoutes(app, config);
   await uploadRoutes(app, config);

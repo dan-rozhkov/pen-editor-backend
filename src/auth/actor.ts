@@ -101,3 +101,23 @@ export async function requireUserId(
   }
   return userId;
 }
+
+/**
+ * The signed-in account id, or a reply already sent (caller returns). For
+ * routes whose data is OWNED by an account: unlike `requireUserId` it never
+ * accepts a body/query `userId`, because that id is client-generated and
+ * unauthenticated, so anyone who knows it could write. 503 when accounts are
+ * off, 401 when signed out.
+ */
+export async function requireAccount(request: FastifyRequest, reply: FastifyReply): Promise<string | null> {
+  if (!request.server.auth) {
+    await reply.status(503).send({ error: "auth_disabled", message: "Accounts are not enabled on this server." });
+    return null;
+  }
+  const actor = await resolveActor(request);
+  if (actor.kind !== "user") {
+    await reply.status(401).send({ error: "unauthorized", message: "Sign in to use design-system libraries." });
+    return null;
+  }
+  return actor.userId;
+}

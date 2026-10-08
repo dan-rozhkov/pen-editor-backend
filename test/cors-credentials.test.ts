@@ -19,6 +19,8 @@ async function corsHeaders(overrides: Partial<Config>, origin: string, method = 
       origin: res.headers.get("access-control-allow-origin"),
       credentials: res.headers.get("access-control-allow-credentials"),
       headers: res.headers.get("access-control-allow-headers"),
+      methods: res.headers.get("access-control-allow-methods"),
+      exposed: res.headers.get("access-control-expose-headers"),
     };
   } finally {
     await running.close();
@@ -41,7 +43,13 @@ describe("CORS credentials", () => {
   });
 
   it("never gives a foreign origin credentials, and does not reflect it past an allowlist", async () => {
-    expect(await corsHeaders({ CORS_ALLOWED_ORIGINS: APP }, EVIL)).toEqual({ origin: null, credentials: null, headers: null });
+    expect(await corsHeaders({ CORS_ALLOWED_ORIGINS: APP }, EVIL)).toEqual({
+      origin: null,
+      credentials: null,
+      headers: null,
+      methods: null,
+      exposed: null,
+    });
   });
 
   it("keeps the empty-allowlist dev behaviour (reflect) but without credentials", async () => {
@@ -52,7 +60,24 @@ describe("CORS credentials", () => {
   it("answers the preflight with the existing allowed headers", async () => {
     const preflight = await corsHeaders({ CORS_ALLOWED_ORIGINS: APP }, APP, "OPTIONS");
     expect(preflight).toMatchObject({ origin: APP, credentials: "true" });
-    expect(preflight.headers).toBe("Content-Type, Authorization, Mcp-Session-Id, X-OpenCode-Key, X-Mobbin-Token");
+    expect(preflight.headers).toBe(
+      "Content-Type, Authorization, Mcp-Session-Id, X-OpenCode-Key, X-Mobbin-Token, Idempotency-Key, If-None-Match",
+    );
+  });
+
+  // The design-system library API (/api/ds) edits with PATCH, upserts with PUT,
+  // publishes with Idempotency-Key and revalidates with If-None-Match; a missing
+  // entry kills the cross-origin preflight, and a browser reads a response
+  // header only if it is exposed.
+  it("lets the design-system API through a credentialed preflight and exposes its response headers", async () => {
+    const preflight = await corsHeaders({ CORS_ALLOWED_ORIGINS: APP }, APP, "OPTIONS");
+    expect(preflight.methods?.split(",").map((m) => m.trim())).toEqual(
+      expect.arrayContaining(["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"]),
+    );
+    const simple = await corsHeaders({ CORS_ALLOWED_ORIGINS: APP }, APP);
+    expect(simple.exposed?.split(",").map((h) => h.trim())).toEqual(
+      expect.arrayContaining(["ETag", "Location", "Idempotent-Replayed", "Retry-After", "Mcp-Session-Id", "WWW-Authenticate"]),
+    );
   });
 });
 
