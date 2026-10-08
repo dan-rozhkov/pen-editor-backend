@@ -3,6 +3,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+  cssNameOf,
   checkRemovalPolicy,
   composeMigrations,
   deriveMigrations,
@@ -60,7 +61,7 @@ describe("ds diff golden fixtures", () => {
         "minor-add-variable", "minor-add-collection", "minor-add-mode", "minor-add-component",
         "minor-add-axis-value", "minor-add-slot", "minor-deprecate-variable", "minor-deprecate-component",
         "patch-value-literal", "patch-alias-retarget", "patch-component-html", "patch-docs-description",
-        "patch-undeprecate", "patch-ordering", "none-identical",
+        "patch-undeprecate", "patch-ordering", "none-identical", "major-rename-variable", "patch-rename-same-css",
       ]),
     );
   });
@@ -113,9 +114,82 @@ describe("composeMigrations", () => {
     ]);
   });
 
+  const rename = (id: string, cssFrom: string, cssTo: string): Migration => ({ op: "renameToken", id, cssFrom, cssTo });
+  const rebind = (from: string, to: string, cssFrom: string, cssTo: string): Migration => ({ op: "rebindToken", from, to, cssFrom, cssTo });
+
+  it("collapses a rename chain and drops a rename that comes back", () => {
+    expect(composeMigrations([[rename("x", "--a", "--b")], [rename("x", "--b", "--c")]])).toEqual([rename("x", "--a", "--c")]);
+    expect(composeMigrations([[rename("x", "--a", "--b")], [rename("x", "--b", "--a")]])).toEqual([]);
+  });
+
+  it("points an earlier rebind at the renamed target and keeps the rename", () => {
+    expect(composeMigrations([[rebind("a", "b", "--a", "--b")], [rename("b", "--b", "--b2")]])).toEqual([
+      rename("b", "--b", "--b2"),
+      rebind("a", "b", "--a", "--b2"),
+    ]);
+  });
+
+  it("turns a rename followed by a rebind of the same token into one rebind from the original CSS name", () => {
+    expect(composeMigrations([[rename("b", "--b", "--b2")], [rebind("b", "c", "--b2", "--c")]])).toEqual([rebind("b", "c", "--b", "--c")]);
+  });
+
+  it("drops a rename of a token that is frozen later", () => {
+    expect(composeMigrations([[rename("b", "--b", "--b2")], [{ op: "freezeToken", id: "b" }]])).toEqual([{ op: "freezeToken", id: "b" }]);
+  });
+
+  it("freezes a rebound source with the value of the token that was frozen", () => {
+    expect(composeMigrations([[rebind("a", "b", "--a", "--b")], [{ op: "freezeToken", id: "b" }]])).toEqual([
+      { op: "freezeToken", id: "a", valueFrom: "b" },
+      { op: "freezeToken", id: "b" },
+    ]);
+    expect(
+      composeMigrations([[rebind("a", "b", "--a", "--b")], [rebind("b", "c", "--b", "--c")], [{ op: "freezeToken", id: "c" }]]),
+    ).toEqual([
+      { op: "freezeToken", id: "a", valueFrom: "c" },
+      { op: "freezeToken", id: "b", valueFrom: "c" },
+      { op: "freezeToken", id: "c" },
+    ]);
+  });
+
   it("keeps one dropMode per mode", () => {
     const drop: Migration = { op: "dropMode", collection: "c", mode: "m" };
     expect(composeMigrations([[drop], [drop]])).toEqual([drop]);
+  });
+});
+
+// A tiny document model: one usage per token of the first snapshot. Applying
+// the per-step migrations one by one is the ground truth; the composed list
+// must land every usage in the same place.
+type Usage = { kind: "token"; id: string; css: string } | { kind: "literal"; value: string };
+
+function applyMigrations(doc: Usage[], ops: Migration[], valueFrom: (id: string) => string): Usage[] {
+  return doc.map((u) => {
+    if (u.kind !== "token") return u;
+    for (const op of ops) {
+      if (op.op === "rebindToken" && u.id === op.from) return { kind: "token", id: op.to, css: op.cssTo };
+      if (op.op === "renameToken" && u.id === op.id) return { ...u, css: op.cssTo };
+      if (op.op === "freezeToken" && u.id === op.id) return { kind: "literal", value: valueFrom(op.valueFrom ?? op.id) };
+    }
+    return u;
+  });
+}
+
+const valueIn = (snapshot: Snapshot, id: string) => JSON.stringify(snapshot.variables.find((v) => v.id === id)?.valuesByMode ?? null);
+
+describe("composeMigrations equals step-by-step application", () => {
+  it.each(chains)("%s", (_file, fixture) => {
+    const snapshots = fixture.chain.map(validated);
+    const start: Usage[] = snapshots[0].variables.map((v) => ({ kind: "token", id: v.id, css: cssNameOf(v) }));
+    let sequential = start;
+    const steps: Migration[][] = [];
+    snapshots.slice(1).forEach((next, i) => {
+      const ops = deriveMigrations(snapshots[i], next);
+      steps.push(ops);
+      sequential = applyMigrations(sequential, ops, (id) => valueIn(snapshots[i], id));
+    });
+    // A composed freeze reads the value from the last version that still has the token.
+    const lastValue = (id: string) => valueIn(snapshots.findLast((s) => s.variables.some((v) => v.id === id)) as Snapshot, id);
+    expect(applyMigrations(start, composeMigrations(steps), lastValue)).toEqual(sequential);
   });
 });
 

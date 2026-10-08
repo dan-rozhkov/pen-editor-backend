@@ -2,7 +2,7 @@
 // the store owns the transaction, this module owns every decision in it.
 // Order of work (inside the row lock): idempotency replay, archived, base
 // version, snapshot validity, diff, bump, removal policy, version limit.
-import { canonicalHash } from "./canonical.js";
+import { canonicalJson, sha256Hex } from "./canonical.js";
 import {
   bumpSatisfies,
   checkRemovalPolicy,
@@ -20,12 +20,30 @@ import {
   type PublishRejection,
 } from "./dsStore.js";
 import { nextVersions, type Bump } from "./semver.js";
-import type { Snapshot, SnapshotValidation } from "./snapshotSchema.js";
+import { validateSnapshot, type Snapshot, type SnapshotValidation } from "./snapshotSchema.js";
+
+/**
+ * A snapshot validated and serialized exactly once, before any lock is taken:
+ * the canonical JSON is what the size check measures, the hash covers, and the
+ * INSERT stores. `json` and `hash` are empty when the snapshot is invalid.
+ */
+export interface PreparedSnapshot {
+  validation: SnapshotValidation;
+  json: string;
+  hash: string;
+}
+
+export function prepareSnapshot(raw: unknown): PreparedSnapshot {
+  const validation = validateSnapshot(raw);
+  if (!validation.ok) return { validation, json: "", hash: "" };
+  const json = canonicalJson(validation.snapshot);
+  return { validation, json, hash: sha256Hex(json) };
+}
 
 export interface PublishInput {
   baseVersion: string | null;
   bump: Bump;
-  validation: SnapshotValidation;
+  snapshot: PreparedSnapshot;
   changelog: unknown;
   notes: string;
   idempotencyKey: string;
@@ -94,7 +112,7 @@ export function decidePublish(input: PublishInput): (ctx: PublishContext) => Pub
       return { kind: "replay", result: { version, bump, publishedAt, publishedBy, snapshotHash } };
     }
     if (ctx.library.archivedAt) return reject(409, "archived", "This library is archived and cannot be published to.");
-    const checked = checkBaseAndSnapshot(ctx, input.baseVersion, input.validation);
+    const checked = checkBaseAndSnapshot(ctx, input.baseVersion, input.snapshot.validation);
     if ("kind" in checked) return checked;
 
     const analysis = analyze(ctx.latest?.snapshot ?? null, checked.snapshot, ctx.latest?.version ?? null);
@@ -114,8 +132,8 @@ export function decidePublish(input: PublishInput): (ctx: PublishContext) => Pub
         version: first ? "1.0.0" : analysis.nextVersions[input.bump],
         bump: first ? "initial" : input.bump,
         baseVersion: input.baseVersion,
-        snapshot: checked.snapshot,
-        snapshotHash: canonicalHash(checked.snapshot),
+        snapshotJson: input.snapshot.json,
+        snapshotHash: input.snapshot.hash,
         changelog: input.changelog,
         summary: analysis.diff.summary,
         migrations: analysis.migrations,

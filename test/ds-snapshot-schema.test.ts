@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { containsNul } from "../src/ds/nul.js";
 import { nextVersions, parseVersion } from "../src/ds/semver.js";
 import { validateSnapshot, type Snapshot } from "../src/ds/snapshotSchema.js";
 
@@ -43,6 +44,11 @@ describe("validateSnapshot", () => {
     expect(result).toMatchObject({ ok: false, code: "invalid_snapshot" });
   });
 
+  it("accepts the literal text backslash-u0000 (it is not a NUL character)", () => {
+    const literal = mutated((s) => void (s.variables[0].name = "a\\u0000b"));
+    expect(validateSnapshot(literal).ok).toBe(true);
+  });
+
   it("answers unsupported_schema for a newer version before looking at the rest", () => {
     expect(validateSnapshot({ schemaVersion: 2, whatever: true })).toMatchObject({ ok: false, code: "unsupported_schema" });
   });
@@ -58,5 +64,16 @@ describe("semver", () => {
     expect(["01.0.0", "1.0", "1.0.0-rc1", "v1.0.0", ""].map(parseVersion)).toEqual([null, null, null, null, null]);
     expect(nextVersions("1.4.2")).toEqual({ major: "2.0.0", minor: "1.5.0", patch: "1.4.3" });
     expect(nextVersions(null)).toEqual({ major: "1.0.0", minor: "1.0.0", patch: "1.0.0" });
+  });
+});
+
+describe("containsNul", () => {
+  it("finds a real U+0000 in values, keys and nested containers, and ignores the escape text", () => {
+    expect(containsNul("a\u0000b")).toBe(true);
+    expect(containsNul({ a: [{ b: "x\u0000" }] })).toBe(true);
+    expect(containsNul({ "k\u0000": 1 })).toBe(true);
+    expect(containsNul("a\\u0000b")).toBe(false);
+    expect(containsNul({ a: [1, null, true, "plain"] })).toBe(false);
+    expect(containsNul(undefined)).toBe(false);
   });
 });

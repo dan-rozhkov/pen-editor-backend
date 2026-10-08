@@ -46,7 +46,10 @@ export interface Violation {
 
 export type Migration =
   | { op: "rebindToken"; from: string; to: string; cssFrom: string; cssTo: string }
-  | { op: "freezeToken"; id: string }
+  /** A surviving variable whose CSS name changed: `var(cssFrom)` in consumer markup becomes `var(cssTo)`. */
+  | { op: "renameToken"; id: string; cssFrom: string; cssTo: string }
+  /** `valueFrom` is set only by composition: freeze `id` with the value of that (rebound-to) token instead of its own. */
+  | { op: "freezeToken"; id: string; valueFrom?: string }
   | { op: "remapComponent"; from: string; to: string }
   | { op: "removeComponent"; key: string }
   | { op: "dropMode"; collection: string; mode: string }
@@ -132,8 +135,14 @@ export function diffSnapshots(prev: Snapshot | null, next: Snapshot): SnapshotDi
     else if (p.deprecated && !n.deprecated) push("changed", entity, "patch", "variable un-deprecated");
     else if (!same(p.deprecated, n.deprecated)) push("changed", entity, "patch", "deprecation details changed");
     if (!same(p.valuesByMode, n.valuesByMode)) push("changed", entity, "patch", "value changed");
-    if (p.name !== n.name || p.description !== n.description || !same(p.scopes, n.scopes)) {
+    // A new CSS name breaks every consumer var(--old): major, with a rename migration.
+    const renamed = cssNameOf(p) !== cssNameOf(n);
+    if (renamed) push("changed", entity, "major", "CSS name changed");
+    else if (p.name !== n.name || p.description !== n.description || !same(p.scopes, n.scopes)) {
       push("changed", entity, "patch", "name, description or scopes changed");
+    }
+    if (renamed && (p.description !== n.description || !same(p.scopes, n.scopes))) {
+      push("changed", entity, "patch", "description or scopes changed");
     }
   }
   for (const vid of nextVars.keys()) {
@@ -262,12 +271,13 @@ export function checkRemovalPolicy(prev: Snapshot | null, next: Snapshot): Viola
   return violations.sort((a, b) => a.entity.localeCompare(b.entity));
 }
 
-const OP_ORDER: Migration["op"][] = ["rebindToken", "freezeToken", "remapComponent", "removeComponent", "dropMode", "remapVariant"];
+const OP_ORDER: Migration["op"][] = ["renameToken", "rebindToken", "freezeToken", "remapComponent", "removeComponent", "dropMode", "remapVariant"];
 
 function opKey(m: Migration): string {
   switch (m.op) {
     case "rebindToken":
       return m.from;
+    case "renameToken":
     case "freezeToken":
       return m.id;
     case "remapComponent":
@@ -294,7 +304,13 @@ export function deriveMigrations(prev: Snapshot | null, next: Snapshot): Migrati
   const nextCollections = byId(next.collections, (c) => c.id);
 
   for (const v of prev.variables) {
-    if (nextVars.has(v.id)) continue;
+    const kept = nextVars.get(v.id);
+    if (kept) {
+      const cssFrom = cssNameOf(v);
+      const cssTo = cssNameOf(kept);
+      if (cssFrom !== cssTo) out.push({ op: "renameToken", id: v.id, cssFrom, cssTo });
+      continue;
+    }
     const target = v.deprecated?.replacedBy ? nextVars.get(v.deprecated.replacedBy) : undefined;
     if (target) out.push({ op: "rebindToken", from: v.id, to: target.id, cssFrom: cssNameOf(v), cssTo: cssNameOf(target) });
     else if (v.deprecated?.note?.trim() || v.deprecated?.replacedBy) out.push({ op: "freezeToken", id: v.id });
@@ -316,37 +332,59 @@ export function deriveMigrations(prev: Snapshot | null, next: Snapshot): Migrati
 
 /**
  * Folds the migrations of consecutive versions (oldest first) into one list
- * that takes a document straight from the first version to the last. A chain
- * A -> B -> C becomes A -> C and B -> C; a token rebound to something that is
- * frozen later is frozen itself. Each op rewrites existing entries once, so a
- * cycle (an id that comes back) cannot loop.
+ * that takes a document straight from the first version to the last, with the
+ * same result as applying every step in turn. A chain A -> B -> C becomes
+ * A -> C and B -> C; renames of one token collapse; a rebind follows the CSS
+ * name of its target; a token rebound to something that is frozen later is
+ * frozen itself, with the value of the token it had been rebound to (that is
+ * what the step-by-step run would have written). Each op rewrites existing
+ * entries once, so a cycle (an id that comes back) cannot loop.
  */
 export function composeMigrations(steps: Migration[][]): Migration[] {
-  const rebinds = new Map<string, Extract<Migration, { op: "rebindToken" }>>();
-  const frozen = new Set<string>();
+  type Rebind = Extract<Migration, { op: "rebindToken" }>;
+  type Rename = Extract<Migration, { op: "renameToken" }>;
+  const rebinds = new Map<string, Rebind>();
+  const renames = new Map<string, Rename>();
+  /** frozen id -> id whose value it is frozen with. */
+  const frozen = new Map<string, string>();
   const remaps = new Map<string, string>();
   const removedComponents = new Set<string>();
   const others = new Map<string, Migration>();
 
   for (const op of steps.flat()) {
     switch (op.op) {
+      case "renameToken": {
+        // Earlier rebinds into this token must write its new CSS name.
+        for (const [from, r] of rebinds) if (r.to === op.id) rebinds.set(from, { ...r, cssTo: op.cssTo });
+        if (frozen.has(op.id) || rebinds.has(op.id)) break;
+        const cssFrom = renames.get(op.id)?.cssFrom ?? op.cssFrom;
+        if (cssFrom === op.cssTo) renames.delete(op.id);
+        else renames.set(op.id, { op: "renameToken", id: op.id, cssFrom, cssTo: op.cssTo });
+        break;
+      }
       case "rebindToken": {
         for (const [from, r] of rebinds) {
           if (r.to !== op.from) continue;
           if (from === op.to) rebinds.delete(from);
           else rebinds.set(from, { ...r, to: op.to, cssTo: op.cssTo });
         }
-        if (op.from !== op.to && !rebinds.has(op.from) && !frozen.has(op.from)) rebinds.set(op.from, op);
+        // The token was renamed first: consumer markup still has its original CSS name.
+        const renamedFrom = renames.get(op.from)?.cssFrom;
+        renames.delete(op.from);
+        if (op.from !== op.to && !rebinds.has(op.from) && !frozen.has(op.from)) {
+          rebinds.set(op.from, renamedFrom === undefined ? op : { ...op, cssFrom: renamedFrom });
+        }
         break;
       }
       case "freezeToken": {
         for (const [from, r] of rebinds) {
           if (r.to === op.id) {
             rebinds.delete(from);
-            frozen.add(from);
+            frozen.set(from, op.id);
           }
         }
-        if (!rebinds.has(op.id)) frozen.add(op.id);
+        renames.delete(op.id);
+        if (!rebinds.has(op.id) && !frozen.has(op.id)) frozen.set(op.id, op.id);
         break;
       }
       case "remapComponent": {
@@ -373,8 +411,9 @@ export function composeMigrations(steps: Migration[][]): Migration[] {
     }
   }
   return sortMigrations([
+    ...renames.values(),
     ...rebinds.values(),
-    ...[...frozen].map((id): Migration => ({ op: "freezeToken", id })),
+    ...[...frozen].map(([id, source]): Migration => (source === id ? { op: "freezeToken", id } : { op: "freezeToken", id, valueFrom: source })),
     ...[...remaps].map(([from, to]): Migration => ({ op: "remapComponent", from, to })),
     ...[...removedComponents].map((key): Migration => ({ op: "removeComponent", key })),
     ...others.values(),

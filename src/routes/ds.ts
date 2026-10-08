@@ -10,10 +10,10 @@ import { z, type ZodType } from "zod";
 import type { AnalyticsClient } from "../analytics/posthog.js";
 import { requireAccount } from "../auth/actor.js";
 import { canonicalJson, sha256Hex } from "../ds/canonical.js";
-import { decodeCursor, type DsLibrary, type DsStore } from "../ds/dsStore.js";
-import { analyze, checkBaseAndSnapshot, decidePublish } from "../ds/publish.js";
+import { parseLibraryCursor, parseVersionCursor, type DsLibrary, type DsStore } from "../ds/dsStore.js";
+import { containsNul } from "../ds/nul.js";
+import { analyze, checkBaseAndSnapshot, decidePublish, prepareSnapshot, type PreparedSnapshot } from "../ds/publish.js";
 import { parseVersion } from "../ds/semver.js";
-import { validateSnapshot } from "../ds/snapshotSchema.js";
 
 const MAX_SNAPSHOT_BYTES = 4 * 1024 * 1024;
 const MAX_CHANGELOG_BYTES = 512 * 1024;
@@ -22,11 +22,10 @@ const PUBLISH_BODY_LIMIT = 6 * 1024 * 1024;
 const WRITE_LIMIT = { rateLimit: { max: 30, timeWindow: "1 minute" } };
 const READ_LIMIT = { rateLimit: { max: 120, timeWindow: "1 minute" } };
 
-const NUL = "\\u0000";
-const hasNul = (value: unknown): boolean => JSON.stringify(value).includes(NUL);
-const noNul = <T extends ZodType>(schema: T) => schema.refine((v) => !hasNul(v), "Strings may not contain U+0000.");
+const noNul = <T extends ZodType>(schema: T) => schema.refine((v) => !containsNul(v), "Strings may not contain U+0000.");
 
 const idParam = z.object({ id: z.string().min(1).max(64) });
+const deleteQuery = z.object({ purge: z.enum(["true", "false"]).optional() });
 const versionParams = z.object({ id: z.string().min(1).max(64), version: z.string().min(1).max(32) });
 const pageQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
@@ -73,8 +72,8 @@ function parse<S extends ZodType>(schema: S, data: unknown, reply: FastifyReply,
 }
 
 /** A cursor this server did not issue is a client bug: say so instead of restarting the list. */
-function badCursor(cursor: string | undefined, arity: number, reply: FastifyReply): boolean {
-  if (cursor === undefined || decodeCursor(cursor, arity) !== null) return false;
+function badCursor(cursor: string | undefined, valid: (cursor: string) => unknown, reply: FastifyReply): boolean {
+  if (cursor === undefined || valid(cursor) !== null) return false;
   void send(reply, 400, "invalid_cursor", "The cursor is not valid. Start again without a cursor.");
   return true;
 }
@@ -101,8 +100,15 @@ function matchesEtag(header: string | undefined, etag: string): boolean {
     .some((t) => t === "*" || t === etag);
 }
 
-function snapshotTooLarge(snapshot: unknown): boolean {
-  return Buffer.byteLength(JSON.stringify(snapshot ?? null), "utf8") > MAX_SNAPSHOT_BYTES;
+/**
+ * One serialization per request on the happy path: a valid snapshot is
+ * measured by its canonical JSON (the very string that is hashed and stored).
+ * Only an invalid one is re-serialized, so an oversized junk body still gets
+ * 413 rather than a pile of validation issues.
+ */
+function snapshotTooLarge(prepared: PreparedSnapshot, raw: unknown): boolean {
+  const size = prepared.validation.ok ? Buffer.byteLength(prepared.json, "utf8") : Buffer.byteLength(JSON.stringify(raw ?? null), "utf8");
+  return size > MAX_SNAPSHOT_BYTES;
 }
 
 export async function dsRoutes(
@@ -146,7 +152,12 @@ export async function dsRoutes(
         const id = `lib_${randomBytes(9).toString("base64url")}`;
         const result = await store.createLibrary({ id, ownerId: userId, name: body.name, description: body.description });
         if (result.kind === "name_taken") return send(reply, 409, "name_taken", "You already have a library with this name.");
-        if (result.kind === "limit") return send(reply, 422, "library_limit", "You have reached the limit of libraries.");
+        if (result.kind === "limit") {
+          return send(reply, 422, "library_limit", "You have reached the limit of libraries. Delete an archived library to free a slot.", {
+            live: result.live,
+            total: result.total,
+          });
+        }
         return reply.status(201).header("Location", `/api/ds/libraries/${id}`).send(libraryJson(result.library));
       }),
     );
@@ -156,7 +167,7 @@ export async function dsRoutes(
       { config: READ_LIMIT },
       guarded(async ({ store, userId }, request, reply) => {
         const query = parse(pageQuery, request.query, reply, "query");
-        if (!query || badCursor(query.cursor, 2, reply)) return reply;
+        if (!query || badCursor(query.cursor, parseLibraryCursor, reply)) return reply;
         const page = await store.listLibraries(userId, { limit: query.limit, cursor: query.cursor ?? null });
         return reply.send({ items: page.items.map(libraryJson), nextCursor: page.nextCursor });
       }),
@@ -194,7 +205,15 @@ export async function dsRoutes(
       { config: WRITE_LIMIT },
       guarded(async ({ store, userId }, request, reply) => {
         const params = parse(idParam, request.params, reply, "path");
-        if (!params) return reply;
+        const query = params && parse(deleteQuery, request.query, reply, "query");
+        if (!params || !query) return reply;
+        if (query.purge === "true") {
+          // Hard delete, only after an archive: consumers had their chance to move.
+          const purged = await store.purgeLibrary(params.id, userId);
+          if (purged === "not_found") return notFound(reply);
+          if (purged === "not_archived") return send(reply, 409, "not_archived", "Archive the library before deleting it for good.");
+          return reply.status(204).send();
+        }
         // Archive only: consumers stay pinned and old versions stay readable.
         return (await store.archiveLibrary(params.id, userId)) ? reply.status(204).send() : notFound(reply);
       }),
@@ -209,10 +228,11 @@ export async function dsRoutes(
         const params = parse(idParam, request.params, reply, "path");
         const body = params && parse(previewBody, request.body, reply, "body");
         if (!params || !body) return reply;
-        if (snapshotTooLarge(body.snapshot)) return send(reply, 413, "snapshot_too_large", "The snapshot is larger than 4 MB.");
+        const prepared = prepareSnapshot(body.snapshot);
+        if (snapshotTooLarge(prepared, body.snapshot)) return send(reply, 413, "snapshot_too_large", "The snapshot is larger than 4 MB.");
         const ctx = await store.getPublishContext(params.id, userId);
         if (!ctx) return notFound(reply);
-        const checked = checkBaseAndSnapshot(ctx, body.baseVersion, validateSnapshot(body.snapshot));
+        const checked = checkBaseAndSnapshot(ctx, body.baseVersion, prepared.validation);
         if ("kind" in checked) return send(reply, checked.status, checked.code, checked.message, checked.details);
         const analysis = analyze(ctx.latest?.snapshot ?? null, checked.snapshot, ctx.latest?.version ?? null);
         return reply.send({
@@ -238,21 +258,25 @@ export async function dsRoutes(
         }
         const body = parse(publishBody, request.body, reply, "body");
         if (!body) return reply;
-        if (snapshotTooLarge(body.snapshot)) return send(reply, 413, "snapshot_too_large", "The snapshot is larger than 4 MB.");
-        if (Buffer.byteLength(JSON.stringify(body.changelog), "utf8") > MAX_CHANGELOG_BYTES) {
+        const prepared = prepareSnapshot(body.snapshot);
+        if (snapshotTooLarge(prepared, body.snapshot)) return send(reply, 413, "snapshot_too_large", "The snapshot is larger than 4 MB.");
+        const changelogJson = JSON.stringify(body.changelog);
+        if (Buffer.byteLength(changelogJson, "utf8") > MAX_CHANGELOG_BYTES) {
           return send(reply, 413, "changelog_too_large", "The changelog is larger than 512 KB.");
         }
+        // Identity of the request without re-serializing the snapshot: its hash stands in for it.
+        const snapshotDigest = prepared.validation.ok ? prepared.hash : sha256Hex(canonicalJson(body.snapshot ?? null));
 
         const outcome = await store.publish(
           { libraryId: params.id, ownerId: userId, publishedBy: userId, idempotencyKey: key.data },
           decidePublish({
             baseVersion: body.baseVersion,
             bump: body.bump,
-            validation: validateSnapshot(body.snapshot),
+            snapshot: prepared,
             changelog: body.changelog,
             notes: body.notes,
             idempotencyKey: key.data,
-            requestHash: sha256Hex(canonicalJson(request.body)),
+            requestHash: sha256Hex(canonicalJson({ baseVersion: body.baseVersion, bump: body.bump, notes: body.notes, changelog: body.changelog, snapshotDigest })),
           }),
         );
         if (outcome.kind === "not_found") return notFound(reply);
@@ -262,13 +286,17 @@ export async function dsRoutes(
         reply.header("Location", location);
         if (outcome.kind === "replay") reply.header("Idempotent-Replayed", "true");
         else {
-          // Counts and enums only: never names, markup or labels.
-          const stored = await store.getVersion(params.id, outcome.result.version);
-          analytics.capture({
-            event: "ds_published",
-            distinctId: userId,
-            properties: { bump: outcome.result.bump, ...(stored?.summary ?? {}) },
-          });
+          // Counts and enums only: never names, markup or labels. The publish
+          // is committed; nothing here may turn it into an error.
+          try {
+            analytics.capture({
+              event: "ds_published",
+              distinctId: userId,
+              properties: { bump: outcome.result.bump, ...outcome.summary },
+            });
+          } catch (err) {
+            request.log.warn({ err }, "[ds] analytics capture failed");
+          }
         }
         return reply.status(outcome.kind === "replay" ? 200 : 201).send(outcome.result);
       }),
@@ -282,10 +310,9 @@ export async function dsRoutes(
       guarded(async ({ store, userId }, request, reply) => {
         const params = parse(idParam, request.params, reply, "path");
         const query = params && parse(pageQuery, request.query, reply, "query");
-        if (!params || !query || badCursor(query.cursor, 1, reply)) return reply;
-        if (!(await store.getLibrary(params.id, userId))) return notFound(reply);
-        const page = await store.listVersions(params.id, { limit: query.limit, cursor: query.cursor ?? null });
-        return reply.send(page);
+        if (!params || !query || badCursor(query.cursor, parseVersionCursor, reply)) return reply;
+        const page = await store.listVersions(params.id, userId, { limit: query.limit, cursor: query.cursor ?? null });
+        return page ? reply.send(page) : notFound(reply);
       }),
     );
 
@@ -295,12 +322,14 @@ export async function dsRoutes(
       guarded(async ({ store, userId }, request, reply) => {
         const params = parse(versionParams, request.params, reply, "path");
         if (!params) return reply;
-        if (!(await store.getLibrary(params.id, userId))) return notFound(reply);
         const isLatest = params.version === "latest";
         if (!isLatest && parseVersion(params.version) === null) return notFound(reply, "Version");
-        const version = await store.getVersion(params.id, params.version);
-        if (!version) return notFound(reply, "Version");
-        const etag = `"${version.snapshotHash}"`;
+        const found = await store.getVersion(params.id, userId, params.version);
+        if (found.kind === "no_library") return notFound(reply);
+        if (found.kind === "no_version") return notFound(reply, "Version");
+        const { version } = found;
+        // The hash alone repeats when a later version reverts to an earlier snapshot.
+        const etag = `"${version.version}:${version.snapshotHash}"`;
         reply.header("ETag", etag);
         // A pinned version never changes; "latest" moves with every publish.
         reply.header("Cache-Control", isLatest ? "private, no-cache" : "private, max-age=31536000, immutable");
@@ -316,14 +345,13 @@ export async function dsRoutes(
         const params = parse(idParam, request.params, reply, "path");
         const query = params && parse(updatesQuery, request.query, reply, "query");
         if (!params || !query) return reply;
-        const found = await store.getLibrary(params.id, userId);
-        if (!found) return notFound(reply);
-        const updates = await store.listUpdates(params.id, query.from, query.limit);
-        if (!updates) return notFound(reply, "Version");
+        const updates = await store.listUpdates(params.id, userId, query.from, query.limit);
+        if (updates.kind === "no_library") return notFound(reply);
+        if (updates.kind === "no_version") return notFound(reply, "Version");
         const last = updates.items[updates.items.length - 1];
         return reply.send({
           current: query.from,
-          latest: found.library.latestVersion,
+          latest: updates.latest,
           items: updates.items,
           // When true, ask again with from = nextFrom before applying anything.
           hasMore: updates.hasMore,
