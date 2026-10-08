@@ -346,9 +346,29 @@ describe("set_variables schema", () => {
     ).toBe(true);
   });
 
-  it("requires the variables record", () => {
-    expect(schema.safeParse({}).success).toBe(false);
-    expect(schema.safeParse({ replace: true }).success).toBe(false);
+  it("accepts collections, a default collection and valuesByMode entries", () => {
+    const parsed = schema.safeParse({
+      collections: { Brand: { modes: ["acme", "globex"], defaultMode: "acme" } },
+      collection: "Brand",
+      variables: {
+        "--bg": { valuesByMode: { light: "#fff", dark: "$--ink" }, scopes: ["fill"], description: "Page" },
+        "--old": { value: "#000", deprecated: { since: "2.0", replacedBy: "$--bg", note: "x" } },
+      },
+    });
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data.collection).toBe("Brand");
+  });
+
+  it("rejects wrongly typed collections", () => {
+    expect(schema.safeParse({ variables: {}, collections: { Brand: { modes: [] } } }).success).toBe(false);
+    expect(schema.safeParse({ variables: {}, collections: { Brand: { modes: "acme" } } }).success).toBe(false);
+    expect(schema.safeParse({ variables: {}, collections: "Brand" }).success).toBe(false);
+    expect(schema.safeParse({ variables: {}, collection: 1 }).success).toBe(false);
+  });
+
+  it("accepts a collections-only call (variables is optional)", () => {
+    expect(schema.safeParse({}).success).toBe(true);
+    expect(schema.safeParse({ collections: { Brand: { modes: ["acme"] } } }).success).toBe(true);
   });
 
   it("rejects non-record variables and non-boolean replace", () => {
@@ -539,6 +559,19 @@ describe("get_variables schema", () => {
     const result = schema.safeParse({});
     expect(result.success).toBe(true);
     expect(result.success && result.data).toEqual({});
+  });
+
+  it("accepts collection, names and mode filters", () => {
+    expect(schema.safeParse({ collection: "Theme" }).success).toBe(true);
+    expect(schema.safeParse({ names: ["--bg", "$--ink"] }).success).toBe(true);
+    expect(schema.safeParse({ mode: "dark" }).success).toBe(true);
+    expect(schema.safeParse({ mode: { Brand: "acme" } }).success).toBe(true);
+  });
+
+  it("rejects wrongly typed filters", () => {
+    expect(schema.safeParse({ names: "x" }).success).toBe(false);
+    expect(schema.safeParse({ collection: 1 }).success).toBe(false);
+    expect(schema.safeParse({ mode: { Brand: 1 } }).success).toBe(false);
   });
 });
 

@@ -432,6 +432,8 @@ export const BATCH_DESIGN_DESCRIPTION = `Execute batch operations on the .pen no
 - **Wrap (card grids / tag lists):** set \`wrap: true\` on a frame with layout to let children flow onto new lines once the main axis runs out of space. Use \`rowGap\`/\`columnGap\` for independent spacing on each axis (row-gap = space between wrapped lines, column-gap = space between items in a row) — either falls back to \`gap\` when unset, so \`gap\` alone still applies to both axes. A wrapped frame typically has a fixed/fill \`width\` and \`height: "fit_content"\` so it hugs the total height of all wrapped rows. Example: \`U("cardGrid", {wrap: true, columnGap: 16, rowGap: 24})\`
 - **Min/max sizing (any child in an auto-layout frame):** \`minWidth\`/\`maxWidth\`/\`minHeight\`/\`maxHeight\` (numbers, in px) clamp a child's resolved size regardless of its sizing mode (fixed/fill_container/fit_content) — e.g. a \`width: "fill_container"\` card that shouldn't grow past 320px: \`U("card", {maxWidth: 320})\`
 - Variable references must use exact names from \`get_variables\` (including leading \`--\` and dashes), e.g. \`"$--ck-blue-500"\`
+- **Number tokens:** \`cornerRadius\`, \`padding\`, \`gap\`, \`rowGap\`, \`columnGap\`, \`width\`, \`height\`, \`fontSize\`, \`strokeThickness\` and \`opacity\` accept a number variable as \`"$--name"\`. The node stays bound: a variable or mode change updates the value. A plain number on a later \`U()\` removes the binding.
+- **Modes per frame:** \`modeOverrides: {"<collection name>": "<mode name>"}\` on a frame sets the variable modes for the frame's contents. Names match without case. \`null\` or \`"inherit"\` clears. \`theme: "dark"\` is short for \`modeOverrides: {"Theme": "dark"}\`. The frame's own fill resolves in its parent's modes. Example, one screen in two brands: \`I(document, {type: "frame", modeOverrides: {"Brand": "acme"}, ...})\` and \`I(document, {type: "frame", modeOverrides: {"Brand": "globex"}, ...})\`.
 - **Constraints (resize behavior, Figma-style):** \`constraints: {horizontal, vertical}\` on a child controls how it repositions/resizes when its parent frame is resized. Each axis is one of \`"min"\` (pinned to left/top, fixed size — the default when unset), \`"max"\` (pinned to right/bottom, fixed size), \`"center"\` (keeps its offset from the parent's center), \`"stretch"\` (left & right / top & bottom both pinned — size grows/shrinks with the parent), or \`"scale"\` (position and size both scale with the parent). Only meaningful for a direct child of a frame WITHOUT auto-layout — auto-layout frames size children via flex rules and ignore constraints. Example: \`U("abc", {constraints: {horizontal: "stretch", vertical: "min"}})\`
 - **Layer masks (Figma-style):** set \`isMask: true\` on a node inside a frame/group to turn it into a mask that clips its siblings rendered ABOVE it (later in that same parent's children — the mask must be created/moved BEFORE the content it should clip so it ends up lower in z-order) up to the next masking sibling or the end of the group. The masker itself is not drawn — only its shape clips. Works for vector shapes (rectangle/ellipse/path/polygon — clips to their outline) as well as text/image-filled nodes (clips to that node's own rendered bounds/shape; soft per-pixel transparency is not yet respected, so prefer a vector shape when you need a precise cutout). Unset with \`isMask: false\` (or omit) to restore normal rendering. Example — a photo cropped to a circle: \`g=I("abc", {type: "frame", name: "Avatar", width: 80, height: 80, children: [{type: "ellipse", name: "Mask", width: 80, height: 80, isMask: true}, {type: "rectangle", name: "Photo", width: 80, height: 80}]})\` then \`G(photoId, "stock", "portrait photo")\`.
 - **Lists (bullet/numbered) on a text node:** a text node's \`text\` is \`\\n\`-joined paragraphs; give it a parallel \`paragraphs\` array (same length as the number of \`\\n\`-separated lines — pad plain paragraphs with \`{}\`) where each entry is \`{listType?: "bullet"|"number"|"none", indentLevel?: number}\`. \`indentLevel\` (0 = top level) nests the item and restarts numbered counters per nested level (a bullet/plain paragraph at the same or shallower level resets a deeper numbered run; returning to a shallower level resumes its own counter). Omit \`paragraphs\`, or use \`{}\`/\`{listType: "none"}\`, for plain (non-list) paragraphs. Example — a heading, a 3-item bullet list, another heading, then a numbered list with one nested sub-step: \`I("doc", {type: "text", name: "Notes", text: "Groceries\\nMilk\\nEggs\\nBread\\nSteps\\nMix\\nDetails\\nBake", paragraphs: [{}, {listType:"bullet"}, {listType:"bullet"}, {listType:"bullet"}, {}, {listType:"number"}, {listType:"number", indentLevel:1}, {listType:"number"}]})\` (paragraphs one-to-one with the 8 \`\\n\`-separated lines). \`U("abc", {paragraphs: [...]})\` re-tags an existing text node's paragraphs the same way (array length should match the node's current line count).
@@ -603,19 +605,66 @@ export const snapshotLayoutInputShape = {
     ),
 };
 
-export const getVariablesInputShape = {};
+export const getVariablesInputShape = {
+  collection: z
+    .string()
+    .optional()
+    .describe(
+      "Collection name or id. Returns only the variables of that collection.",
+    ),
+  names: z
+    .array(z.string())
+    .optional()
+    .describe(
+      'Variable names to read. Each name may have a leading "--" or "$". Returns only these variables.',
+    ),
+  mode: z
+    .union([z.string(), z.record(z.string())])
+    .optional()
+    .describe(
+      'Limits the returned values to one mode. A string is a mode name of the Theme collection, for example "dark". An object maps collection names to mode names, for example {"Brand": "acme"}.',
+    ),
+};
 
 export const setVariablesInputShape = {
   variables: z
     .record(z.unknown())
+    .optional()
     .describe(
-      "Variable definitions, as an object keyed by variable name. Simplest form — a plain hex string per name: " +
-        '`{"--brand-primary": "#3b82f6", "--brand-bg": "#ffffff"}`. ' +
-        "Full form — an object per name with `type` (\"color\" | \"number\" | \"string\", default \"color\") and `value`: " +
+      "Variable definitions, as an object keyed by variable name. Every old form stays valid. " +
+        'Simplest form: a plain hex string per name: `{"--brand-primary": "#3b82f6", "--brand-bg": "#ffffff"}`. ' +
+        'Full form: an object per name with `type` ("color" | "number" | "string", default "color") and `value`: ' +
         '`{"--radius-lg": {"type": "number", "value": "16"}}`. ' +
         "Per-theme values use `themeValues`: " +
         '`{"--brand-bg": {"type": "color", "value": "#ffffff", "themeValues": {"dark": "#0b0b0b"}}}`. ' +
-        "Names may be given with or without a leading `--`/`$`. Nested token groups (e.g. `{colors: {primary: {$type, $value}}}`) are also accepted.",
+        "Names may be given with or without a leading `--`/`$`. Nested token groups (e.g. `{colors: {primary: {$type, $value}}}`) are also accepted. " +
+        "New fields per variable: " +
+        '`valuesByMode` maps a mode name to a value: `{"--bg": {"valuesByMode": {"light": "#fff", "dark": "$--ink"}}}`. ' +
+        'A string value that starts with `$` is an alias to another variable, for example "$--ink". ' +
+        "`collection` is the collection name of the variable. " +
+        "`description` is a short text for people and agents. " +
+        '`scopes` is an array that limits where the variable applies. Allowed values: "fill", "stroke", "text", "radius", "spacing", "gap", "size", "fontSize", "fontFamily", "fontWeight", "opacity", "strokeWidth". ' +
+        '`deprecated` is `{since?, replacedBy?: "$--new", note?}`. ' +
+        'When two collections hold the same name, write the alias as "$Collection/--name" or "$id:<variableId>". ' +
+        "`value` on a variable with different values per mode sets only the default mode. `valuesByMode` wins over `value`. " +
+        "May be omitted when the call only defines `collections`.",
+    ),
+  collections: z
+    .record(
+      z.object({
+        modes: z.array(z.string()).min(1),
+        defaultMode: z.string().optional(),
+      }),
+    )
+    .optional()
+    .describe(
+      'Collections to create or update, keyed by collection name. Each collection lists its mode names: `{"Brand": {"modes": ["acme", "globex"], "defaultMode": "acme"}}`. Define a collection here before a variable uses its modes.',
+    ),
+  collection: z
+    .string()
+    .optional()
+    .describe(
+      "Default collection name for the variables in this call. The collection is created if it does not exist. A `collection` field on one variable overrides it.",
     ),
   replace: z
     .boolean()
@@ -654,6 +703,9 @@ const GUIDELINES: Record<string, string> = {
     "- Form fields: vertical frame with `gap: 16`, inputs with `width: \"fill_container\"`.\n\n" +
     "## Design Tokens\n" +
     "- Reference colors, fonts and radii through `$--variable` tokens so a theme change propagates, using only names that `get_variables` actually returns.\n" +
+    "- Prefer semantic tokens over primitive tokens. Never bind a primitive token when a semantic token exists for that role.\n" +
+    "- Read a slice of the tokens with `get_variables` and its `names` or `collection` argument.\n" +
+    "- In embed HTML, reference a token as `var(--name)` with its `cssName`.\n" +
     "- If the document has no suitable tokens yet, create them with `set_variables` (e.g. background/foreground/primary/border colors, heading/body fonts, a radius scale) before referencing them.\n\n" +
     "## Spacing Reference\n" +
     "- Screen sections gap: 24-32. Card grid gap: 16-24. Form fields gap: 16.\n" +
@@ -1338,7 +1390,13 @@ export const penTools = {
 
   get_variables: tool({
     description:
-      "Read all design variables (tokens) and themes defined in the .pen file. Variables are colors, numbers, or strings, and may have different values per theme.",
+      "Read the design variables (tokens) in the .pen file. Variables are colors, numbers, or strings. " +
+      "Each variable has one value per mode. A collection groups variables and defines their modes. The Theme collection has the modes light and dark. " +
+      "Each variable returns its `name` (use it as `$--name` in native nodes), its `cssName` (use it as `var(--name)` in embed HTML), its raw and resolved value per mode, and optional `description`, `scopes`, and `deprecated`. " +
+      "A raw value that starts with `$` is an alias to another variable. If the plain name is ambiguous, the alias is written as `$Collection/--name`. " +
+      "Call it with no arguments to read everything. " +
+      "Pass `names` or `collection` to read a slice. Pass `mode` to read the values of one mode only. " +
+      "A filter that matches nothing returns an empty list and a hint, not an error.",
     inputSchema: z.object(getVariablesInputShape),
   }),
 
@@ -1439,7 +1497,16 @@ export const penTools = {
 
   set_variables: tool({
     description:
-      "Add or update design variables and themes. Variables can reference theme axes for different values per theme. By default merges with existing variables (matched by id or name); set replace=true to overwrite all.",
+      "Add or update design variables, collections, and modes. " +
+      "Use `collections` to define a collection and its modes. Use `collection` to set the default collection for the call. " +
+      "In `variables`, give one value per mode with `valuesByMode`, for example {light: \"#fff\", dark: \"$--ink\"}. " +
+      "A value that starts with `$` is an alias to another variable. Alias order inside one call does not matter. " +
+      "Add `description`, `scopes`, and `deprecated` {since, replacedBy, note} when they help. " +
+      "Create primitive variables first, then create semantic variables that alias them. " +
+      "The call is atomic. If any collection, mode, alias target, or type is wrong, the call returns an error and changes nothing. " +
+      "By default the call merges with existing variables (matched by id or name). " +
+      "If a name exists in more than one collection, pass `collection` or the call is refused. " +
+      "Set replace=true to overwrite all.",
     inputSchema: z.object(setVariablesInputShape),
   }),
 
