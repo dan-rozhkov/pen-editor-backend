@@ -670,11 +670,11 @@ Optional user accounts (Google, magic link, email + password) plus the OAuth 2.1
 
 `/api/mcp` (streamable HTTP, `@modelcontextprotocol/sdk`) and `/api/mcp/ws`
 (WebSocket, `@fastify/websocket`) expose a curated 33-tool MCP surface (28 bridged, 3 static, 2 skill; plus the design-system resources `sideform://ds/*` in `src/mcp/designSystemResources.ts`) —
-15 tools bridged live to a connected `pen-editor` browser tab
+28 tools bridged live (get_editor_state, batch_get, snapshot_layout, get_variables, get_screenshot, batch_design, set_variables, comments x4, read/edit_embed_html, rename_layers, find_empty_space_on_canvas, plus get_design_system, lint_design, get_styles, get_text_styles, set_styles, set_text_styles, apply_fill_style, apply_text_style, apply_effect_style, define_component, extract_component, detach_instance, delete_component) to a connected `pen-editor` browser tab
 (`src/mcp/bridge.ts`, most-recently-active session wins, 30s timeout —
 `BRIDGED_TOOL_NAMES` now includes the 4 comment tools plus `read_embed_html`,
 `edit_embed_html`, `rename_layers`, and `find_empty_space_on_canvas`
-alongside the original 7), 3 static tools executed directly on the server
+alongside the original 7, and the 13 design-system, style, component and lint tools listed above), 3 static tools executed directly on the server
 (`STATIC_TOOL_NAMES`), and 2 skill tools (`SKILL_TOOL_NAMES`:
 `list_skills`/`load_skill`) also executed
 on the server but deliberately kept out of `STATIC_TOOL_NAMES` — that list is
@@ -688,7 +688,7 @@ have. Gated by `MCP_AUTH_TOKEN`.
 
 The curated catalog itself is authored for the full chat agent (every
 `penTools` schema plus `/api/chat`'s mode/policy routing), which is wider
-than this 20-tool surface — so `list_skills`/`load_skill` don't hand out a
+than this 33-tool surface — so `list_skills`/`load_skill` don't hand out a
 skill's instructions as if that gap didn't exist. `src/mcp/skillSurface.ts`
 scans a skill's body for backtick-quoted or call-style (`tool_name(`)
 mentions of any tool name and flags the ones not on this MCP surface. The

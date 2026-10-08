@@ -749,7 +749,8 @@ export const applyEffectStyleInputShape = {
 };
 
 const DESIGN_SYSTEM_COMPONENT_STATUSES = ["draft", "stable", "deprecated"] as const;
-const DESIGN_SYSTEM_INCLUDE = ["tokens", "components", "lint", "library"] as const;
+// "library" joins this list in Phase 6 (shared libraries).
+const DESIGN_SYSTEM_INCLUDE = ["tokens", "components", "lint"] as const;
 
 // All fields optional, like getVariablesInputShape. penTools are not sent as
 // an OpenAI strict json_schema (only generateObject callers are), so
@@ -793,7 +794,7 @@ export const getDesignSystemInputShape = {
   include: z
     .array(z.enum(DESIGN_SYSTEM_INCLUDE))
     .optional()
-    .describe('Parts of the result to return. Omit it to get "tokens" and "components".'),
+    .describe('Parts of the result to return. Omit it to get "tokens" and "components". Add "lint" to get the lint rule catalog and, when available, finding counts.'),
   limit: z
     .number()
     .int()
@@ -813,10 +814,10 @@ export const lintDesignInputShape = {
     .optional()
     .describe("Rule ids to run. Omit it to run all rules."),
   mode: z
-    .union([z.string(), z.record(z.string())])
+    .union([z.literal("all"), z.string(), z.record(z.string())])
     .optional()
     .describe(
-      'Checks the design in one mode. A string is a mode name of the Theme collection, for example "dark". An object maps collection names to mode names. Omit it to check every mode context of the document (at most 8).',
+      'Checks the design in one mode context. A string is a mode name of the Theme collection, for example "dark". An object maps collection names to mode names. The string "all" checks every mode context of the document (at most 8). Omit it to check only the current mode context of the document.',
     ),
   severity: z
     .enum(["error", "warning", "info"])
@@ -1577,8 +1578,8 @@ export const penTools = {
       "Check the design against its design system. The tool only reads. It never changes the document. " +
       "It runs seven rules: hardcoded-value (a raw value that equals a token), off-scale-value (a number that is near a token but not equal), contrast (text below the WCAG ratio), deprecated-token (a bound token marked deprecated), deprecated-component (an instance of a deprecated component), embed-literal (a raw color or size in embed HTML where a var(--token) fits), and component-drift (an instance that is out of date, orphaned, or detached from its master). " +
       "Each finding has `rule`, `severity` (error, warning, or info), `nodeId`, `pageId`, `message`, and `fixHint`. " +
-      "Pass `nodeIds` to check a subtree, `rules` to choose rules, `mode` to check one mode, `severity` to set a minimum severity, and `limit` to cap the count. " +
-      "Without `mode`, the tool checks every mode context of the document. " +
+      "Pass `nodeIds` to check a subtree, `rules` to choose rules, `mode` to check one mode context, `severity` to set a minimum severity, and `limit` to cap the count. " +
+      "Without `mode`, the tool checks only the current mode context of the document. Pass `mode: \"all\"` to check every mode context (at most 8). " +
       "To fix a finding, use the existing tools: batch_design, replace_all_matching_properties, edit_embed_html, or define_component. Then run lint_design again.",
     inputSchema: z.object(lintDesignInputShape),
   }),

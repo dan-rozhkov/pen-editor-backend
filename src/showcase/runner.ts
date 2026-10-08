@@ -173,6 +173,23 @@ const DELEGATED_BRIEF_ANSWER =
 const EMULATED_CLIENT_TOOLS: Record<string, () => Promise<string>> = {
   get_editor_state: async () => EMPTY_DOCUMENT_STATE,
   get_variables: async () => JSON.stringify({ variables: [] }),
+  // A showcase run is a blank document: no tokens, no components, no findings.
+  get_design_system: async () =>
+    JSON.stringify({
+      schema: 1,
+      collections: [],
+      tokens: [],
+      components: [],
+      truncated: false,
+      hint: "The document has no design tokens or components yet. Define your own in the embed CSS.",
+    }),
+  lint_design: async () =>
+    JSON.stringify({
+      summary: { errors: 0, warnings: 0, info: 0, byRule: {}, scanned: { nodes: 0, embeds: 0 } },
+      findings: [],
+      truncated: false,
+      hint: "Nothing to check in an empty document.",
+    }),
   ask_user: async () => DELEGATED_BRIEF_ANSWER,
 };
 

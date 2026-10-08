@@ -58,9 +58,9 @@ export const TOOL_META: Record<McpToolName, ToolMeta> = {
   apply_fill_style: write("Apply fill style", false),
   apply_text_style: write("Apply text style", false),
   apply_effect_style: write("Apply effect style", false),
-  define_component: write("Define component", false),
-  extract_component: write("Extract component", false),
-  detach_instance: write("Detach component instance", false),
+  define_component: write("Define component", true),
+  extract_component: write("Extract component", true),
+  detach_instance: write("Detach component instance", true),
   delete_component: write("Delete component", true),
 };
 

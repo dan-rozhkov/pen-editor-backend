@@ -148,6 +148,21 @@ describe("runShowcaseGeneration", () => {
     expect(result.screens).toEqual([{ name: "Only", htmlContent: "<div>Only</div>" }]);
   });
 
+  it("emulates get_design_system and lint_design as empty results instead of unavailable stubs", async () => {
+    holders.model = mockModel([
+      toolCallResult("get_design_system", {}),
+      toolCallResult("lint_design", {}),
+      toolCallResult("batch_design", {
+        operations: 's1=I(document, {type: "embed", name: "Only", htmlContent: "<div>Only</div>"})',
+      }),
+      textResult("done"),
+    ]);
+
+    const result = await runShowcaseGeneration(makeConfig(), "мобильный банк");
+
+    expect(result.screens).toEqual([{ name: "Only", htmlContent: "<div>Only</div>" }]);
+  });
+
   it("does not offer get_screenshot, remove_background, or vectorize_image — no browser, no scene graph", async () => {
     // The system prompt recommends get_screenshot for verifying a finished
     // screen, so advertising it here would buy a guaranteed-wasted step in

@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import {
   BATCH_DESIGN_DESCRIPTION,
+  penTools,
   batchDesignInputShape,
   makeBatchDesignInputSchema,
   getEditorStateInputShape,
@@ -110,6 +111,12 @@ function bridgedErrorMessage(raw: string): string | undefined {
     return (parsed as { error: string }).error;
   }
   return undefined;
+}
+
+// The newly bridged tools reuse the penTools text, so the MCP and chat
+// descriptions cannot drift. Append any MCP-only note here, not by rewriting.
+function sharedDescription(name: keyof typeof penTools): string {
+  return (penTools[name] as { description?: string }).description ?? "";
 }
 
 const GET_SCREENSHOT_DESCRIPTION =
@@ -340,7 +347,7 @@ export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer 
     {
       ...toolMeta("get_design_system"),
       description:
-        "Read the design system of the open document in one call: tokens (name, cssName, scopes, raw and resolved value per mode) and components (key, status, variants, slots, usage, tokens used). The result has no HTML. Call it before you design or edit. Pass `scope`, `mode`, `include` and `limit` to read a slice.",
+        sharedDescription("get_design_system"),
       inputSchema: getDesignSystemInputShape,
     },
     (args) => callBridged("get_design_system", args),
@@ -351,7 +358,7 @@ export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer 
     {
       ...toolMeta("get_styles"),
       description:
-        "Read all named fill styles (color, gradient, image) and effect styles (shadow, blur) of the document.",
+        sharedDescription("get_styles"),
       inputSchema: {},
     },
     (args) => callBridged("get_styles", args),
@@ -362,7 +369,7 @@ export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer 
     {
       ...toolMeta("get_text_styles"),
       description:
-        "Read all named text styles of the document: fontFamily, fontSize, fontWeight, lineHeight, letterSpacing, textTransform.",
+        sharedDescription("get_text_styles"),
       inputSchema: {},
     },
     (args) => callBridged("get_text_styles", args),
@@ -373,7 +380,7 @@ export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer 
     {
       ...toolMeta("set_styles"),
       description:
-        "Create or update named fill styles and effect styles. Merges by default. replace=true overwrites the set that you pass. Editing a style updates every node that uses it.",
+        sharedDescription("set_styles"),
       inputSchema: setStylesInputShape,
     },
     (args) => callBridged("set_styles", args),
@@ -384,7 +391,7 @@ export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer 
     {
       ...toolMeta("set_text_styles"),
       description:
-        "Create or update named text styles. Merges by default. replace=true overwrites all text styles. Editing a style updates every text node that uses it.",
+        sharedDescription("set_text_styles"),
       inputSchema: setTextStylesInputShape,
     },
     (args) => callBridged("set_text_styles", args),
@@ -395,7 +402,7 @@ export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer 
     {
       ...toolMeta("apply_fill_style"),
       description:
-        "Bind the fill of one or more nodes to a named fill style from get_styles or set_styles.",
+        sharedDescription("apply_fill_style"),
       inputSchema: applyFillStyleInputShape,
     },
     (args) => callBridged("apply_fill_style", args),
@@ -406,7 +413,7 @@ export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer 
     {
       ...toolMeta("apply_text_style"),
       description:
-        "Bind one or more text nodes to a named text style from get_text_styles or set_text_styles.",
+        sharedDescription("apply_text_style"),
       inputSchema: applyTextStyleInputShape,
     },
     (args) => callBridged("apply_text_style", args),
@@ -417,7 +424,7 @@ export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer 
     {
       ...toolMeta("apply_effect_style"),
       description:
-        "Bind the shadow and blur stack of one or more nodes to a named effect style from get_styles or set_styles.",
+        sharedDescription("apply_effect_style"),
       inputSchema: applyEffectStyleInputShape,
     },
     (args) => callBridged("apply_effect_style", args),
@@ -428,7 +435,7 @@ export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer 
     {
       ...toolMeta("define_component"),
       description:
-        "Create a component master from HTML, or update the master if the key exists. Use it when the same element repeats across embed screens. The master has one root element with data-c=\"KEY\". Mark slots with data-c-slot and variants with data-v-<axis>. To use the component in embed HTML, write a <c-KEY> tag. A change to the master updates every instance.",
+        sharedDescription("define_component"),
       inputSchema: defineComponentInputShape,
     },
     (args) => callBridged("define_component", args),
@@ -439,7 +446,7 @@ export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer 
     {
       ...toolMeta("extract_component"),
       description:
-        "Turn an element of an existing embed into a component. The element becomes the master, and the tool puts an instance in its place. Set replaceSimilar to true to also replace equal elements in other embeds.",
+        sharedDescription("extract_component"),
       inputSchema: extractComponentInputShape,
     },
     (args) => callBridged("extract_component", args),
@@ -450,7 +457,7 @@ export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer 
     {
       ...toolMeta("detach_instance"),
       description:
-        "Detach one component instance from its master. The HTML stays as it is. Later changes to the master do not reach this element. Use it when you must change markup outside the slots.",
+        sharedDescription("detach_instance"),
       inputSchema: detachInstanceInputShape,
     },
     (args) => callBridged("detach_instance", args),
@@ -461,7 +468,7 @@ export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer 
     {
       ...toolMeta("delete_component"),
       description:
-        "Delete a component master by key. The tool first detaches every instance on every page, then deletes the master. Instance markup stays in its embed.",
+        sharedDescription("delete_component"),
       inputSchema: deleteComponentInputShape,
     },
     (args) => callBridged("delete_component", args),
@@ -472,7 +479,7 @@ export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer 
     {
       ...toolMeta("lint_design"),
       description:
-        "Check the design against its design system. Read-only. Rules: hardcoded-value, off-scale-value, contrast, deprecated-token, deprecated-component, embed-literal, component-drift. Each finding has rule, severity, nodeId, message and fixHint. Fix findings with the other tools, then run it again.",
+        sharedDescription("lint_design"),
       inputSchema: lintDesignInputShape,
     },
     (args) => callBridged("lint_design", args),

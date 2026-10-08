@@ -19,7 +19,7 @@ describe("get_design_system schema", () => {
       schemaOf("get_design_system").safeParse({
         scope: { saved: "Brand", collections: ["Theme"], components: ["btn"], componentStatus: ["stable"], tokenScopes: ["fill"], names: ["--color-*"] },
         mode: { Brand: "B", Theme: "dark" },
-        include: ["tokens", "components", "lint", "library"],
+        include: ["tokens", "components", "lint"],
         limit: 50,
       }).success,
     ).toBe(true);
@@ -28,6 +28,7 @@ describe("get_design_system schema", () => {
 
   it.each([
     { include: ["html"] },
+    { include: ["library"] },
     { limit: 0 },
     { limit: 1.5 },
     { limit: 5000 },
@@ -46,6 +47,7 @@ describe("get_design_system schema", () => {
 describe("lint_design schema", () => {
   it("accepts an empty call and a full call", () => {
     expect(schemaOf("lint_design").safeParse({}).success).toBe(true);
+    expect(schemaOf("lint_design").safeParse({ mode: "all" }).success).toBe(true);
     expect(
       schemaOf("lint_design").safeParse({ nodeIds: ["a"], rules: ["contrast"], mode: { Theme: "dark" }, severity: "warning", limit: 10 }).success,
     ).toBe(true);
@@ -53,6 +55,11 @@ describe("lint_design schema", () => {
 
   it.each([{ rules: ["nope"] }, { severity: "fatal" }, { limit: 0 }, { limit: 1001 }, { nodeIds: "a" }])("rejects %j", (bad) => {
     expect(schemaOf("lint_design").safeParse(bad).success).toBe(false);
+  });
+
+  it("says the default is the current mode context and documents mode all", () => {
+    expect(descriptionOf("lint_design")).toContain("only the current mode context");
+    expect(descriptionOf("lint_design")).toContain('mode: "all"');
   });
 
   it("names exactly the seven rules in the description", () => {
@@ -88,7 +95,7 @@ describe("bridged style, component and design-system tools", () => {
     for (const n of ["get_design_system", "lint_design", "get_styles", "get_text_styles"]) expect(meta(n).readOnlyHint, n).toBe(true);
     for (const n of NEW.filter((x) => !["get_design_system", "lint_design", "get_styles", "get_text_styles"].includes(x))) {
       expect(meta(n).readOnlyHint, n).toBe(false);
-      expect(meta(n).destructiveHint, n).toBe(["delete_component", "set_styles", "set_text_styles"].includes(n));
+      expect(meta(n).destructiveHint, n).toBe(["delete_component", "set_styles", "set_text_styles", "define_component", "extract_component", "detach_instance"].includes(n));
     }
   });
 });
@@ -107,11 +114,12 @@ describe("MCP instructions", () => {
 describe("design system MCP resources", () => {
   const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
   let failWith: string | null = null;
+  let reply: unknown = null;
   const call: BridgedCall = async (tool, args) => {
     calls.push({ tool, args });
     return failWith
       ? { isError: true, content: [{ type: "text", text: failWith }] }
-      : { content: [{ type: "text", text: JSON.stringify({ schema: 1, args }) }] };
+      : { content: [{ type: "text", text: JSON.stringify(reply ?? { schema: 1, args }) }] };
   };
   let client: Client;
 
@@ -143,20 +151,41 @@ describe("design system MCP resources", () => {
     expect(tokens.contents[0]).toMatchObject({ uri: "sideform://ds/tokens.json", mimeType: "application/json" });
     await client.readResource({ uri: "sideform://ds/components.json" });
     expect(calls).toEqual([
-      { tool: "get_design_system", args: { include: ["tokens"] } },
-      { tool: "get_design_system", args: { include: ["components"] } },
+      { tool: "get_design_system", args: { include: ["tokens"], limit: 2000 } },
+      { tool: "get_design_system", args: { include: ["components"], limit: 2000 } },
     ]);
   });
 
   it("passes the saved scope from the URI", async () => {
     calls.length = 0;
     await client.readResource({ uri: "sideform://ds/Brand%20A/components.json" });
-    expect(calls).toEqual([{ tool: "get_design_system", args: { include: ["components"], scope: { saved: "Brand A" } } }]);
+    expect(calls).toEqual([{ tool: "get_design_system", args: { include: ["components"], limit: 2000, scope: { saved: "Brand A" } } }]);
   });
 
   it("fails with an open-the-editor message when no tab answers", async () => {
     failWith = "No Sideform editor is open for your account.";
     await expect(client.readResource({ uri: "sideform://ds/tokens.json" })).rejects.toThrow(/Open the Sideform editor in a browser tab/);
     failWith = null;
+  });
+
+  it("keeps the real error when the failure is not a missing tab", async () => {
+    failWith = "Editor tab is not responding to \"get_design_system\" (no acknowledgement within 30000ms).";
+    const read = client.readResource({ uri: "sideform://ds/tokens.json" });
+    await expect(read).rejects.toThrow(/not responding/);
+    await expect(read).rejects.not.toThrow(/Open the Sideform editor/);
+    failWith = null;
+  });
+
+  it("adds a truncation note when the result is cut", async () => {
+    reply = { schema: 1, tokens: [], truncated: true };
+    const { contents } = await client.readResource({ uri: "sideform://ds/tokens.json" });
+    reply = null;
+    const body = JSON.parse(contents[0].text as string) as { truncated: boolean; truncatedNote: string };
+    expect(body.truncated).toBe(true);
+    expect(body.truncatedNote).toContain("get_design_system");
+  });
+
+  it("rejects a malformed scope with a clear error", async () => {
+    await expect(client.readResource({ uri: "sideform://ds/%E0%A4%A/tokens.json" })).rejects.toThrow(/Invalid scope in resource URI/);
   });
 });
