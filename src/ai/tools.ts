@@ -627,6 +627,7 @@ export const getVariablesInputShape = {
 export const setVariablesInputShape = {
   variables: z
     .record(z.unknown())
+    .optional()
     .describe(
       "Variable definitions, as an object keyed by variable name. Every old form stays valid. " +
         'Simplest form: a plain hex string per name: `{"--brand-primary": "#3b82f6", "--brand-bg": "#ffffff"}`. ' +
@@ -641,7 +642,10 @@ export const setVariablesInputShape = {
         "`collection` is the collection name of the variable. " +
         "`description` is a short text for people and agents. " +
         '`scopes` is an array that limits where the variable applies. Allowed values: "fill", "stroke", "text", "radius", "spacing", "gap", "size", "fontSize", "fontFamily", "fontWeight", "opacity", "strokeWidth". ' +
-        '`deprecated` is `{since?, replacedBy?: "$--new", note?}`.',
+        '`deprecated` is `{since?, replacedBy?: "$--new", note?}`. ' +
+        'When two collections hold the same name, write the alias as "$Collection/--name" or "$id:<variableId>". ' +
+        "`value` on a variable with different values per mode sets only the default mode. `valuesByMode` wins over `value`. " +
+        "May be omitted when the call only defines `collections`.",
     ),
   collections: z
     .record(
@@ -1342,7 +1346,7 @@ export const penTools = {
       "Read the design variables (tokens) in the .pen file. Variables are colors, numbers, or strings. " +
       "Each variable has one value per mode. A collection groups variables and defines their modes. The Theme collection has the modes light and dark. " +
       "Each variable returns its `name` (use it as `$--name` in native nodes), its `cssName` (use it as `var(--name)` in embed HTML), its raw and resolved value per mode, and optional `description`, `scopes`, and `deprecated`. " +
-      "A raw value that starts with `$` is an alias to another variable. " +
+      "A raw value that starts with `$` is an alias to another variable. If the plain name is ambiguous, the alias is written as `$Collection/--name`. " +
       "Call it with no arguments to read everything. " +
       "Pass `names` or `collection` to read a slice. Pass `mode` to read the values of one mode only. " +
       "A filter that matches nothing returns an empty list and a hint, not an error.",
@@ -1410,7 +1414,9 @@ export const penTools = {
       "Add `description`, `scopes`, and `deprecated` {since, replacedBy, note} when they help. " +
       "Create primitive variables first, then create semantic variables that alias them. " +
       "The call is atomic. If any collection, mode, alias target, or type is wrong, the call returns an error and changes nothing. " +
-      "By default the call merges with existing variables (matched by id or name). Set replace=true to overwrite all.",
+      "By default the call merges with existing variables (matched by id or name). " +
+      "If a name exists in more than one collection, pass `collection` or the call is refused. " +
+      "Set replace=true to overwrite all.",
     inputSchema: z.object(setVariablesInputShape),
   }),
 

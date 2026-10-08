@@ -358,9 +358,9 @@ describe("set_variables schema", () => {
     expect(schema.safeParse({ variables: {}, collection: 1 }).success).toBe(false);
   });
 
-  it("requires the variables record", () => {
-    expect(schema.safeParse({}).success).toBe(false);
-    expect(schema.safeParse({ replace: true }).success).toBe(false);
+  it("accepts a collections-only call (variables is optional)", () => {
+    expect(schema.safeParse({}).success).toBe(true);
+    expect(schema.safeParse({ collections: { Brand: { modes: ["acme"] } } }).success).toBe(true);
   });
 
   it("rejects non-record variables and non-boolean replace", () => {
