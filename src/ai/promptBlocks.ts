@@ -27,6 +27,8 @@ When you change part of a screen that already exists, use \`read_embed_html\` to
 
 When the canvas context carries a \`selectedEmbedElement\` block, the user pointed at that exact element inside the screen with the editor's element picker — treat it as the target of a vague request ("make this bigger", "change the colour"). Its \`outerHtml\` comes from the rendered DOM and is a description, NOT a guaranteed anchor: still call \`read_embed_html\` (mode \`grep\`) to get a byte-exact fragment before \`edit_embed_html\`, especially when \`hasSourceTemplate\` is true (edits then apply to the authoring template, whose text differs from the rendered HTML).
 
+When a component key is registered, write \`<c-KEY>\` tags instead of copying its markup. Call get_design_system to see the registered components.
+
 ## Embed fit-to-canvas
 Any \`embed\` \`htmlContent\` you write or edit MUST fit exactly inside its \`width\`×\`height\` — it renders as a fixed-size viewport with NO scrolling, so overflow is lost, not scrollable. Put \`*, *::before, *::after { box-sizing: border-box; }\` at the top of the \`<style>\` block, size the root/body to the embed's exact \`width\`/\`height\` with \`margin: 0; overflow: hidden;\`, and budget content against that height before writing markup rather than shrinking fonts/padding afterward to force a fit. This applies to EVERY element, not just the root — no inner container may scroll either: \`overflow-y: auto\`, \`overflow: scroll\`, \`overflow-x: auto\` on a \`.content\`/list/card container are banned for the same reason as on the root, because a scrollbar is visible chrome and a right-side offset, not a way to fit more content. Content that does not fit must be cut down in the design. See the \`prototype\`/\`slides\` skills for the full ruleset.
 
@@ -42,4 +44,5 @@ export const EMBED_RULES_COMPACT = [
   "Each screen is ONE top-level `embed` node: I(document, {type: \"embed\", name, width, height, htmlContent}). Never build new screens from native frame/text/rect nodes; a top-level native insert is rejected.",
   "htmlContent is fully self-contained and must fit exactly inside the embed's width x height: `box-sizing: border-box` everywhere, body sized to width x height with `margin: 0; overflow: hidden`, and NO scrolling anywhere (no overflow auto/scroll). Cut content to fit.",
   "To change part of an existing embed use read_embed_html then edit_embed_html; do not rewrite htmlContent with U().",
+  "When a component key is registered, write `<c-KEY>` tags instead of copying its markup. Call get_design_system to see the registered components.",
 ] as const;

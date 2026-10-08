@@ -287,7 +287,7 @@ export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer 
     {
       ...toolMeta("read_embed_html"),
       description:
-        "Read part of an existing embed node's HTML without pulling the whole document into context. `outline` (default) returns the tag structure with attributes intact and text/deep subtrees elided; `grep` returns lines matching a literal substring with surrounding context, for byte-exact anchors to feed edit_embed_html; `full` returns the entire HTML. Always read before editing.",
+        "Read part of an existing embed node's HTML without pulling the whole document into context. `outline` (default) returns the tag structure with attributes intact and text/deep subtrees elided; `grep` returns lines matching a literal substring with surrounding context, for byte-exact anchors to feed edit_embed_html; `full` returns the entire HTML. Always read before editing. `view` is optional: \"compact\" (default) shows each component instance as one <c-KEY …> tag; \"expanded\" shows the full markup that the editor manages inside each instance.",
       // registerTool's declared inputSchema is a raw shape (the SDK needs
       // that shape, not a refined ZodEffects, to advertise the tool's JSON
       // schema) — it can't carry the "pattern required when mode is 'grep'"
@@ -314,7 +314,7 @@ export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer 
     {
       ...toolMeta("edit_embed_html"),
       description:
-        "Apply targeted text edits to an existing embed node's HTML instead of rewriting the whole screen. Each edit replaces an exact substring (oldString) with newString; an empty newString deletes the match. Use this to change part of a screen that already exists; rewriting the whole htmlContent costs thousands of tokens and silently drifts parts you weren't asked to touch, so reserve that for replacing a screen wholesale with a different concept. Read the fragment with read_embed_html first.",
+        "Apply targeted text edits to an existing embed node's HTML instead of rewriting the whole screen. Each edit replaces an exact substring (oldString) with newString; an empty newString deletes the match. Use this to change part of a screen that already exists; rewriting the whole htmlContent costs thousands of tokens and silently drifts parts you weren't asked to touch, so reserve that for replacing a screen wholesale with a different concept. Read the fragment with read_embed_html first. Your anchors match its compact view by default, where each component instance is one <c-KEY …> tag. You cannot edit the managed markup inside an instance: edit the component master with define_component, or call detach_instance first.",
       inputSchema: editEmbedHtmlInputShape,
     },
     (args) => callBridged("edit_embed_html", args),

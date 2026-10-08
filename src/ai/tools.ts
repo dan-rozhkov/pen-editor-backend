@@ -1338,6 +1338,12 @@ export const readEmbedHtmlInputShape = {
     .enum(["outline", "grep", "full"])
     .default("outline")
     .describe("outline = elided structure, grep = matches for `pattern`, full = entire HTML."),
+  view: z
+    .enum(["compact", "expanded"])
+    .default("compact")
+    .describe(
+      "compact (default) shows each component instance as one <c-KEY …> tag. expanded shows the full managed markup of each instance.",
+    ),
   pattern: z
     .string()
     .optional()
@@ -1360,6 +1366,12 @@ export const readEmbedHtmlInputShape = {
 
 export const editEmbedHtmlInputShape = {
   nodeId: z.string().describe("Id of the embed node to edit."),
+  view: z
+    .enum(["compact", "expanded"])
+    .optional()
+    .describe(
+      "Which text your anchors match. compact (default) is the read_embed_html compact view. expanded is the full managed markup.",
+    ),
   // Models sometimes emit `edits` as a JSON-encoded string instead of an array; the frontend
   // handler (editEmbedHtml.ts parseEdits) already tolerates that, so parse it here too rather
   // than rejecting the call before it reaches the browser. Non-JSON strings pass through
@@ -1604,7 +1616,9 @@ export const penTools = {
       "use it to see how a screen is built. `grep` returns the lines matching a literal substring with surrounding " +
       "context — use it to get byte-exact anchors for edit_embed_html. `full` returns the entire HTML; avoid it " +
       "unless you are genuinely rewriting the screen. Always read before editing: edit_embed_html matches the text you " +
-      "give it, tolerating only whitespace differences.",
+      "give it, tolerating only whitespace differences. " +
+      "`view` is optional. \"compact\" (default) shows each component instance as one <c-KEY …> tag. " +
+      "\"expanded\" shows the full markup that the editor manages inside each instance.",
     inputSchema: readEmbedHtmlInputSchema,
   }),
 
@@ -1618,7 +1632,9 @@ export const penTools = {
       "match (indentation and line breaks) only when the exact one finds nothing and the tolerant one is unambiguous. " +
       "Each oldString must occur exactly once unless replaceAll is true. Edits apply in order and atomically — if any " +
       "edit fails to match, nothing is changed. The call is also refused when the edits would leave a previously " +
-      "well-formed screen with an unclosed tag, so open and close a tag in the SAME call, never across two.",
+      "well-formed screen with an unclosed tag, so open and close a tag in the SAME call, never across two. " +
+      "Your anchors match the compact view of read_embed_html by default, where each component instance is one <c-KEY …> tag. " +
+      "You cannot edit the managed markup inside an instance. Edit the component master with define_component, or call detach_instance first.",
     inputSchema: z.object(editEmbedHtmlInputShape),
   }),
 
