@@ -5,18 +5,13 @@ import { readFileSync } from "node:fs";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { Snapshot } from "../src/ds/snapshotSchema.js";
 import { APP_ORIGIN, mintMcpToken, useAuthApp, useLocalAuthIssuer } from "./authHarness.js";
+import { as, createAccount, json, orgPostOn, type Account } from "./dsAccounts.js";
 import { assert } from "./helpers.js";
 
 const app = useAuthApp({}, { withDsStore: true });
 const BASE = (JSON.parse(readFileSync(new URL("./fixtures/ds-diff/none-identical.json", import.meta.url), "utf8")) as { before: Snapshot }).before;
 
-interface Account {
-  cookie: string;
-  userId: string;
-  apiKey: string;
-}
 let hop = 0;
-let seq = 0;
 
 function call(credential: { cookie?: string; bearer?: string }, method: string, path: string, body?: unknown, headers: Record<string, string> = {}) {
   return fetch(`${app().url}${path}`, {
@@ -32,22 +27,11 @@ function call(credential: { cookie?: string; bearer?: string }, method: string, 
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 }
-const as = (a: Account) => ({ cookie: a.cookie });
-const json = async <T>(res: Response) => (await res.json()) as T;
 const status = async (p: Promise<Response>) => (await p).status;
 
-async function account(tag: string): Promise<Account> {
-  const email = `${tag}${++seq}@example.test`;
-  const cookie = await app().signUp(email);
-  const session = await json<{ user: { id: string } }>(await app().fetchAuth("/api/auth/get-session", { headers: { Cookie: cookie } }));
-  const key = await json<{ key: string }>(
-    await app().fetchAuth("/api/auth/api-key/create", { method: "POST", headers: { Cookie: cookie }, body: JSON.stringify({ name: "ci" }) }),
-  );
-  return { cookie, userId: session.user.id, apiKey: key.key };
-}
+const account = (tag: string) => createAccount(app(), tag);
 
-const orgPost = (cookie: string, path: string, body: unknown) =>
-  app().fetchAuth(`/api/auth/organization/${path}`, { method: "POST", headers: { Cookie: cookie }, body: JSON.stringify(body) });
+const orgPost = (cookie: string, path: string, body: unknown) => orgPostOn(app(), cookie, path, body);
 
 let owner: Account, editor: Account, viewer: Account, stranger: Account;
 let orgId = "";

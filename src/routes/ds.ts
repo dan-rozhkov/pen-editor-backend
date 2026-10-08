@@ -19,6 +19,7 @@ import { parseLibraryCursor, parseVersionCursor, type DsLibrary, type DsStore } 
 import { containsNul } from "../ds/nul.js";
 import { analyze, checkBaseAndSnapshot, decidePublish, prepareSnapshot, type PreparedSnapshot } from "../ds/publish.js";
 import { parseVersion } from "../ds/semver.js";
+import { MAX_USAGE_METRICS_BYTES, usageAnalytics, usageMetricsSchema } from "../ds/usage.js";
 
 const MAX_SNAPSHOT_BYTES = 4 * 1024 * 1024;
 const MAX_CHANGELOG_BYTES = 512 * 1024;
@@ -66,6 +67,14 @@ const updatesQuery = z.object({
   from: versionString,
   limit: z.coerce.number().int().min(1).max(100).default(20),
 });
+const usageParams = z.object({ id: z.string().min(1).max(64), documentKey: z.string().uuid() });
+const usageBody = z.object({ version: versionString, metrics: usageMetricsSchema });
+const usageDocumentsQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  cursor: z.string().regex(/^\d{1,5}$/).optional(),
+  sort: z.enum(["reportedAt", "coverage"]).default("reportedAt"),
+});
+const USAGE_BODY_LIMIT = 128 * 1024;
 const idempotencyKeySchema = z.string().regex(/^[\x21-\x7e]{8,128}$/);
 
 function send(reply: FastifyReply, status: number, error: string, message: string, details?: Record<string, unknown>) {
@@ -416,6 +425,89 @@ export async function dsRoutes(
           hasMore: updates.hasMore,
           nextFrom: updates.hasMore && last ? last.version : null,
         });
+      }),
+    );
+
+    // ---- adoption usage (counts only) ------------------------------------
+
+    scope.put(
+      "/api/ds/libraries/:id/usage/:documentKey",
+      { bodyLimit: USAGE_BODY_LIMIT, config: WRITE_LIMIT },
+      guarded(async ({ store, principal }, request, reply) => {
+        const params = parse(usageParams, request.params, reply, "path");
+        const body = params && parse(usageBody, request.body, reply, "body");
+        if (!params || !body) return reply;
+        if (Buffer.byteLength(JSON.stringify(body.metrics), "utf8") > MAX_USAGE_METRICS_BYTES) {
+          return send(reply, 413, "metrics_too_large", "The usage report is larger than 64 KB.");
+        }
+        const result = await store.reportUsage({
+          libraryId: params.id,
+          principal,
+          documentKey: params.documentKey,
+          version: body.version,
+          metrics: body.metrics,
+        });
+        if (result.kind === "not_found") return notFound(reply);
+        if (result.kind === "forbidden") return forbidden(reply, result.code);
+        if (result.kind === "unknown_version") return send(reply, 422, "unknown_version", "This library has no such version.");
+        if (result.kind === "unknown_ids") {
+          return send(reply, 422, "unknown_ids", "The report names variables or components that are not in this version.", { count: result.count });
+        }
+        // Buckets only: the report is committed, nothing here may fail the request.
+        try {
+          analytics.capture({
+            event: "ds_usage_reported",
+            distinctId: principal.userId,
+            properties: { ...usageAnalytics(body.metrics), replaced: result.replaced },
+          });
+        } catch (err) {
+          request.log.warn({ err }, "[ds] analytics capture failed");
+        }
+        return reply.status(204).send();
+      }),
+    );
+
+    scope.delete(
+      "/api/ds/libraries/:id/usage/:documentKey",
+      { config: WRITE_LIMIT },
+      guarded(async ({ store, principal }, request, reply) => {
+        const params = parse(usageParams, request.params, reply, "path");
+        if (!params) return reply;
+        const result = await store.deleteUsage({ libraryId: params.id, principal, documentKey: params.documentKey });
+        if (result === "not_found") return notFound(reply);
+        if (typeof result === "object") return forbidden(reply, result.code);
+        return reply.status(204).send();
+      }),
+    );
+
+    scope.get(
+      "/api/ds/libraries/:id/usage/summary",
+      { config: READ_LIMIT },
+      guarded(async ({ store, principal }, request, reply) => {
+        const params = parse(idParam, request.params, reply, "path");
+        if (!params) return reply;
+        const summary = await store.getUsageSummary(params.id, principal);
+        if (summary === null) return notFound(reply);
+        if ("kind" in summary) return forbidden(reply, summary.code);
+        return reply.send(summary);
+      }),
+    );
+
+    scope.get(
+      "/api/ds/libraries/:id/usage/documents",
+      { config: READ_LIMIT },
+      guarded(async ({ store, principal }, request, reply) => {
+        const params = parse(idParam, request.params, reply, "path");
+        const query = params && parse(usageDocumentsQuery, request.query, reply, "query");
+        if (!params || !query) return reply;
+        const page = await store.listUsageDocuments(params.id, principal, {
+          limit: query.limit,
+          offset: query.cursor ? Number(query.cursor) : 0,
+          sort: query.sort,
+        });
+        if (page === null) return notFound(reply);
+        if ("kind" in page) return forbidden(reply, page.code);
+        return reply.send(page);
       }),
     );
 

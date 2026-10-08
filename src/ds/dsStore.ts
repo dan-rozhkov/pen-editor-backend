@@ -15,6 +15,17 @@ import { can, decide, isDsRole, type DsAction, type DsRole, type Principal } fro
 import { actorOf, insertAudit, listAudit, type AuditItem } from "./audit.js";
 import { parseVersion, type Semver } from "./semver.js";
 import type { Snapshot } from "./snapshotSchema.js";
+import {
+  countUnknownIds,
+  listUsageDocuments,
+  summarizeUsage,
+  USAGE_PRUNE_BATCH,
+  USAGE_RETENTION_DAYS,
+  USAGE_SUMMARY_ROW_CAP,
+  type UsageMetrics,
+  type UsageRow,
+  type UsageSort,
+} from "./usage.js";
 
 export interface DsClient {
   query(sql: string, params?: unknown[]): Promise<{ rows: unknown[] }>;
@@ -163,6 +174,16 @@ export type UpdateLibraryResult =
   | { kind: "archived" }
   | Forbidden;
 
+export type ReportUsageResult =
+  | { kind: "ok"; replaced: boolean }
+  | { kind: "not_found" }
+  | { kind: "unknown_version" }
+  | { kind: "unknown_ids"; count: number }
+  | Forbidden;
+export type DeleteUsageResult = "deleted" | "not_found" | Forbidden;
+export type UsageSummary = ReturnType<typeof summarizeUsage>;
+export type UsageDocuments = ReturnType<typeof listUsageDocuments>;
+
 export interface DsStore {
   /** `orgId` set = the library belongs to that organization (the caller needs write there). */
   createLibrary(input: { id: string; principal: Principal; orgId?: string | null; name: string; description: string }): Promise<CreateLibraryResult>;
@@ -192,6 +213,24 @@ export interface DsStore {
   listUpdates(libraryId: string, userId: string, from: string, limit: number): Promise<UpdatesLookup>;
   /** The library's audit history, newest first. The caller checks the admin role first. */
   listAudit(libraryId: string, page: { limit: number; cursor: string | null; action: string | null }): Promise<Page<AuditItem>>;
+  /** Upsert the caller's latest report of one document. Needs `read` (consumers report); idempotent per (library, document). */
+  reportUsage(input: {
+    libraryId: string;
+    principal: Principal;
+    documentKey: string;
+    version: string;
+    metrics: UsageMetrics;
+  }): Promise<ReportUsageResult>;
+  /** Removes a report: its reporter, or an admin of the library. Absent = still "deleted". */
+  deleteUsage(input: { libraryId: string; principal: Principal; documentKey: string }): Promise<DeleteUsageResult>;
+  /** Aggregates of the last 90 days. Needs `read`; null when the caller has no role. */
+  getUsageSummary(libraryId: string, principal: Principal): Promise<UsageSummary | null | Forbidden>;
+  /** Single reports of the last 90 days. Needs `write` (editor/owner); null when the caller has no role. `cursor` is an offset. */
+  listUsageDocuments(
+    libraryId: string,
+    principal: Principal,
+    page: { limit: number; offset: number; sort: UsageSort },
+  ): Promise<UsageDocuments | null | Forbidden>;
   close(): Promise<void>;
 }
 
@@ -365,6 +404,24 @@ export function createDsStore(connectionString: string | undefined, pool?: DsPoo
       rows: Array<{ count: number }>;
     };
     return { library, latest, versionCount: c.rows[0]?.count ?? 0 };
+  };
+
+  const loadUsageRows = async (libraryId: string): Promise<UsageRow[]> => {
+    const rows = (await db.query(
+      `SELECT document_key, version, metrics, prev_metrics, reported_at FROM ds_usage
+        WHERE library_id = $1 AND reported_at >= now() - make_interval(days => $2)
+        ORDER BY reported_at DESC, document_key LIMIT $3`,
+      [libraryId, USAGE_RETENTION_DAYS, USAGE_SUMMARY_ROW_CAP],
+    )) as {
+      rows: Array<{ document_key: string; version: string; metrics: UsageMetrics; prev_metrics: UsageMetrics | null; reported_at: string | Date }>;
+    };
+    return rows.rows.map((r) => ({
+      documentKey: r.document_key,
+      version: r.version,
+      metrics: r.metrics,
+      prevMetrics: r.prev_metrics,
+      reportedAt: new Date(r.reported_at),
+    }));
   };
 
   return {
@@ -754,6 +811,85 @@ export function createDsStore(connectionString: string | undefined, pool?: DsPoo
 
     listAudit(libraryId, page) {
       return listAudit(db, libraryId, page);
+    },
+
+    async reportUsage({ libraryId, principal, documentKey, version, metrics }) {
+      return inTransaction(async (client): Promise<ReportUsageResult> => {
+        const library = await fetchLibrary(client, libraryId, principal.userId);
+        if (!library) return { kind: "not_found" };
+        const decision = decide(principal, library.role, "read");
+        if (!decision.ok) return { kind: "forbidden", code: decision.code };
+        const v = (await client.query("SELECT snapshot FROM ds_versions WHERE library_id = $1 AND version = $2", [libraryId, version])) as {
+          rows: Array<{ snapshot: Snapshot }>;
+        };
+        if (!v.rows[0]) return { kind: "unknown_version" };
+        const unknown = countUnknownIds(metrics, v.rows[0].snapshot);
+        if (unknown > 0) return { kind: "unknown_ids", count: unknown };
+        // An identical re-report keeps prev_metrics, so a retry never erases the real "before".
+        const r = (await client.query(
+          `INSERT INTO ds_usage (library_id, document_key, reporter_id, version, metrics)
+           VALUES ($1, $2, $3, $4, $5::jsonb)
+           ON CONFLICT (library_id, document_key) DO UPDATE SET
+             reporter_id = EXCLUDED.reporter_id,
+             version = EXCLUDED.version,
+             prev_metrics = CASE WHEN ds_usage.metrics = EXCLUDED.metrics THEN ds_usage.prev_metrics ELSE ds_usage.metrics END,
+             metrics = EXCLUDED.metrics,
+             reported_at = now()
+           RETURNING (xmax = 0) AS inserted`,
+          [libraryId, documentKey, principal.userId, version, JSON.stringify(metrics)],
+        )) as { rows: Array<{ inserted: boolean }> };
+        await client.query(
+          `DELETE FROM ds_usage WHERE (library_id, document_key) IN (
+             SELECT library_id, document_key FROM ds_usage
+              WHERE library_id = $1 AND reported_at < now() - make_interval(days => $2)
+              LIMIT $3)`,
+          [libraryId, USAGE_RETENTION_DAYS, USAGE_PRUNE_BATCH],
+        );
+        return { kind: "ok", replaced: r.rows[0]?.inserted === false };
+      });
+    },
+
+    async deleteUsage({ libraryId, principal, documentKey }) {
+      return inTransaction(async (client): Promise<DeleteUsageResult> => {
+        const library = await fetchLibrary(client, libraryId, principal.userId);
+        if (!library) return "not_found";
+        const decision = decide(principal, library.role, "read");
+        if (!decision.ok) return { kind: "forbidden", code: decision.code };
+        const row = (await client.query("SELECT reporter_id FROM ds_usage WHERE library_id = $1 AND document_key = $2 FOR UPDATE", [
+          libraryId,
+          documentKey,
+        ])) as { rows: Array<{ reporter_id: string }> };
+        if (!row.rows[0]) return "deleted";
+        if (row.rows[0].reporter_id !== principal.userId && !can(principal, library.role, "admin")) {
+          return { kind: "forbidden", code: "forbidden" };
+        }
+        await client.query("DELETE FROM ds_usage WHERE library_id = $1 AND document_key = $2", [libraryId, documentKey]);
+        return "deleted";
+      });
+    },
+
+    async listUsageDocuments(libraryId, principal, { limit, offset, sort }) {
+      const library = await fetchLibrary(db, libraryId, principal.userId);
+      if (!library) return null;
+      const decision = decide(principal, library.role, "write");
+      if (!decision.ok) return { kind: "forbidden", code: decision.code };
+      return listUsageDocuments(await loadUsageRows(libraryId), library.latestVersion, sort, offset, limit);
+    },
+
+    async getUsageSummary(libraryId, principal) {
+      const library = await fetchLibrary(db, libraryId, principal.userId);
+      if (!library) return null;
+      const decision = decide(principal, library.role, "read");
+      if (!decision.ok) return { kind: "forbidden", code: decision.code };
+      const usage = await loadUsageRows(libraryId);
+      let latest: Snapshot | null = null;
+      if (library.latestVersion) {
+        const v = (await db.query("SELECT snapshot FROM ds_versions WHERE library_id = $1 AND version = $2", [libraryId, library.latestVersion])) as {
+          rows: Array<{ snapshot: Snapshot }>;
+        };
+        latest = v.rows[0]?.snapshot ?? null;
+      }
+      return summarizeUsage(usage, library.latestVersion, latest);
     },
 
     async close() {
