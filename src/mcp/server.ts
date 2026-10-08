@@ -21,6 +21,17 @@ import {
   readEmbedHtmlInputSchema,
   editEmbedHtmlInputShape,
   findEmptySpaceOnCanvasInputShape,
+  getDesignSystemInputShape,
+  lintDesignInputShape,
+  setStylesInputShape,
+  setTextStylesInputShape,
+  applyFillStyleInputShape,
+  applyTextStyleInputShape,
+  applyEffectStyleInputShape,
+  defineComponentInputShape,
+  extractComponentInputShape,
+  detachInstanceInputShape,
+  deleteComponentInputShape,
 } from "../ai/tools.js";
 import { callTool as callBridgedTool, type BridgeOwner, type SessionCredential } from "./bridge.js";
 import { ensureSkillsLoaded, getAllSkills, getSkill } from "../ai/skills.js";
@@ -31,6 +42,7 @@ import {
   POLICY_DEPENDENT_SKILL_NAMES,
 } from "./skillSurface.js";
 import { buildMcpInstructions } from "./instructions.js";
+import { registerDesignSystemResources } from "./designSystemResources.js";
 import { registerCanvasWidget, type CanvasWidgetSettings } from "./canvasWidget.js";
 import { toolMeta } from "./toolAnnotations.js";
 import { BRIDGED_TOOL_NAMES, SKILL_TOOL_NAMES, STATIC_TOOL_NAMES } from "./toolNames.js";
@@ -324,6 +336,149 @@ export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer 
   );
 
   server.registerTool(
+    "get_design_system",
+    {
+      ...toolMeta("get_design_system"),
+      description:
+        "Read the design system of the open document in one call: tokens (name, cssName, scopes, raw and resolved value per mode) and components (key, status, variants, slots, usage, tokens used). The result has no HTML. Call it before you design or edit. Pass `scope`, `mode`, `include` and `limit` to read a slice.",
+      inputSchema: getDesignSystemInputShape,
+    },
+    (args) => callBridged("get_design_system", args),
+  );
+
+  server.registerTool(
+    "get_styles",
+    {
+      ...toolMeta("get_styles"),
+      description:
+        "Read all named fill styles (color, gradient, image) and effect styles (shadow, blur) of the document.",
+      inputSchema: {},
+    },
+    (args) => callBridged("get_styles", args),
+  );
+
+  server.registerTool(
+    "get_text_styles",
+    {
+      ...toolMeta("get_text_styles"),
+      description:
+        "Read all named text styles of the document: fontFamily, fontSize, fontWeight, lineHeight, letterSpacing, textTransform.",
+      inputSchema: {},
+    },
+    (args) => callBridged("get_text_styles", args),
+  );
+
+  server.registerTool(
+    "set_styles",
+    {
+      ...toolMeta("set_styles"),
+      description:
+        "Create or update named fill styles and effect styles. Merges by default. replace=true overwrites the set that you pass. Editing a style updates every node that uses it.",
+      inputSchema: setStylesInputShape,
+    },
+    (args) => callBridged("set_styles", args),
+  );
+
+  server.registerTool(
+    "set_text_styles",
+    {
+      ...toolMeta("set_text_styles"),
+      description:
+        "Create or update named text styles. Merges by default. replace=true overwrites all text styles. Editing a style updates every text node that uses it.",
+      inputSchema: setTextStylesInputShape,
+    },
+    (args) => callBridged("set_text_styles", args),
+  );
+
+  server.registerTool(
+    "apply_fill_style",
+    {
+      ...toolMeta("apply_fill_style"),
+      description:
+        "Bind the fill of one or more nodes to a named fill style from get_styles or set_styles.",
+      inputSchema: applyFillStyleInputShape,
+    },
+    (args) => callBridged("apply_fill_style", args),
+  );
+
+  server.registerTool(
+    "apply_text_style",
+    {
+      ...toolMeta("apply_text_style"),
+      description:
+        "Bind one or more text nodes to a named text style from get_text_styles or set_text_styles.",
+      inputSchema: applyTextStyleInputShape,
+    },
+    (args) => callBridged("apply_text_style", args),
+  );
+
+  server.registerTool(
+    "apply_effect_style",
+    {
+      ...toolMeta("apply_effect_style"),
+      description:
+        "Bind the shadow and blur stack of one or more nodes to a named effect style from get_styles or set_styles.",
+      inputSchema: applyEffectStyleInputShape,
+    },
+    (args) => callBridged("apply_effect_style", args),
+  );
+
+  server.registerTool(
+    "define_component",
+    {
+      ...toolMeta("define_component"),
+      description:
+        "Create a component master from HTML, or update the master if the key exists. Use it when the same element repeats across embed screens. The master has one root element with data-c=\"KEY\". Mark slots with data-c-slot and variants with data-v-<axis>. To use the component in embed HTML, write a <c-KEY> tag. A change to the master updates every instance.",
+      inputSchema: defineComponentInputShape,
+    },
+    (args) => callBridged("define_component", args),
+  );
+
+  server.registerTool(
+    "extract_component",
+    {
+      ...toolMeta("extract_component"),
+      description:
+        "Turn an element of an existing embed into a component. The element becomes the master, and the tool puts an instance in its place. Set replaceSimilar to true to also replace equal elements in other embeds.",
+      inputSchema: extractComponentInputShape,
+    },
+    (args) => callBridged("extract_component", args),
+  );
+
+  server.registerTool(
+    "detach_instance",
+    {
+      ...toolMeta("detach_instance"),
+      description:
+        "Detach one component instance from its master. The HTML stays as it is. Later changes to the master do not reach this element. Use it when you must change markup outside the slots.",
+      inputSchema: detachInstanceInputShape,
+    },
+    (args) => callBridged("detach_instance", args),
+  );
+
+  server.registerTool(
+    "delete_component",
+    {
+      ...toolMeta("delete_component"),
+      description:
+        "Delete a component master by key. The tool first detaches every instance on every page, then deletes the master. Instance markup stays in its embed.",
+      inputSchema: deleteComponentInputShape,
+    },
+    (args) => callBridged("delete_component", args),
+  );
+
+  server.registerTool(
+    "lint_design",
+    {
+      ...toolMeta("lint_design"),
+      description:
+        "Check the design against its design system. Read-only. Rules: hardcoded-value, off-scale-value, contrast, deprecated-token, deprecated-component, embed-literal, component-drift. Each finding has rule, severity, nodeId, message and fixHint. Fix findings with the other tools, then run it again.",
+      inputSchema: lintDesignInputShape,
+    },
+    (args) => callBridged("lint_design", args),
+  );
+
+  server.registerTool(
     "list_skills",
     {
       ...toolMeta("list_skills"),
@@ -409,6 +564,8 @@ export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer 
     },
     async (args) => textResult(JSON.stringify(await getStyleGuideImpl(args))),
   );
+
+  registerDesignSystemResources(server, callBridged);
 
   if (ctx.owner !== null && ctx.widget && ctx.credential) {
     registerCanvasWidget(server, ctx.owner, ctx.credential, ctx.widget);

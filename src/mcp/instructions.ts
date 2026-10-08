@@ -12,6 +12,8 @@ export function buildMcpInstructions(opts: { hasCanvasWidget: boolean; appOrigin
   "For any NEW screen, page, landing page or app flow, call load_skill(\"prototype\") FIRST and follow it (decks: load_skill(\"slides\")).",
   opts.hasCanvasWidget ? `On clients that display apps, call open_canvas first. ${editorNote}` : editorNote,
   ...EMBED_RULES_COMPACT,
+  "Before you design or edit, call get_design_system. It returns the tokens and components of the document. Use its tokens and components instead of raw values.",
+  "To reuse a registered component in embed HTML, write a <c-key> tag, where key is the component key. Do not copy the master markup.",
   "Use native nodes only to edit existing native designs: call get_editor_state, get_variables and batch_get first, then insert into existing frames.",
   "Skills may mention tools this server lacks (ask_user, generate_image, web or design research). They are unavailable: ask the user in plain conversation if your client allows, otherwise choose sensible defaults yourself; use picsum for photos; skip research steps.",
   ].join("\n\n");

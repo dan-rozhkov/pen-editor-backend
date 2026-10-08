@@ -58,6 +58,19 @@ describe("MCP server integration", () => {
         "edit_embed_html",
         "rename_layers",
         "find_empty_space_on_canvas",
+        "get_design_system",
+        "get_styles",
+        "get_text_styles",
+        "set_styles",
+        "set_text_styles",
+        "apply_fill_style",
+        "apply_text_style",
+        "apply_effect_style",
+        "define_component",
+        "extract_component",
+        "detach_instance",
+        "delete_component",
+        "lint_design",
         "get_guidelines",
         "get_style_guide_tags",
         "get_style_guide",
@@ -105,6 +118,40 @@ describe("MCP server integration", () => {
     await client.close();
     editor.close();
     await waitForSessionCount(0);
+  });
+
+  it("round-trips get_design_system, lint_design and the design-system resources through the bridge", async () => {
+    const editor = await connectFakeEditor(server.url, TEST_TOKEN, {
+      get_design_system: JSON.stringify({ schema: 1, tokens: [] }),
+      lint_design: JSON.stringify({ summary: { errors: 0 } }),
+    });
+    await waitForSessionCount(1);
+    const client = await connectMcpClient(server.url, TEST_TOKEN);
+    const textOf = (r: { content?: unknown }) => (r.content as Array<{ text: string }>)[0].text;
+
+    const ds = await client.callTool({ name: "get_design_system", arguments: { include: ["tokens"] } });
+    expect(ds.isError).toBeFalsy();
+    expect(JSON.parse(textOf(ds))).toEqual({ schema: 1, tokens: [] });
+    const lint = await client.callTool({ name: "lint_design", arguments: { rules: ["contrast"] } });
+    expect(JSON.parse(textOf(lint))).toEqual({ summary: { errors: 0 } });
+    const bad = await client.callTool({ name: "lint_design", arguments: { rules: ["nope"] } });
+    expect(bad.isError).toBe(true);
+
+    const resource = await client.readResource({ uri: "sideform://ds/tokens.json" });
+    expect(JSON.parse(resource.contents[0].text as string)).toEqual({ schema: 1, tokens: [] });
+    expect((await client.listResources()).resources.map((r) => r.uri)).toContain("sideform://ds/tokens.json");
+
+    await client.close();
+    editor.close();
+    await waitForSessionCount(0);
+  });
+
+  it("rejects a design-system resource read without an editor tab with an open-the-editor message", async () => {
+    const client = await connectMcpClient(server.url, TEST_TOKEN);
+    await expect(client.readResource({ uri: "sideform://ds/components.json" })).rejects.toThrow(
+      /Open the Sideform editor in a browser tab/,
+    );
+    await client.close();
   });
 
   it("returns an MCP error result, not a crash, when no editor tab is connected", async () => {

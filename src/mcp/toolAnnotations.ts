@@ -35,6 +35,10 @@ export const TOOL_META: Record<McpToolName, ToolMeta> = {
   read_comments: read("Read comments"),
   read_embed_html: read("Read embed HTML"),
   find_empty_space_on_canvas: read("Find empty canvas space"),
+  get_design_system: read("Get design system"),
+  get_styles: read("Get fill and effect styles"),
+  get_text_styles: read("Get text styles"),
+  lint_design: read("Lint design"),
   get_guidelines: read("Get design guidelines"),
   get_style_guide_tags: read("List style guide tags"),
   get_style_guide: read("Get style guide"),
@@ -49,6 +53,15 @@ export const TOOL_META: Record<McpToolName, ToolMeta> = {
   reply_comment: write("Reply to comment", false),
   resolve_comment: write("Resolve comment", false),
   leave_comment: write("Leave comments", false),
+  set_styles: write("Set fill and effect styles", true),
+  set_text_styles: write("Set text styles", true),
+  apply_fill_style: write("Apply fill style", false),
+  apply_text_style: write("Apply text style", false),
+  apply_effect_style: write("Apply effect style", false),
+  define_component: write("Define component", false),
+  extract_component: write("Extract component", false),
+  detach_instance: write("Detach component instance", false),
+  delete_component: write("Delete component", true),
 };
 
 /** `title` + `annotations` to spread into a tool's registration config. */

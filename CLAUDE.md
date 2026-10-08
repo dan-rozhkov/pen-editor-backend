@@ -669,7 +669,7 @@ Optional user accounts (Google, magic link, email + password) plus the OAuth 2.1
 ## MCP server (`src/mcp/`)
 
 `/api/mcp` (streamable HTTP, `@modelcontextprotocol/sdk`) and `/api/mcp/ws`
-(WebSocket, `@fastify/websocket`) expose a curated 20-tool MCP surface —
+(WebSocket, `@fastify/websocket`) expose a curated 33-tool MCP surface (28 bridged, 3 static, 2 skill; plus the design-system resources `sideform://ds/*` in `src/mcp/designSystemResources.ts`) —
 15 tools bridged live to a connected `pen-editor` browser tab
 (`src/mcp/bridge.ts`, most-recently-active session wins, 30s timeout —
 `BRIDGED_TOOL_NAMES` now includes the 4 comment tools plus `read_embed_html`,
