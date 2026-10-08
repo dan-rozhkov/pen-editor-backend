@@ -781,7 +781,7 @@ export const getDesignSystemInputShape = {
       names: z
         .array(z.string())
         .optional()
-        .describe('Name globs, for example "--color-*". Each glob matches token names and component keys.'),
+        .describe('Token name globs, for example "--color-*". They filter tokens only. Use `components` to filter components.'),
     })
     .optional()
     .describe("Filters. Omit it to read the whole design system."),
