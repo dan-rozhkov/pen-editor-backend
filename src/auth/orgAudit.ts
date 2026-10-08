@@ -1,6 +1,6 @@
 // Seam between the Better Auth organization hooks (src/auth/organization.ts)
-// and the audit log. 8.1 ships only the no-op writer; task 8.3 supplies the
-// real one (INSERT into audit_log) and passes it to createAuth().
+// and the audit log. noopOrgAuditWriter is the default for createAuth();
+// buildApp passes the real one (orgAuditWriter.ts, INSERT into audit_log).
 
 export type OrgAuditAction = "member.add" | "member.remove" | "member.role_change";
 

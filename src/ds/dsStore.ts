@@ -3,12 +3,16 @@
 // object implementing the interface, one module-level singleton for production
 // wiring. Unlike the other stores, publish needs a real transaction
 // (BEGIN / SELECT ... FOR UPDATE / INSERT / COMMIT), so the pool also exposes
-// connect(). Every method takes the owner id and filters on it in SQL (reads
-// join ds_libraries): a library that belongs to somebody else is
-// indistinguishable from one that does not exist, whatever the caller checked
-// before.
+// connect(). Every method takes the caller's account id and filters on it in
+// SQL (reads join ds_libraries and the caller's `member` row): a library the
+// caller has no role on is indistinguishable from one that does not exist,
+// whatever the caller checked before. Writes take the Principal and re-check
+// its role inside the transaction; each one writes its audit_log row on the
+// same client, so the row and the change commit or roll back together.
 import { createPgPool } from "../tracing/traceStore.js";
 import type { Migration, DiffSummary } from "./diff.js";
+import { can, isDsRole, type DsAction, type DsRole, type Principal } from "./access.js";
+import { actorOf, insertAudit, listAudit, type AuditItem } from "./audit.js";
 import { parseVersion, type Semver } from "./semver.js";
 import type { Snapshot } from "./snapshotSchema.js";
 
@@ -34,6 +38,10 @@ export const MAX_VERSIONS_PER_LIBRARY = 500;
 export interface DsLibrary {
   id: string;
   ownerId: string;
+  /** The organization the library belongs to; null = a personal library. */
+  orgId: string | null;
+  /** The caller's role on this library. */
+  role: DsRole;
   name: string;
   description: string;
   latestVersion: string | null;
@@ -131,6 +139,9 @@ export type PublishOutcome =
 export type CreateLibraryResult =
   | { kind: "created"; library: DsLibrary }
   | { kind: "name_taken" }
+  /** The organization does not exist or the caller is not a member. */
+  | { kind: "org_not_found" }
+  | { kind: "forbidden" }
   | { kind: "limit"; live: number; total: number };
 export type PurgeLibraryResult = "purged" | "not_found" | "not_archived";
 export type VersionLookup = { kind: "no_library" } | { kind: "no_version" } | { kind: "ok"; version: DsVersion };
@@ -141,34 +152,42 @@ export type UpdatesLookup =
 export type UpdateLibraryResult = { kind: "updated"; library: DsLibrary } | { kind: "not_found" } | { kind: "name_taken" } | { kind: "archived" };
 
 export interface DsStore {
-  createLibrary(input: { id: string; ownerId: string; name: string; description: string }): Promise<CreateLibraryResult>;
-  listLibraries(ownerId: string, page: { limit: number; cursor: string | null }): Promise<Page<DsLibrary>>;
-  /** Null when the library does not exist or belongs to someone else. */
-  getLibrary(id: string, ownerId: string): Promise<{ library: DsLibrary; latest: DsLatestVersionMeta | null } | null>;
-  updateLibrary(id: string, ownerId: string, patch: { name?: string; description?: string }): Promise<UpdateLibraryResult>;
-  /** Idempotent: archiving an archived library is still true. False = not found. */
-  archiveLibrary(id: string, ownerId: string): Promise<boolean>;
+  /** `orgId` set = the library belongs to that organization (the caller needs write there). */
+  createLibrary(input: { id: string; principal: Principal; orgId?: string | null; name: string; description: string }): Promise<CreateLibraryResult>;
+  /** Personal libraries of `userId` plus every organization library they are a member of. */
+  listLibraries(userId: string, page: { limit: number; cursor: string | null }): Promise<Page<DsLibrary>>;
+  /** Null when the library does not exist or the caller has no role on it. */
+  getLibrary(id: string, userId: string): Promise<{ library: DsLibrary; latest: DsLatestVersionMeta | null } | null>;
+  /** The caller's role on the library, or null when there is none (or no library). */
+  getRole(id: string, userId: string): Promise<DsRole | null>;
+  updateLibrary(id: string, principal: Principal, patch: { name?: string; description?: string }): Promise<UpdateLibraryResult>;
+  /** Idempotent: archiving an archived library is still true. False = not found (or role too low). */
+  archiveLibrary(id: string, principal: Principal): Promise<boolean>;
   /** Hard delete, only of an archived library (its versions go with it). */
-  purgeLibrary(id: string, ownerId: string): Promise<PurgeLibraryResult>;
-  /** One transaction: lock the library row, let `decide` rule, insert the version. */
+  purgeLibrary(id: string, principal: Principal): Promise<PurgeLibraryResult>;
+  /** One transaction: lock the library row, let `decide` rule, insert the version and its audit row. */
   publish(
-    input: { libraryId: string; ownerId: string; publishedBy: string; idempotencyKey: string },
+    input: { libraryId: string; principal: Principal; idempotencyKey: string },
     decide: (ctx: PublishContext) => PublishDecision,
   ): Promise<PublishOutcome>;
   /** Read-only twin of publish's context, for preview. */
-  getPublishContext(libraryId: string, ownerId: string): Promise<Omit<PublishContext, "replay"> | null>;
-  /** Null when the library does not exist or belongs to someone else. */
-  listVersions(libraryId: string, ownerId: string, page: { limit: number; cursor: string | null }): Promise<Page<DsVersionListItem> | null>;
+  getPublishContext(libraryId: string, userId: string): Promise<Omit<PublishContext, "replay"> | null>;
+  /** Null when the library does not exist or the caller has no role on it. */
+  listVersions(libraryId: string, userId: string, page: { limit: number; cursor: string | null }): Promise<Page<DsVersionListItem> | null>;
   /** `version` may be "latest". */
-  getVersion(libraryId: string, ownerId: string, version: string): Promise<VersionLookup>;
+  getVersion(libraryId: string, userId: string, version: string): Promise<VersionLookup>;
   /** Versions strictly after `from`, oldest first. */
-  listUpdates(libraryId: string, ownerId: string, from: string, limit: number): Promise<UpdatesLookup>;
+  listUpdates(libraryId: string, userId: string, from: string, limit: number): Promise<UpdatesLookup>;
+  /** The library's audit history, newest first. The caller checks the admin role first. */
+  listAudit(libraryId: string, page: { limit: number; cursor: string | null; action: string | null }): Promise<Page<AuditItem>>;
   close(): Promise<void>;
 }
 
 interface LibraryRow {
   id: string;
   owner_id: string;
+  org_id: string | null;
+  role: string;
   name: string;
   description: string;
   latest_version: string | null;
@@ -179,10 +198,24 @@ interface LibraryRow {
   cursor_ts?: string;
 }
 
-const LIBRARY_COLUMNS = "id, owner_id, name, description, latest_version, latest_published_at, archived_at, created_at, updated_at";
+// The caller's role on library `l`, resolved in SQL. A personal library
+// (org_id NULL) belongs to its owner alone. An organization library takes the
+// best role the caller's `member` row names; a role outside owner / editor /
+// viewer (a legacy or multi-role string) grants nothing. `$u` is the
+// placeholder holding the caller's account id.
+const ROLE_RANK = `CASE role WHEN 'owner' THEN 0 WHEN 'editor' THEN 1 ELSE 2 END`;
+const libraryFrom = (u: string) => `ds_libraries l
+  LEFT JOIN LATERAL (
+    SELECT role FROM member
+     WHERE "organizationId" = l.org_id AND "userId" = ${u} AND role IN ('owner', 'editor', 'viewer')
+     ORDER BY ${ROLE_RANK} LIMIT 1
+  ) m ON true`;
+const roleSql = (u: string) => `(CASE WHEN l.org_id IS NULL THEN (CASE WHEN l.owner_id = ${u} THEN 'owner' END) ELSE m.role END)`;
+const LIBRARY_COLUMNS = (u: string) =>
+  `l.id, l.owner_id, l.org_id, ${roleSql(u)} AS role, l.name, l.description, l.latest_version, l.latest_published_at, l.archived_at, l.created_at, l.updated_at`;
 // Keyset cursors must carry the timestamp at Postgres precision (microseconds):
 // a JS Date truncates to milliseconds and would silently skip or repeat rows.
-const CURSOR_TS = `to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
+const CURSOR_TS = `to_char(l.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
 
 const date = (v: string | Date | null): Date | null => (v === null ? null : new Date(v));
 
@@ -190,6 +223,8 @@ function toLibrary(row: LibraryRow): DsLibrary {
   return {
     id: row.id,
     ownerId: row.owner_id,
+    orgId: row.org_id,
+    role: row.role as DsRole,
     name: row.name,
     description: row.description,
     latestVersion: row.latest_version,
@@ -268,12 +303,35 @@ export function createDsStore(connectionString: string | undefined, pool?: DsPoo
   // on a second end().
   let closed = false;
 
-  const fetchLibrary = async (q: Pick<DsPool, "query">, id: string, ownerId: string, lock = false): Promise<DsLibrary | null> => {
+  /** The library, when `userId` holds any role on it. `lock` takes the row lock (FOR UPDATE OF l). */
+  const fetchLibrary = async (q: Pick<DsPool, "query">, id: string, userId: string, lock = false): Promise<DsLibrary | null> => {
     const r = (await q.query(
-      `SELECT ${LIBRARY_COLUMNS} FROM ds_libraries WHERE id = $1 AND owner_id = $2${lock ? " FOR UPDATE" : ""}`,
-      [id, ownerId],
+      `SELECT ${LIBRARY_COLUMNS("$2")} FROM ${libraryFrom("$2")}
+        WHERE l.id = $1 AND ${roleSql("$2")} IS NOT NULL${lock ? " FOR UPDATE OF l" : ""}`,
+      [id, userId],
     )) as { rows: LibraryRow[] };
     return r.rows[0] ? toLibrary(r.rows[0]) : null;
+  };
+
+  /** Locks the library and requires `action` of the principal; anything less reads as "not found". */
+  const lockFor = async (client: DsClient, id: string, principal: Principal, action: DsAction): Promise<DsLibrary | null> => {
+    const library = await fetchLibrary(client, id, principal.userId, true);
+    return library && can(principal, library.role, action) ? library : null;
+  };
+
+  const inTransaction = async <T>(fn: (client: DsClient) => Promise<T>): Promise<T> => {
+    const client = await db.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await fn(client);
+      await client.query("COMMIT");
+      return result;
+    } catch (err) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
   };
 
   const loadContext = async (q: Pick<DsPool, "query">, library: DsLibrary) => {
@@ -292,51 +350,78 @@ export function createDsStore(connectionString: string | undefined, pool?: DsPoo
   };
 
   return {
-    async createLibrary({ id, ownerId, name, description }) {
+    async createLibrary({ id, principal, orgId = null, name, description }) {
       const client = await db.connect();
       try {
         await client.query("BEGIN");
         // READ COMMITTED lets two creates both count 19 and both insert. The
-        // transaction-scoped lock queues an owner's creates behind each other
+        // transaction-scoped lock queues an account's creates behind each other
         // (and is released by COMMIT/ROLLBACK, so a crash cannot leak it).
-        await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`ds_libraries:${ownerId}`]);
+        await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`ds_libraries:${principal.userId}`]);
+        let role: DsRole = "owner";
+        if (orgId !== null) {
+          const m = (await client.query(
+            `SELECT role FROM member WHERE "organizationId" = $1 AND "userId" = $2 AND role IN ('owner', 'editor', 'viewer')
+              ORDER BY ${ROLE_RANK} LIMIT 1`,
+            [orgId, principal.userId],
+          )) as { rows: Array<{ role: string }> };
+          if (!m.rows[0] || !isDsRole(m.rows[0].role)) {
+            await client.query("ROLLBACK");
+            return { kind: "org_not_found" };
+          }
+          role = m.rows[0].role;
+        }
+        if (!can(principal, role, "write")) {
+          await client.query("ROLLBACK");
+          return { kind: "forbidden" };
+        }
         const counts = (await client.query(
           `SELECT count(*) FILTER (WHERE archived_at IS NULL)::int AS live, count(*)::int AS total
              FROM ds_libraries WHERE owner_id = $1`,
-          [ownerId],
+          [principal.userId],
         )) as { rows: Array<{ live: number; total: number }> };
         const { live, total } = counts.rows[0] ?? { live: 0, total: 0 };
         if (live >= MAX_LIBRARIES_PER_OWNER || total >= MAX_TOTAL_LIBRARIES_PER_OWNER) {
           await client.query("ROLLBACK");
           return { kind: "limit", live, total };
         }
-        const r = (await client.query(
-          `INSERT INTO ds_libraries (id, owner_id, name, description) VALUES ($1, $2, $3, $4) RETURNING ${LIBRARY_COLUMNS}`,
-          [id, ownerId, name, description],
-        )) as { rows: LibraryRow[] };
+        await client.query("INSERT INTO ds_libraries (id, owner_id, org_id, name, description) VALUES ($1, $2, $3, $4, $5)", [
+          id, principal.userId, orgId, name, description,
+        ]);
+        await insertAudit(client, {
+          ...actorOf(principal),
+          libraryId: id,
+          orgId,
+          action: "library.create",
+          targetType: "library",
+          targetId: id,
+          meta: { scope: orgId === null ? "personal" : "org" },
+        });
+        const library = await fetchLibrary(client, id, principal.userId);
+        if (!library) throw new Error("created library is not readable by its creator");
         await client.query("COMMIT");
-        return { kind: "created", library: toLibrary(r.rows[0]) };
+        return { kind: "created", library };
       } catch (err) {
         await client.query("ROLLBACK").catch(() => undefined);
-        if (uniqueViolation(err, "owner_name")) return { kind: "name_taken" };
+        if (uniqueViolation(err, "owner_name") || uniqueViolation(err, "org_name")) return { kind: "name_taken" };
         throw err;
       } finally {
         client.release();
       }
     },
 
-    async listLibraries(ownerId, { limit, cursor }) {
-      const params: unknown[] = [ownerId];
-      let where = "owner_id = $1 AND archived_at IS NULL";
+    async listLibraries(userId, { limit, cursor }) {
+      const params: unknown[] = [userId];
+      let where = `${roleSql("$1")} IS NOT NULL AND l.archived_at IS NULL`;
       const key = cursor ? parseLibraryCursor(cursor) : null;
       if (key) {
         params.push(key.createdAt, key.id);
-        where += " AND (created_at, id) < ($2::timestamptz, $3)";
+        where += " AND (l.created_at, l.id) < ($2::timestamptz, $3)";
       }
       params.push(limit + 1);
       const r = (await db.query(
-        `SELECT ${LIBRARY_COLUMNS}, ${CURSOR_TS} AS cursor_ts FROM ds_libraries
-          WHERE ${where} ORDER BY created_at DESC, id DESC LIMIT $${params.length}`,
+        `SELECT ${LIBRARY_COLUMNS("$1")}, ${CURSOR_TS} AS cursor_ts FROM ${libraryFrom("$1")}
+          WHERE ${where} ORDER BY l.created_at DESC, l.id DESC LIMIT $${params.length}`,
         params,
       )) as { rows: LibraryRow[] };
       const rows = r.rows.slice(0, limit);
@@ -347,8 +432,8 @@ export function createDsStore(connectionString: string | undefined, pool?: DsPoo
       };
     },
 
-    async getLibrary(id, ownerId) {
-      const library = await fetchLibrary(db, id, ownerId);
+    async getLibrary(id, userId) {
+      const library = await fetchLibrary(db, id, userId);
       if (!library) return null;
       let latest: DsLatestVersionMeta | null = null;
       if (library.latestVersion) {
@@ -370,47 +455,96 @@ export function createDsStore(connectionString: string | undefined, pool?: DsPoo
       return { library, latest };
     },
 
-    async updateLibrary(id, ownerId, patch) {
-      try {
-        const r = (await db.query(
-          `UPDATE ds_libraries
-              SET name = COALESCE($3, name), description = COALESCE($4, description), updated_at = now()
-            WHERE id = $1 AND owner_id = $2 AND archived_at IS NULL
-            RETURNING ${LIBRARY_COLUMNS}`,
-          [id, ownerId, patch.name ?? null, patch.description ?? null],
-        )) as { rows: LibraryRow[] };
-        if (r.rows[0]) return { kind: "updated", library: toLibrary(r.rows[0]) };
-      } catch (err) {
-        if (uniqueViolation(err, "owner_name")) return { kind: "name_taken" };
-        throw err;
-      }
-      const existing = await fetchLibrary(db, id, ownerId);
-      return existing ? { kind: "archived" } : { kind: "not_found" };
+    async getRole(id, userId) {
+      return (await fetchLibrary(db, id, userId))?.role ?? null;
     },
 
-    async archiveLibrary(id, ownerId) {
-      const r = (await db.query(
-        `UPDATE ds_libraries SET archived_at = COALESCE(archived_at, now()), updated_at = now()
-          WHERE id = $1 AND owner_id = $2 RETURNING id`,
-        [id, ownerId],
-      )) as { rows: unknown[] };
-      return r.rows.length > 0;
-    },
-
-    async purgeLibrary(id, ownerId) {
-      const r = (await db.query(
-        "DELETE FROM ds_libraries WHERE id = $1 AND owner_id = $2 AND archived_at IS NOT NULL RETURNING id",
-        [id, ownerId],
-      )) as { rows: unknown[] };
-      if (r.rows.length > 0) return "purged";
-      return (await fetchLibrary(db, id, ownerId)) ? "not_archived" : "not_found";
-    },
-
-    async publish({ libraryId, ownerId, publishedBy, idempotencyKey }, decide) {
+    async updateLibrary(id, principal, patch) {
       const client = await db.connect();
       try {
         await client.query("BEGIN");
-        const library = await fetchLibrary(client, libraryId, ownerId, true);
+        const library = await lockFor(client, id, principal, "write");
+        if (!library) {
+          await client.query("ROLLBACK");
+          return { kind: "not_found" };
+        }
+        if (library.archivedAt) {
+          await client.query("ROLLBACK");
+          return { kind: "archived" };
+        }
+        await client.query(
+          `UPDATE ds_libraries SET name = COALESCE($2, name), description = COALESCE($3, description), updated_at = now() WHERE id = $1`,
+          [id, patch.name ?? null, patch.description ?? null],
+        );
+        await insertAudit(client, {
+          ...actorOf(principal),
+          libraryId: id,
+          orgId: library.orgId,
+          action: "library.update",
+          targetType: "library",
+          targetId: id,
+          meta: { fields: [patch.name !== undefined ? "name" : "", patch.description !== undefined ? "description" : ""].filter(Boolean) },
+        });
+        const updated = await fetchLibrary(client, id, principal.userId);
+        await client.query("COMMIT");
+        return updated ? { kind: "updated", library: updated } : { kind: "not_found" };
+      } catch (err) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        if (uniqueViolation(err, "owner_name") || uniqueViolation(err, "org_name")) return { kind: "name_taken" };
+        throw err;
+      } finally {
+        client.release();
+      }
+    },
+
+    async archiveLibrary(id, principal) {
+      return inTransaction(async (client) => {
+        const library = await lockFor(client, id, principal, "admin");
+        if (!library) return false;
+        // Idempotent: only the first archive changes anything, so only it is audited.
+        if (!library.archivedAt) {
+          await client.query("UPDATE ds_libraries SET archived_at = now(), updated_at = now() WHERE id = $1", [id]);
+          await insertAudit(client, {
+            ...actorOf(principal),
+            libraryId: id,
+            orgId: library.orgId,
+            action: "library.archive",
+            targetType: "library",
+            targetId: id,
+          });
+        }
+        return true;
+      });
+    },
+
+    async purgeLibrary(id, principal) {
+      return inTransaction(async (client): Promise<PurgeLibraryResult> => {
+        const library = await lockFor(client, id, principal, "admin");
+        if (!library) return "not_found";
+        if (!library.archivedAt) return "not_archived";
+        const versions = (await client.query("SELECT count(*)::int AS count FROM ds_versions WHERE library_id = $1", [id])) as {
+          rows: Array<{ count: number }>;
+        };
+        await client.query("DELETE FROM ds_libraries WHERE id = $1", [id]);
+        await insertAudit(client, {
+          ...actorOf(principal),
+          libraryId: id,
+          orgId: library.orgId,
+          action: "library.purge",
+          targetType: "library",
+          targetId: id,
+          meta: { versions: versions.rows[0]?.count ?? 0 },
+        });
+        return "purged";
+      });
+    },
+
+    async publish({ libraryId, principal, idempotencyKey }, decide) {
+      const publishedBy = principal.userId;
+      const client = await db.connect();
+      try {
+        await client.query("BEGIN");
+        const library = await lockFor(client, libraryId, principal, "publish");
         if (!library) {
           await client.query("ROLLBACK");
           return { kind: "not_found" };
@@ -460,6 +594,17 @@ export function createDsStore(connectionString: string | undefined, pool?: DsPoo
           "UPDATE ds_libraries SET latest_version = $2, latest_published_at = $3, updated_at = now() WHERE id = $1",
           [libraryId, v.version, publishedAt],
         );
+        await insertAudit(client, {
+          ...actorOf(principal),
+          libraryId,
+          orgId: library.orgId,
+          action: "version.publish",
+          targetType: "version",
+          targetId: v.version,
+          beforeHash: base.latest?.snapshotHash ?? null,
+          afterHash: v.snapshotHash,
+          meta: { bump: v.bump },
+        });
         await client.query("COMMIT");
         return {
           kind: "created",
@@ -478,13 +623,13 @@ export function createDsStore(connectionString: string | undefined, pool?: DsPoo
       }
     },
 
-    async getPublishContext(libraryId, ownerId) {
-      const library = await fetchLibrary(db, libraryId, ownerId);
+    async getPublishContext(libraryId, userId) {
+      const library = await fetchLibrary(db, libraryId, userId);
       return library ? loadContext(db, library) : null;
     },
 
-    async listVersions(libraryId, ownerId, { limit, cursor }) {
-      const params: unknown[] = [libraryId, ownerId];
+    async listVersions(libraryId, userId, { limit, cursor }) {
+      const params: unknown[] = [libraryId, userId];
       let on = "v.library_id = l.id";
       const key = cursor ? parseVersionCursor(cursor) : null;
       if (key) {
@@ -496,8 +641,8 @@ export function createDsStore(connectionString: string | undefined, pool?: DsPoo
       // row, which is how "empty" differs from "not yours" in one query.
       const r = (await db.query(
         `SELECT v.version, v.bump, v.summary, v.published_by, v.published_at
-           FROM ds_libraries l LEFT JOIN ds_versions v ON ${on}
-          WHERE l.id = $1 AND l.owner_id = $2
+           FROM ${libraryFrom("$2")} LEFT JOIN ds_versions v ON ${on}
+          WHERE l.id = $1 AND ${roleSql("$2")} IS NOT NULL
           ORDER BY v.major DESC, v.minor DESC, v.patch DESC LIMIT $${params.length}`,
         params,
       )) as { rows: Array<Partial<VersionRow>> };
@@ -517,14 +662,14 @@ export function createDsStore(connectionString: string | undefined, pool?: DsPoo
       };
     },
 
-    async getVersion(libraryId, ownerId, version) {
+    async getVersion(libraryId, userId, version) {
       const r = (await db.query(
         `SELECT v.version, v.bump, v.base_version, v.snapshot, v.snapshot_hash, v.changelog, v.summary,
                 v.migrations, v.notes, v.published_by, v.published_at
-           FROM ds_libraries l
+           FROM ${libraryFrom("$2")}
            LEFT JOIN ds_versions v ON v.library_id = l.id AND v.version = ${version === "latest" ? "l.latest_version" : "$3"}
-          WHERE l.id = $1 AND l.owner_id = $2`,
-        version === "latest" ? [libraryId, ownerId] : [libraryId, ownerId, version],
+          WHERE l.id = $1 AND ${roleSql("$2")} IS NOT NULL`,
+        version === "latest" ? [libraryId, userId] : [libraryId, userId, version],
       )) as { rows: Array<Partial<VersionRow>> };
       const row = r.rows[0];
       if (!row) return { kind: "no_library" };
@@ -548,21 +693,21 @@ export function createDsStore(connectionString: string | undefined, pool?: DsPoo
       };
     },
 
-    async listUpdates(libraryId, ownerId, from, limit) {
+    async listUpdates(libraryId, userId, from, limit) {
       const parts = parseVersion(from);
       if (!parts) {
-        // Not a version of anything; still tell "not yours" apart.
-        return (await fetchLibrary(db, libraryId, ownerId)) ? { kind: "no_version" } : { kind: "no_library" };
+        // Not a version of anything; still tell "no access" apart.
+        return (await fetchLibrary(db, libraryId, userId)) ? { kind: "no_version" } : { kind: "no_library" };
       }
       const r = (await db.query(
         `SELECT l.latest_version,
                 EXISTS (SELECT 1 FROM ds_versions f WHERE f.library_id = l.id AND f.version = $3) AS from_exists,
                 v.version, v.bump, v.notes, v.changelog, v.migrations
-           FROM ds_libraries l
+           FROM ${libraryFrom("$2")}
            LEFT JOIN ds_versions v ON v.library_id = l.id AND (v.major, v.minor, v.patch) > ($4, $5, $6)
-          WHERE l.id = $1 AND l.owner_id = $2
+          WHERE l.id = $1 AND ${roleSql("$2")} IS NOT NULL
           ORDER BY v.major, v.minor, v.patch LIMIT $7`,
-        [libraryId, ownerId, from, parts.major, parts.minor, parts.patch, limit + 1],
+        [libraryId, userId, from, parts.major, parts.minor, parts.patch, limit + 1],
       )) as { rows: Array<Partial<VersionRow> & { latest_version: string | null; from_exists: boolean }> };
       const first = r.rows[0];
       if (!first) return { kind: "no_library" };
@@ -580,6 +725,10 @@ export function createDsStore(connectionString: string | undefined, pool?: DsPoo
         })),
         hasMore: found.length > limit,
       };
+    },
+
+    listAudit(libraryId, page) {
+      return listAudit(db, libraryId, page);
     },
 
     async close() {

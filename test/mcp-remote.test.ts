@@ -1,5 +1,5 @@
 import { WebSocket } from "ws";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { buildApp } from "../src/app.js";
@@ -7,12 +7,10 @@ import { resetBridgeForTests } from "../src/mcp/bridge.js";
 import { BRIDGE_TICKET_TTL_MS, mintBridgeTicket } from "../src/mcp/bridgeTickets.js";
 import { CANVAS_RESOURCE_URI } from "../src/mcp/canvasWidget.js";
 import { makeConfig } from "./helpers.js";
-import { APP_ORIGIN, useAuthApp } from "./authHarness.js";
+import { APP_ORIGIN, mintMcpToken, useAuthApp, useLocalAuthIssuer } from "./authHarness.js";
 import { connectFakeEditor, expectAnnotatedTools, waitForSessionCount } from "./mcpEditorHelpers.js";
 
 const LEGACY_TOKEN = "a-very-secret-token!";
-const ISSUER = "http://localhost:3001/api/auth";
-const RESOURCE = "http://localhost:3001/mcp";
 const app = useAuthApp({ MCP_AUTH_TOKEN: LEGACY_TOKEN });
 
 interface Account {
@@ -132,33 +130,9 @@ describe("/mcp API key", () => {
 describe("/mcp OAuth access token", () => {
   // The JWKS and issuer live at BETTER_AUTH_URL (a fixed port); the test app is
   // on an ephemeral one, so key fetches are redirected to it.
-  const realFetch = globalThis.fetch;
-  beforeAll(() => {
-    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
-      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      return realFetch(url.replace("http://localhost:3001", app().url), init);
-    });
-  });
-  afterAll(() => vi.restoreAllMocks());
+  useLocalAuthIssuer(app);
 
-  async function mint(sub: string, claims: Record<string, unknown> = {}): Promise<string> {
-    const auth = app().app.auth as unknown as {
-      api: { signJWT(ctx: { body: { payload: Record<string, unknown> } }): Promise<{ token: string }> };
-    };
-    const { token } = await auth.api.signJWT({
-      body: {
-        payload: {
-          sub,
-          iss: ISSUER,
-          aud: RESOURCE,
-          scope: "mcp:tools",
-          exp: Math.floor(Date.now() / 1000) + 300,
-          ...claims,
-        },
-      },
-    });
-    return token;
-  }
+  const mint = (sub: string, claims: Record<string, unknown> = {}) => mintMcpToken(app(), sub, claims);
 
   it("authenticates by subject and routes to that user's tab", async () => {
     resetBridgeForTests();

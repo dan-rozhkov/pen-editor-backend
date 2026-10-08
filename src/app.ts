@@ -32,6 +32,7 @@ import { uploadRoutes } from "./routes/upload.js";
 import { repoRoutes } from "./routes/repo.js";
 import { mobbinAuthRoutes } from "./routes/mobbinAuth.js";
 import { createPgPool, createTraceStore, type TraceStore } from "./tracing/traceStore.js";
+import { createOrgAuditWriter } from "./auth/orgAuditWriter.js";
 import { createAuth, type Auth, type AuthDatabase, type CreateAuthOptions } from "./auth/index.js";
 import type { ClaimPool } from "./auth/claim.js";
 import { authRoutes } from "./routes/auth.js";
@@ -191,7 +192,10 @@ export async function buildApp(
     authPool = options.authPool ?? null;
   } else if (isAuthEnabled(config)) {
     authPool = options.authPool ?? (createPgPool(config.TRACE_DATABASE_URL as string) as unknown as AuthDatabase & ClaimPool);
-    auth = createAuth(config, authPool, options.authOptions);
+    auth = createAuth(config, authPool, {
+      ...options.authOptions,
+      orgAudit: options.authOptions?.orgAudit ?? createOrgAuditWriter(authPool),
+    });
   }
   app.decorate("auth", auth);
   if (authPool && !options.authPool) {
@@ -410,7 +414,7 @@ export async function buildApp(
   await memoryActivityRoutes(app, config, memoryStore);
   await userSkillRoutes(app, config, userSkillStore);
   await sharedCanvasRoutes(app, config, sharedCanvasStore);
-  await dsRoutes(app, dsStore, analytics);
+  await dsRoutes(app, config, dsStore, analytics);
   await modelsRoutes(app, config);
   await opencodeRoutes(app, config);
   await uploadRoutes(app, config);

@@ -3,6 +3,7 @@ import { organization } from "better-auth/plugins";
 import { createAccessControl } from "better-auth/plugins/access";
 import { defaultStatements, memberAc, ownerAc } from "better-auth/plugins/organization/access";
 import { noopOrgAuditWriter, type OrgAuditEvent, type OrgAuditWriter } from "./orgAudit.js";
+import { currentActorUserId } from "./requestActor.js";
 import { invitationMessage, type EmailSender } from "./email.js";
 
 // Actions on a design-system library (Phase 8). `admin` = manage members and
@@ -83,7 +84,7 @@ export function createOrganizationPlugin({ sendEmail, appOrigin, audit = noopOrg
     },
     // actorUserId: filled where the hook data names the actor. Hooks whose
     // `user` is only the AFFECTED account (remove-member, update-member-role)
-    // leave it null; 8.3 reads the actor from the request session there.
+    // read the actor from the request session (requestActor.ts).
     organizationHooks: {
       beforeCreateInvitation: async ({ invitation }) => assertAllowedRole(invitation.role),
       beforeAddMember: async ({ member }) => assertAllowedRole(member.role),
@@ -115,7 +116,7 @@ export function createOrganizationPlugin({ sendEmail, appOrigin, audit = noopOrg
           action: "member.remove",
           organizationId: org.id,
           targetUserId: member.userId,
-          actorUserId: null,
+          actorUserId: await currentActorUserId(),
           role: member.role,
         });
       },
@@ -124,7 +125,7 @@ export function createOrganizationPlugin({ sendEmail, appOrigin, audit = noopOrg
           action: "member.role_change",
           organizationId: org.id,
           targetUserId: member.userId,
-          actorUserId: null,
+          actorUserId: await currentActorUserId(),
           role: member.role,
           previousRole,
         });

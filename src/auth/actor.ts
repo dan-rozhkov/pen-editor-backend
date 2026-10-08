@@ -1,6 +1,9 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { isPlausibleUserId } from "../lib/userId.js";
 import type { Auth, AuthSession } from "./index.js";
+import type { Principal } from "../ds/access.js";
+import { extractBearerToken } from "../mcp/auth.js";
+import type { BearerVerifier } from "./bearer.js";
 import { toWebHeaders } from "./webBridge.js";
 
 // `app.auth` is the Better Auth instance, or null when accounts are off
@@ -103,15 +106,43 @@ export async function requireUserId(
 }
 
 /**
- * The signed-in account id, or a reply already sent (caller returns). For
+ * The authenticated caller, or a reply already sent (caller returns). For
  * routes whose data is OWNED by an account: unlike `requireUserId` it never
  * accepts a body/query `userId`, because that id is client-generated and
  * unauthenticated, so anyone who knows it could write. 503 when accounts are
- * off, 401 when signed out.
+ * off, 401 when the caller is anonymous or its credential is bad.
+ *
+ * A principal is one of: a session cookie (`user`), an `sf_` API key
+ * (`api_key`), or an OAuth access token (`agent`). An Authorization bearer
+ * header, when present, decides; the cookie is only consulted without one.
+ * Pass `verify` (createBearerVerifier) to accept the bearer kinds; without it
+ * a bearer header is ignored and only the session counts.
  */
-export async function requireAccount(request: FastifyRequest, reply: FastifyReply): Promise<string | null> {
+export async function requireAccount(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  verify: BearerVerifier | null = null,
+): Promise<Principal | null> {
   if (!request.server.auth) {
     await reply.status(503).send({ error: "auth_disabled", message: "Accounts are not enabled on this server." });
+    return null;
+  }
+  if (verify && extractBearerToken(request.headers.authorization)) {
+    const result = await verify(request);
+    if (result.ok) {
+      return result.kind === "api_key"
+        ? { userId: result.userId, kind: "api_key", keyId: result.keyId, scopes: [] }
+        : { userId: result.userId, kind: "agent", ...(result.clientId ? { clientId: result.clientId } : {}), scopes: result.scopes };
+    }
+    if (result.reason === "rate_limited") {
+      await reply.status(429).send({ error: "rate_limited", message: "Too many requests. Try again later." });
+      return null;
+    }
+    const challenge = result.response.headers.get("www-authenticate");
+    if (challenge) reply.header("WWW-Authenticate", challenge);
+    // 403 insufficient_scope stays 403; everything else is a bad credential.
+    const status = result.response.status === 403 ? 403 : 401;
+    await reply.status(status).send({ error: status === 403 ? "forbidden" : "unauthorized", message: "The access token or API key is not valid for design-system libraries." });
     return null;
   }
   const actor = await resolveActor(request);
@@ -119,5 +150,5 @@ export async function requireAccount(request: FastifyRequest, reply: FastifyRepl
     await reply.status(401).send({ error: "unauthorized", message: "Sign in to use design-system libraries." });
     return null;
   }
-  return actor.userId;
+  return { userId: actor.userId, kind: "user", scopes: [] };
 }

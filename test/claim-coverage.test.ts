@@ -11,7 +11,8 @@ const IDENTITY_COLUMNS = ["userid", "ownerid", "authorid", "createdby", "anonid"
 const ALLOWLIST: Record<string, { columns: string[]; reason: string }> = {
   raw_traces: { columns: ["user_id"], reason: "TTL analytics (14 days) stay under the anon id by design; see CLAUDE.md known limits" },
   session_summaries: { columns: ["user_id"], reason: "TTL analytics derived from raw_traces; stay under the anon id by design" },
-  ds_libraries: { columns: ["owner_id"], reason: "owned by a Better Auth account id, never an anon id; nothing to claim" },
+  ds_libraries: { columns: ["owner_id"], reason: "owned by a Better Auth account id, never an anon id; nothing to claim (org_id is an organization id, not an identity column)" },
+  audit_log: { columns: ["actor_id"], reason: "append-only audit trail: actor_id is a Better Auth account id (or 'system'), never an anon id; nothing to claim" },
   agent_skills: { columns: ["created_by"], reason: "agent-authored, global skill library; created_by is provenance, not an owner" },
   anon_claims: { columns: ["anon_id", "user_id"], reason: "the claim ledger itself: anon_id is the source, user_id the destination account" },
   account: { columns: ["userId"], reason: "Better Auth: account id" },

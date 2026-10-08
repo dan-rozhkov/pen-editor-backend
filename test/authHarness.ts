@@ -3,7 +3,7 @@
 // transaction without mocking away the thing under test. Emails are captured
 // instead of sent. Pair with chatHarness.ts's startApp for the HTTP plumbing.
 import { randomBytes } from "node:crypto";
-import { afterAll, beforeAll } from "vitest";
+import { afterAll, beforeAll, vi } from "vitest";
 import type { PGlite } from "@electric-sql/pglite";
 import type { Config } from "../src/config.js";
 import type { BuildAppOptions } from "../src/app.js";
@@ -132,4 +132,35 @@ export function useAuthApp(
     await current?.close();
   });
   return () => current as AuthHarness;
+}
+
+const ISSUER = "http://localhost:3001/api/auth";
+const RESOURCE = "http://localhost:3001/mcp";
+
+/** An OAuth access token (an "agent" principal) for `sub`, signed by the app's own JWKS. */
+export async function mintMcpToken(running: AuthHarness, sub: string, claims: Record<string, unknown> = {}): Promise<string> {
+  const auth = running.app.auth as unknown as {
+    api: { signJWT(ctx: { body: { payload: Record<string, unknown> } }): Promise<{ token: string }> };
+  };
+  const { token } = await auth.api.signJWT({
+    body: {
+      payload: { sub, iss: ISSUER, aud: RESOURCE, scope: "mcp:tools", exp: Math.floor(Date.now() / 1000) + 300, ...claims },
+    },
+  });
+  return token;
+}
+
+/**
+ * The OAuth guard fetches the JWKS from BETTER_AUTH_URL (http://localhost:3001),
+ * which is not where the test app listens: send those requests to the app.
+ */
+export function useLocalAuthIssuer(current: () => AuthHarness): void {
+  const realFetch = globalThis.fetch;
+  beforeAll(() => {
+    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      return realFetch(url.replace("http://localhost:3001", current().url), init);
+    });
+  });
+  afterAll(() => vi.restoreAllMocks());
 }

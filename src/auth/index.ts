@@ -71,7 +71,7 @@ export type AuthDatabase = Parameters<typeof betterAuth>[0]["database"];
 export interface CreateAuthOptions {
   /** Test seam: replaces Resend / the stdout logger. */
   sendEmail?: EmailSender;
-  /** Receives organization member changes; 8.3 supplies the real writer. */
+  /** Receives organization member changes (buildApp passes the audit_log writer unless a test overrides it). */
   orgAudit?: OrgAuditWriter;
   /** Test seam: replaces the pinned-DNS metadata fetch used by CIMD. */
   fetchClientMetadataResource?: typeof fetchClientMetadataResource;

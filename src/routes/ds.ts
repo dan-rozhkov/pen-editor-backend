@@ -1,5 +1,6 @@
-// Design-system library API: /api/ds/*. Account-only (session cookie; an
-// anonymous id is never enough, see requireAccount), cursor-paginated lists
+// Design-system library API: /api/ds/*. Account-only (a session cookie, an sf_
+// API key or an OAuth token; an anonymous id is never enough, see
+// requireAccount), role-checked per library (src/ds/access.ts), cursor-paginated lists
 // without snapshots, immutable ETag'd versions, idempotent publish. Errors are
 // always { error, message, details? }. Spec:
 // pen-editor/docs/superpowers/plans/2026-10-08-phase6-8-library-adoption-governance-plan.md
@@ -9,6 +10,10 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z, type ZodType } from "zod";
 import type { AnalyticsClient } from "../analytics/posthog.js";
 import { requireAccount } from "../auth/actor.js";
+import { createBearerVerifier } from "../auth/bearer.js";
+import type { Config } from "../config.js";
+import { decide, type DsAction, type DsRole, type Principal } from "../ds/access.js";
+import { parseAuditCursor } from "../ds/audit.js";
 import { canonicalJson, sha256Hex } from "../ds/canonical.js";
 import { parseLibraryCursor, parseVersionCursor, type DsLibrary, type DsStore } from "../ds/dsStore.js";
 import { containsNul } from "../ds/nul.js";
@@ -33,6 +38,7 @@ const pageQuery = z.object({
 });
 const versionString = z.string().refine((v) => parseVersion(v) !== null, "Expected MAJOR.MINOR.PATCH");
 const createBody = z.object({
+  orgId: z.string().min(1).max(64).optional(),
   name: noNul(z.string().trim().min(1).max(120)),
   description: noNul(z.string().max(2000)).default(""),
 });
@@ -50,6 +56,11 @@ const publishBody = z.object({
   snapshot: z.unknown(),
   changelog: noNul(z.record(z.string(), z.unknown())).default({}),
   notes: noNul(z.string().max(2000)).default(""),
+});
+const auditQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  cursor: z.string().min(1).max(64).optional(),
+  action: z.string().regex(/^[a-z_]+\.[a-z_]+$/).max(40).optional(),
 });
 const updatesQuery = z.object({
   from: versionString,
@@ -84,6 +95,8 @@ function libraryJson(l: DsLibrary) {
     name: l.name,
     description: l.description,
     ownerId: l.ownerId,
+    orgId: l.orgId,
+    role: l.role,
     latestVersion: l.latestVersion,
     latestPublishedAt: l.latestPublishedAt,
     archivedAt: l.archivedAt,
@@ -113,6 +126,7 @@ function snapshotTooLarge(prepared: PreparedSnapshot, raw: unknown): boolean {
 
 export async function dsRoutes(
   app: FastifyInstance,
+  config: Config,
   store: DsStore | null,
   analytics: AnalyticsClient,
 ): Promise<void> {
@@ -129,29 +143,63 @@ export async function dsRoutes(
       return send(reply, status, code, status === 429 ? "Too many requests. Try again later." : err.message);
     });
 
-    type Handler = (ctx: { store: DsStore; userId: string }, request: FastifyRequest, reply: FastifyReply) => Promise<unknown>;
+    const verifyBearer = app.auth ? createBearerVerifier(app.auth, config) : null;
+
+    type Handler = (ctx: { store: DsStore; principal: Principal }, request: FastifyRequest, reply: FastifyReply) => Promise<unknown>;
     const guarded =
       (handler: Handler) =>
       async (request: FastifyRequest, reply: FastifyReply) => {
         if (!store) return send(reply, 503, "ds_unavailable", "Design-system libraries are not configured on this server.");
-        const userId = await requireAccount(request, reply);
-        if (!userId) return reply;
-        return handler({ store, userId }, request, reply);
+        const principal = await requireAccount(request, reply, verifyBearer);
+        if (!principal) return reply;
+        return handler({ store, principal }, request, reply);
       };
 
     const notFound = (reply: FastifyReply, what = "Library") => send(reply, 404, "not_found", `${what} not found.`);
+
+    /**
+     * Role gate for one library: 404 when the caller has no role on it (it
+     * may not exist), 403 when the role or the kind of caller is too low.
+     * Null = reply already sent.
+     */
+    const authorize = async (
+      store: DsStore,
+      principal: Principal,
+      libraryId: string,
+      action: DsAction,
+      reply: FastifyReply,
+    ): Promise<DsRole | null> => {
+      const role = await store.getRole(libraryId, principal.userId);
+      if (!role) {
+        await notFound(reply);
+        return null;
+      }
+      const decision = decide(principal, role, action);
+      if (!decision.ok) {
+        await send(
+          reply,
+          403,
+          decision.code,
+          decision.code === "agent_cannot_approve" ? "An agent cannot publish or approve changes." : "Your role does not allow this action.",
+        );
+        return null;
+      }
+      return role;
+    };
 
     // ---- libraries -------------------------------------------------------
 
     scope.post(
       "/api/ds/libraries",
       { config: WRITE_LIMIT },
-      guarded(async ({ store, userId }, request, reply) => {
+      guarded(async ({ store, principal }, request, reply) => {
         const body = parse(createBody, request.body, reply, "body");
         if (!body) return reply;
         const id = `lib_${randomBytes(9).toString("base64url")}`;
-        const result = await store.createLibrary({ id, ownerId: userId, name: body.name, description: body.description });
-        if (result.kind === "name_taken") return send(reply, 409, "name_taken", "You already have a library with this name.");
+        const result = await store.createLibrary({ id, principal, orgId: body.orgId ?? null, name: body.name, description: body.description });
+        if (result.kind === "org_not_found") return notFound(reply, "Organization");
+        if (result.kind === "forbidden") return send(reply, 403, "forbidden", "Your role does not allow this action.");
+        if (result.kind === "name_taken") return send(reply, 409, "name_taken", "A library with this name already exists here.");
         if (result.kind === "limit") {
           return send(reply, 422, "library_limit", "You have reached the limit of libraries. Delete an archived library to free a slot.", {
             live: result.live,
@@ -165,10 +213,10 @@ export async function dsRoutes(
     scope.get(
       "/api/ds/libraries",
       { config: READ_LIMIT },
-      guarded(async ({ store, userId }, request, reply) => {
+      guarded(async ({ store, principal }, request, reply) => {
         const query = parse(pageQuery, request.query, reply, "query");
         if (!query || badCursor(query.cursor, parseLibraryCursor, reply)) return reply;
-        const page = await store.listLibraries(userId, { limit: query.limit, cursor: query.cursor ?? null });
+        const page = await store.listLibraries(principal.userId, { limit: query.limit, cursor: query.cursor ?? null });
         return reply.send({ items: page.items.map(libraryJson), nextCursor: page.nextCursor });
       }),
     );
@@ -176,10 +224,10 @@ export async function dsRoutes(
     scope.get(
       "/api/ds/libraries/:id",
       { config: READ_LIMIT },
-      guarded(async ({ store, userId }, request, reply) => {
+      guarded(async ({ store, principal }, request, reply) => {
         const params = parse(idParam, request.params, reply, "path");
         if (!params) return reply;
-        const found = await store.getLibrary(params.id, userId);
+        const found = await store.getLibrary(params.id, principal.userId);
         if (!found) return notFound(reply);
         return reply.send({ ...libraryJson(found.library), latest: found.latest });
       }),
@@ -188,14 +236,15 @@ export async function dsRoutes(
     scope.patch(
       "/api/ds/libraries/:id",
       { config: WRITE_LIMIT },
-      guarded(async ({ store, userId }, request, reply) => {
+      guarded(async ({ store, principal }, request, reply) => {
         const params = parse(idParam, request.params, reply, "path");
         const body = params && parse(patchBody, request.body, reply, "body");
         if (!params || !body) return reply;
-        const result = await store.updateLibrary(params.id, userId, body);
+        if (!(await authorize(store, principal, params.id, "write", reply))) return reply;
+        const result = await store.updateLibrary(params.id, principal, body);
         if (result.kind === "not_found") return notFound(reply);
         if (result.kind === "archived") return send(reply, 409, "archived", "This library is archived.");
-        if (result.kind === "name_taken") return send(reply, 409, "name_taken", "You already have a library with this name.");
+        if (result.kind === "name_taken") return send(reply, 409, "name_taken", "A library with this name already exists here.");
         return reply.send(libraryJson(result.library));
       }),
     );
@@ -203,19 +252,20 @@ export async function dsRoutes(
     scope.delete(
       "/api/ds/libraries/:id",
       { config: WRITE_LIMIT },
-      guarded(async ({ store, userId }, request, reply) => {
+      guarded(async ({ store, principal }, request, reply) => {
         const params = parse(idParam, request.params, reply, "path");
         const query = params && parse(deleteQuery, request.query, reply, "query");
         if (!params || !query) return reply;
+        if (!(await authorize(store, principal, params.id, "admin", reply))) return reply;
         if (query.purge === "true") {
           // Hard delete, only after an archive: consumers had their chance to move.
-          const purged = await store.purgeLibrary(params.id, userId);
+          const purged = await store.purgeLibrary(params.id, principal);
           if (purged === "not_found") return notFound(reply);
           if (purged === "not_archived") return send(reply, 409, "not_archived", "Archive the library before deleting it for good.");
           return reply.status(204).send();
         }
         // Archive only: consumers stay pinned and old versions stay readable.
-        return (await store.archiveLibrary(params.id, userId)) ? reply.status(204).send() : notFound(reply);
+        return (await store.archiveLibrary(params.id, principal)) ? reply.status(204).send() : notFound(reply);
       }),
     );
 
@@ -224,13 +274,13 @@ export async function dsRoutes(
     scope.post(
       "/api/ds/libraries/:id/preview",
       { bodyLimit: PUBLISH_BODY_LIMIT, config: WRITE_LIMIT },
-      guarded(async ({ store, userId }, request, reply) => {
+      guarded(async ({ store, principal }, request, reply) => {
         const params = parse(idParam, request.params, reply, "path");
         const body = params && parse(previewBody, request.body, reply, "body");
         if (!params || !body) return reply;
         const prepared = prepareSnapshot(body.snapshot);
         if (snapshotTooLarge(prepared, body.snapshot)) return send(reply, 413, "snapshot_too_large", "The snapshot is larger than 4 MB.");
-        const ctx = await store.getPublishContext(params.id, userId);
+        const ctx = await store.getPublishContext(params.id, principal.userId);
         if (!ctx) return notFound(reply);
         const checked = checkBaseAndSnapshot(ctx, body.baseVersion, prepared.validation);
         if ("kind" in checked) return send(reply, checked.status, checked.code, checked.message, checked.details);
@@ -249,9 +299,10 @@ export async function dsRoutes(
     scope.post(
       "/api/ds/libraries/:id/versions",
       { bodyLimit: PUBLISH_BODY_LIMIT, config: WRITE_LIMIT },
-      guarded(async ({ store, userId }, request, reply) => {
+      guarded(async ({ store, principal }, request, reply) => {
         const params = parse(idParam, request.params, reply, "path");
         if (!params) return reply;
+        if (!(await authorize(store, principal, params.id, "publish", reply))) return reply;
         const key = idempotencyKeySchema.safeParse(request.headers["idempotency-key"]);
         if (!key.success) {
           return send(reply, 400, "idempotency_key_required", "Send an Idempotency-Key header of 8 to 128 printable characters.");
@@ -268,7 +319,7 @@ export async function dsRoutes(
         const snapshotDigest = prepared.validation.ok ? prepared.hash : sha256Hex(canonicalJson(body.snapshot ?? null));
 
         const outcome = await store.publish(
-          { libraryId: params.id, ownerId: userId, publishedBy: userId, idempotencyKey: key.data },
+          { libraryId: params.id, principal, idempotencyKey: key.data },
           decidePublish({
             baseVersion: body.baseVersion,
             bump: body.bump,
@@ -291,7 +342,7 @@ export async function dsRoutes(
           try {
             analytics.capture({
               event: "ds_published",
-              distinctId: userId,
+              distinctId: principal.userId,
               properties: { bump: outcome.result.bump, ...outcome.summary },
             });
           } catch (err) {
@@ -307,11 +358,11 @@ export async function dsRoutes(
     scope.get(
       "/api/ds/libraries/:id/versions",
       { config: READ_LIMIT },
-      guarded(async ({ store, userId }, request, reply) => {
+      guarded(async ({ store, principal }, request, reply) => {
         const params = parse(idParam, request.params, reply, "path");
         const query = params && parse(pageQuery, request.query, reply, "query");
         if (!params || !query || badCursor(query.cursor, parseVersionCursor, reply)) return reply;
-        const page = await store.listVersions(params.id, userId, { limit: query.limit, cursor: query.cursor ?? null });
+        const page = await store.listVersions(params.id, principal.userId, { limit: query.limit, cursor: query.cursor ?? null });
         return page ? reply.send(page) : notFound(reply);
       }),
     );
@@ -319,12 +370,12 @@ export async function dsRoutes(
     scope.get(
       "/api/ds/libraries/:id/versions/:version",
       { config: READ_LIMIT },
-      guarded(async ({ store, userId }, request, reply) => {
+      guarded(async ({ store, principal }, request, reply) => {
         const params = parse(versionParams, request.params, reply, "path");
         if (!params) return reply;
         const isLatest = params.version === "latest";
         if (!isLatest && parseVersion(params.version) === null) return notFound(reply, "Version");
-        const found = await store.getVersion(params.id, userId, params.version);
+        const found = await store.getVersion(params.id, principal.userId, params.version);
         if (found.kind === "no_library") return notFound(reply);
         if (found.kind === "no_version") return notFound(reply, "Version");
         const { version } = found;
@@ -341,11 +392,11 @@ export async function dsRoutes(
     scope.get(
       "/api/ds/libraries/:id/updates",
       { config: READ_LIMIT },
-      guarded(async ({ store, userId }, request, reply) => {
+      guarded(async ({ store, principal }, request, reply) => {
         const params = parse(idParam, request.params, reply, "path");
         const query = params && parse(updatesQuery, request.query, reply, "query");
         if (!params || !query) return reply;
-        const updates = await store.listUpdates(params.id, userId, query.from, query.limit);
+        const updates = await store.listUpdates(params.id, principal.userId, query.from, query.limit);
         if (updates.kind === "no_library") return notFound(reply);
         if (updates.kind === "no_version") return notFound(reply, "Version");
         const last = updates.items[updates.items.length - 1];
@@ -357,6 +408,21 @@ export async function dsRoutes(
           hasMore: updates.hasMore,
           nextFrom: updates.hasMore && last ? last.version : null,
         });
+      }),
+    );
+
+    // ---- audit -----------------------------------------------------------
+
+    scope.get(
+      "/api/ds/libraries/:id/audit",
+      { config: READ_LIMIT },
+      guarded(async ({ store, principal }, request, reply) => {
+        const params = parse(idParam, request.params, reply, "path");
+        const query = params && parse(auditQuery, request.query, reply, "query");
+        if (!params || !query || badCursor(query.cursor, parseAuditCursor, reply)) return reply;
+        if (!(await authorize(store, principal, params.id, "admin", reply))) return reply;
+        const page = await store.listAudit(params.id, { limit: query.limit, cursor: query.cursor ?? null, action: query.action ?? null });
+        return reply.send(page);
       }),
     );
   });
