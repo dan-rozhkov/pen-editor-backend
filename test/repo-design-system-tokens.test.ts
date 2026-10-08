@@ -325,6 +325,13 @@ describe("resolveTailwindTokenReferences", () => {
 });
 
 describe("dark token extraction", () => {
+  it("ignores a negated prefers-color-scheme media block", () => {
+    const tokens = extractCssCustomPropertyTokens(
+      ":root { --background: #000; } @media not all and (prefers-color-scheme: dark) { :root { --background: #fff; } }",
+    );
+    expect(tokens.dark).toBeUndefined();
+  });
+
   it("parses shadcn :root + .dark, normalizing HSL triplets", () => {
     const css = `
       :root { --background: 0 0% 100%; --primary: 222 47% 11%; --radius: 0.5rem; }

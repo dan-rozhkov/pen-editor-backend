@@ -579,7 +579,7 @@ function collectDarkBlocks(css: string, inDarkMedia = false): string[] {
     if (close === -1) break;
     const prelude = css.slice(pos, open).split(";").pop()!.trim();
     const body = css.slice(open + 1, close);
-    if (/^@media[^{]*prefers-color-scheme\s*:\s*dark/.test(prelude)) {
+    if (/^@media[^{]*prefers-color-scheme\s*:\s*dark/.test(prelude) && !/\bnot\b/i.test(prelude)) {
       out.push(...collectDarkBlocks(body, true));
     } else if (/^@layer\b/.test(prelude)) {
       out.push(...collectDarkBlocks(body, inDarkMedia));
