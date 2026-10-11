@@ -165,10 +165,12 @@ export function registerJevBrowseRoute<Body>(
         // One Jev call per request (plus, for /api/browse/step, a small
         // STRUCTURED_MODEL call for TYPE_TEXT or a second small Jev call for
         // SELECT — see chooseSelectOption in browseStep.ts). Cheap
-        // individually, but browse_task fires one per loop iteration (up to
-        // 25), so a per-IP cap well above a legitimate task's step rate still
-        // bounds a script hammering these endpoints directly.
-        rateLimit: { max: 60, timeWindow: "1 minute" },
+        // individually, but browse_task fires one per loop iteration, and a
+        // planned multi-item goal runs up to 150 of them back to back at
+        // ~1/s (a live skroutz run hit 60/min and stalled 15 sub-goals on
+        // 429s). 180/min sits well above that rate and still bounds a script
+        // hammering these endpoints directly.
+        rateLimit: { max: 180, timeWindow: "1 minute" },
       },
     },
     async (request, reply) => {
