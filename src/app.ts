@@ -25,6 +25,7 @@ import { opencodeRoutes } from "./routes/opencode.js";
 import { prototypeLinkRoutes } from "./routes/prototype-link.js";
 import { browseStepRoutes } from "./routes/browseStep.js";
 import { browseLocateRoutes } from "./routes/browseLocate.js";
+import { browsePlanRoutes } from "./routes/browsePlan.js";
 import { tasteCheckRoutes } from "./routes/tasteCheck.js";
 import { showcaseRoutes } from "./routes/showcase.js";
 import { showcasePublishRoutes } from "./routes/showcasePublish.js";
@@ -426,6 +427,7 @@ export async function buildApp(
   await prototypeLinkRoutes(app, config);
   await browseStepRoutes(app, config);
   await browseLocateRoutes(app, config);
+  await browsePlanRoutes(app, config);
   await tasteCheckRoutes(app, config);
   await repoRoutes(app, config);
   await mobbinAuthRoutes(app, config);

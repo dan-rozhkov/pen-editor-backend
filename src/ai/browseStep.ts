@@ -979,7 +979,7 @@ const NUMBERABLE_PII_KINDS = new Set(["email", "phone"]);
  * leaked/hallucinated placeholder and rejected. Deriving the prefix list
  * from what scrubbing can actually emit means only a REAL placeholder shape
  * is ever flagged. */
-const PLACEHOLDER_KIND_PREFIXES = [
+export const PLACEHOLDER_KIND_PREFIXES = [
   ...PII_KINDS.map((kind) => kind.toUpperCase().replace(/\s+/g, "_")),
   "SENSITIVE",
 ];
