@@ -22,7 +22,7 @@ export const MAX_SUBGOAL_CHARS = 1_000;
 /** Shared by the route's zod schema and the fallback goal. */
 export const MAX_GOAL_CHARS = 2_000;
 // Clearly below the client's own 15 s wait, so the fallback reaches it.
-export const BROWSE_PLAN_TIMEOUT_MS = 10_000;
+export const BROWSE_PLAN_TIMEOUT_MS = 20_000;
 
 // Deliberately lenient: caps are enforced in normalizeSubgoals, so a model
 // that overshoots a limit is trimmed rather than failing the whole call.
