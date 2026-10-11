@@ -2404,7 +2404,7 @@ Returns the created/updated style ids and names (with a created|updated status) 
         .positive()
         .max(25)
         .optional()
-        .describe("Maximum number of snapshot/decide/act cycles. Default 25, hard cap 25."),
+        .describe("Maximum number of snapshot/decide/act cycles per sub-goal (a single-flow goal is one sub-goal). Default 25, hard cap 25; a planned multi-item goal is also capped at 150 steps in total."),
     }),
   }),
 
