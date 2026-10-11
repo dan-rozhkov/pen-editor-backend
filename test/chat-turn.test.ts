@@ -539,6 +539,40 @@ describe("prepareChatTurn", () => {
       expect(turn.tools.browse_task).toBeDefined();
     });
 
+    it("renders the browse_task-first rule into system only when browse_task is offered", async () => {
+      const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+      const messages = [userMessage("open skroutz.gr and build a cart")];
+      const on = await prepareChatTurn({
+        config: makeConfig({ TYPESAFE_API_KEY: "key" }),
+        messages,
+        clientCapabilities: { desktopBrowser: true },
+      });
+      expect(on.tools.browse_task).toBeDefined();
+      expect(on.system).toContain("## Browser tasks");
+      expect(on.system).toContain("starts with `browse_task`");
+
+      const noKey = await prepareChatTurn({
+        config: makeConfig({ TYPESAFE_API_KEY: undefined }),
+        messages,
+        clientCapabilities: { desktopBrowser: true },
+      });
+      expect(noKey.system).not.toContain("## Browser tasks");
+
+      const noBrowser = await prepareChatTurn({
+        config: makeConfig({ TYPESAFE_API_KEY: "key" }),
+        messages,
+      });
+      expect(noBrowser.system).not.toContain("## Browser tasks");
+
+      // Constant across requests (prompt caching).
+      const again = await prepareChatTurn({
+        config: makeConfig({ TYPESAFE_API_KEY: "key" }),
+        messages: [userMessage("something else entirely")],
+        clientCapabilities: { desktopBrowser: true },
+      });
+      expect(again.systemPromptHash).toBe(on.systemPromptHash);
+    });
+
     it("is absent without desktopBrowser even when TYPESAFE_API_KEY is set", async () => {
       const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
 

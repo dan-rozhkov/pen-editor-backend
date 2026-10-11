@@ -766,7 +766,16 @@ export async function prepareChatTurn(
   // pointer block only appears when there is somewhere for it to point.
   const canvasContextDelivered = Boolean(canvasContext);
 
+  // Computed ONCE and shared by the system-prompt rule and the browse_*
+  // structural/key gates below, so the rule can never drift from the tool set.
+  const browserKind =
+    input.clientCapabilities?.browser ?? (input.clientCapabilities?.desktopBrowser ? "desktop" : undefined);
+  const hasBrowser = browserKind === "desktop" || (browserKind === "cloud" && Boolean(config.STEEL_API_KEY));
+  const browseTaskOffered = hasBrowser && Boolean(config.TYPESAFE_API_KEY);
+  const browserGuidance = browseTaskOffered;
+
   const system = buildSystemPrompt(skillCatalog, {
+    browserGuidance,
     memoryGuidance: memoryInjected,
     memorySnapshot: memorySnapshotBlock,
     selfSkillsGuidance: selfSkillsInjected,
@@ -1183,9 +1192,6 @@ export async function prepareChatTurn(
     // there too when this flag is true but the model/provider/VISION_MODEL
     // combination can't carry the image) — the two gates are independent
     // and either one deleting it is sufficient.
-    const browserKind =
-      input.clientCapabilities?.browser ?? (input.clientCapabilities?.desktopBrowser ? "desktop" : undefined);
-    const hasBrowser = browserKind === "desktop" || (browserKind === "cloud" && Boolean(config.STEEL_API_KEY));
     if (!hasBrowser) {
       delete tools.browse_open;
       delete tools.browse_snapshot;
@@ -1204,7 +1210,7 @@ export async function prepareChatTurn(
     // ungated, every browse_task call would burn its whole step budget on
     // identical 503s instead of never being offered — the same reasoning
     // as the FAL_KEY gate on remove_background/vectorize_image just below.
-    if (!config.TYPESAFE_API_KEY) {
+    if (!browseTaskOffered) {
       delete tools.browse_task;
     }
 

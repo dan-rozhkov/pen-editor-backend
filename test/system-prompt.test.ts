@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { AGENT_MODES, buildSystemPrompt } from "../src/ai/system-prompt.js";
+import { AGENT_MODES, buildSystemPrompt, BROWSER_TASKS_GUIDANCE } from "../src/ai/system-prompt.js";
 
 describe("AGENT_MODES", () => {
   it("remains exported for legacy request-body validation", () => {
@@ -211,5 +211,16 @@ describe("embed fit-to-canvas: no inner scrolling", () => {
     const prompt = buildSystemPrompt();
     expect(prompt).toContain("no inner container may scroll either");
     expect(prompt).toContain("overflow-y: auto");
+  });
+});
+
+describe("browser tasks guidance", () => {
+  it("is absent by default and present with browserGuidance", () => {
+    expect(buildSystemPrompt()).not.toContain("## Browser tasks");
+    const prompt = buildSystemPrompt([], { browserGuidance: true });
+    expect(prompt).toContain("## Browser tasks");
+    expect(prompt).toContain(BROWSER_TASKS_GUIDANCE);
+    expect(BROWSER_TASKS_GUIDANCE).toMatch(/starts with `browse_task`/);
+    expect(BROWSER_TASKS_GUIDANCE).toMatch(/other than `done`/);
   });
 });

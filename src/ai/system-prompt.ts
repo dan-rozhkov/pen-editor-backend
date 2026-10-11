@@ -38,7 +38,17 @@ export interface SystemPromptMemory {
    * data itself into `system` is exactly the prompt-cache bug this option
    * exists to avoid — see chatTurn.ts for the full story. */
   canvasContextDelivered?: boolean;
+  /** True when `browse_task` is actually in this turn's tool set. Renders the
+   * constant "Browser tasks" rule. Per-capability, not per-request: it is
+   * derived from the client's browser capability plus server keys, so it
+   * stays byte-identical across a session's requests (prompt caching). */
+  browserGuidance?: boolean;
 }
+
+export const BROWSER_TASKS_GUIDANCE = `Any task that needs the built-in browser starts with \`browse_task\`: navigating, searching, clicking through, filling forms, adding to a cart. Pass \`url\` to it instead of calling \`browse_open\` first. It runs the whole multi-step flow in one call.
+- Split a big job into several \`browse_task\` calls, one per sub-goal, each with a concrete goal. Example: adding many items to a cart is one \`browse_task\` per item, not one call for all of them.
+- If a \`browse_task\` call returns a status other than \`done\` (\`blocked\`, \`budget\`, \`stalled\`), continue from where it stopped: first try another \`browse_task\` with a narrower goal, then the manual tools (\`browse_snapshot\`, \`browse_act\`, \`browse_tabs\`) if that also fails.
+- You may call the manual tools directly, without \`browse_task\`, only for: follow-up on the page \`browse_task\` landed on (reading with \`browse_read\` or \`browse_find_images\`, scrolling to load more results, a verification screenshot if available); one single action \`browse_task\` cannot do (a key other than Enter or Escape, a slider); or \`browse_open\` when the user only asks you to open a page to look at it.`;
 
 export function buildSystemPrompt(
   skills: SkillCatalogEntry[] = [],
@@ -62,6 +72,10 @@ export function buildSystemPrompt(
   // prompt stays where it was.
   if (memory.selfSkillsGuidance) {
     parts.push(`\n## Your Own Skills\n\n${SELF_SKILLS_GUIDANCE}`);
+  }
+
+  if (memory.browserGuidance) {
+    parts.push(`\n## Browser tasks\n\n${BROWSER_TASKS_GUIDANCE}`);
   }
 
   if (memory.memorySnapshot) {

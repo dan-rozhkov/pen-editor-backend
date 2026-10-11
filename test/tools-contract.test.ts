@@ -1563,3 +1563,21 @@ describe("component tool schemas", () => {
     },
   );
 });
+
+describe("browse tool descriptions steer to browse_task first", () => {
+  const desc = (n: string) => String((penTools as Record<string, { description?: string }>)[n].description);
+  it("browse_task has no 'simple enough' escape hatch and names the fallback rule", () => {
+    const d = desc("browse_task");
+    expect(d).not.toContain("simple enough");
+    expect(d).not.toContain("when you want to see each step");
+    expect(d).toContain("THE default first call for EVERY browser task");
+    expect(d).toContain("one per sub-goal");
+  });
+  it("manual tools are marked as the fallback", () => {
+    expect(desc("browse_open")).toContain("If browse_task is in your tool set");
+    for (const n of ["browse_act", "browse_snapshot", "browse_screenshot"]) {
+      expect(desc(n)).toContain("If browse_task is in your tool set, start browser tasks with it");
+      expect(desc(n)).not.toContain("use browse_task instead");
+    }
+  });
+});
