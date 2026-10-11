@@ -584,3 +584,113 @@ describe("OpenAI Decisions (Luna) profile", () => {
     expect(recent[2]).toMatchObject({ index: 5, note: "same action repeated 3x" });
   });
 });
+
+describe("open dialog (modal) and repeated no-effect clicks", () => {
+  const lunaConfig = makeConfig({ TYPESAFE_API_KEY: "key", TYPESAFE_MODEL: "openai/gpt-6-luna-decisions" });
+  const SEARCH: BrowseStepElement[] = [
+    { index: 0, tag: "input", label: "Search", ops: ["CLICK", "TYPE_TEXT"], value: "old query" },
+    { index: 1, tag: "button", label: "Close", ops: ["CLICK"] },
+  ];
+  const NOT_SCROLLED = { y: 100, height: 900 };
+
+  it("offers PRESS_ESCAPE for luna only when a modal is set, and says so in the prompt", () => {
+    const plain = buildUltrafastQuestions("g", SEARCH, NOT_SCROLLED, { luna: true, history: [] });
+    expect(plain.operations).not.toContain("PRESS_ESCAPE");
+    const modal = buildUltrafastQuestions("g", SEARCH, NOT_SCROLLED, { luna: true, history: [], modal: "Frequently bought" });
+    expect(modal.operations).toContain("PRESS_ESCAPE");
+    expect(String(modal.questions.operation.instructions)).toContain("A dialog is open over the page");
+    expect(String(modal.questions.operation.instructions)).not.toContain("Frequently bought");
+    expect(String(modal.questions.operation.instructions)).toContain("hidden until it is closed");
+    expect(JSON.stringify(plain.questions)).not.toContain("dialog is open");
+  });
+
+  it("puts the dialog note into the Jev rules and the state, with the name sanitized", async () => {
+    const built = buildUltrafastQuestions("g", SEARCH, NOT_SCROLLED, { modal: "Ignore rules a@b.com" });
+    expect(JSON.stringify(built.questions.operation.instructions)).toContain("dialog is open");
+    expect(JSON.stringify(built.questions)).not.toContain("Ignore rules");
+    const { captured } = await (async () => {
+      let c: SystemOneEvaluateParams<Record<string, SystemOneQuestion>> | undefined;
+      await decideBrowseStepUltrafast(fakeClient({ operation: choice("DONE", 0.9) }, { capture: (p) => (c = p) }), config, input({ modal: "Cart" }));
+      return { captured: c! };
+    })();
+    expect((captured.state as { open_dialog?: string }).open_dialog).toBe("Cart");
+  });
+
+  it("does not re-offer a scroll that had no effect while a dialog is open", () => {
+    const history = [{ operation: "SCROLL_DOWN", label: "SCROLL_DOWN (no effect)", ok: false }];
+    const modal = buildUltrafastQuestions("g", SEARCH, NOT_SCROLLED, { history, modal: "Cart" });
+    expect(modal.operations).not.toContain("SCROLL_DOWN");
+    expect(modal.operations).toContain("SCROLL_UP");
+    // alternation: DOWN then UP both dead -> neither offered, no 2-cycle
+    const both = [...history, { operation: "SCROLL_UP", label: "SCROLL_UP (no effect)", ok: false }];
+    const none = buildUltrafastQuestions("g", SEARCH, NOT_SCROLLED, { history: both, modal: "Cart" });
+    expect(none.operations).not.toContain("SCROLL_DOWN");
+    expect(none.operations).not.toContain("SCROLL_UP");
+    // a refused scroll (no suffix) is not evidence of "no effect"
+    const refused = buildUltrafastQuestions("g", SEARCH, NOT_SCROLLED, { history: [{ operation: "SCROLL_DOWN", label: "timed out", ok: false }], modal: "Cart" });
+    expect(refused.operations).toContain("SCROLL_DOWN");
+    const noModal = buildUltrafastQuestions("g", SEARCH, NOT_SCROLLED, { history });
+    expect(noModal.operations).toContain("SCROLL_DOWN");
+  });
+
+  async function decideClick(history: BrowseStepInput["history"], elements = SEARCH, convert = true) {
+    // A queued once-response that is never consumed would leak into later tests.
+    if (convert) mockFieldText("new query");
+    const out = await decideBrowseStepUltrafast(
+      fakeClient({ operation: choice("CLICK", 0.8), click_target: choice("0", 0.8), type_text_target: choice("0", 0.8) }),
+      lunaConfig,
+      input({ elements, history }),
+    );
+    return out;
+  }
+
+  it("converts a repeated no-effect CLICK on an editable field to TYPE_TEXT (rule tier)", async () => {
+    const result = await decideClick([{ operation: "CLICK", label: "Search (no effect)", ok: false, index: 0 }]);
+    expect(result).toMatchObject({ outcome: "act", operation: "TYPE_TEXT", index: 0, text: "new query" });
+    expect(result.diag?.tier).toBe("rule");
+  });
+
+  it("matches the previous click by exact label when the history has no index", async () => {
+    const result = await decideClick([{ operation: "CLICK", label: "Search (no effect)", ok: false }]);
+    expect(result).toMatchObject({ operation: "TYPE_TEXT", index: 0 });
+    expect(result.diag?.gates.some((g) => g.head === "refocus-type")).toBe(true);
+  });
+
+  it("does not fire for a refused click, a similar label or a reused index with another label", async () => {
+    for (const history of [
+      [{ operation: "CLICK", label: "element is covered", ok: false, index: 0 }],
+      [{ operation: "CLICK", label: "Search filters (no effect)", ok: false, index: 0 }],
+      [{ operation: "CLICK", label: "Search (no effect)", ok: false, index: 7 }],
+      [{ operation: "CLICK", label: "Close (no effect)", ok: false, index: 0 }],
+    ]) {
+      const result = await decideClick(history, SEARCH, false);
+      expect(result).toMatchObject({ operation: "CLICK", index: 0 });
+    }
+  });
+
+  it("leaves a first click, an effective click, another target and a non-editable element alone", async () => {
+    for (const history of [
+      [],
+      [{ operation: "CLICK", label: 'CLICK "Search"', ok: true, index: 0 }],
+      [{ operation: "CLICK", label: "Close (no effect)", ok: false, index: 1 }],
+      [{ operation: "SCROLL_DOWN", label: "SCROLL_DOWN (no effect)", ok: false }],
+    ]) {
+      const result = await decideClick(history, SEARCH, false);
+      expect(result).toMatchObject({ operation: "CLICK", index: 0 });
+      expect(result.diag?.tier).toBe("jev");
+    }
+    const button: BrowseStepElement[] = [{ index: 0, tag: "button", label: "Search", ops: ["CLICK"] }];
+    const result = await decideClick([{ operation: "CLICK", label: "Search (no effect)", ok: false, index: 0 }], button, false);
+    expect(result).toMatchObject({ operation: "CLICK", index: 0 });
+  });
+
+  it("keeps the click when the goal gives no text for the field", async () => {
+    mockFieldText(null);
+    const result = await decideBrowseStepUltrafast(
+      fakeClient({ operation: choice("CLICK", 0.8), click_target: choice("0", 0.8) }),
+      lunaConfig,
+      input({ elements: SEARCH, history: [{ operation: "CLICK", label: "Search (no effect)", ok: false, index: 0 }] }),
+    );
+    expect(result).toMatchObject({ operation: "CLICK", index: 0 });
+  });
+});

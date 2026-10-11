@@ -340,3 +340,14 @@ describe("POST /api/browse/step — ultrafast policy (the default)", () => {
     });
   });
 });
+
+describe("modal body field", () => {
+  it("accepts and omits modal", async () => {
+    const { bodySchema } = await import("../src/routes/browseStep.js");
+    const base = { goal: "g", url: "https://x.test", title: "t", elements: [], history: [] };
+    expect(bodySchema.safeParse(base).success).toBe(true);
+    const withModal = bodySchema.safeParse({ ...base, modal: "Cart" });
+    expect(withModal.success && withModal.data.modal).toBe("Cart");
+    expect(bodySchema.safeParse({ ...base, modal: "x".repeat(201) }).success).toBe(false);
+  });
+});

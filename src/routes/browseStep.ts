@@ -93,7 +93,7 @@ const scrollSchema = z.object({
   atBottom: z.boolean().optional(),
 });
 
-const bodySchema = z.object({
+export const bodySchema = z.object({
   goal: z.string().min(1).max(2_000),
   url: z.string().max(4_000),
   title: z.string().max(500),
@@ -106,6 +106,9 @@ const bodySchema = z.object({
   // Visible page text (the snapshot's own, or a browse_read fallback) —
   // used by the ultrafast policy only. Optional: an older client omits it.
   pageText: z.string().max(20_000).optional(),
+  // Name of the open aria-modal dialog the snapshot is scoped to (the desktop
+  // snapshot's `modal`). Optional: older clients omit it.
+  modal: z.string().max(200).optional(),
   // Marked screenshot (experiment, BROWSE_STEP_VISION). A malformed value is
   // dropped by normalizeScreenshot, never a 400.
   screenshot: z.string().max(4_000_000).optional(),
@@ -219,6 +222,7 @@ export async function browseStepRoutes(
         history: body.history,
         scroll: body.scroll,
         pageText: body.pageText,
+        modal: body.modal,
         screenshot: visionOn ? normalizeScreenshot(body.screenshot) : undefined,
       };
       // Deterministic CAPTCHA guard, before either policy (no Jev call).

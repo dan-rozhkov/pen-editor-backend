@@ -483,6 +483,9 @@ export interface BrowseStepInput {
   /** Visible page text from the snapshot (or a `read` fallback) — only the
    * ultrafast policy uses it; PII-scrubbed before it leaves this server. */
   pageText?: string;
+  /** Name of the aria-modal dialog the snapshot's element list is scoped to,
+   * when one is open (ultrafast policy only; absent from older clients). */
+  modal?: string;
   /** Marked (Set-of-Marks) screenshot as a data: URL. Only the ultrafast
    * policy with BROWSE_STEP_VISION=on reads it. Never logged. */
   screenshot?: string;
@@ -540,7 +543,7 @@ export interface BrowseStepResult {
  * (never its label) for "select", and the chosen CANDIDATE'S INDEX (never
  * its text — `"none"` is a valid pick) for "text". */
 export interface BrowseStepGateDiag {
-  head: "op" | "target" | "select" | "text" | "suggestion" | "none" | "enter";
+  head: "op" | "target" | "select" | "text" | "suggestion" | "none" | "enter" | "refocus-type";
   peak: number;
   threshold: number;
   jevPick: string;
@@ -2605,6 +2608,13 @@ interface RepeatGuardContext {
  * browseTask.ts, `isNoEffectResult`/the `noEffect` branch of `note()`). */
 function historyEntryMadeNoProgress(entry: BrowseStepHistoryEntry): boolean {
   return entry.ok === false || entry.label.endsWith("(no effect)");
+}
+
+/** The step LANDED but changed nothing: the frontend's literal "(no effect)"
+ * suffix. Unlike historyEntryMadeNoProgress this excludes a refused/failed
+ * step (stale snapshot, covered, timeout: `ok: false`, no suffix). */
+export function historyEntryLandedNoEffect(entry: BrowseStepHistoryEntry): boolean {
+  return entry.label.endsWith("(no effect)");
 }
 
 const PAGE_UPDATE_SUFFIX_MARKER = "(page updated";

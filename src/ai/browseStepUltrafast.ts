@@ -17,6 +17,7 @@ import {
   buildNumberedPlaceholderGoal,
   capAndScrubElements,
   hasProbabilities,
+  historyEntryLandedNoEffect,
   peakProbability,
   resolveTypedPlaceholder,
   toCascadePromptSafeText,
@@ -112,11 +113,24 @@ const NONE_LABEL = "None of these: every candidate is already filled/set, or non
 const CALENDAR_HINT =
   "A calendar is open: dates are picked there, not typed. CLICK Next month until the wanted month shows, then CLICK the wanted day.";
 
-function lunaInstructions(goal: string, head?: TargetHead, vision = false, calendar = false): string {
+/** Told to the model (both profiles) while the snapshot reports an open
+ * aria-modal dialog: the element list is scoped to it, so without this the
+ * model scrolls a page it cannot reach (live: ×10 "(no effect)", stalled). */
+export const MODAL_NOTE =
+  "A dialog is open over the page — its name is in state.open_dialog. The element list shows only the dialog; the rest of the page (for example the site's search box and navigation) is hidden until it is closed with its close button or Escape.";
+
+/** The modal name as the model sees it: PII-scrubbed, prompt-safe, short. */
+function safeModalName(modal: string | undefined): string | undefined {
+  const name = modal ? toCascadePromptSafeText(truncateLabel(scrubPii(modal), 80)).trim() : "";
+  return name || undefined;
+}
+
+function lunaInstructions(goal: string, head?: TargetHead, vision = false, calendar = false, modal = false): string {
   return (
     `Goal: ${goal}\n\nChoose only the next single step. Do not repeat an action that already had no effect or was just repeated.` +
     (head ? `\nChoose the target element for the operation ${head}.` : "") +
     (calendar ? `\n${CALENDAR_HINT}` : "") +
+    (modal ? `\n${MODAL_NOTE}` : "") +
     (vision ? `\n${SCREENSHOT_NOTE.screenshot_note}` : "")
   );
 }
@@ -423,6 +437,7 @@ function lunaOffers(
   op: string,
   elements: BrowseStepElement[],
   history: BrowseStepInput["history"],
+  modal = false,
 ): boolean {
   const last = history[history.length - 1];
   switch (op) {
@@ -434,7 +449,7 @@ function lunaOffers(
     // SCROLL_UP/DOWN: always offered (an older client sends no `scroll`, and
     // the caller already drops the impossible direction when it does).
     case "PRESS_ESCAPE":
-      return elements.some((el) => el.expanded === true || el.role === "dialog" || el.role === "alertdialog");
+      return modal || elements.some((el) => el.expanded === true || el.role === "dialog" || el.role === "alertdialog");
     case "WAIT":
       // A page with (almost) nothing to act on, or one that just changed.
       return elements.length <= 2 || (!!last && /page updated/.test(last.label));
@@ -448,6 +463,8 @@ export interface UltrafastOptions {
   /** OpenAI Decisions profile (see isOpenAIDecisions). */
   luna?: boolean;
   history?: BrowseStepInput["history"];
+  /** Name of the open aria-modal dialog the snapshot is scoped to, if any. */
+  modal?: string;
 }
 
 export function buildUltrafastQuestions(
@@ -459,6 +476,14 @@ export function buildUltrafastQuestions(
   const opts: UltrafastOptions = typeof visionOrOpts === "boolean" ? { vision: visionOrOpts } : visionOrOpts;
   const vision = opts.vision === true;
   const luna = opts.luna === true;
+  const modal = safeModalName(opts.modal);
+  // Behind a dialog a scroll that changed nothing will change nothing again:
+  // drop every direction that landed with no effect recently (no 2-cycle).
+  const deadScrolls = new Set(
+    modal
+      ? (opts.history ?? []).slice(-6).filter((h) => h.operation.startsWith("SCROLL_") && historyEntryLandedNoEffect(h)).map((h) => h.operation)
+      : [],
+  );
   const calendarOpen = elements.some((el) => /\b(next|previous|prev)\s+(month|year)\b/i.test(el.label));
   const byIndex = new Map(elements.map((el) => [el.index, el]));
   const targets = buildTargets(elements);
@@ -469,7 +494,8 @@ export function buildUltrafastQuestions(
     if (head && targets[head].size === 0) continue;
     if (op === "SCROLL_UP" && scroll && scroll.y <= 0) continue;
     if (op === "SCROLL_DOWN" && scroll?.atBottom === true) continue;
-    if (luna && !lunaOffers(op, elements, opts.history ?? [])) continue;
+    if (deadScrolls.has(op)) continue;
+    if (luna && !lunaOffers(op, elements, opts.history ?? [], modal !== undefined)) continue;
     operations[op] = label;
   }
   // A Luna page with no real action operation must still be able to wait.
@@ -482,8 +508,8 @@ export function buildUltrafastQuestions(
       type: "choice",
       criteria: operations,
       instructions: luna
-        ? lunaInstructions(goal, undefined, vision, calendarOpen)
-        : { goal, rules: NEXT_ACTION_RULES, ...(vision ? SCREENSHOT_NOTE : {}) },
+        ? lunaInstructions(goal, undefined, vision, calendarOpen, modal !== undefined)
+        : { goal, rules: NEXT_ACTION_RULES, ...(modal ? { dialog_note: MODAL_NOTE } : {}), ...(vision ? SCREENSHOT_NOTE : {}) },
     },
   };
   for (const head of Object.keys(targets) as TargetHead[]) {
@@ -500,11 +526,12 @@ export function buildUltrafastQuestions(
       type: "choice",
       criteria,
       instructions: luna
-        ? lunaInstructions(goal, head, vision, calendarOpen)
+        ? lunaInstructions(goal, head, vision, calendarOpen, modal !== undefined)
         : {
             goal,
             operation: head,
             rules: [NEXT_ACTION_RULES, TARGET_RULES],
+            ...(modal ? { dialog_note: MODAL_NOTE } : {}),
             ...(vision ? SCREENSHOT_NOTE : {}),
           },
     };
@@ -572,6 +599,28 @@ async function writeFieldText(
   return resolved.text;
 }
 
+/** The element label a CLICK history entry names: the frontend records the
+ * bare label, then optional side effects (" → opened tab: …") and the
+ * " (no effect)" / "(page updated…)" suffix. */
+function clickTargetLabel(label: string): string {
+  let t = label.replace(/ ?\(no effect\)$/, "");
+  const fx = t.indexOf(" → ");
+  if (fx >= 0) t = t.slice(0, fx);
+  return t;
+}
+
+/** Rule B trigger: the last step was a CLICK that LANDED with no effect (not a
+ * refused/failed one) on this same element. Same element = exactly equal
+ * normalized label (indices are per snapshot), and equal index when both
+ * sides carry one. */
+export function repeatsNoEffectClick(history: BrowseStepInput["history"], el: BrowseStepElement): boolean {
+  const last = history[history.length - 1];
+  if (!last || last.operation !== "CLICK" || !historyEntryLandedNoEffect(last)) return false;
+  if (last.index !== undefined && last.index !== el.index) return false;
+  const label = normalize(el.label);
+  return label !== "" && normalize(clickTargetLabel(last.label)) === label;
+}
+
 export async function decideBrowseStepUltrafast(
   client: SystemOneClient,
   config: Config,
@@ -582,12 +631,13 @@ export async function decideBrowseStepUltrafast(
   const gates: NonNullable<BrowseStepResult["diag"]>["gates"] = [];
   const vision = config.BROWSE_STEP_VISION === "on" && !!input.screenshot;
   let inputTokens: number | undefined;
+  let ruleTier = false;
   const finish = (result: BrowseStepResult): BrowseStepResult => ({
     ...result,
     timings: { ...timings, totalMs: Date.now() - start },
     diag: {
       gates,
-      tier: result.outcome === "retry" ? "retry" : "jev",
+      tier: result.outcome === "retry" ? "retry" : ruleTier ? "rule" : "jev",
       vision,
       ...(inputTokens !== undefined ? { inputTokens } : {}),
     },
@@ -615,7 +665,9 @@ export async function decideBrowseStepUltrafast(
     vision,
     luna,
     history: input.history,
+    modal: input.modal,
   });
+  const modalName = safeModalName(input.modal);
 
   let model: string;
   let answers: Partial<Record<string, SystemOneAnswer>>;
@@ -626,6 +678,7 @@ export async function decideBrowseStepUltrafast(
       elements: elements.map(stateElement),
       recent_actions: history,
       ...(input.scroll ? { scroll: input.scroll } : {}),
+      ...(modalName ? { open_dialog: modalName } : {}),
     };
     const result = await client.evaluate({
       state: vision
@@ -742,6 +795,37 @@ export async function decideBrowseStepUltrafast(
     if (lastStep?.ok && lastStep.operation === "TYPE_TEXT" && lastStep.index === target.index && !elements.some((e) => e.isPassword)) {
       gates.push({ head: "enter", peak: peakProbability(targetAnswer), threshold: 0, jevPick: `CLICK ${target.index}` });
       return finish({ outcome: "act", operation: "PRESS_ENTER", confidence: stepConfidence, model, reason: "clicked the field just typed into: submit it" });
+    }
+  }
+  if (operation === "CLICK" && el.ops.includes("TYPE_TEXT") && !el.isPassword && repeatsNoEffectClick(input.history, el)) {
+    // The previous click on this field landed but only focused it (this is the
+    // second click); clicking again cannot fill it. Typing needs a value from
+    // the goal: with none (or on failure), keep the click.
+    const textStart = Date.now();
+    let text: string | null = null;
+    let textFailure: string | undefined;
+    try {
+      text = await writeFieldText(config, input, el, pageText, AbortSignal.timeout(BROWSE_TEXT_TIMEOUT_MS));
+    } catch (err) {
+      textFailure = `refocus-type skipped, text helper failed: ${err instanceof Error ? err.message : String(err)}`;
+    }
+    timings.textMs = Date.now() - textStart;
+    if (text === null) {
+      return finish({ outcome: "act", operation, index: target.index, confidence: stepConfidence, model, ...(textFailure ? { reason: textFailure } : {}) });
+    }
+    {
+      gates.push({ head: "refocus-type", peak: peakProbability(targetAnswer), threshold: 0, jevPick: `CLICK ${target.index}` });
+      ruleTier = true;
+      return finish({
+        outcome: "act",
+        operation: "TYPE_TEXT",
+        index: target.index,
+        text,
+        confidence: stepConfidence,
+        model,
+        textSource: "llm",
+        reason: "repeated click on a text field changed nothing: type into it",
+      });
     }
   }
   if (operation !== "TYPE_TEXT") {
