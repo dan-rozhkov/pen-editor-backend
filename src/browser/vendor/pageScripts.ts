@@ -1,4 +1,4 @@
-// VENDORED from pen-editor-desktop/src/main/browser/pageScripts.ts @ 061e285.
+// VENDORED from pen-editor-desktop/src/main/browser/pageScripts.ts @ a151e1f.
 // Do not edit: regenerate with `npm run browser:sync` (scripts/sync-browser-vendor.mjs).
 // ---- end of vendor header ----
 // Scripts injected into a browser tab's real page via
@@ -3558,11 +3558,13 @@ export const CURSOR_PLAN_JS = `
   var ARROW_POINTS = "2.2,1.6 17.6,8.5 10.8,12.4 6.2,17.7";
   // cua motion.rs default_effects, per style. rotates: the tip turns toward the
   // direction of travel (cua heading Tangent); false = fixed, never chases a heading.
+  // Every style is fixed on purpose: the turning arrow read as distracting, the
+  // user wants plain movement. Flip a style back to true to re-enable it.
   var STYLE_EFFECTS = {
-    signature_arc: { trail: false, glow: true, magnet: false, ripple: true, squish: true, rotates: true },
-    spring_settle: { trail: false, glow: true, magnet: false, ripple: false, squish: true, rotates: true },
+    signature_arc: { trail: false, glow: true, magnet: false, ripple: true, squish: true, rotates: false },
+    spring_settle: { trail: false, glow: true, magnet: false, ripple: false, squish: true, rotates: false },
     magnetic: { trail: false, glow: false, magnet: true, ripple: true, squish: false, rotates: false },
-    comet_swoop: { trail: true, glow: false, magnet: false, ripple: true, squish: false, rotates: true },
+    comet_swoop: { trail: true, glow: false, magnet: false, ripple: true, squish: false, rotates: false },
     classic: { trail: false, glow: false, magnet: false, ripple: true, squish: true, rotates: false }
   };
   var NO_EFFECTS = { trail: false, glow: false, magnet: false, ripple: false, squish: false, rotates: false };
@@ -4025,12 +4027,12 @@ export const CURSOR_JS = `(() => {
   // (https://github.com/trycua/cua): the whole move is planned once as timed
   // samples (120 Hz), then every animation frame interpolates by elapsed time.
   var args = ${ARGS_MARKER};
-  var CURSOR_VERSION = "5";
+  var CURSOR_VERSION = "6";
 
   ${FIND_BY_TEXT_JS}
 
   var TRAIL_MS = 240;
-  var RIPPLE_MS = 520;
+  var RIPPLE_MS = 380;
   var MAGNET_MS = 700;
   var PRESS_HOLD_MS = 90;
   var PRESS_IN_MS = 50;
@@ -4084,13 +4086,16 @@ export const CURSOR_JS = `(() => {
       "pointer-events:none;opacity:0;z-index:2147483647;";
     root.appendChild(glow);
 
-    // Ripple ring: sized per frame.
+    // Ripple ring: the pre-engine click pulse — a thin white ring with a faint
+    // dark outline, scaled per frame (0.4 -> 1.6, opacity .9 -> 0). The bright
+    // blue cua ring read as too loud on real pages.
     var ring = document.createElement("div");
     ring.setAttribute("data-pen-cursor-ring", "1");
     ring.style.cssText =
-      "position:absolute;left:0;top:0;width:16px;height:16px;margin-left:-8px;margin-top:-8px;" +
-      "box-sizing:border-box;border-radius:50%;border:5px solid rgba(159,215,255,.75);" +
-      "box-shadow:0 0 0 1px rgba(13,153,255,.4);pointer-events:none;opacity:0;z-index:2147483647;";
+      "position:absolute;left:0;top:0;width:24px;height:24px;margin-left:-12px;margin-top:-12px;" +
+      "box-sizing:border-box;border-radius:50%;border:2px solid rgba(255,255,255,.9);" +
+      "box-shadow:0 0 0 1px rgba(0,0,0,.35);pointer-events:none;opacity:0;" +
+      "z-index:2147483647;";
     root.appendChild(ring);
 
     // The arrow rides in its own translated carrier.
@@ -4517,7 +4522,7 @@ export const CURSOR_JS = `(() => {
           ms.width = rect.width + 12 + "px";
           ms.height = rect.height + 12 + "px";
         }
-        state.ring.style.transform = "translate3d(" + targetX + "px," + targetY + "px,0)";
+        state.ring.style.transform = "translate3d(" + targetX + "px," + targetY + "px,0) scale(0.4)";
 
         var endMs = total;
         if (fx.trail) endMs = Math.max(endMs, motionEnd + TRAIL_MS);
@@ -4574,13 +4579,10 @@ export const CURSOR_JS = `(() => {
           if (doRipple) {
             var rk = (elapsed - arrivalT) / RIPPLE_MS;
             if (rk >= 0 && rk <= 1) {
-              var rr = 8 + 44 * easeOut(rk);
-              state.ring.style.width = rr * 2 + "px";
-              state.ring.style.height = rr * 2 + "px";
-              state.ring.style.marginLeft = -rr + "px";
-              state.ring.style.marginTop = -rr + "px";
-              state.ring.style.borderWidth = 4 * (1 - rk) + 1 + "px";
-              state.ring.style.opacity = String(1 - rk);
+              var ek = easeOut(rk);
+              state.ring.style.transform =
+                "translate3d(" + targetX + "px," + targetY + "px,0) scale(" + (0.4 + 1.2 * ek) + ")";
+              state.ring.style.opacity = String(0.9 * (1 - ek));
             } else {
               state.ring.style.opacity = "0";
             }
@@ -4818,13 +4820,9 @@ export const READ_JS = `(() => {
 export const MARKS_JS = `(() => {
   var args = ${ARGS_MARKER};
   var snapshotId = args.snapshotId;
-
-  var existing = document.querySelector("[data-pen-marks]");
-  if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
-
-  var container = document.createElement("div");
-  container.setAttribute("data-pen-marks", "1");
-  container.style.cssText = "position:fixed;left:0;top:0;width:0;height:0;z-index:2147483646;pointer-events:none;";
+  // draw:false = layout only: same selection and placement, NO DOM change; the
+  // marks come back as data for COMPOSE_MARKS_JS to paint onto the captured image.
+  var draw = args.draw !== false;
 
   var vw = window.innerWidth || document.documentElement.clientWidth || 0;
   var vh = window.innerHeight || document.documentElement.clientHeight || 0;
@@ -4904,21 +4902,9 @@ export const MARKS_JS = `(() => {
     return skipContent || !coversContent(c);
   }
 
-  var count = 0;
+  var out = [];
   for (var n2 = 0; n2 < items.length; n2++) {
     var it = items[n2];
-    var box = document.createElement("div");
-    box.style.cssText =
-      "position:fixed;left:" +
-      it.l +
-      "px;top:" +
-      it.t +
-      "px;width:" +
-      (it.r - it.l) +
-      "px;height:" +
-      (it.b - it.t) +
-      "px;outline:2px solid #0d99ff;outline-offset:-1px;box-sizing:border-box;pointer-events:none;";
-    container.appendChild(box);
 
     var text = String(it.idx);
     var labelW = 2 * PAD + CHAR_W * text.length;
@@ -4977,34 +4963,171 @@ export const MARKS_JS = `(() => {
     var labelTop = Math.max(0, Math.min(chosen.t, Math.max(0, vh - fh)));
     placed.push({ l: labelLeft, t: labelTop, r: labelLeft + fw, b: labelTop + fh });
     stats[kind]++;
+    out.push({
+      text: text,
+      box: { l: it.l, t: it.t, w: it.r - it.l, h: it.b - it.t },
+      label: { l: labelLeft, t: labelTop, w: fw, h: fh },
+      inside: inside,
+      font: inside ? 9 : FONT,
+      padX: inside ? 3 : PAD,
+      bg: inside ? "rgba(13,153,255,0.82)" : "#0d99ff",
+    });
+  }
+
+  // Both modes first drop any stale overlay, so it never ends up in a clean capture.
+  var existing = document.querySelector("[data-pen-marks]");
+  if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+
+  if (!draw) {
+    return { marked: out.length, placement: stats, marks: out, viewportWidth: vw, viewportHeight: vh };
+  }
+
+  var container = document.createElement("div");
+  container.setAttribute("data-pen-marks", "1");
+  container.style.cssText = "position:fixed;left:0;top:0;width:0;height:0;z-index:2147483646;pointer-events:none;";
+  for (var d = 0; d < out.length; d++) {
+    var m = out[d];
+    var box = document.createElement("div");
+    box.style.cssText =
+      "position:fixed;left:" +
+      m.box.l +
+      "px;top:" +
+      m.box.t +
+      "px;width:" +
+      m.box.w +
+      "px;height:" +
+      m.box.h +
+      "px;outline:2px solid #0d99ff;outline-offset:-1px;box-sizing:border-box;pointer-events:none;";
+    container.appendChild(box);
 
     var label = document.createElement("div");
-    label.textContent = text;
+    label.textContent = m.text;
     label.style.cssText =
       "position:fixed;left:" +
-      labelLeft +
+      m.label.l +
       "px;top:" +
-      labelTop +
+      m.label.t +
       "px;box-sizing:border-box;min-width:" +
-      fw +
+      m.label.w +
       "px;height:" +
-      fh +
+      m.label.h +
       "px;padding:0 " +
-      (inside ? 3 : PAD) +
+      m.padX +
       "px;background:" +
-      (inside ? "rgba(13,153,255,0.82)" : "#0d99ff") +
+      m.bg +
       ";color:#fff;font:" +
-      (inside ? 9 : FONT) +
+      m.font +
       "px/" +
-      fh +
+      m.label.h +
       "px -apple-system,BlinkMacSystemFont,sans-serif;border-radius:3px;" +
       "pointer-events:none;white-space:nowrap;text-align:center;";
     container.appendChild(label);
-    count++;
   }
 
   (document.documentElement || document.body).appendChild(container);
-  return { marked: count, placement: stats };
+  return { marked: out.length, placement: stats };
+})()`;
+
+/**
+ * Runs ONLY in an isolated world (executeJavaScriptIsolated) — never the page's
+ * main world, whose scripts could patch atob/Blob/createImageBitmap and read
+ * cross-origin iframe pixels or forge the result. Paints MARKS_JS's layout (`draw:false` result) onto an already captured
+ * image, entirely off-DOM: the JPEG (`args.imageData`, a data URL or bare
+ * base64) is decoded via base64 -> Uint8Array -> Blob -> createImageBitmap (no
+ * network, no `new Image()`, so page CSP cannot block it), drawn on a
+ * detached (Offscreen)Canvas, and the boxes/labels are drawn scaled by
+ * imageWidth / viewportWidth. Resolves `{ imageData, width, height }` (JPEG
+ * data URL, same as capture()) or `{ error }`. Never touches the document.
+ */
+/** JPEG quality of the composed (second-generation) screenshot. Higher than
+ * capture()'s 0.7 so small digits survive re-encoding. */
+export const COMPOSE_JPEG_QUALITY = 0.8;
+
+export const COMPOSE_MARKS_JS = `(async () => {
+  var args = ${ARGS_MARKER};
+  try {
+    if (typeof createImageBitmap !== "function") return { error: "createImageBitmap unavailable" };
+    var b64 = String(args.imageData || "");
+    var comma = b64.indexOf(",");
+    if (b64.indexOf("data:") === 0 && comma >= 0) b64 = b64.slice(comma + 1);
+    var bin = atob(b64);
+    var bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    var bmp = await createImageBitmap(new Blob([bytes], { type: "image/jpeg" }));
+    var W = bmp.width;
+    var H = bmp.height;
+    var canvas;
+    if (typeof OffscreenCanvas === "function") canvas = new OffscreenCanvas(W, H);
+    else {
+      canvas = document.createElement("canvas");
+      canvas.width = W;
+      canvas.height = H;
+    }
+    var ctx = canvas.getContext("2d");
+    if (!ctx) return { error: "no 2d context" };
+    ctx.drawImage(bmp, 0, 0, W, H);
+    if (bmp.close) bmp.close();
+    var kx = args.viewportWidth > 0 ? W / args.viewportWidth : 1;
+    var ky = args.viewportHeight > 0 ? H / args.viewportHeight : kx;
+    var marks = args.marks || [];
+    var BLUE = "#0d99ff";
+    for (var a = 0; a < marks.length; a++) {
+      var m = marks[a];
+      ctx.strokeStyle = BLUE;
+      // DOM look: outline 2px, offset -1px = ring from 1px inside to 1px
+      // outside the box edge, i.e. a 2px stroke centred on the edge.
+      ctx.lineWidth = 2 * kx;
+      ctx.strokeRect(m.box.l * kx, m.box.t * ky, m.box.w * kx, m.box.h * ky);
+    }
+    for (var c = 0; c < marks.length; c++) {
+      var mk = marks[c];
+      // Exactly the placed rect: placement and drawing stay identical.
+      var x = mk.label.l * kx;
+      var y = mk.label.t * ky;
+      var w = mk.label.w * kx;
+      var h = mk.label.h * ky;
+      var fontPx = mk.font * ky;
+      ctx.font = fontPx + "px -apple-system,BlinkMacSystemFont,sans-serif";
+      var avail = Math.max(1, w - 2 * mk.padX * kx);
+      var tw = ctx.measureText(mk.text).width;
+      if (tw > avail) {
+        fontPx = fontPx * (avail / tw);
+        ctx.font = fontPx + "px -apple-system,BlinkMacSystemFont,sans-serif";
+      }
+      var r = 3 * Math.min(kx, ky);
+      ctx.fillStyle = mk.bg;
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.lineTo(x + w - r, y);
+      ctx.arcTo(x + w, y, x + w, y + r, r);
+      ctx.lineTo(x + w, y + h - r);
+      ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+      ctx.lineTo(x + r, y + h);
+      ctx.arcTo(x, y + h, x, y + h - r, r);
+      ctx.lineTo(x, y + r);
+      ctx.arcTo(x, y, x + r, y, r);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = "#fff";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(mk.text, x + w / 2, y + h / 2 + 0.5 * ky);
+    }
+    var dataUrl;
+    if (canvas.convertToBlob) {
+      var blob = await canvas.convertToBlob({ type: "image/jpeg", quality: ${COMPOSE_JPEG_QUALITY} });
+      var buf = new Uint8Array(await blob.arrayBuffer());
+      var s = "";
+      for (var p = 0; p < buf.length; p += 8192) s += String.fromCharCode.apply(null, buf.subarray(p, p + 8192));
+      dataUrl = "data:image/jpeg;base64," + btoa(s);
+    } else {
+      dataUrl = canvas.toDataURL("image/jpeg", ${COMPOSE_JPEG_QUALITY});
+    }
+    if (!dataUrl || dataUrl.indexOf("data:image/jpeg") !== 0) return { error: "compose produced no image" };
+    return { imageData: dataUrl, width: W, height: H };
+  } catch (e) {
+    return { error: "compose failed: " + (e && e.message ? e.message : String(e)) };
+  }
 })()`;
 
 /** Removes the `[data-pen-marks]` overlay MARKS_JS installed — run in

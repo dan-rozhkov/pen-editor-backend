@@ -1,4 +1,4 @@
-// VENDORED from pen-editor-desktop/src/main/browser/controller.ts @ 061e285.
+// VENDORED from pen-editor-desktop/src/main/browser/controller.ts @ a151e1f.
 // Do not edit: regenerate with `npm run browser:sync` (scripts/sync-browser-vendor.mjs).
 // ---- end of vendor header ----
 // The built-in browser's command surface (design doc
@@ -42,6 +42,7 @@ import {
   DISMISS_DIALOG_STATE_JS,
   CURSOR_JS,
   MARKS_JS,
+  COMPOSE_MARKS_JS,
   REMOVE_MARKS_JS,
   CURSOR_VISIBILITY_JS,
   HOVER_TARGET_JS,
@@ -474,6 +475,10 @@ const WAIT_POLL_INTERVAL_MS = 100;
  * what keeps that case from hanging the whole screenshot command. */
 const PAINT_WAIT_TIMEOUT_MS = 100;
 
+/** Bound on the isolated-world compose of an annotated screenshot; a hang
+ * falls back to the DOM overlay instead of timing out the whole command. */
+const COMPOSE_MARKS_TIMEOUT_MS = 2_000;
+
 /** A browser tab's page, as the controller needs to drive it. Electron-free
  * — window.ts supplies the real implementation over a WebContentsView. */
 export interface BrowserPageHandle {
@@ -623,6 +628,12 @@ export interface BrowserPageHandle {
    * the frame no longer exists (closed/navigated away) between `listFrames`
    * and this call.
    */
+  /** Runs `code` in an ISOLATED world of the top document (own globals, same
+   * DOM), awaiting a returned promise. Optional: only COMPOSE_MARKS_JS uses
+   * it, and without it the annotated screenshot uses the DOM-overlay fallback —
+   * compose NEVER runs in the page's main world (page scripts could patch
+   * decoders and read cross-origin iframe pixels, or forge the result). */
+  executeJavaScriptIsolated?(code: string): Promise<unknown>;
   executeJavaScriptInFrame?(frameId: number, code: string, timeoutMs: number): Promise<unknown>;
 }
 
@@ -2962,13 +2973,90 @@ export class BrowserController {
     return { ...publicResult, elements, snapshotId };
   }
 
+  /** Annotated capture. Preferred: lay the marks out with MARKS_JS
+   * `draw:false` (no visible DOM change), capture the CLEAN page, paint the
+   * marks onto the image in an isolated world (COMPOSE_MARKS_JS). Any failure
+   * — or a handle without `executeJavaScriptIsolated` — falls back to the
+   * visible `[data-pen-marks]` overlay + capture (`overlay.drawn` tells the
+   * caller to run REMOVE_MARKS_JS). Returns the image and mark count, or an
+   * `{ error }` result. */
+  private async captureAnnotated(
+    page: BrowserPageHandle,
+    snapshotId: string,
+    cursorHidden: boolean,
+    overlay: { drawn: boolean },
+  ): Promise<{ captured: { imageData: string; width: number; height: number } | null; marked: number } | { error: string }> {
+    const composed = await this.captureComposedMarks(page, snapshotId, cursorHidden);
+    if (composed) return composed;
+    overlay.drawn = true;
+    // MARKS_JS's own result is checked: a failed overlay must not produce a
+    // mark-less screenshot with no indication why.
+    const marksResult = await this.executeScript(page, "MARKS_JS", { snapshotId });
+    if ("error" in marksResult) return { error: String(marksResult.error) };
+    const marked = isRecord(marksResult) && typeof marksResult.marked === "number" ? marksResult.marked : 0;
+    // Capturing right after MARKS_JS can miss the overlay: wait for a paint
+    // (double rAF raced against a timeout — a hidden view never fires rAF).
+    await this.waitForPaint(page);
+    return { captured: (await page.capture?.()) ?? null, marked };
+  }
+
+  /** The compose path of `captureAnnotated`; `null` on ANY failure. Never
+   * throws, never runs compose in the page's main world. */
+  private async captureComposedMarks(
+    page: BrowserPageHandle,
+    snapshotId: string,
+    cursorHidden: boolean,
+  ): Promise<{ captured: { imageData: string; width: number; height: number }; marked: number } | null> {
+    if (!page.executeJavaScriptIsolated || !page.capture) return null;
+    try {
+      const layout = await this.executeScript(page, "MARKS_JS", { snapshotId, draw: false });
+      if (
+        "error" in layout ||
+        !Array.isArray(layout.marks) ||
+        typeof layout.viewportWidth !== "number" ||
+        !(layout.viewportWidth > 0)
+      ) {
+        return null;
+      }
+      if (cursorHidden) await this.waitForPaint(page);
+      const clean = await page.capture();
+      if (!clean || !clean.imageData) return null;
+      const code = COMPOSE_MARKS_JS.replace(ARGS_MARKER, () =>
+        JSON.stringify({
+          imageData: clean.imageData,
+          marks: layout.marks,
+          viewportWidth: layout.viewportWidth,
+          viewportHeight: typeof layout.viewportHeight === "number" ? layout.viewportHeight : 0,
+        }),
+      );
+      const out = await withTimeout(page.executeJavaScriptIsolated(code), COMPOSE_MARKS_TIMEOUT_MS, "Mark compose timed out.");
+      if (
+        !isRecord(out) ||
+        "error" in out ||
+        typeof out.imageData !== "string" ||
+        !out.imageData.startsWith("data:image/") ||
+        typeof out.width !== "number" ||
+        typeof out.height !== "number"
+      ) {
+        return null;
+      }
+      return { captured: { imageData: out.imageData, width: out.width, height: out.height }, marked: layout.marks.length };
+    } catch {
+      return null;
+    }
+  }
+
   /** Full browser use: a downscaled JPEG of the current viewport —
    * `page.capture()` (window.ts: `webContents.capturePage()` → resize to
    * ≤1280px wide → `toJPEG(70)`).
    *
-   * `annotate: true` overlays numbered labels (MARKS_JS, "set of marks") on
-   * the elements of a snapshot, captures, and always removes the overlay in
-   * `finally`, so a failed capture never leaves marks on the page.
+   * `annotate: true` marks the elements of a snapshot with numbered labels
+   * ("set of marks"). The user never sees them: MARKS_JS lays them out with
+   * `draw:false` (no DOM change), the CLEAN page is captured, and
+   * COMPOSE_MARKS_JS paints the marks onto the image in a detached canvas.
+   * Only if that fails does it fall back to drawing the visible
+   * `[data-pen-marks]` DOM overlay, capturing, and always removing the overlay
+   * in `finally`, so a failed capture never leaves marks on the page.
    * - Without `snapshotId`: takes a FRESH snapshot first; its id becomes the
    *   one `perform`/`act` accept next.
    * - With `snapshotId` (reuse path): marks that existing snapshot without
@@ -3026,11 +3114,13 @@ export class BrowserController {
 
       let snapshotId: string | undefined;
       let elements: unknown;
-      let marksTouched = false;
+      // Set when the visible DOM overlay was (attempted to be) drawn.
+      const overlay = { drawn: false };
       let marked = 0;
       // One cleanup for every path (early error returns included): restore
-      // the cursor, then remove the marks overlay if MARKS_JS was attempted.
+      // the cursor, then remove the marks overlay if MARKS_JS drew it.
       try {
+        let captured: { imageData: string; width: number; height: number } | null;
         if (annotate) {
           if (givenSnapshotId !== undefined) {
             snapshotId = givenSnapshotId;
@@ -3041,21 +3131,15 @@ export class BrowserController {
             elements = snap.elements;
           }
           await hideCursor();
-          marksTouched = true;
-          // MARKS_JS's own result is checked: a failed overlay must not
-          // produce a mark-less screenshot with no indication why.
-          const marksResult = await this.executeScript(page, "MARKS_JS", { snapshotId });
-          if ("error" in marksResult) return marksResult;
-          if (isRecord(marksResult) && typeof marksResult.marked === "number") marked = marksResult.marked;
-          // Capturing right after MARKS_JS can miss the overlay: wait for a
-          // paint (double rAF raced against a timeout — a hidden view never
-          // fires rAF, so this must never hang).
-          await this.waitForPaint(page);
+          const annotated = await this.captureAnnotated(page, snapshotId, cursorHidden, overlay);
+          if ("error" in annotated) return errorResult(annotated.error);
+          captured = annotated.captured;
+          marked = annotated.marked;
         } else {
           await hideCursor();
           if (cursorHidden) await this.waitForPaint(page);
+          captured = await page.capture();
         }
-        const captured = await page.capture();
         if (!captured || !captured.imageData) {
           return errorResult("Screenshot capture failed (empty image).");
         }
@@ -3074,7 +3158,7 @@ export class BrowserController {
         return result;
       } finally {
         await restoreCursor();
-        if (marksTouched) {
+        if (overlay.drawn) {
           try {
             await this.executeScript(page, "REMOVE_MARKS_JS", {});
           } catch {
