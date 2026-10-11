@@ -188,10 +188,61 @@ describe("decideBrowseStepUltrafast", () => {
     expect(prompt()).toContain("Create your account");
   });
 
-  it("blocks when the goal holds no value for the chosen field", async () => {
+  it("blocks (no runner-up) when the goal holds no value for the chosen field", async () => {
     mockFieldText(null);
     const { result } = await decide({ operation: choice("TYPE_TEXT", 0.9), type_text_target: choice("1", 0.9) });
     expect(result.outcome).toBe("blocked");
+  });
+
+  it("continues with the runner-up operation when no text can be written", async () => {
+    mockFieldText(null);
+    const { result } = await decide({
+      operation: choice("TYPE_TEXT", 0.6, { probabilities: { TYPE_TEXT: 0.6, CLICK: 0.35 } }),
+      type_text_target: choice("1", 0.9),
+      click_target: choice("5", 0.9),
+    });
+    expect(result).toMatchObject({ outcome: "act", operation: "CLICK", index: 5 });
+  });
+
+  it("does not fall back to PRESS_ENTER when no text can be written and a password field is present", async () => {
+    mockFieldText(null);
+    const { result } = await decide(
+      {
+        operation: choice("TYPE_TEXT", 0.6, { probabilities: { TYPE_TEXT: 0.6, PRESS_ENTER: 0.35 } }),
+        type_text_target: choice("1", 0.9),
+      },
+      { elements: [...FORM, { index: 9, tag: "input", label: "Password", ops: ["TYPE_TEXT"], isPassword: true }] },
+    );
+    expect(result.outcome).toBe("blocked");
+    expect(result.operation).not.toBe("PRESS_ENTER");
+  });
+
+  it("blocks when the only runner-up is below the minimum probability", async () => {
+    mockFieldText(null);
+    const { result } = await decide({
+      operation: choice("TYPE_TEXT", 0.9, { probabilities: { TYPE_TEXT: 0.9, CLICK: 0.05 } }),
+      type_text_target: choice("1", 0.9),
+      click_target: choice("5", 0.9),
+    });
+    expect(result.outcome).toBe("blocked");
+  });
+
+  it("does not fall back to a click on the field that returned no text", async () => {
+    mockFieldText(null);
+    const { result } = await decide({
+      operation: choice("TYPE_TEXT", 0.6, { probabilities: { TYPE_TEXT: 0.6, CLICK: 0.35 } }),
+      type_text_target: choice("1", 0.9),
+      click_target: choice("1", 0.9),
+    });
+    expect(result.outcome).toBe("blocked");
+  });
+
+  it("writeFieldText prompt restricts the quoted-phrase rule to search fields and delimits the goal without double quotes", async () => {
+    const prompt = mockFieldText("x");
+    await decide({ operation: choice("TYPE_TEXT", 0.9), type_text_target: choice("1", 0.9) });
+    expect(prompt()).toContain("For a search or query field, if the goal contains a phrase in double quotes, type exactly that phrase.");
+    expect(prompt()).toContain("Goal:\\n<<<\\nRegister as Anna"); // prompt is JSON-serialized
+    expect(prompt()).not.toContain('Goal: "');
   });
 
   it.each([

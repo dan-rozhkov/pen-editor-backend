@@ -48,6 +48,15 @@ describe("POST /api/browse/plan", () => {
     expect(prompt).toMatch(/Never invent personal data/);
   });
 
+  it("asks for typed text in the site's language, in double quotes", () => {
+    const prompt = buildPlanPrompt("Find milk", "https://shop.example.gr");
+    expect(prompt).toContain("Text the agent will TYPE into the site");
+    expect(prompt).toContain(".gr means Greek");
+    expect(prompt).toContain("double quotes");
+    expect(prompt).toContain("Never translate or transliterate proper names");
+    expect(prompt).not.toContain("otherwise write it in English");
+  });
+
   it("asks for a checkable Done when / Does not count clause per sub-goal", () => {
     const prompt = buildPlanPrompt("Add three different items to a cart", undefined);
     expect(prompt).toContain("Done when:");
