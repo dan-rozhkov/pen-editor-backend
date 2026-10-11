@@ -459,3 +459,107 @@ describe("vision (BROWSE_STEP_VISION)", () => {
     expect(Array.isArray(base.captured.state)).toBe(false);
   });
 });
+
+describe("OpenAI Decisions (Luna) profile", () => {
+  const lunaConfig = makeConfig({ TYPESAFE_API_KEY: "key", TYPESAFE_MODEL: "openai/gpt-6-luna-decisions" });
+  const SCROLLED = { y: 100, height: 900, atBottom: false };
+
+  async function decideLuna(answers: Record<string, SystemOneAnswer>, overrides: Partial<BrowseStepInput> = {}) {
+    let captured: Captured | undefined;
+    const result = await decideBrowseStepUltrafast(
+      fakeClient(answers, { capture: (p) => (captured = p) }),
+      lunaConfig,
+      input(overrides),
+    );
+    return { result, captured: captured! };
+  }
+
+  it("recognises openai/ models only", async () => {
+    const { isOpenAIDecisions } = await import("../src/ai/browseStepUltrafast.js");
+    expect(isOpenAIDecisions("openai/gpt-6-luna-decisions")).toBe(true);
+    expect(isOpenAIDecisions("jev-latest")).toBe(false);
+    expect(isOpenAIDecisions(undefined)).toBe(false);
+  });
+
+  it("uses a short instruction block, a none option and no always-offered noise operations", () => {
+    const built = buildUltrafastQuestions("the goal", FORM, SCROLLED, { luna: true, history: [] });
+    expect(typeof built.questions.operation.instructions).toBe("string");
+    expect(String(built.questions.operation.instructions)).toContain("the goal");
+    expect(String(built.questions.operation.instructions)).not.toContain("Do not repeat satisfied steps");
+    expect(built.operations).not.toContain("HOVER");
+    expect(built.operations).not.toContain("PRESS_ENTER");
+    expect(built.operations).not.toContain("WAIT");
+    expect(built.operations).not.toContain("PRESS_ESCAPE");
+    expect(built.operations).toEqual(expect.arrayContaining(["CLICK", "TYPE_TEXT", "SELECT", "SCROLL_UP", "SCROLL_DOWN", "DONE", "BLOCKED"]));
+    const criteria = built.questions.click_target.type === "choice" ? built.questions.click_target.criteria : {};
+    expect(Object.keys(criteria)).toContain("none");
+  });
+
+  it("leaves Jev's questions untouched", () => {
+    const built = buildUltrafastQuestions("the goal", FORM, SCROLLED, { history: [] });
+    expect(built.operations).toEqual(expect.arrayContaining(["HOVER", "PRESS_ENTER", "WAIT", "PRESS_ESCAPE"]));
+    const criteria = built.questions.click_target.type === "choice" ? built.questions.click_target.criteria : {};
+    expect(Object.keys(criteria)).not.toContain("none");
+  });
+
+  it("offers PRESS_ENTER right after a landed TYPE_TEXT and the calendar hint when a calendar is open", () => {
+    const history = [{ operation: "TYPE_TEXT" as const, label: 'TYPE_TEXT "x" into "Search"', ok: true, index: 0 }];
+    const built = buildUltrafastQuestions(
+      "goal",
+      [{ index: 0, tag: "button", label: "Next month", ops: ["CLICK"] }],
+      SCROLLED,
+      { luna: true, history },
+    );
+    expect(built.operations).toContain("PRESS_ENTER");
+    expect(String(built.questions.operation.instructions)).toContain("A calendar is open");
+  });
+
+  it("keeps a DONE that clearly leads the runner-up, but still demotes a weak BLOCKED", async () => {
+    const done = await decideLuna({
+      operation: choice("DONE", 0.35, { probabilities: { DONE: 0.35, CLICK: 0.15, SCROLL_DOWN: 0.1 } }),
+    });
+    expect(done.result.outcome).toBe("done");
+    const blocked = await decideLuna({
+      operation: choice("BLOCKED", 0.4, { probabilities: { BLOCKED: 0.4, CLICK: 0.2, SCROLL_DOWN: 0.1 } }),
+      click_target: choice("5", 0.9),
+    });
+    expect(blocked.result).toMatchObject({ outcome: "act", operation: "CLICK", index: 5 });
+  });
+
+  it("falls back to the next-best operation when the target is 'none'", async () => {
+    const { result } = await decideLuna({
+      operation: choice("TYPE_TEXT", 0.6, { probabilities: { TYPE_TEXT: 0.6, CLICK: 0.3, DONE: 0.1 } }),
+      type_text_target: choice("none", 0.9),
+      click_target: choice("5", 0.9),
+    });
+    expect(result).toMatchObject({ outcome: "act", operation: "CLICK", index: 5 });
+  });
+
+  it("retries when every candidate answers 'none'", async () => {
+    const { result } = await decideLuna({
+      operation: choice("CLICK", 0.6, { probabilities: { CLICK: 0.6, DONE: 0.4 } }),
+      click_target: choice("none", 0.9),
+    });
+    expect(result.outcome).toBe("retry");
+  });
+
+  it("turns a click on the field just typed into into PRESS_ENTER", async () => {
+    const { result } = await decideLuna(
+      { operation: choice("CLICK", 0.9), click_target: choice("0", 0.9) },
+      {
+        elements: [{ index: 0, tag: "input", label: "Search", ops: ["CLICK", "TYPE_TEXT"], value: "x" }],
+        history: [{ operation: "TYPE_TEXT", label: 'TYPE_TEXT "x" into "Search"', ok: true, index: 0 }],
+      },
+    );
+    expect(result).toMatchObject({ outcome: "act", operation: "PRESS_ENTER" });
+  });
+
+  it("adds the element index and a repeat count to the history it sends", async () => {
+    const click = (n: number) => ({ operation: "CLICK" as const, label: "Search (page updated)", ok: true, index: n });
+    const { captured } = await decideLuna({ operation: choice("WAIT", 0.9) }, { history: [click(5), click(5), click(5)] });
+    const recent = (captured.state as { recent_actions: Array<Record<string, unknown>> }).recent_actions;
+    expect(recent[0]).toMatchObject({ index: 5 });
+    expect(recent[0]).not.toHaveProperty("note");
+    expect(recent[2]).toMatchObject({ index: 5, note: "same action repeated 3x" });
+  });
+});

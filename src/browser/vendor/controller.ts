@@ -1,4 +1,4 @@
-// VENDORED from pen-editor-desktop/src/main/browser/controller.ts @ 8814d93.
+// VENDORED from pen-editor-desktop/src/main/browser/controller.ts @ 061e285.
 // Do not edit: regenerate with `npm run browser:sync` (scripts/sync-browser-vendor.mjs).
 // ---- end of vendor header ----
 // The built-in browser's command surface (design doc
@@ -802,13 +802,22 @@ function validateIndexSnapshot(
 
 function validateScreenshotArgs(
   args: unknown,
-): { ok: true; value: { annotate: boolean } } | { ok: false; error: string } {
+): { ok: true; value: { annotate: boolean; snapshotId?: string } } | { ok: false; error: string } {
   if (args !== undefined && !isRecord(args)) {
     return { ok: false, error: "browse_screenshot requires an object (or no arguments)." };
   }
   const raw = isRecord(args) ? args : {};
   if (raw.annotate !== undefined && typeof raw.annotate !== "boolean") {
     return { ok: false, error: 'browse_screenshot requires "annotate" to be a boolean when provided.' };
+  }
+  if (raw.snapshotId !== undefined) {
+    if (raw.annotate !== true) {
+      return { ok: false, error: 'browse_screenshot accepts "snapshotId" only together with "annotate": true.' };
+    }
+    if (typeof raw.snapshotId !== "string" || raw.snapshotId.trim() === "") {
+      return { ok: false, error: 'browse_screenshot requires "snapshotId" to be a non-empty string when provided.' };
+    }
+    return { ok: true, value: { annotate: true, snapshotId: raw.snapshotId } };
   }
   return { ok: true, value: { annotate: raw.annotate === true } };
 }
@@ -2955,15 +2964,23 @@ export class BrowserController {
 
   /** Full browser use: a downscaled JPEG of the current viewport —
    * `page.capture()` (window.ts: `webContents.capturePage()` → resize to
-   * ≤1280px wide → `toJPEG(70)`). `annotate: true` first takes a fresh
-   * snapshot (so its `snapshotId` becomes the one `perform`/`act`'s
-   * index-based actions will accept next), overlays a numbered label on
-   * every one of its elements (MARKS_JS — "set of marks"), captures, and
-   * always removes the overlay in `finally` regardless of how the capture
-   * itself goes, so a failed capture can never leave marks stuck on the
-   * page. An empty capture (`capture()` returning null) is an `{ error }`,
-   * not a blank image — a caller has no way to tell "the page is genuinely
-   * blank" from "the capture silently failed" otherwise. */
+   * ≤1280px wide → `toJPEG(70)`).
+   *
+   * `annotate: true` overlays numbered labels (MARKS_JS, "set of marks") on
+   * the elements of a snapshot, captures, and always removes the overlay in
+   * `finally`, so a failed capture never leaves marks on the page.
+   * - Without `snapshotId`: takes a FRESH snapshot first; its id becomes the
+   *   one `perform`/`act` accept next.
+   * - With `snapshotId` (reuse path): marks that existing snapshot without
+   *   re-snapshotting, so the loop's own snapshot stays valid. Staleness is
+   *   decided only by `checkSnapshotStale` (unknown/superseded id or changed
+   *   page → `{ error }`, nothing captured). `lastSnapshot` is never
+   *   replaced or cleared. MARKS_JS covers only the top document and
+   *   viewport-visible elements, so a current snapshot may legitimately mark
+   *   0 — the image is still returned; `marked` reports the count.
+   *
+   * An empty capture (`capture()` returning null) is an `{ error }`, not a
+   * blank image. */
   async screenshot(args: unknown): Promise<BrowserCommandResult> {
     return this.runExclusive(() => this.screenshotUnlocked(args));
   }
@@ -2971,11 +2988,17 @@ export class BrowserController {
   private async screenshotUnlocked(args: unknown): Promise<BrowserCommandResult> {
     const validated = validateScreenshotArgs(args);
     if (!validated.ok) return errorResult(validated.error);
-    const { annotate } = validated.value;
+    const { annotate, snapshotId: givenSnapshotId } = validated.value;
     return this.withCommandTimeout(async () => {
       const page = this.target.currentPage();
       if (!page) return errorResult("No browser tab is open — call browse_open first.");
       if (!page.capture) return errorResult("Screenshot is not supported by this browser tab.");
+      // Reusing the caller's snapshot: refuse a stale one BEFORE touching the
+      // page. Read-only — `lastSnapshot` is neither replaced nor cleared.
+      if (givenSnapshotId !== undefined) {
+        const stale = this.checkSnapshotStale(givenSnapshotId, page);
+        if (stale) return stale;
+      }
 
       // The agent cursor's effects (glow, trail, ripple) must not show up in
       // a screenshot: hide the whole overlay root for the capture, restore
@@ -3003,44 +3026,35 @@ export class BrowserController {
 
       let snapshotId: string | undefined;
       let elements: unknown;
-      if (annotate) {
-        const snap = await this.takeSnapshot(page);
-        if ("error" in snap) return snap;
-        snapshotId = snap.snapshotId as string;
-        elements = snap.elements;
-        await hideCursor();
-        // Second-pass review finding 7: MARKS_JS's own result is checked
-        // before proceeding — before this, a MARKS_JS failure (a throwing/
-        // rejecting executeJavaScript, or a page-script `{ error }`) was
-        // silently ignored and the capture ran anyway, so a failed overlay
-        // produced a screenshot with no marks and no indication why. On
-        // error, any partially-applied marks are removed (best-effort) before
-        // returning, same as the ordinary `finally` cleanup below would.
-        const marksResult = await this.executeScript(page, "MARKS_JS", { snapshotId });
-        if ("error" in marksResult) {
-          try {
-            await this.executeScript(page, "REMOVE_MARKS_JS", {});
-          } catch {
-            // Best-effort — see this method's `finally` block below.
-          }
-          await restoreCursor();
-          return marksResult;
-        }
-        // Second-pass review finding 7: capturing right after MARKS_JS
-        // returns can miss the overlay entirely — the DOM mutation hasn't
-        // necessarily been painted yet when `capturePage()` runs. Waits for
-        // an in-page double requestAnimationFrame (the standard "wait for
-        // the next paint" idiom), raced against a short timeout: a hidden
-        // `WebContentsView` never fires `requestAnimationFrame` at all (this
-        // repo has been bitten by that before — get_screenshot), so this must
-        // never hang the whole command waiting for a paint that will never
-        // come.
-        await this.waitForPaint(page);
-      } else {
-        await hideCursor();
-        if (cursorHidden) await this.waitForPaint(page);
-      }
+      let marksTouched = false;
+      let marked = 0;
+      // One cleanup for every path (early error returns included): restore
+      // the cursor, then remove the marks overlay if MARKS_JS was attempted.
       try {
+        if (annotate) {
+          if (givenSnapshotId !== undefined) {
+            snapshotId = givenSnapshotId;
+          } else {
+            const snap = await this.takeSnapshot(page);
+            if ("error" in snap) return snap;
+            snapshotId = snap.snapshotId as string;
+            elements = snap.elements;
+          }
+          await hideCursor();
+          marksTouched = true;
+          // MARKS_JS's own result is checked: a failed overlay must not
+          // produce a mark-less screenshot with no indication why.
+          const marksResult = await this.executeScript(page, "MARKS_JS", { snapshotId });
+          if ("error" in marksResult) return marksResult;
+          if (isRecord(marksResult) && typeof marksResult.marked === "number") marked = marksResult.marked;
+          // Capturing right after MARKS_JS can miss the overlay: wait for a
+          // paint (double rAF raced against a timeout — a hidden view never
+          // fires rAF, so this must never hang).
+          await this.waitForPaint(page);
+        } else {
+          await hideCursor();
+          if (cursorHidden) await this.waitForPaint(page);
+        }
         const captured = await page.capture();
         if (!captured || !captured.imageData) {
           return errorResult("Screenshot capture failed (empty image).");
@@ -3054,17 +3068,17 @@ export class BrowserController {
         };
         if (annotate) {
           result.snapshotId = snapshotId;
-          result.elements = elements;
+          result.marked = marked;
+          if (elements !== undefined) result.elements = elements;
         }
         return result;
       } finally {
         await restoreCursor();
-        if (annotate) {
+        if (marksTouched) {
           try {
             await this.executeScript(page, "REMOVE_MARKS_JS", {});
           } catch {
-            // Best-effort cleanup — a failure here must never mask whatever
-            // the capture itself returned/threw.
+            // Best-effort cleanup — must never mask the capture's outcome.
           }
         }
       }

@@ -96,19 +96,59 @@ const OPERATION_LABELS: Record<Exclude<BrowseOperation, "DONE" | "BLOCKED">, str
   WAIT: "Wait for the page to update.",
 };
 
+/** OpenAI Decisions models ("Luna", `openai/...`) read the 20 Jev-tuned rules
+ * as a to-do list (replay: 1/7 correct next steps with them, 6/7 with the
+ * two-line profile below), so they get their own, short instruction block and
+ * a few structural differences. Jev's questions are untouched. */
+export function isOpenAIDecisions(model: string | undefined): boolean {
+  return (model ?? "").toLowerCase().startsWith("openai/");
+}
+
+const NONE_KEY = "none";
+const NONE_LABEL = "None of these: every candidate is already filled/set, or none fits the next step.";
+
+const CALENDAR_HINT =
+  "A calendar is open: dates are picked there, not typed. CLICK Next month until the wanted month shows, then CLICK the wanted day.";
+
+function lunaInstructions(goal: string, head?: TargetHead, vision = false, calendar = false): string {
+  return (
+    `Goal: ${goal}\n\nChoose only the next single step. Do not repeat an action that already had no effect or was just repeated.` +
+    (head ? `\nChoose the target element for the operation ${head}.` : "") +
+    (calendar ? `\n${CALENDAR_HINT}` : "") +
+    (vision ? `\n${SCREENSHOT_NOTE.screenshot_note}` : "")
+  );
+}
+
 /** The one gate kept on top of upstream's argmax: ending the task is not
  * reversible, so a DONE/BLOCKED pick below this peak yields to the best
  * non-terminal operation instead. Live (bench shop, old desktop build): DONE
  * at peak 0.24 with "Please select a country" on screen. */
 export const TERMINAL_MIN_PEAK = 0.5;
 
+/** Luna: DONE/BLOCKED stands when it leads the runner-up by this much. */
+export const LUNA_TERMINAL_MARGIN = 0.15;
+
 const TERMINAL_OPERATIONS = new Set(["DONE", "BLOCKED"]);
 
 /** The operation to act on: Jev's pick, unless it is an unconfident
  * DONE/BLOCKED — then the most probable operation that is neither. */
-function chooseOperation(answer: SystemOneChoiceAnswer, offered: string[]): { operation: string; demoted: boolean } {
+function chooseOperation(
+  answer: SystemOneChoiceAnswer,
+  offered: string[],
+  luna = false,
+): { operation: string; demoted: boolean } {
   if (!TERMINAL_OPERATIONS.has(answer.choice) || peakProbability(answer) >= TERMINAL_MIN_PEAK) {
     return { operation: answer.choice, demoted: false };
+  }
+  // Decisions models spread probability over more operations (a correct DONE
+  // peaks at 0.3-0.4): a clear lead over the runner-up is evidence enough.
+  // BLOCKED keeps the absolute bar (a wrong BLOCKED ends the task for good).
+  if (luna && answer.choice === "DONE") {
+    const others = offered
+      .filter((op) => op !== answer.choice)
+      .map((op) => answer.probabilities[op] ?? 0)
+      .sort((a, b) => b - a);
+    if (peakProbability(answer) - (others[0] ?? 0) >= LUNA_TERMINAL_MARGIN) return { operation: answer.choice, demoted: false };
   }
   const runnerUp = offered
     .filter((op) => !TERMINAL_OPERATIONS.has(op))
@@ -365,7 +405,7 @@ function targetHeadFor(op: BrowseOperation): TargetHead | undefined {
 // along in `state` (BROWSE_STEP_VISION=on).
 const SCREENSHOT_NOTE = {
   screenshot_note:
-    "The screenshot shows the visible part of the current page. Interactive elements are outlined in blue boxes; the blue number at a box's top-left corner equals that element's index in the JSON state. Use the screenshot for visual cues (icons, colour, position, layout, disabled look); use the JSON for labels and values.",
+    "The screenshot shows the visible part of the current page. Interactive elements are outlined in blue boxes; each box has a small blue number label touching it (usually just outside its top-left corner, above or beside it; inside the top-left corner when boxes are tightly packed). The number equals that element's index in the JSON state. Use the screenshot for visual cues (icons, colour, position, layout, disabled look); use the JSON for labels and values.",
 };
 
 export interface UltrafastQuestions {
@@ -374,12 +414,52 @@ export interface UltrafastQuestions {
   targets: Record<TargetHead, Map<string, Target>>;
 }
 
+/** Luna: the always-offered noise operations (HOVER, WAIT, SCROLL_*,
+ * PRESS_ESCAPE) flatten the operation distribution (median peak 0.54-0.60 vs
+ * Jev 0.82), so they are offered only when the context justifies them. */
+function lunaOffers(
+  op: string,
+  elements: BrowseStepElement[],
+  scroll: BrowseStepInput["scroll"],
+  history: BrowseStepInput["history"],
+): boolean {
+  const last = history[history.length - 1];
+  switch (op) {
+    case "HOVER":
+      // Only as a fallback after a click that did nothing.
+      return !!last && !last.ok && last.operation === "CLICK";
+    case "PRESS_ENTER":
+      return !!last && last.ok && last.operation === "TYPE_TEXT";
+    case "SCROLL_UP":
+    case "SCROLL_DOWN":
+      return scroll !== undefined;
+    case "PRESS_ESCAPE":
+      return elements.some((el) => el.expanded === true || el.role === "dialog" || el.role === "alertdialog");
+    case "WAIT":
+      // A page with (almost) nothing to act on, or one that just changed.
+      return elements.length <= 2 || (!!last && /page updated/.test(last.label));
+    default:
+      return true;
+  }
+}
+
+export interface UltrafastOptions {
+  vision?: boolean;
+  /** OpenAI Decisions profile (see isOpenAIDecisions). */
+  luna?: boolean;
+  history?: BrowseStepInput["history"];
+}
+
 export function buildUltrafastQuestions(
   goal: string,
   elements: BrowseStepElement[],
   scroll: BrowseStepInput["scroll"],
-  vision = false,
+  visionOrOpts: boolean | UltrafastOptions = false,
 ): UltrafastQuestions {
+  const opts: UltrafastOptions = typeof visionOrOpts === "boolean" ? { vision: visionOrOpts } : visionOrOpts;
+  const vision = opts.vision === true;
+  const luna = opts.luna === true;
+  const calendarOpen = elements.some((el) => /\b(next|previous|prev)\s+(month|year)\b/i.test(el.label));
   const byIndex = new Map(elements.map((el) => [el.index, el]));
   const targets = buildTargets(elements);
 
@@ -389,34 +469,44 @@ export function buildUltrafastQuestions(
     if (head && targets[head].size === 0) continue;
     if (op === "SCROLL_UP" && scroll && scroll.y <= 0) continue;
     if (op === "SCROLL_DOWN" && scroll?.atBottom === true) continue;
+    if (luna && !lunaOffers(op, elements, scroll, opts.history ?? [])) continue;
     operations[op] = label;
   }
   operations.DONE = DONE_LABEL;
   operations.BLOCKED = BLOCKED_LABEL;
+  // A Luna page with nothing to click must still be able to wait.
+  if (luna && Object.keys(operations).length <= 3) operations.WAIT = OPERATION_LABELS.WAIT;
 
   const questions: Record<string, SystemOneQuestion> = {
     operation: {
       type: "choice",
       criteria: operations,
-      instructions: { goal, rules: NEXT_ACTION_RULES, ...(vision ? SCREENSHOT_NOTE : {}) },
+      instructions: luna
+        ? lunaInstructions(goal, undefined, vision, calendarOpen)
+        : { goal, rules: NEXT_ACTION_RULES, ...(vision ? SCREENSHOT_NOTE : {}) },
     },
   };
   for (const head of Object.keys(targets) as TargetHead[]) {
     if (targets[head].size === 0) continue;
-    const criteria: Record<string, Record<string, unknown>> = {};
+    const criteria: Record<string, Record<string, unknown> | string> = {};
     for (const [key, target] of targets[head]) {
       const el = byIndex.get(target.index);
       if (el) criteria[key] = targetCriterion(el, target.option);
     }
+    // Decisions models refuse (HTTP 502) a question when nothing fits, e.g.
+    // every field already filled: give them an honest way out.
+    if (luna) criteria[NONE_KEY] = NONE_LABEL;
     questions[TARGET_QUESTION_ID[head]] = {
       type: "choice",
       criteria,
-      instructions: {
-        goal,
-        operation: head,
-        rules: [NEXT_ACTION_RULES, TARGET_RULES],
-        ...(vision ? SCREENSHOT_NOTE : {}),
-      },
+      instructions: luna
+        ? lunaInstructions(goal, head, vision, calendarOpen)
+        : {
+            goal,
+            operation: head,
+            rules: [NEXT_ACTION_RULES, TARGET_RULES],
+            ...(vision ? SCREENSHOT_NOTE : {}),
+          },
     };
   }
   return { questions, operations: Object.keys(operations), targets };
@@ -506,12 +596,26 @@ export async function decideBrowseStepUltrafast(
   const goal = scrubPii(input.goal);
   const elements = withRememberedSelections(capAndScrubElements(input.elements), input.history);
   const pageText = scrubPii((input.pageText ?? "").slice(0, MAX_PAGE_TEXT_CHARS));
-  const history = input.history.slice(-HISTORY_WINDOW).map((h) => ({
-    action: truncateLabel(scrubPii(h.label), 160),
-    operation: h.operation,
-    ok: h.ok,
-  }));
-  const { questions, operations, targets } = buildUltrafastQuestions(goal, elements, input.scroll, vision);
+  const luna = isOpenAIDecisions(config.TYPESAFE_MODEL);
+  const history = input.history.slice(-HISTORY_WINDOW).map((h, i, all) => {
+    const base = { action: truncateLabel(scrubPii(h.label), 160), operation: h.operation, ok: h.ok };
+    if (!luna) return base;
+    // Luna: name the element and say how often the same action was repeated
+    // back to back; a repeated click that reports "(page updated)" never
+    // trips the no-effect marker otherwise.
+    let repeats = 1;
+    for (let j = i - 1; j >= 0 && all[j]!.operation === h.operation && all[j]!.index === h.index && h.index !== undefined; j--) repeats++;
+    return {
+      ...(h.index !== undefined ? { index: h.index } : {}),
+      ...base,
+      ...(repeats > 1 ? { note: `same action repeated ${repeats}x` } : {}),
+    };
+  });
+  const { questions, operations, targets } = buildUltrafastQuestions(goal, elements, input.scroll, {
+    vision,
+    luna,
+    history: input.history,
+  });
 
   let model: string;
   let answers: Partial<Record<string, SystemOneAnswer>>;
@@ -543,7 +647,7 @@ export async function decideBrowseStepUltrafast(
   if (!opAnswer || !operations.includes(opAnswer.choice)) {
     return finish(retry("malformed operation answer", model));
   }
-  const chosen = chooseOperation(opAnswer, operations);
+  const chosen = chooseOperation(opAnswer, operations, luna);
   const operation = chosen.operation as BrowseOperation;
   const confidence = chosen.demoted ? (opAnswer.probabilities[operation] ?? 0) : opAnswer.confidence;
   gates.push({
@@ -595,6 +699,30 @@ export async function decideBrowseStepUltrafast(
   if (!head) return finish({ outcome: "act", operation, confidence, model });
 
   const targetAnswer = choiceAnswer(answers[TARGET_QUESTION_ID[head]]);
+  if (luna && targetAnswer?.choice === NONE_KEY) {
+    // The model says no candidate fits this operation: take its next-best
+    // operation that still has a real target instead.
+    const alt = operations
+      .filter((op) => op !== operation && !TERMINAL_OPERATIONS.has(op))
+      .sort((a, b) => (opAnswer.probabilities[b] ?? 0) - (opAnswer.probabilities[a] ?? 0))
+      .find((op) => {
+        const h = targetHeadFor(op as BrowseOperation);
+        const a = h ? choiceAnswer(answers[TARGET_QUESTION_ID[h]]) : null;
+        return !h || (a !== null && a.choice !== NONE_KEY);
+      });
+    if (!alt) return finish(retry(`no candidate fits ${operation}`, model, confidence));
+    gates.push({ head: "none", peak: peakProbability(targetAnswer), threshold: 0, jevPick: operation });
+    const altHead = targetHeadFor(alt as BrowseOperation);
+    if (!altHead) return finish({ outcome: "act", operation: alt as BrowseOperation, confidence, model });
+    return decideTarget(alt as BrowseOperation, altHead, choiceAnswer(answers[TARGET_QUESTION_ID[altHead]]));
+  }
+  return decideTarget(operation, head, targetAnswer);
+
+  async function decideTarget(
+    operation: BrowseOperation,
+    head: TargetHead,
+    targetAnswer: SystemOneChoiceAnswer | null,
+  ): Promise<BrowseStepResult> {
   const target = targetAnswer ? targets[head].get(targetAnswer.choice) : undefined;
   if (!targetAnswer || !target) return finish(retry(`malformed target answer for ${operation}`, model, confidence));
   gates.push({ head: head === "SELECT" ? "select" : "target", peak: peakProbability(targetAnswer), threshold: 0, jevPick: targetAnswer.choice });
@@ -603,6 +731,16 @@ export async function decideBrowseStepUltrafast(
 
   if (operation === "SELECT") {
     return finish({ outcome: "act", operation, index: target.index, text: target.option, confidence: stepConfidence, model });
+  }
+  if (operation === "CLICK" && luna) {
+    // Luna never submits a typed query (PRESS_ENTER 0.03 vs Jev 0.65 after
+    // TYPE_TEXT) and re-clicks the field it just typed into: that click means
+    // "submit it".
+    const lastStep = input.history[input.history.length - 1];
+    if (lastStep?.ok && lastStep.operation === "TYPE_TEXT" && lastStep.index === target.index && !elements.some((e) => e.isPassword)) {
+      gates.push({ head: "enter", peak: peakProbability(targetAnswer), threshold: 0, jevPick: `CLICK ${target.index}` });
+      return finish({ outcome: "act", operation: "PRESS_ENTER", confidence: stepConfidence, model, reason: "clicked the field just typed into: submit it" });
+    }
   }
   if (operation !== "TYPE_TEXT") {
     return finish({ outcome: "act", operation, index: target.index, confidence: stepConfidence, model });
@@ -634,4 +772,5 @@ export async function decideBrowseStepUltrafast(
     model,
     textSource: "llm",
   });
+  }
 }

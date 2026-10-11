@@ -440,13 +440,16 @@ describe("createSystemOne", () => {
       expect(res.answers.category).toEqual(goodAnswers.category);
     });
 
-    it("caps rounds at 2: a second refusal rethrows instead of looping", async () => {
+    it("drops several refused questions in turn, then stops at the round cap", async () => {
       const fetchFn = vi
         .fn()
         .mockResolvedValueOnce(refusal("category"))
-        .mockResolvedValueOnce(refusal("quality"));
-      await expect(mk(fetchFn).evaluate({ state: "s", questions })).rejects.toThrow(/refused to answer question "quality"/);
-      expect(fetchFn).toHaveBeenCalledTimes(2);
+        .mockResolvedValueOnce(refusal("quality"))
+        .mockResolvedValueOnce(refusal("isSpam"));
+      const res = await mk(fetchFn).evaluate({ state: "s", questions });
+      expect(res.refused).toEqual(["category", "quality", "isSpam"]);
+      expect(Object.keys(res.answers)).toEqual([]);
+      expect(fetchFn).toHaveBeenCalledTimes(3);
     });
 
     it("keeps a 1-option local answer and omits a refused sibling", async () => {

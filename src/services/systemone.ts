@@ -185,8 +185,9 @@ export class SystemOneRefusalError extends SystemOneUpstreamError {
   }
 }
 
-// At most one resend: the first call, then one call without refused questions.
-const MAX_ROUNDS = 2;
+// The first call, then up to three resends without the refused questions
+// (a Decisions model can refuse several heads one at a time).
+const MAX_ROUNDS = 4;
 
 const REFUSAL_MESSAGE_RE = /^OpenAI refused to answer question "([^"]+)"$/;
 const refusalBodySchema = z.object({
@@ -410,8 +411,7 @@ export function createSystemOne(
           Object.assign(answers, result.answers);
           pending = {};
         } catch (err) {
-          // Only the first round may be followed by a resend.
-          const id = round === 0 && err instanceof SystemOneRefusalError ? err.questionId : undefined;
+                    const id = err instanceof SystemOneRefusalError ? err.questionId : undefined;
           if (id === undefined || !(id in pending)) throw err;
           refused.push(id);
           const { [id]: _dropped, ...rest } = pending;
