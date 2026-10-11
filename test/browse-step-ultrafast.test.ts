@@ -8,7 +8,7 @@ vi.mock("../src/ai/provider.js", async (importOriginal) =>
 
 import { createModel, mockJsonModelOnce } from "./structuredModelFakes.js";
 import { choice, fakeClient } from "./browseFakes.js";
-import { containsWholeTyped, matchesTyped, pickSuggestion } from "../src/ai/browseStepUltrafast.js";
+import { MAX_DECISION_CHOICES, containsWholeTyped, goalWantsMultipleUnits, matchesTyped, pickSuggestion, repeatsCommittedClick, repeatsNoEffectClick } from "../src/ai/browseStepUltrafast.js";
 import type { SystemOneAnswer, SystemOneEvaluateParams, SystemOneQuestion } from "../src/services/systemone.js";
 import type { BrowseStepElement, BrowseStepInput } from "../src/ai/browseStep.js";
 
@@ -692,5 +692,198 @@ describe("open dialog (modal) and repeated no-effect clicks", () => {
       input({ elements: SEARCH, history: [{ operation: "CLICK", label: "Search (no effect)", ok: false, index: 0 }] }),
     );
     expect(result).toMatchObject({ operation: "CLICK", index: 0 });
+  });
+});
+
+describe("choice cap (Decisions API limit)", () => {
+  const selects: BrowseStepElement[] = [0, 1, 2].map((n) => ({
+    index: n,
+    tag: "select",
+    label: `Filter ${n}`,
+    ops: ["SELECT"],
+    options: Array.from({ length: 100 }, (_, i) => (n === 0 && i === 98 ? "Hiking boots" : `Option ${n}-${i}`)),
+    value: "",
+  }));
+
+  it("keeps every question within the limit, luna NONE slot included", () => {
+    for (const luna of [false, true]) {
+      const built = buildUltrafastQuestions("buy hiking boots", selects, undefined, { luna });
+      for (const q of Object.values(built.questions)) {
+        if (q.type === "choice") expect(Object.keys(q.criteria).length).toBeLessThanOrEqual(MAX_DECISION_CHOICES);
+      }
+      expect(Object.keys(built.questions.select_target!.criteria as object).length).toBeLessThanOrEqual(MAX_DECISION_CHOICES);
+    }
+  });
+
+  it("keeps a goal-matching option at position 99 and a fair share of every select", () => {
+    const built = buildUltrafastQuestions("buy hiking boots", selects, undefined, { luna: true });
+    const targets = [...built.targets.SELECT.values()];
+    expect(targets.some((t) => t.index === 0 && t.option === "Hiking boots")).toBe(true);
+    for (const n of [0, 1, 2]) expect(targets.filter((t) => t.index === n).length).toBeGreaterThan(50);
+    // keys in the criteria still map to the right target
+    const key = [...built.targets.SELECT].find(([, t]) => t.option === "Hiking boots")![0];
+    expect(key).toBe("0:99");
+    expect((built.questions.select_target!.criteria as Record<string, unknown>)[key]).toBeDefined();
+  });
+
+  // Insurance: no realistic page has this many clickable elements, but the
+  // Decisions API rejects the whole question when one head overflows.
+  it("caps CLICK targets by order", () => {
+    const many: BrowseStepElement[] = Array.from({ length: 400 }, (_, i) => ({ index: i, tag: "a", label: `Link ${i}`, ops: ["CLICK"] }));
+    const built = buildUltrafastQuestions("g", many, undefined, { luna: true });
+    expect(Object.keys(built.questions.click_target!.criteria as object).length).toBeLessThanOrEqual(MAX_DECISION_CHOICES);
+    expect(built.targets.CLICK.has("0")).toBe(true);
+  });
+});
+
+describe("committed-click guard", () => {
+  const BTN = (label: string): BrowseStepElement[] => [{ index: 3, tag: "button", label, ops: ["CLICK"] }];
+  const ADDED = [{ operation: "CLICK", label: 'Add to cart → effect: "Add to cart" became "Add to cart 1"; counter 0→1', ok: true, index: 3 }];
+
+  async function run(goal: string, history: BrowseStepInput["history"], label = "Add to cart 1") {
+    return decideBrowseStepUltrafast(
+      fakeClient({ operation: choice("CLICK", 0.8), click_target: choice("3", 0.8) }),
+      config,
+      input({ goal, elements: BTN(label), history }),
+    );
+  }
+
+  it("turns a repeated commit click into DONE (rule tier, already-done gate)", async () => {
+    const result = await run("add the tent to the cart", ADDED);
+    expect(result.outcome).toBe("done");
+    expect(result.diag?.tier).toBe("rule");
+    expect(result.diag?.gates.some((g) => g.head === "already-done")).toBe(true);
+  });
+
+  it("does not fire on pagination or date clicks (no became note for the same control)", async () => {
+    expect((await run("go to the next page", [{ operation: "CLICK", label: "Page 2", ok: true }], "Page 3")).outcome).toBe("act");
+    expect((await run("pick a date", [{ operation: "CLICK", label: "June 14", ok: true }], "June 21")).outcome).toBe("act");
+    expect((await run("add the tent", [{ operation: "CLICK", label: "Add to cart", ok: true }])).outcome).toBe("act");
+  });
+
+  it("does not fire for an identical label (next product page)", async () => {
+    expect(await run("add the tent", ADDED, "Add to cart")).toMatchObject({ outcome: "act", operation: "CLICK", index: 3 });
+    expect(repeatsCommittedClick([{ operation: "CLICK", label: "Add to cart → effect: counter 0→1", ok: true }], BTN("Add to cart")[0]!, "g")).toBe(false);
+  });
+
+  it("parses the became note with page-updated suffixes in either order", () => {
+    const el = BTN("Add to cart 1")[0]!;
+    const note = 'effect: "Add to cart" became "Add to cart 1"';
+    const labels = [
+      `Add to cart (page updated: "x") → ${note}`,
+      `Add to cart → ${note} (page updated: "x")`,
+      `Add to cart → ${note}; counter 0→1; appeared: "View cart" (page updated: "y")`,
+    ];
+    for (const label of labels) expect(repeatsCommittedClick([{ operation: "CLICK", label, ok: true }], el, "g")).toBe(true);
+    // page text inside the suffix is never read as an effect
+    const decoy = 'Add to cart → effect: counter 0→1 (page updated: "Add to cart" became "Add to cart 1")';
+    expect(repeatsCommittedClick([{ operation: "CLICK", label: decoy, ok: true }], el, "g")).toBe(false);
+  });
+
+  it("is not converted when the goal asks for several units", async () => {
+    expect(await run("add 2 bottles", ADDED)).toMatchObject({ outcome: "act", operation: "CLICK", index: 3 });
+  });
+
+  it("ignores no-effect clicks, failed clicks and unrelated labels", () => {
+    const el = BTN("Add to cart 1")[0]!;
+    const became = 'Add to cart → effect: "Add to cart" became "Add to cart 1"';
+    expect(repeatsCommittedClick([{ operation: "CLICK", label: `${became} (no effect)`, ok: true }], el, "g")).toBe(false);
+    expect(repeatsCommittedClick([{ operation: "CLICK", label: "Checkout", ok: true }], el, "g")).toBe(false);
+    expect(repeatsCommittedClick([{ operation: "CLICK", label: became, ok: false }], el, "g")).toBe(false);
+  });
+
+  it("carried-over commits never end the sub-goal: the control is removed from the CLICK targets", async () => {
+    const btn = BTN("Add to cart 1")[0]!;
+    const carried = [{ operation: "CLICK", label: `${ADDED[0]!.label} (earlier sub-goal)`, ok: true }];
+    expect(repeatsCommittedClick(carried, btn, "g")).toBe(false);
+    const other: BrowseStepElement = { index: 4, tag: "button", label: "Buy now", ops: ["CLICK"] };
+    const built = buildUltrafastQuestions("add the sleeping bag", [btn, other], undefined, { luna: true, history: carried });
+    expect([...built.targets.CLICK.keys()]).toEqual(["4"]);
+    // a current-sub-goal commit keeps the target (the DONE rule handles it)
+    const own = buildUltrafastQuestions("add the tent", [btn, other], undefined, { luna: true, history: ADDED });
+    expect([...own.targets.CLICK.keys()]).toEqual(["3", "4"]);
+    // carried no-effect entries never trigger no-effect rules
+    const el: BrowseStepElement = { index: 0, tag: "input", label: "Search", ops: ["CLICK", "TYPE_TEXT"] };
+    expect(repeatsNoEffectClick([{ operation: "CLICK", label: "Search (no effect) (earlier sub-goal)", ok: false, index: 0 }], el)).toBe(false);
+    expect(repeatsNoEffectClick([{ operation: "CLICK", label: "Search (no effect)", ok: false, index: 0 }], el)).toBe(true);
+  });
+});
+
+describe("carried-over last history entry", () => {
+  const FIELD: BrowseStepElement[] = [{ index: 1, tag: "input", label: "Search", ops: ["TYPE_TEXT", "CLICK"] }];
+  const typed = { operation: "TYPE_TEXT", label: 'TYPE_TEXT "tent" into "Search"', ok: true, index: 1 };
+
+  it("offers PRESS_ENTER after the sub-goal's own TYPE_TEXT but not after a carried one", () => {
+    const own = buildUltrafastQuestions("g", FIELD, undefined, { luna: true, history: [typed] });
+    expect(own.operations).toContain("PRESS_ENTER");
+    const carried = buildUltrafastQuestions("g", FIELD, undefined, { luna: true, history: [{ ...typed, label: `${typed.label} (earlier sub-goal)` }] });
+    expect(carried.operations).not.toContain("PRESS_ENTER");
+  });
+
+  it("offers HOVER and WAIT only for the sub-goal's own last entry", () => {
+    const failed = { operation: "CLICK", label: "Buy (page updated: \"x\")", ok: false, index: 1 };
+    const many: BrowseStepElement[] = [1, 2, 3].map((i) => ({ index: i, tag: "a", label: `L${i}`, ops: ["CLICK"] }));
+    expect(buildUltrafastQuestions("g", many, undefined, { luna: true, history: [failed] }).operations).toEqual(expect.arrayContaining(["HOVER", "WAIT"]));
+    const ops = buildUltrafastQuestions("g", many, undefined, { luna: true, history: [{ ...failed, label: `${failed.label} (earlier sub-goal)` }] }).operations;
+    expect(ops).not.toContain("HOVER");
+    expect(ops).not.toContain("WAIT");
+  });
+});
+
+describe("goalWantsMultipleUnits", () => {
+  it.each([
+    "add 2 bottles of water to the cart",
+    "buy two bottles of water",
+    "put x2 in the basket",
+    "add 3x tent pegs",
+    "order 3 pcs",
+    "set quantity 2",
+    "add a couple of pens",
+    "order a dozen eggs",
+    "buy both",
+    "get several",
+    "add 12 bottles",
+  ])("true: %s", (goal) => {
+    expect(goalWantsMultipleUnits(goal)).toBe(true);
+  });
+
+  it.each([
+    "find a tent under 50 EUR",
+    "show gifts, price €30",
+    "buy a $20 gift card",
+    "add the 4-person tent",
+    "add shoes size 42",
+    "find a 20 cm ruler",
+    "buy a 512 GB phone",
+    "a 2 TB drive",
+    "a 15 inch laptop",
+    "a 65 W charger",
+    "a 500 mAh battery",
+    "20% off jackets",
+    "models released in 2024",
+    "add iphone15 case",
+    "find an RTX4090",
+    "add the sleeping bag to the cart",
+    "go to page 3",
+    "flights on June 14 returning June 21",
+    "hotel for 2 adults and 3 nights",
+    "add the 1 liter bottle",
+    "order a 2.5 kg bag",
+    "iPhone 15 Pro",
+  ])("false: %s", (goal) => {
+    expect(goalWantsMultipleUnits(goal)).toBe(false);
+  });
+});
+
+describe("field text prompt", () => {
+  it("tells the helper to take search text from the goal, never from the page", async () => {
+    const prompt = mockFieldText("tent");
+    await decideBrowseStepUltrafast(
+      fakeClient({ operation: choice("TYPE_TEXT", 0.9), type_text_target: choice("1", 0.9) }),
+      config,
+      input({ goal: "find a tent" }),
+    );
+    expect(prompt()).toContain("MUST come from the goal");
+    expect(prompt()).toContain("Never copy text from the page");
   });
 });

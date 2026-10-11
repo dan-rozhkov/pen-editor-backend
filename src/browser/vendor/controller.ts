@@ -1,4 +1,4 @@
-// VENDORED from pen-editor-desktop/src/main/browser/controller.ts @ a151e1f.
+// VENDORED from pen-editor-desktop/src/main/browser/controller.ts @ c2c7203.
 // Do not edit: regenerate with `npm run browser:sync` (scripts/sync-browser-vendor.mjs).
 // ---- end of vendor header ----
 // The built-in browser's command surface (design doc

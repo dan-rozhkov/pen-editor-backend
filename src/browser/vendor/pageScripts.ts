@@ -1,4 +1,4 @@
-// VENDORED from pen-editor-desktop/src/main/browser/pageScripts.ts @ a151e1f.
+// VENDORED from pen-editor-desktop/src/main/browser/pageScripts.ts @ c2c7203.
 // Do not edit: regenerate with `npm run browser:sync` (scripts/sync-browser-vendor.mjs).
 // ---- end of vendor header ----
 // Scripts injected into a browser tab's real page via
@@ -776,7 +776,7 @@ const HIT_TEST_HELPER_JS = `
   // usable box of its own — a visually hidden native range input is probed
   // through its visible proxy, and a hit inside that proxy counts as related.
   function penProbe(el, boxEl) {
-    var out = { testable: 0, related: false, walled: 0 };
+    var out = { testable: 0, related: false, walled: 0, wall: null };
     var r = (boxEl || el).getBoundingClientRect();
     if (r.width <= 0 || r.height <= 0) return out;
     if (r.bottom <= 0 || r.top >= window.innerHeight || r.right <= 0 || r.left >= window.innerWidth) return out;
@@ -793,7 +793,10 @@ const HIT_TEST_HELPER_JS = `
         return out;
       }
       var layer = penOverlayLayerFor(hit, el);
-      if (layer && penIsWall(layer)) out.walled++;
+      if (layer && penIsWall(layer)) {
+        out.walled++;
+        if (!out.wall) out.wall = layer;
+      }
     }
     return out;
   }
@@ -2739,9 +2742,16 @@ export const SNAPSHOT_JS = `(() => {
   // hit-test, yet perfectly reachable through its wrapper, so only genuine
   // overlays count. Elements wholly outside the viewport are never dropped
   // (nothing can be hit-tested there; they're the infinite-scroll margin).
+  // Every covered candidate is also tallied against the wall layer that hid
+  // it (penWallHits), so a non-aria-modal drawer/overlay can be reported as
+  // the snapshot's modal below.
+  var penWallHits = new Map();
   function penIsCovered(el, boxEl) {
     var probe = penProbe(el, boxEl);
-    return probe.testable > 0 && !probe.related && probe.walled === probe.testable;
+    var covered = probe.testable > 0 && !probe.related && probe.walled === probe.testable;
+    // covered implies walled > 0, so probe.wall is always set here.
+    if (covered) penWallHits.set(probe.wall, (penWallHits.get(probe.wall) || 0) + 1);
+    return covered;
   }
 
   // Nearest-to-viewport first, then capped — the element table is the whole
@@ -2763,6 +2773,59 @@ export const SNAPSHOT_JS = `(() => {
   // page, top to bottom and left to right, so "the first result" in the
   // table is the first result on the page.
   capped.sort(penReadingOrder);
+
+  // A wall that is not aria-modal / <dialog> (a cart side drawer that dims the
+  // page and locks scroll) still hides everything behind it. When rule 1 found
+  // no modal but rule 2 dropped at least PEN_OVERLAY_MIN_COVERED candidates
+  // behind one wall AND a surviving listed control lives in a fixed/sticky
+  // layer (the drawer itself or the wall), report that wall as the modal so
+  // the caller knows it is behind an overlay (and can press Escape / use the
+  // overlay's own close control) instead of scrolling to no effect. An empty
+  // overlay (nothing interactive on it) or a stray covered control keeps the
+  // old behaviour: no modal. The element table is NOT scoped by this, and
+  // child frames are still all merged (a sibling iframe pattern).
+  var PEN_OVERLAY_MIN_COVERED = 3;
+  function penFixedLayerOf(el) {
+    var node = el;
+    var guard = 0;
+    while (node && node.nodeType === 1 && guard < 500) {
+      var pos = getComputedStyle(node).position;
+      if (pos === "fixed" || pos === "sticky") return node;
+      node = penComposedParent(node);
+      guard++;
+    }
+    return null;
+  }
+  var overlayEl = null;
+  var overlayLabel = "";
+  if (!modalScoped) {
+    var overlayBest = 0;
+    penWallHits.forEach(function (count, layer) {
+      if (count > overlayBest) {
+        overlayBest = count;
+        overlayEl = layer;
+      }
+    });
+    if (overlayEl && overlayBest >= PEN_OVERLAY_MIN_COVERED) {
+      var survivingLayers = [];
+      for (var sl = 0; sl < capped.length; sl++) {
+        var slLayer = penFixedLayerOf(capped[sl].el);
+        if (slLayer && survivingLayers.indexOf(slLayer) < 0) survivingLayers.push(slLayer);
+      }
+      if (survivingLayers.length === 0) {
+        overlayEl = null;
+      } else {
+        // The wall's own label first; a bare backdrop falls back to the
+        // sibling panel that holds the listed controls (the drawer).
+        overlayLabel = penModalLabel(overlayEl);
+        for (var ll = 0; !overlayLabel && ll < survivingLayers.length; ll++) {
+          overlayLabel = penModalLabel(survivingLayers[ll]);
+        }
+      }
+    } else {
+      overlayEl = null;
+    }
+  }
 
   var elements = [];
   for (var idx = 0; idx < capped.length; idx++) {
@@ -2836,6 +2899,9 @@ export const SNAPSHOT_JS = `(() => {
     // <body>) outside the modal is kept when it is visibly on top: a sample
     // point hits it or a descendant (same rule as portal candidates above).
     if (modalScoped && !penComposedContains(modalEl, candidate) && !penHitsWithin(candidate)) continue;
+    // A page carousel hidden behind the overlay wall is as unreachable as a
+    // page-behind button.
+    if (overlayEl && penIsCovered(candidate)) continue;
     var existingStamp = candidate.getAttribute("data-pen-snap");
     if (existingStamp && existingStamp.indexOf(snapshotStampPrefix) === 0) {
       var existingIndex = parseInt(existingStamp.slice(snapshotStampPrefix.length), 10);
@@ -2940,10 +3006,15 @@ export const SNAPSHOT_JS = `(() => {
     scroll: scrollInfo,
     text: textParts.join("\\n").slice(0, 6000),
   };
-  // Present only when rule 1 actually scoped the table, so a caller can tell
-  // "these are the modal's controls" from "this page has nothing else".
+  // Present when rule 1 scoped the table (these are the modal's controls, not
+  // "this page has nothing else"), or when a non-aria wall hid candidates
+  // behind a drawer/overlay (see overlayEl above; the table is not scoped).
   if (modalScoped) {
     snapshotResult.modal = penModalLabel(modalEl) || "modal dialog";
+  } else if (overlayEl) {
+    snapshotResult.modal = overlayLabel || "overlay";
+  }
+  if (modalScoped) {
     // Which <iframe>s live inside the modal (identified like IFRAME_RECTS_JS:
     // src, name/id) so controller.ts's takeSnapshot merges only those child
     // frames. Internal — stripped from the result before it reaches callers.

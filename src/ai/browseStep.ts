@@ -543,7 +543,7 @@ export interface BrowseStepResult {
  * (never its label) for "select", and the chosen CANDIDATE'S INDEX (never
  * its text — `"none"` is a valid pick) for "text". */
 export interface BrowseStepGateDiag {
-  head: "op" | "target" | "select" | "text" | "suggestion" | "none" | "enter" | "refocus-type";
+  head: "op" | "target" | "select" | "text" | "suggestion" | "none" | "enter" | "refocus-type" | "already-done";
   peak: number;
   threshold: number;
   jevPick: string;
@@ -2607,6 +2607,7 @@ interface RepeatGuardContext {
  * the frontend's literal "(no effect)" suffix (see pen-editor's
  * browseTask.ts, `isNoEffectResult`/the `noEffect` branch of `note()`). */
 function historyEntryMadeNoProgress(entry: BrowseStepHistoryEntry): boolean {
+  if (isCarriedOverEntry(entry)) return false;
   return entry.ok === false || entry.label.endsWith("(no effect)");
 }
 
@@ -2614,7 +2615,23 @@ function historyEntryMadeNoProgress(entry: BrowseStepHistoryEntry): boolean {
  * suffix. Unlike historyEntryMadeNoProgress this excludes a refused/failed
  * step (stale snapshot, covered, timeout: `ok: false`, no suffix). */
 export function historyEntryLandedNoEffect(entry: BrowseStepHistoryEntry): boolean {
+  // An entry carried over from the previous sub-goal says nothing about the
+  // current one: it never counts as "no effect".
+  if (isCarriedOverEntry(entry)) return false;
   return entry.label.endsWith("(no effect)");
+}
+
+/** The frontend marks history entries carried over from the previous
+ * sub-goal with this trailing suffix. */
+export const CARRIED_OVER_SUFFIX = " (earlier sub-goal)";
+
+export function isCarriedOverEntry(entry: { label: string }): boolean {
+  return entry.label.endsWith(CARRIED_OVER_SUFFIX);
+}
+
+/** The label without the carried-over suffix (label parsers read this). */
+export function stripCarriedOverSuffix(label: string): string {
+  return label.endsWith(CARRIED_OVER_SUFFIX) ? label.slice(0, -CARRIED_OVER_SUFFIX.length) : label;
 }
 
 const PAGE_UPDATE_SUFFIX_MARKER = "(page updated";
