@@ -1571,7 +1571,14 @@ describe("browse tool descriptions steer to browse_task first", () => {
     expect(d).not.toContain("simple enough");
     expect(d).not.toContain("when you want to see each step");
     expect(d).toContain("THE default first call for EVERY browser task");
-    expect(d).toContain("one per sub-goal");
+    expect(d).toContain("WHOLE goal in one call");
+    expect(d).toContain("maxSteps 25");
+    expect(d).not.toMatch(/split a big job|per sub-goal|per cart item/i);
+  });
+  it("browse_task rejects a goal the step route would 400 on (> 2000 chars)", () => {
+    const schema = (penTools.browse_task as unknown as { inputSchema: { safeParse: (v: unknown) => { success: boolean } } }).inputSchema;
+    expect(schema.safeParse({ goal: "x".repeat(2000) }).success).toBe(true);
+    expect(schema.safeParse({ goal: "x".repeat(2001) }).success).toBe(false);
   });
   it("manual tools are marked as the fallback", () => {
     expect(desc("browse_open")).toContain("If browse_task is in your tool set");

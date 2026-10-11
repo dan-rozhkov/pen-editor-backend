@@ -45,9 +45,9 @@ export interface SystemPromptMemory {
   browserGuidance?: boolean;
 }
 
-export const BROWSER_TASKS_GUIDANCE = `Any task that needs the built-in browser starts with \`browse_task\`: navigating, searching, clicking through, filling forms, adding to a cart. Pass \`url\` to it instead of calling \`browse_open\` first. It runs the whole multi-step flow in one call.
-- Split a big job into several \`browse_task\` calls, one per sub-goal, each with a concrete goal. Example: adding many items to a cart is one \`browse_task\` per item, not one call for all of them.
-- If a \`browse_task\` call returns a status other than \`done\` (\`blocked\`, \`budget\`, \`stalled\`), continue from where it stopped: first try another \`browse_task\` with a narrower goal, then the manual tools (\`browse_snapshot\`, \`browse_act\`, \`browse_tabs\`) if that also fails.
+export const BROWSER_TASKS_GUIDANCE = `Any task that needs the built-in browser starts with \`browse_task\`: navigating, searching, clicking through, filling forms, adding to a cart. Hand the WHOLE user goal to ONE \`browse_task\` call. Put the user's full goal with all its constraints in \`goal\` (do not shorten it to the first step, do not break it into sub-goals or per-item calls), pass \`url\` when you know it (instead of calling \`browse_open\` first), and set \`maxSteps: 25\`. The loop drives every step itself.
+- If \`browse_task\` returns \`budget\` or \`stalled\`, call it again with the REMAINING goal plus a short note of what is already done (from the transcript), again with \`maxSteps: 25\`. Keep \`goal\` under 2000 characters. At most 2 such repeat calls; after that, use the manual tools (\`browse_snapshot\`, \`browse_act\`, \`browse_tabs\`).
+- If it returns \`blocked\` because of a login, password, CAPTCHA or anti-bot wall, do not call it again: tell the user what to do in the browser tab, then continue after they confirm. For any other \`blocked\`, treat it like \`stalled\`.
 - You may call the manual tools directly, without \`browse_task\`, only for: follow-up on the page \`browse_task\` landed on (reading with \`browse_read\` or \`browse_find_images\`, scrolling to load more results, a verification screenshot if available); one single action \`browse_task\` cannot do (a key other than Enter or Escape, a slider); or \`browse_open\` when the user only asks you to open a page to look at it.`;
 
 export function buildSystemPrompt(
