@@ -93,6 +93,26 @@ describe("createSystemOne", () => {
     expect(result.usage).toEqual({ input_tokens: 10, output_tokens: 5 });
   });
 
+  it("sends an OpenAI Decisions model to OpenRouter with the OpenRouter key", async () => {
+    const fetchFn = vi.fn(async () => jsonResponse({ ...goodResponseBody, model: "openai/gpt-6-luna-decisions" }));
+    const client = createSystemOne(
+      makeConfig({
+        TYPESAFE_API_KEY: "typesafe-key",
+        OPENROUTER_API_KEY: "or-key",
+        TYPESAFE_MODEL: "openai/gpt-6-luna-decisions",
+      }),
+      fetchFn as unknown as typeof fetch,
+      noSleep,
+    );
+
+    await client!.evaluate({ state: "hello world", questions });
+
+    const [url, init] = (fetchFn as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(String(url)).toBe("https://openrouter.ai/api/v1/systemone");
+    expect(init.headers).toMatchObject({ Authorization: "Bearer or-key" });
+    expect(JSON.parse(init.body).model).toBe("openai/gpt-6-luna-decisions");
+  });
+
   it("throws when the response is missing an answer for a requested question", async () => {
     const { quality: _quality, ...partialAnswers } = goodAnswers;
     const fetchFn = vi.fn(async () =>

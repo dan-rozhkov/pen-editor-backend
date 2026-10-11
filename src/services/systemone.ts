@@ -26,6 +26,9 @@ const RETRY_BASE_DELAY_MS = 500;
 // through both. Deliberately well under REQUEST_TIMEOUT_MS so a capped sleep
 // still leaves room for the retry's own fetch.
 const MAX_RETRY_AFTER_MS = 10_000;
+// OpenAI Decisions (e.g. openai/gpt-6-luna-decisions) speak the same
+// System One contract on OpenRouter; see createSystemOne.
+export const OPENROUTER_DECISIONS_BASE_URL = "https://openrouter.ai/api/v1";
 
 // --- Question types (request side) -----------------------------------
 
@@ -372,10 +375,14 @@ export function createSystemOne(
   fetchFn: typeof fetch = fetch,
   sleepFn: (ms: number, signal: AbortSignal) => Promise<void> = defaultSleep,
 ): SystemOneClient | null {
-  const apiKey = config.TYPESAFE_API_KEY;
-  if (!apiKey) return null;
+  if (!config.TYPESAFE_API_KEY) return null;
   const model = config.TYPESAFE_MODEL;
-  const url = `${config.TYPESAFE_BASE_URL}/systemone`;
+  // OpenAI Decisions models are served by OpenRouter under the same
+  // contract, so switching between Jev and Luna is TYPESAFE_MODEL alone:
+  // the TypeSafe key and base URL stay in place for the way back.
+  const viaOpenRouter = isOpenAIDecisions(model);
+  const apiKey = viaOpenRouter ? config.OPENROUTER_API_KEY : config.TYPESAFE_API_KEY;
+  const url = `${viaOpenRouter ? OPENROUTER_DECISIONS_BASE_URL : config.TYPESAFE_BASE_URL}/systemone`;
 
   return {
     async evaluate<Q extends Record<string, SystemOneQuestion>>({
