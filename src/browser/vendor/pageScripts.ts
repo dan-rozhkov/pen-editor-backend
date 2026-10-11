@@ -1,4 +1,4 @@
-// VENDORED from pen-editor-desktop/src/main/browser/pageScripts.ts @ c2c7203.
+// VENDORED from pen-editor-desktop/src/main/browser/pageScripts.ts @ 6dfac76.
 // Do not edit: regenerate with `npm run browser:sync` (scripts/sync-browser-vendor.mjs).
 // ---- end of vendor header ----
 // Scripts injected into a browser tab's real page via
@@ -2796,6 +2796,51 @@ export const SNAPSHOT_JS = `(() => {
     }
     return null;
   }
+  // An overlay tied to the focused text field (an autocomplete / suggestions
+  // panel) is part of typing, not a blocker: reporting it as the modal made
+  // the caller press Escape, which clears the typed text, then click the field
+  // again, forever. Deliberately narrow — suppress ONLY when (a) the deep
+  // active element is a real text entry (textarea, text-like input, or
+  // contenteditable; not a role=combobox div, not a date/password input),
+  // (b) that field sits OUTSIDE the wall and the drawer layers (an overlay
+  // holding its own focused field is a real popup; a full-viewport suggestions
+  // panel covers its own field, so "listed" cannot be required),
+  // and (c) the field points at the overlay (aria-controls / aria-owns / list
+  // target inside or equal to a layer) or a layer holds a listbox / option.
+  // Mirrors the penDeepActive / penIsEditable helpers (FOCUS_FOLLOW_HELPER_JS)
+  // but with a stricter input-type list.
+  function penOverlayBelongsToField(wall, layers) {
+    var act = document.activeElement;
+    var g = 0;
+    while (act && act.shadowRoot && act.shadowRoot.activeElement && g < 20) {
+      act = act.shadowRoot.activeElement;
+      g++;
+    }
+    if (!act || act.nodeType !== 1 || act === document.body) return false;
+    var tag = act.tagName.toLowerCase();
+    var itype = (act.getAttribute("type") || "").toLowerCase();
+    var textEntry =
+      tag === "textarea" ||
+      (tag === "input" && /^(|text|search|email|url|tel|number)$/.test(itype)) ||
+      act.isContentEditable === true;
+    if (!textEntry) return false;
+    var all = [wall].concat(layers);
+    for (var ai = 0; ai < all.length; ai++) {
+      if (penComposedContains(all[ai], act)) return false;
+    }
+    var root = act.getRootNode && act.getRootNode();
+    var refIds = ((act.getAttribute("aria-controls") || "") + " " + (act.getAttribute("aria-owns") || "") + " " + (act.getAttribute("list") || "")).split(/\\s+/);
+    for (var li = 0; li < all.length; li++) {
+      var layer = all[li];
+      for (var ri = 0; ri < refIds.length; ri++) {
+        if (!refIds[ri]) continue;
+        var ref = (root && root.getElementById && root.getElementById(refIds[ri])) || document.getElementById(refIds[ri]);
+        if (ref && penComposedContains(layer, ref)) return true;
+      }
+      if (deepQueryAll(layer, "[role=listbox],[role=option]").length > 0) return true;
+    }
+    return false;
+  }
   var overlayEl = null;
   var overlayLabel = "";
   if (!modalScoped) {
@@ -2812,7 +2857,7 @@ export const SNAPSHOT_JS = `(() => {
         var slLayer = penFixedLayerOf(capped[sl].el);
         if (slLayer && survivingLayers.indexOf(slLayer) < 0) survivingLayers.push(slLayer);
       }
-      if (survivingLayers.length === 0) {
+      if (survivingLayers.length === 0 || penOverlayBelongsToField(overlayEl, survivingLayers)) {
         overlayEl = null;
       } else {
         // The wall's own label first; a bare backdrop falls back to the

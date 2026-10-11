@@ -60,6 +60,10 @@ import {
 export const COMMIT_EFFECT_RULE =
   "An effect note after a CLICK ('became', 'counter', 'appeared') means the action took effect. If it achieved the goal, answer DONE. Never repeat a commit action (add, buy, submit, save, send) whose effect was already observed, unless the goal asks for more units than were already added.";
 
+/** DONE for a goal that adds to a cart or submits something needs proof (prompt guidance only). */
+export const DONE_COMMIT_RULE =
+  "For a goal that adds to a cart or submits something, answer DONE only after you see that the add/submit took effect (an effect note, a changed button or counter, a confirmation).";
+
 // questions.py NEXT_ACTION, adapted to this loop's operation set.
 const NEXT_ACTION_RULES = [
   "Advance the user's entire goal from the CURRENT page using one operation.",
@@ -80,6 +84,7 @@ const NEXT_ACTION_RULES = [
   'A recent action marked "(no effect)" changed nothing; do not repeat it unchanged.',
   COMMIT_EFFECT_RULE,
   "DONE requires visible evidence that ALL requirements are satisfied. If asked to open a result, a matching link is not enough.",
+  DONE_COMMIT_RULE,
   "Before DONE, check that every value the goal asks for is visibly applied in the page's fields or results; a field still showing its empty placeholder means the task is not done.",
   "Never click or interact with a CAPTCHA or an \"I'm not a robot\" check; answer BLOCKED instead.",
   "BLOCKED means no supported operation can make progress, or the page needs credentials the user must enter themselves.",
@@ -134,7 +139,7 @@ function safeModalName(modal: string | undefined): string | undefined {
 
 function lunaInstructions(goal: string, head?: TargetHead, vision = false, calendar = false, modal = false): string {
   return (
-    `Goal: ${goal}\n\nChoose only the next single step. Do not repeat an action that already had no effect or was just repeated.\n${COMMIT_EFFECT_RULE}` +
+    `Goal: ${goal}\n\nChoose only the next single step. Do not repeat an action that already had no effect or was just repeated.\n${COMMIT_EFFECT_RULE}\n${DONE_COMMIT_RULE}` +
     (head ? `\nChoose the target element for the operation ${head}.` : "") +
     (calendar ? `\n${CALENDAR_HINT}` : "") +
     (modal ? `\n${MODAL_NOTE}` : "") +
@@ -654,6 +659,7 @@ async function writeFieldText(
       "Return the exact string to enter in the selected field of a web form, as part of an automated browsing task.",
       "Infer the value from the original goal and the field's meaning, using the page context and recent actions.",
       "Never invent personal information. If the goal does not provide a value for this field, return null.",
+      'If the goal offers alternatives for the value ("A" or "B"), return the first one.',
       "For a search or query field, the text MUST come from the goal: the item or phrase the goal names. Never copy text from the page (product names, headings, menu or cart entries) into a search field. Use page text only for values the goal explicitly says to read from the page.",
       `Goal: "${promptGoal}"`,
       ...NUMBERED_PLACEHOLDER_PROMPT_LINES,

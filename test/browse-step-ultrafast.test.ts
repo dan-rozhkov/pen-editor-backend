@@ -885,5 +885,6 @@ describe("field text prompt", () => {
     );
     expect(prompt()).toContain("MUST come from the goal");
     expect(prompt()).toContain("Never copy text from the page");
+    expect(prompt()).toContain("return the first one");
   });
 });
