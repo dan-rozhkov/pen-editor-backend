@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { Config } from "../config.js";
-import { createSystemOne, type SystemOneClient } from "../services/systemone.js";
+import { createSystemOne, isJevModel, type SystemOneClient } from "../services/systemone.js";
 import { decideBrowseStepUltrafast } from "../ai/browseStepUltrafast.js";
 import {
   decideBrowseStep,
@@ -198,7 +198,8 @@ export async function browseStepRoutes(
   config: Config,
 ): Promise<void> {
   // System One "jev*" models are text-only: never send them an image.
-  const visionBlocked = config.BROWSE_STEP_VISION === "on" && config.TYPESAFE_MODEL.startsWith("jev");
+  const visionBlocked = config.BROWSE_STEP_VISION === "on" && isJevModel(config.TYPESAFE_MODEL);
+  const visionOn = config.BROWSE_STEP_VISION === "on" && !visionBlocked;
   if (visionBlocked) {
     app.log.warn(
       { model: config.TYPESAFE_MODEL },
@@ -218,7 +219,7 @@ export async function browseStepRoutes(
         history: body.history,
         scroll: body.scroll,
         pageText: body.pageText,
-        screenshot: visionBlocked ? undefined : normalizeScreenshot(body.screenshot),
+        screenshot: visionOn ? normalizeScreenshot(body.screenshot) : undefined,
       };
       // Deterministic CAPTCHA guard, before either policy (no Jev call).
       const wall = detectBotWall(input);

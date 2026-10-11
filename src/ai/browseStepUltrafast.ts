@@ -8,6 +8,7 @@ import type {
   SystemOneClient,
   SystemOneQuestion,
 } from "../services/systemone.js";
+import { isOpenAIDecisions } from "../services/systemone.js";
 import { createModel } from "./provider.js";
 import {
   BROWSE_STEP_TIMEOUT_MS,
@@ -100,11 +101,12 @@ const OPERATION_LABELS: Record<Exclude<BrowseOperation, "DONE" | "BLOCKED">, str
  * as a to-do list (replay: 1/7 correct next steps with them, 6/7 with the
  * two-line profile below), so they get their own, short instruction block and
  * a few structural differences. Jev's questions are untouched. */
-export function isOpenAIDecisions(model: string | undefined): boolean {
-  return (model ?? "").toLowerCase().startsWith("openai/");
-}
+export { isOpenAIDecisions };
 
 const NONE_KEY = "none";
+/** Luna answered "none" for its target: the next-best operation is only taken
+ * when the model gave it at least this much probability; otherwise retry. */
+export const LUNA_FALLBACK_MIN_PROBABILITY = 0.2;
 const NONE_LABEL = "None of these: every candidate is already filled/set, or none fits the next step.";
 
 const CALENDAR_HINT =
@@ -405,7 +407,7 @@ function targetHeadFor(op: BrowseOperation): TargetHead | undefined {
 // along in `state` (BROWSE_STEP_VISION=on).
 const SCREENSHOT_NOTE = {
   screenshot_note:
-    "The screenshot shows the visible part of the current page. Interactive elements are outlined in blue boxes; each box has a small blue number label touching it (usually just outside its top-left corner, above or beside it; inside the top-left corner when boxes are tightly packed). The number equals that element's index in the JSON state. Use the screenshot for visual cues (icons, colour, position, layout, disabled look); use the JSON for labels and values.",
+    "The screenshot shows the visible part of the current page. Interactive elements are outlined in blue boxes; each box has a small blue number label touching one of its edges (outside on the left, above, right or below, or inside a corner). The number equals that element's index in the JSON state. Use the screenshot for visual cues (icons, colour, position, layout, disabled look); use the JSON for labels and values.",
 };
 
 export interface UltrafastQuestions {
@@ -420,7 +422,6 @@ export interface UltrafastQuestions {
 function lunaOffers(
   op: string,
   elements: BrowseStepElement[],
-  scroll: BrowseStepInput["scroll"],
   history: BrowseStepInput["history"],
 ): boolean {
   const last = history[history.length - 1];
@@ -430,9 +431,8 @@ function lunaOffers(
       return !!last && !last.ok && last.operation === "CLICK";
     case "PRESS_ENTER":
       return !!last && last.ok && last.operation === "TYPE_TEXT";
-    case "SCROLL_UP":
-    case "SCROLL_DOWN":
-      return scroll !== undefined;
+    // SCROLL_UP/DOWN: always offered (an older client sends no `scroll`, and
+    // the caller already drops the impossible direction when it does).
     case "PRESS_ESCAPE":
       return elements.some((el) => el.expanded === true || el.role === "dialog" || el.role === "alertdialog");
     case "WAIT":
@@ -469,13 +469,13 @@ export function buildUltrafastQuestions(
     if (head && targets[head].size === 0) continue;
     if (op === "SCROLL_UP" && scroll && scroll.y <= 0) continue;
     if (op === "SCROLL_DOWN" && scroll?.atBottom === true) continue;
-    if (luna && !lunaOffers(op, elements, scroll, opts.history ?? [])) continue;
+    if (luna && !lunaOffers(op, elements, opts.history ?? [])) continue;
     operations[op] = label;
   }
+  // A Luna page with no real action operation must still be able to wait.
+  if (luna && Object.keys(operations).length === 0) operations.WAIT = OPERATION_LABELS.WAIT;
   operations.DONE = DONE_LABEL;
   operations.BLOCKED = BLOCKED_LABEL;
-  // A Luna page with nothing to click must still be able to wait.
-  if (luna && Object.keys(operations).length <= 3) operations.WAIT = OPERATION_LABELS.WAIT;
 
   const questions: Record<string, SystemOneQuestion> = {
     operation: {
@@ -703,7 +703,7 @@ export async function decideBrowseStepUltrafast(
     // The model says no candidate fits this operation: take its next-best
     // operation that still has a real target instead.
     const alt = operations
-      .filter((op) => op !== operation && !TERMINAL_OPERATIONS.has(op))
+      .filter((op) => op !== operation && !TERMINAL_OPERATIONS.has(op) && (opAnswer.probabilities[op] ?? 0) >= LUNA_FALLBACK_MIN_PROBABILITY)
       .sort((a, b) => (opAnswer.probabilities[b] ?? 0) - (opAnswer.probabilities[a] ?? 0))
       .find((op) => {
         const h = targetHeadFor(op as BrowseOperation);
@@ -713,8 +713,9 @@ export async function decideBrowseStepUltrafast(
     if (!alt) return finish(retry(`no candidate fits ${operation}`, model, confidence));
     gates.push({ head: "none", peak: peakProbability(targetAnswer), threshold: 0, jevPick: operation });
     const altHead = targetHeadFor(alt as BrowseOperation);
-    if (!altHead) return finish({ outcome: "act", operation: alt as BrowseOperation, confidence, model });
-    return decideTarget(alt as BrowseOperation, altHead, choiceAnswer(answers[TARGET_QUESTION_ID[altHead]]));
+    const altConfidence = opAnswer.probabilities[alt] ?? confidence;
+    if (!altHead) return finish({ outcome: "act", operation: alt as BrowseOperation, confidence: altConfidence, model });
+    return decideTarget(alt as BrowseOperation, altHead, choiceAnswer(answers[TARGET_QUESTION_ID[altHead]]), altConfidence);
   }
   return decideTarget(operation, head, targetAnswer);
 
@@ -722,11 +723,12 @@ export async function decideBrowseStepUltrafast(
     operation: BrowseOperation,
     head: TargetHead,
     targetAnswer: SystemOneChoiceAnswer | null,
+    opConfidence = confidence,
   ): Promise<BrowseStepResult> {
   const target = targetAnswer ? targets[head].get(targetAnswer.choice) : undefined;
   if (!targetAnswer || !target) return finish(retry(`malformed target answer for ${operation}`, model, confidence));
   gates.push({ head: head === "SELECT" ? "select" : "target", peak: peakProbability(targetAnswer), threshold: 0, jevPick: targetAnswer.choice });
-  const stepConfidence = Math.min(confidence, targetAnswer.confidence);
+  const stepConfidence = Math.min(opConfidence, targetAnswer.confidence);
   const el = elements.find((e) => e.index === target.index)!;
 
   if (operation === "SELECT") {

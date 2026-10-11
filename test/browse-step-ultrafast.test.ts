@@ -532,7 +532,28 @@ describe("OpenAI Decisions (Luna) profile", () => {
       type_text_target: choice("none", 0.9),
       click_target: choice("5", 0.9),
     });
-    expect(result).toMatchObject({ outcome: "act", operation: "CLICK", index: 5 });
+    expect(result).toMatchObject({ outcome: "act", operation: "CLICK", index: 5, confidence: 0.3 });
+  });
+
+  it("retries instead of falling back to an operation below the probability floor", async () => {
+    const { result } = await decideLuna({
+      operation: choice("TYPE_TEXT", 0.85, { probabilities: { TYPE_TEXT: 0.85, CLICK: 0.1, DONE: 0.05 } }),
+      type_text_target: choice("none", 0.9),
+      click_target: choice("5", 0.9),
+    });
+    expect(result.outcome).toBe("retry");
+  });
+
+  it("offers WAIT only when no real action operation exists", () => {
+    const withClick = buildUltrafastQuestions("g", FORM, SCROLLED, { luna: true, history: [] });
+    expect(withClick.operations).not.toContain("WAIT");
+    const empty = buildUltrafastQuestions("g", [], { y: 0, height: 900, atBottom: true }, { luna: true, history: [] });
+    expect(empty.operations).toContain("WAIT");
+  });
+
+  it("offers both scroll operations when the client sends no scroll info", () => {
+    const built = buildUltrafastQuestions("g", FORM, undefined, { luna: true, history: [] });
+    expect(built.operations).toEqual(expect.arrayContaining(["SCROLL_UP", "SCROLL_DOWN"]));
   });
 
   it("retries when every candidate answers 'none'", async () => {

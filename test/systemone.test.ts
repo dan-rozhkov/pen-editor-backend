@@ -389,8 +389,8 @@ describe("createSystemOne", () => {
       probabilities: { a: p, b: 1 - p },
       confidence: p,
     });
-    const mk = (fetchFn: unknown) =>
-      createSystemOne(makeConfig({ TYPESAFE_API_KEY: "k" }), fetchFn as typeof fetch, noSleep)!;
+    const mk = (fetchFn: unknown, model = "openai/gpt-6-luna-decisions") =>
+      createSystemOne(makeConfig({ TYPESAFE_API_KEY: "k", TYPESAFE_MODEL: model }), fetchFn as typeof fetch, noSleep)!;
     const one: Record<string, SystemOneQuestion> = {
       solo: { type: "choice", instructions: "x", criteria: { only: "the only one" } },
     };
@@ -410,6 +410,35 @@ describe("createSystemOne", () => {
         probabilities: { only: 1 },
         confidence: 1,
       });
+    });
+
+    it("sends a 1-option choice to the API for a Jev model, as on main", async () => {
+      const fetchFn = vi.fn(async () =>
+        jsonResponse({
+          model: "jev",
+          answers: { solo: { type: "choice", choice: "only", probabilities: { only: 1 }, confidence: 1 } },
+          usage: { input_tokens: 1, output_tokens: 1 },
+        }),
+      );
+      await mk(fetchFn, "jev-latest").evaluate({ state: "s", questions: one });
+      expect(fetchFn).toHaveBeenCalledTimes(1);
+      expect(sentQuestionIds(fetchFn, 0)).toEqual(["solo"]);
+    });
+
+    it("reports questions still pending after the round cap as refused", async () => {
+      const five: Record<string, SystemOneQuestion> = Object.fromEntries(
+        ["q1", "q2", "q3", "q4", "q5"].map((id) => [id, { type: "choice", instructions: "x", criteria: { a: "A", b: "B" } } as SystemOneQuestion]),
+      );
+      const fetchFn = vi
+        .fn()
+        .mockResolvedValueOnce(refusal("q1"))
+        .mockResolvedValueOnce(refusal("q2"))
+        .mockResolvedValueOnce(refusal("q3"))
+        .mockResolvedValueOnce(refusal("q4"));
+      const res = await mk(fetchFn).evaluate({ state: "s", questions: five });
+      expect(fetchFn).toHaveBeenCalledTimes(4);
+      expect(res.refused).toEqual(["q1", "q2", "q3", "q4", "q5"]);
+      expect(res.answers).toEqual({});
     });
 
     it("sends only the remaining questions and merges the local answer", async () => {

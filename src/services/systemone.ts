@@ -357,6 +357,16 @@ function abortableSleep(
   });
 }
 
+/** OpenAI Decisions models ("Luna", `openai/...`). Case-insensitive. */
+export function isOpenAIDecisions(model: string | undefined): boolean {
+  return (model ?? "").toLowerCase().startsWith("openai/");
+}
+
+/** System One "jev*" models (text-only). Case-insensitive. */
+export function isJevModel(model: string | undefined): boolean {
+  return (model ?? "").toLowerCase().startsWith("jev");
+}
+
 export function createSystemOne(
   config: Config,
   fetchFn: typeof fetch = fetch,
@@ -378,16 +388,17 @@ export function createSystemOne(
         ? AbortSignal.any([timeoutSignal, signal])
         : timeoutSignal;
 
-      // OpenAI Decisions compatibility (harmless for Jev): a choice with a
-      // single option is answered locally (the vendor 400s on < 2 choices),
-      // and a question the vendor refuses (its exact 502 refusal error) is
-      // dropped — never answered with a made-up value — and the rest resent
-      // once (MAX_ROUNDS).
+      // OpenAI Decisions compatibility: a choice with a single option is
+      // answered locally (only OpenAI Decisions models 400 on < 2 choices;
+      // Jev still receives it as before). A question the vendor refuses (its
+      // exact 502 refusal error) is dropped — never answered with a made-up
+      // value — and the rest resent, up to MAX_ROUNDS rounds in total.
+      const localSingleOption = isOpenAIDecisions(config.TYPESAFE_MODEL);
       const answers: Record<string, SystemOneAnswer> = {};
       let pending: Record<string, SystemOneQuestion> = {};
       for (const [id, q] of Object.entries(questions)) {
         const opts = q.type === "choice" ? Object.keys(q.criteria) : [];
-        if (q.type === "choice" && opts.length === 1) {
+        if (localSingleOption && q.type === "choice" && opts.length === 1) {
           answers[id] = {
             type: "choice",
             choice: opts[0]!,
@@ -411,15 +422,17 @@ export function createSystemOne(
           Object.assign(answers, result.answers);
           pending = {};
         } catch (err) {
-                    const id = err instanceof SystemOneRefusalError ? err.questionId : undefined;
+          const id = err instanceof SystemOneRefusalError ? err.questionId : undefined;
           if (id === undefined || !(id in pending)) throw err;
           refused.push(id);
           const { [id]: _dropped, ...rest } = pending;
           pending = rest;
         }
       }
-      // Still pending after the last round: a second refusal threw above, so
-      // this only happens when the resend itself was never needed.
+      // Still pending after the last round (every round ended in a refusal):
+      // report them as refused too, so callers take their retry path instead
+      // of the questions vanishing silently.
+      refused.push(...Object.keys(pending));
       return { model, answers: answers as Partial<Record<keyof Q, SystemOneAnswer>>, refused, usage };
     },
   };
