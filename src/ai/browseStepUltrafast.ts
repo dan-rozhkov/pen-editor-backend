@@ -361,6 +361,13 @@ function targetHeadFor(op: BrowseOperation): TargetHead | undefined {
   return op === "CLICK" || op === "TYPE_TEXT" || op === "SELECT" ? op : undefined;
 }
 
+// Added to every question's instructions only when a marked screenshot rides
+// along in `state` (BROWSE_STEP_VISION=on).
+const SCREENSHOT_NOTE = {
+  screenshot_note:
+    "The screenshot shows the visible part of the current page. Interactive elements are outlined in blue boxes; the blue number at a box's top-left corner equals that element's index in the JSON state. Use the screenshot for visual cues (icons, colour, position, layout, disabled look); use the JSON for labels and values.",
+};
+
 export interface UltrafastQuestions {
   questions: Record<string, SystemOneQuestion>;
   operations: string[];
@@ -371,6 +378,7 @@ export function buildUltrafastQuestions(
   goal: string,
   elements: BrowseStepElement[],
   scroll: BrowseStepInput["scroll"],
+  vision = false,
 ): UltrafastQuestions {
   const byIndex = new Map(elements.map((el) => [el.index, el]));
   const targets = buildTargets(elements);
@@ -390,7 +398,7 @@ export function buildUltrafastQuestions(
     operation: {
       type: "choice",
       criteria: operations,
-      instructions: { goal, rules: NEXT_ACTION_RULES },
+      instructions: { goal, rules: NEXT_ACTION_RULES, ...(vision ? SCREENSHOT_NOTE : {}) },
     },
   };
   for (const head of Object.keys(targets) as TargetHead[]) {
@@ -403,7 +411,12 @@ export function buildUltrafastQuestions(
     questions[TARGET_QUESTION_ID[head]] = {
       type: "choice",
       criteria,
-      instructions: { goal, operation: head, rules: [NEXT_ACTION_RULES, TARGET_RULES] },
+      instructions: {
+        goal,
+        operation: head,
+        rules: [NEXT_ACTION_RULES, TARGET_RULES],
+        ...(vision ? SCREENSHOT_NOTE : {}),
+      },
     };
   }
   return { questions, operations: Object.keys(operations), targets };
@@ -477,10 +490,17 @@ export async function decideBrowseStepUltrafast(
   const start = Date.now();
   const timings: NonNullable<BrowseStepResult["timings"]> = { jevMs: 0, totalMs: 0 };
   const gates: NonNullable<BrowseStepResult["diag"]>["gates"] = [];
+  const vision = config.BROWSE_STEP_VISION === "on" && !!input.screenshot;
+  let inputTokens: number | undefined;
   const finish = (result: BrowseStepResult): BrowseStepResult => ({
     ...result,
     timings: { ...timings, totalMs: Date.now() - start },
-    diag: { gates, tier: result.outcome === "retry" ? "retry" : "jev" },
+    diag: {
+      gates,
+      tier: result.outcome === "retry" ? "retry" : "jev",
+      vision,
+      ...(inputTokens !== undefined ? { inputTokens } : {}),
+    },
   });
 
   const goal = scrubPii(input.goal);
@@ -491,24 +511,28 @@ export async function decideBrowseStepUltrafast(
     operation: h.operation,
     ok: h.ok,
   }));
-  const { questions, operations, targets } = buildUltrafastQuestions(goal, elements, input.scroll);
+  const { questions, operations, targets } = buildUltrafastQuestions(goal, elements, input.scroll, vision);
 
   let model: string;
-  let answers: Record<string, SystemOneAnswer>;
+  let answers: Partial<Record<string, SystemOneAnswer>>;
   const jevStart = Date.now();
   try {
+    const stateObject = {
+      page: { url: scrubPii(input.url), title: scrubPii(input.title), text: pageText },
+      elements: elements.map(stateElement),
+      recent_actions: history,
+      ...(input.scroll ? { scroll: input.scroll } : {}),
+    };
     const result = await client.evaluate({
-      state: {
-        page: { url: scrubPii(input.url), title: scrubPii(input.title), text: pageText },
-        elements: elements.map(stateElement),
-        recent_actions: history,
-        ...(input.scroll ? { scroll: input.scroll } : {}),
-      },
+      state: vision
+        ? [JSON.stringify(stateObject), { type: "image_url", image_url: { url: input.screenshot } }]
+        : stateObject,
       questions,
       signal: AbortSignal.timeout(BROWSE_STEP_TIMEOUT_MS),
     });
     model = result.model;
     answers = result.answers;
+    inputTokens = result.usage.input_tokens;
   } catch (err) {
     return finish(retry(`browse step evaluation failed: ${err instanceof Error ? err.message : String(err)}`));
   } finally {

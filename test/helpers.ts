@@ -44,6 +44,7 @@ export function makeConfig(overrides: Partial<Config> = {}): Config {
     STRUCTURED_MODEL: envSchema.shape.STRUCTURED_MODEL.parse(undefined),
     BROWSE_CASCADE_MODEL: envSchema.shape.BROWSE_CASCADE_MODEL.parse(undefined),
     BROWSE_STEP_POLICY: envSchema.shape.BROWSE_STEP_POLICY.parse(undefined),
+    BROWSE_STEP_VISION: envSchema.shape.BROWSE_STEP_VISION.parse(undefined),
     TRACE_DATABASE_URL: undefined,
     TRACE_RAW_TTL_DAYS: 14,
     ANALYSIS_MODEL: "openrouter:google/gemini-2.5-flash",

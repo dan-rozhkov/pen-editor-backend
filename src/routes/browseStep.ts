@@ -106,7 +106,35 @@ const bodySchema = z.object({
   // Visible page text (the snapshot's own, or a browse_read fallback) —
   // used by the ultrafast policy only. Optional: an older client omits it.
   pageText: z.string().max(20_000).optional(),
+  // Marked screenshot (experiment, BROWSE_STEP_VISION). A malformed value is
+  // dropped by normalizeScreenshot, never a 400.
+  screenshot: z.string().max(4_000_000).optional(),
 });
+
+const DATA_IMAGE_PREFIX_RE = /^data:image\/(jpeg|png|webp)(?:;[^,;]+)*;base64,/i;
+const BASE64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
+const MIN_SCREENSHOT_BASE64_CHARS = 100;
+// Leading base64 characters of each format's magic bytes.
+const RAW_MAGIC: ReadonlyArray<readonly [string, string]> = [
+  ["/9j/", "jpeg"],
+  ["iVBOR", "png"],
+  ["UklGR", "webp"],
+];
+
+/** Canonical `data:image/<fmt>;base64,<payload>` for a data URL (extra media
+ * type parameters such as charset tolerated and dropped, whitespace in the
+ * payload stripped) or for raw base64 whose magic bytes name jpeg/png/webp.
+ * Anything else — too short, wrong alphabet, unknown format — is undefined. */
+export function normalizeScreenshot(raw: string | undefined): string | undefined {
+  const s = raw?.trim();
+  if (!s) return undefined;
+  const prefix = DATA_IMAGE_PREFIX_RE.exec(s);
+  const payload = (prefix ? s.slice(prefix[0].length) : s).replace(/\s+/g, "");
+  if (payload.length < MIN_SCREENSHOT_BASE64_CHARS || !BASE64_RE.test(payload)) return undefined;
+  if (prefix) return `data:image/${prefix[1]!.toLowerCase()};base64,${payload}`;
+  const format = RAW_MAGIC.find(([magic]) => payload.startsWith(magic))?.[1];
+  return format ? `data:image/${format};base64,${payload}` : undefined;
+}
 
 /**
  * Registers one stateless Jev-backed browse route — shared by
@@ -169,6 +197,15 @@ export async function browseStepRoutes(
   app: FastifyInstance,
   config: Config,
 ): Promise<void> {
+  // System One "jev*" models are text-only: never send them an image.
+  const visionBlocked = config.BROWSE_STEP_VISION === "on" && config.TYPESAFE_MODEL.startsWith("jev");
+  if (visionBlocked) {
+    app.log.warn(
+      { model: config.TYPESAFE_MODEL },
+      "BROWSE_STEP_VISION=on ignored: TYPESAFE_MODEL is a jev model without vision; screenshots will not be sent",
+    );
+  }
+  const stepConfig: Config = visionBlocked ? { ...config, BROWSE_STEP_VISION: "off" } : config;
   registerJevBrowseRoute(app, config, {
     path: "/api/browse/step",
     bodySchema,
@@ -181,17 +218,20 @@ export async function browseStepRoutes(
         history: body.history,
         scroll: body.scroll,
         pageText: body.pageText,
+        screenshot: visionBlocked ? undefined : normalizeScreenshot(body.screenshot),
       };
       // Deterministic CAPTCHA guard, before either policy (no Jev call).
       const wall = detectBotWall(input);
       const result = wall
         ? botWallResult(wall)
         : config.BROWSE_STEP_POLICY === "ultrafast"
-          ? await decideBrowseStepUltrafast(client, config, input)
+          ? await decideBrowseStepUltrafast(client, stepConfig, input)
           : await decideBrowseStep(client, config, input);
       // One line per decision so a stuck browse_task can be diagnosed from
       // the server log. Only the decision's own fields — never page text;
       // a cascade `reason` is model-written and may quote the page.
+      // vision/inputTokens are logged once, at the top level, not inside diag.
+      const { vision: _vision, inputTokens: _inputTokens, ...logDiag } = result.diag ?? {};
       app.log.info(
         {
           browseStep: {
@@ -205,7 +245,9 @@ export async function browseStepRoutes(
             cascadeNote: result.cascadeNote,
             timings: result.timings,
             textSource: result.textSource,
-            diag: result.diag,
+            vision: result.diag?.vision === true,
+            inputTokens: result.diag?.inputTokens,
+            diag: logDiag,
           },
         },
         "browse step decided",

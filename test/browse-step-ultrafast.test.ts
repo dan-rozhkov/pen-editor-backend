@@ -213,6 +213,19 @@ describe("decideBrowseStepUltrafast", () => {
     expect(result.outcome).toBe("retry");
   });
 
+  it("retries when the operation question was refused (no answer), not acting on an invented one", async () => {
+    // A refused question is absent from `answers`; the target answer alone must not trigger an action.
+    const { result } = await decide({ click_target: choice("5", 0.9) });
+    expect(result.outcome).toBe("retry");
+    expect(result.index).toBeUndefined();
+  });
+
+  it("does not act on an invented index when the target question was refused", async () => {
+    const { result } = await decide({ operation: choice("CLICK", 0.9) });
+    expect(result.outcome).toBe("retry");
+    expect(result.index).toBeUndefined();
+  });
+
   it("retries when Jev itself fails", async () => {
     const result = await decideBrowseStepUltrafast(fakeClient({}, { throwError: new Error("boom") }), config, input());
     expect(result).toMatchObject({ outcome: "retry" });
@@ -406,5 +419,43 @@ describe("suggestion matching", () => {
     expect(containsWholeTyped(options[1].label, pending.typed)).toBe(true);
     expect(pickSuggestion(pending, null).el.index).toBe(3);
     expect(pickSuggestion(pending, { probabilities: {} } as never).el.index).toBe(3);
+  });
+});
+
+describe("vision (BROWSE_STEP_VISION)", () => {
+  const SHOT = "data:image/jpeg;base64,QUJD";
+  const visionConfig = makeConfig({ TYPESAFE_API_KEY: "key", BROWSE_STEP_VISION: "on" });
+  const answers = { operation: choice("CLICK", 0.9), click_target: choice("5", 0.9) };
+
+  async function run(cfg: typeof config, screenshot?: string) {
+    let captured: Captured | undefined;
+    const result = await decideBrowseStepUltrafast(
+      fakeClient(answers, { capture: (p) => (captured = p) }),
+      cfg,
+      input({ screenshot }),
+    );
+    return { result, captured: captured! };
+  }
+
+  it("sends array state and a screenshot_note on every question when on + screenshot", async () => {
+    const { result, captured } = await run(visionConfig, SHOT);
+    expect(Array.isArray(captured.state)).toBe(true);
+    const [json, image] = captured.state as [string, unknown];
+    expect(JSON.parse(json)).toHaveProperty("elements");
+    expect(image).toEqual({ type: "image_url", image_url: { url: SHOT } });
+    for (const q of Object.values(captured.questions)) {
+      expect(q.instructions).toHaveProperty("screenshot_note");
+    }
+    expect(result.diag).toMatchObject({ vision: true, inputTokens: 100 });
+  });
+
+  it("keeps state and questions byte-identical to the flag-off baseline otherwise", async () => {
+    const base = await run(config);
+    for (const other of [await run(config, SHOT), await run(visionConfig)]) {
+      expect(JSON.stringify(other.captured.state)).toBe(JSON.stringify(base.captured.state));
+      expect(JSON.stringify(other.captured.questions)).toBe(JSON.stringify(base.captured.questions));
+      expect(other.result.diag?.vision).toBe(false);
+    }
+    expect(Array.isArray(base.captured.state)).toBe(false);
   });
 });

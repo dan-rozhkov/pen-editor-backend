@@ -379,4 +379,115 @@ describe("createSystemOne", () => {
       clearTimeoutSpy.mockRestore();
     }
   });
+
+  describe("OpenAI Decisions compatibility", () => {
+    const sentQuestionIds = (fetchFn: ReturnType<typeof vi.fn>, call: number) =>
+      Object.keys(JSON.parse((fetchFn.mock.calls[call]![1] as RequestInit).body as string).questions);
+    const choiceBody = (id: string, p = 0.8) => ({
+      type: "choice",
+      choice: "a",
+      probabilities: { a: p, b: 1 - p },
+      confidence: p,
+    });
+    const mk = (fetchFn: unknown) =>
+      createSystemOne(makeConfig({ TYPESAFE_API_KEY: "k" }), fetchFn as typeof fetch, noSleep)!;
+    const one: Record<string, SystemOneQuestion> = {
+      solo: { type: "choice", instructions: "x", criteria: { only: "the only one" } },
+    };
+    const two: Record<string, SystemOneQuestion> = {
+      pair: { type: "choice", instructions: "x", criteria: { a: "A", b: "B" } },
+    };
+    const refusal = (id: string) =>
+      jsonResponse({ error: { message: `OpenAI refused to answer question "${id}"`, code: 502 } }, 502);
+
+    it("answers a 1-option choice locally and skips the call when nothing remains", async () => {
+      const fetchFn = vi.fn();
+      const res = await mk(fetchFn).evaluate({ state: "s", questions: one });
+      expect(fetchFn).not.toHaveBeenCalled();
+      expect(res.answers.solo).toEqual({
+        type: "choice",
+        choice: "only",
+        probabilities: { only: 1 },
+        confidence: 1,
+      });
+    });
+
+    it("sends only the remaining questions and merges the local answer", async () => {
+      const fetchFn = vi.fn(async () =>
+        jsonResponse({ model: "m", answers: { pair: choiceBody("pair") }, usage: { input_tokens: 3, output_tokens: 1 } }),
+      );
+      const res = await mk(fetchFn).evaluate({ state: "s", questions: { ...one, ...two } });
+      expect(sentQuestionIds(fetchFn, 0)).toEqual(["pair"]);
+      expect(Object.keys(res.answers).sort()).toEqual(["pair", "solo"]);
+      expect(res.usage.input_tokens).toBe(3);
+    });
+
+    it("omits a refused question from answers, lists it in refused, and resends the rest", async () => {
+      const fetchFn = vi
+        .fn()
+        .mockResolvedValueOnce(refusal("isSpam"))
+        .mockResolvedValueOnce(
+          jsonResponse({
+            model: "m",
+            answers: { category: goodAnswers.category, quality: goodAnswers.quality },
+            usage: { input_tokens: 4, output_tokens: 2 },
+          }),
+        );
+      const res = await mk(fetchFn).evaluate({ state: "s", questions });
+      expect(sentQuestionIds(fetchFn, 1)).toEqual(["category", "quality"]);
+      expect("isSpam" in res.answers).toBe(false);
+      expect(res.refused).toEqual(["isSpam"]);
+      expect(res.answers.category).toEqual(goodAnswers.category);
+    });
+
+    it("caps rounds at 2: a second refusal rethrows instead of looping", async () => {
+      const fetchFn = vi
+        .fn()
+        .mockResolvedValueOnce(refusal("category"))
+        .mockResolvedValueOnce(refusal("quality"));
+      await expect(mk(fetchFn).evaluate({ state: "s", questions })).rejects.toThrow(/refused to answer question "quality"/);
+      expect(fetchFn).toHaveBeenCalledTimes(2);
+    });
+
+    it("keeps a 1-option local answer and omits a refused sibling", async () => {
+      const fetchFn = vi
+        .fn()
+        .mockResolvedValueOnce(refusal("pair"))
+        .mockResolvedValueOnce(
+          jsonResponse({ model: "m", answers: { other: choiceBody("other") }, usage: { input_tokens: 1, output_tokens: 1 } }),
+        );
+      const other: Record<string, SystemOneQuestion> = {
+        other: { type: "choice", instructions: "x", criteria: { a: "A", b: "B" } },
+      };
+      const res = await mk(fetchFn).evaluate({ state: "s", questions: { ...one, ...two, ...other } });
+      expect(sentQuestionIds(fetchFn, 1)).toEqual(["other"]);
+      expect(res.answers.solo).toMatchObject({ choice: "only", confidence: 1 });
+      expect(res.answers.pair).toBeUndefined();
+      expect(res.refused).toEqual(["pair"]);
+    });
+
+    it.each([
+      ["a different 502 mentioning refused and a sent id", { error: { message: 'upstream refused connection while processing "category"', code: 502 } }, 502],
+      ["the refusal message with a non-502 status", { error: { message: 'OpenAI refused to answer question "category"', code: 502 } }, 500],
+      ["the refusal message with a non-502 code", { error: { message: 'OpenAI refused to answer question "category"', code: 500 } }, 502],
+      ["a refusal message with trailing text", { error: { message: 'OpenAI refused to answer question "category" twice', code: 502 } }, 502],
+    ])("rethrows %s without resending", async (_n, body, status) => {
+      const fetchFn = vi.fn(async () => jsonResponse(body, status));
+      await expect(mk(fetchFn).evaluate({ state: "s", questions })).rejects.toThrow();
+      expect(fetchFn).toHaveBeenCalledTimes(1);
+    });
+
+    it("rethrows a 502 that names no sent question, with the OpenRouter error message", async () => {
+      const fetchFn = vi.fn(async () => refusal("ghost"));
+      await expect(mk(fetchFn).evaluate({ state: "s", questions })).rejects.toThrow(/refused to answer question "ghost"/);
+      expect(fetchFn).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps the Jev path to a single request when every choice has 2+ options", async () => {
+      const fetchFn = vi.fn(async () => jsonResponse(goodResponseBody));
+      await mk(fetchFn).evaluate({ state: "s", questions });
+      expect(fetchFn).toHaveBeenCalledTimes(1);
+      expect(sentQuestionIds(fetchFn, 0)).toEqual(["isSpam", "category", "quality"]);
+    });
+  });
 });

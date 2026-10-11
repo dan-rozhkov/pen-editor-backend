@@ -270,4 +270,73 @@ describe("POST /api/browse/step — ultrafast policy (the default)", () => {
     const body = JSON.parse((vi.mocked(fetch).mock.calls[0][1] as RequestInit).body as string);
     expect(body.state.page.text).toBe("We use cookies. Accept all?");
   });
+
+  describe("screenshot field", () => {
+    const visionConfig = (extra: Record<string, unknown> = {}) =>
+      makeConfig({ TYPESAFE_API_KEY: "key", BROWSE_STEP_VISION: "on", TYPESAFE_MODEL: "openai/gpt-6-luna-decisions", ...extra });
+    const sentState = () => JSON.parse((vi.mocked(fetch).mock.calls[0]![1] as RequestInit).body as string).state;
+    const run = async (screenshot: unknown, cfg = visionConfig()) => {
+      stubJev({ operation: choice("CLICK"), click_target: choice("3") });
+      const res = await postStep({ ...validBody, screenshot }, cfg);
+      expect(res.statusCode).toBe(200);
+      return sentState();
+    };
+    const JPEG = "/9j/" + "A".repeat(120);
+    const PNG = "iVBOR" + "A".repeat(120);
+    const WEBP = "UklGR" + "A".repeat(120);
+
+    it("passes a data URL through", async () => {
+      const state = await run(`data:image/png;base64,${PNG}`);
+      expect(state[1]).toEqual({ type: "image_url", image_url: { url: `data:image/png;base64,${PNG}` } });
+    });
+
+    it("tolerates extra data URL params and strips whitespace in the payload", async () => {
+      const state = await run(`data:image/jpeg;charset=utf-8;base64,${JPEG.slice(0, 50)}\n${JPEG.slice(50)}`);
+      expect(state[1].image_url.url).toBe(`data:image/jpeg;base64,${JPEG}`);
+    });
+
+    it.each([
+      ["jpeg", JPEG],
+      ["png", PNG],
+      ["webp", WEBP],
+    ])("detects %s from raw base64 magic bytes", async (fmt, raw) => {
+      const state = await run(raw);
+      expect(state[1].image_url.url).toBe(`data:image/${fmt};base64,${raw}`);
+    });
+
+    it.each([
+      ["junk text", "not an image!!"],
+      ["too-short base64", "/9j/QUJD"],
+      ["raw base64 with an unknown magic", "Z".repeat(200)],
+      ["a gif data URL", `data:image/gif;base64,${JPEG}`],
+      ["a bad alphabet", `/9j/${"A".repeat(120)}!!`],
+    ])("drops %s without a 400", async (_n, shot) => {
+      expect(Array.isArray(await run(shot))).toBe(false);
+    });
+
+    it("is ignored while the flag is off", async () => {
+      stubJev({ operation: choice("CLICK"), click_target: choice("3") });
+      const res = await postStep({ ...validBody, screenshot: JPEG }, makeConfig({ TYPESAFE_API_KEY: "key" }));
+      expect(res.statusCode).toBe(200);
+      expect(Array.isArray(sentState())).toBe(false);
+    });
+
+    it("never sends an image to a jev model, even with the flag on, and warns once at registration", async () => {
+      const warn = vi.fn();
+      stubJev({ operation: choice("CLICK"), click_target: choice("3") });
+      const cfg = visionConfig({ TYPESAFE_MODEL: "jev-latest" });
+      const { browseStepRoutes } = await import("../src/routes/browseStep.js");
+      const Fastify = (await import("fastify")).default;
+      const app = Fastify({ logger: false });
+      app.log.warn = warn as never;
+      await browseStepRoutes(app, cfg);
+      for (let i = 0; i < 2; i++) {
+        const res = await app.inject({ method: "POST", url: "/api/browse/step", payload: { ...validBody, screenshot: JPEG } });
+        expect(res.statusCode).toBe(200);
+      }
+      await app.close();
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(Array.isArray(sentState())).toBe(false);
+    });
+  });
 });

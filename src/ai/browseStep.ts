@@ -483,6 +483,9 @@ export interface BrowseStepInput {
   /** Visible page text from the snapshot (or a `read` fallback) — only the
    * ultrafast policy uses it; PII-scrubbed before it leaves this server. */
   pageText?: string;
+  /** Marked (Set-of-Marks) screenshot as a data: URL. Only the ultrafast
+   * policy with BROWSE_STEP_VISION=on reads it. Never logged. */
+  screenshot?: string;
 }
 
 export interface BrowseStepResult {
@@ -564,6 +567,11 @@ export interface BrowseStepDiag {
   goalMet?: number;
   deadEnd?: number;
   tier: "jev" | "noul" | "cascade" | "rule" | "retry";
+  /** Ultrafast only: this step's state carried a marked screenshot. */
+  vision?: boolean;
+  /** Ultrafast only: System One `usage.input_tokens` of the step's evaluate
+   * call; absent when no call completed. */
+  inputTokens?: number;
 }
 
 const OP_ID = "op";
@@ -2888,7 +2896,7 @@ async function decideBrowseStepCore(
     AbortSignal.any([AbortSignal.timeout(BROWSE_STEP_TIMEOUT_MS), decisionDeadline]);
 
   let model: string;
-  let answers: Record<string, SystemOneAnswer>;
+  let answers: Partial<Record<string, SystemOneAnswer>>;
   const jevStart = Date.now();
   try {
     const result = await client.evaluate({

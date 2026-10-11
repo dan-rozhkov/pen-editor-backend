@@ -129,6 +129,12 @@ const errorBodySchema = z.object({
   }),
 });
 
+// OpenRouter-hosted deployments (OpenAI Decisions) answer errors as
+// `{ error: { message, code } }` instead of the documented `{ detail }`.
+const openRouterErrorBodySchema = z.object({
+  error: z.object({ message: z.string().optional() }),
+});
+
 // --- Errors --------------------------------------------------------------
 
 export class SystemOneError extends Error {
@@ -166,6 +172,40 @@ export class SystemOneUpstreamError extends SystemOneError {
   }
 }
 
+/** The vendor's exact refusal: HTTP 502 with
+ * `{"error":{"message":"OpenAI refused to answer question \"<id>\"","code":502}}`.
+ * Any other 502 stays a plain SystemOneUpstreamError. */
+export class SystemOneRefusalError extends SystemOneUpstreamError {
+  constructor(
+    message: string,
+    readonly questionId: string,
+  ) {
+    super(message);
+    this.name = "SystemOneRefusalError";
+  }
+}
+
+// At most one resend: the first call, then one call without refused questions.
+const MAX_ROUNDS = 2;
+
+const REFUSAL_MESSAGE_RE = /^OpenAI refused to answer question "([^"]+)"$/;
+const refusalBodySchema = z.object({
+  error: z.object({ message: z.string(), code: z.number() }),
+});
+
+function parseRefusedQuestionId(status: number, text: string | undefined): string | undefined {
+  if (status !== 502 || !text) return undefined;
+  let json: unknown;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  const parsed = refusalBodySchema.safeParse(json);
+  if (!parsed.success || parsed.data.error.code !== 502) return undefined;
+  return REFUSAL_MESSAGE_RE.exec(parsed.data.error.message)?.[1];
+}
+
 // --- Client ---------------------------------------------------------------
 
 export interface SystemOneEvaluateParams<
@@ -178,7 +218,12 @@ export interface SystemOneEvaluateParams<
 
 export interface SystemOneResult<Q extends Record<string, SystemOneQuestion>> {
   model: string;
-  answers: Record<keyof Q, SystemOneAnswer>;
+  /** A question the vendor refused to answer is ABSENT here (never filled
+   * with a made-up value): callers must treat a missing key as "no answer"
+   * and take their fail-safe path. */
+  answers: Partial<Record<keyof Q, SystemOneAnswer>>;
+  /** Ids of the questions dropped because the vendor refused them. */
+  refused: string[];
   usage: { input_tokens: number; output_tokens: number };
 }
 
@@ -188,17 +233,25 @@ export interface SystemOneClient {
   ): Promise<SystemOneResult<Q>>;
 }
 
-async function extractDetailMessage(response: Response): Promise<string | undefined> {
-  let text: string;
+async function readBodyText(response: Response): Promise<string | undefined> {
   try {
-    text = await response.text();
+    return await response.text();
   } catch {
     return undefined;
   }
+}
+
+async function extractDetailMessage(response: Response): Promise<string | undefined> {
+  return detailFromText(await readBodyText(response));
+}
+
+function detailFromText(text: string | undefined): string | undefined {
   if (!text) return undefined;
   try {
     const parsed = errorBodySchema.safeParse(JSON.parse(text));
     if (parsed.success) return parsed.data.detail.message;
+    const alt = openRouterErrorBodySchema.safeParse(JSON.parse(text));
+    if (alt.success && alt.data.error.message) return alt.data.error.message;
   } catch {
     // Not JSON, or didn't match the documented error shape — fall through
     // to returning the raw text below so the error still carries something
@@ -324,6 +377,58 @@ export function createSystemOne(
         ? AbortSignal.any([timeoutSignal, signal])
         : timeoutSignal;
 
+      // OpenAI Decisions compatibility (harmless for Jev): a choice with a
+      // single option is answered locally (the vendor 400s on < 2 choices),
+      // and a question the vendor refuses (its exact 502 refusal error) is
+      // dropped — never answered with a made-up value — and the rest resent
+      // once (MAX_ROUNDS).
+      const answers: Record<string, SystemOneAnswer> = {};
+      let pending: Record<string, SystemOneQuestion> = {};
+      for (const [id, q] of Object.entries(questions)) {
+        const opts = q.type === "choice" ? Object.keys(q.criteria) : [];
+        if (q.type === "choice" && opts.length === 1) {
+          answers[id] = {
+            type: "choice",
+            choice: opts[0]!,
+            probabilities: { [opts[0]!]: 1 },
+            confidence: 1,
+          };
+        } else {
+          pending = { ...pending, [id]: q };
+        }
+      }
+
+      let model = config.TYPESAFE_MODEL;
+      const usage = { input_tokens: 0, output_tokens: 0 };
+      const refused: string[] = [];
+      for (let round = 0; round < MAX_ROUNDS && Object.keys(pending).length > 0; round++) {
+        try {
+          const result = await sendQuestions(state, pending, combinedSignal);
+          model = result.model;
+          usage.input_tokens += result.usage.input_tokens;
+          usage.output_tokens += result.usage.output_tokens;
+          Object.assign(answers, result.answers);
+          pending = {};
+        } catch (err) {
+          // Only the first round may be followed by a resend.
+          const id = round === 0 && err instanceof SystemOneRefusalError ? err.questionId : undefined;
+          if (id === undefined || !(id in pending)) throw err;
+          refused.push(id);
+          const { [id]: _dropped, ...rest } = pending;
+          pending = rest;
+        }
+      }
+      // Still pending after the last round: a second refusal threw above, so
+      // this only happens when the resend itself was never needed.
+      return { model, answers: answers as Partial<Record<keyof Q, SystemOneAnswer>>, refused, usage };
+    },
+  };
+
+  async function sendQuestions(
+    state: SystemOneEvaluateParams<Record<string, SystemOneQuestion>>["state"],
+    questions: Record<string, SystemOneQuestion>,
+    combinedSignal: AbortSignal,
+  ): Promise<{ model: string; answers: Record<string, SystemOneAnswer>; usage: { input_tokens: number; output_tokens: number } }> {
       let lastError: SystemOneError | undefined;
       for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
         const response = await fetchFn(url, {
@@ -368,7 +473,7 @@ export function createSystemOne(
           }
           return {
             model: parsed.data.model,
-            answers: parsed.data.answers as Record<keyof Q, SystemOneAnswer>,
+            answers: parsed.data.answers,
             usage: parsed.data.usage,
           };
         }
@@ -397,8 +502,13 @@ export function createSystemOne(
           continue;
         }
 
-        const detailMessage = await extractDetailMessage(response);
+        const bodyText = await readBodyText(response);
+        const detailMessage = detailFromText(bodyText);
         const suffix = detailMessage ? `: ${detailMessage}` : "";
+        const refusedId = parseRefusedQuestionId(response.status, bodyText);
+        if (refusedId !== undefined) {
+          throw new SystemOneRefusalError(`System One returned 502${suffix}`, refusedId);
+        }
         if (response.status === 401) {
           throw new SystemOneAuthError(
             `System One authentication failed${suffix}`,
@@ -426,6 +536,5 @@ export function createSystemOne(
         lastError ??
         new SystemOneUpstreamError("System One request failed for an unknown reason.")
       );
-    },
-  };
+  }
 }

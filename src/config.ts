@@ -221,6 +221,10 @@ export const envSchema = z.object({
   // small LLM that sees the chosen field. "legacy" is the gated/cascaded
   // policy it replaced.
   BROWSE_STEP_POLICY: z.enum(["ultrafast", "legacy"]).default("ultrafast"),
+  // Experiment: "on" lets the ultrafast step decision see the client's marked
+  // screenshot (body.screenshot) next to the element tree. Off = unchanged.
+  // Ignored (with a startup warning) when TYPESAFE_MODEL starts with "jev".
+  BROWSE_STEP_VISION: z.enum(["off", "on"]).default("off"),
   // --- Trace analysis (all optional; chat server works without them) ---
   // Postgres for raw traces + analysis artifacts (Aiven: append ?sslmode=no-verify —
   // TLS-encrypted, skips CA verification of Aiven's project CA).
