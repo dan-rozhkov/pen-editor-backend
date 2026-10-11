@@ -543,7 +543,7 @@ export interface BrowseStepResult {
  * (never its label) for "select", and the chosen CANDIDATE'S INDEX (never
  * its text — `"none"` is a valid pick) for "text". */
 export interface BrowseStepGateDiag {
-  head: "op" | "target" | "select" | "text" | "suggestion" | "none" | "enter" | "refocus-type" | "already-done";
+  head: "op" | "target" | "select" | "text" | "suggestion" | "none" | "enter" | "refocus-type" | "already-done" | "done-after-no-effect";
   peak: number;
   threshold: number;
   jevPick: string;
@@ -1425,13 +1425,15 @@ function collectCandidateSpans(goal: string): TextCandidateSpan[] {
     if (span.kind !== "email") continue;
     pushCandidateSpan(spans, goal.slice(span.start, span.end), span.start);
   }
+  const clauseAt = goalClauseStart(goal);
+  const inClause = (i: number) => clauseAt >= 0 && i >= clauseAt;
   for (const m of goal.matchAll(NUMBER_CANDIDATE_RE)) {
-    if (m.index === undefined) continue;
+    if (m.index === undefined || inClause(m.index)) continue;
     const strippedDollar = m[0].startsWith("$");
     pushCandidateSpan(spans, m[0].replace(/^\$/, ""), m.index + (strippedDollar ? 1 : 0));
   }
   for (const m of goal.matchAll(KEYWORD_PHRASE_RE)) {
-    if (m.index === undefined || m[1] === undefined) continue;
+    if (m.index === undefined || m[1] === undefined || inClause(m.index)) continue;
     pushCandidateSpan(spans, m[1], m.index + m[0].indexOf(m[1]));
   }
   for (const m of goal.matchAll(AS_PHRASE_RE)) {
@@ -2619,6 +2621,22 @@ export function historyEntryLandedNoEffect(entry: BrowseStepHistoryEntry): boole
   // current one: it never counts as "no effect".
   if (isCarriedOverEntry(entry)) return false;
   return entry.label.endsWith("(no effect)");
+}
+
+const GOAL_CLAUSE_START_RE = /(?:^|\s)(?:Done when|Does not count):/i;
+
+/** Index where the trailing "Done when: …" / "Does not count: …" clauses of a
+ * planner sub-goal start, or -1. For the checks that read the goal's own
+ * words; the prompts sent to models keep the clauses. */
+export function goalClauseStart(goal: string): number {
+  const m = GOAL_CLAUSE_START_RE.exec(goal);
+  return m ? m.index : -1;
+}
+
+/** The goal without its trailing "Done when: …" / "Does not count: …" clauses. */
+export function stripGoalClauses(goal: string): string {
+  const at = goalClauseStart(goal);
+  return at < 0 ? goal : goal.slice(0, at).trimEnd();
 }
 
 /** The frontend marks history entries carried over from the previous

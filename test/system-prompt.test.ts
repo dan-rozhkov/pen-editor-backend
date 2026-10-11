@@ -221,13 +221,20 @@ describe("browser tasks guidance", () => {
     expect(prompt).toContain("## Browser tasks");
     expect(prompt).toContain(BROWSER_TASKS_GUIDANCE);
     expect(BROWSER_TASKS_GUIDANCE).toMatch(/starts with `browse_task`/);
-    expect(BROWSER_TASKS_GUIDANCE).toMatch(/returns `budget` or `stalled`/);
+    expect(BROWSER_TASKS_GUIDANCE).toMatch(/ends `budget`, `stalled` or `blocked`/);
     expect(BROWSER_TASKS_GUIDANCE).toContain("WHOLE user goal to ONE `browse_task` call");
     expect(BROWSER_TASKS_GUIDANCE).toContain("maxSteps: 25");
     expect(BROWSER_TASKS_GUIDANCE).toContain("REMAINING goal");
     expect(BROWSER_TASKS_GUIDANCE).not.toMatch(/split a big job|per sub-goal|one `browse_task` per item/i);
     // A login/CAPTCHA wall goes back to the user; repeats are capped.
     expect(BROWSER_TASKS_GUIDANCE).toMatch(/`blocked` because of a login[^\n]*do not call it again/);
-    expect(BROWSER_TASKS_GUIDANCE).toContain("At most 2 such repeat calls");
+    expect(BROWSER_TASKS_GUIDANCE).toContain("ONCE for ALL unfinished sub-goals together");
+    expect(BROWSER_TASKS_GUIDANCE).toContain("At most 2 such repeat calls in total");
+    expect(BROWSER_TASKS_GUIDANCE).toContain("already failed twice");
+    expect(BROWSER_TASKS_GUIDANCE).toContain("real number of attempts");
+    expect(BROWSER_TASKS_GUIDANCE).toContain("not found in the searches tried");
+    expect(BROWSER_TASKS_GUIDANCE).not.toMatch(/within N attempts/);
+    expect(BROWSER_TASKS_GUIDANCE).toContain("small remaining step");
+    expect(BROWSER_TASKS_GUIDANCE).toMatch(/never invent reasons|never claim the thing does not exist/i);
   });
 });

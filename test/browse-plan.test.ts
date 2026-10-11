@@ -9,7 +9,7 @@ vi.mock("../src/ai/provider.js", async (importOriginal) =>
 import { createModel, jsonModel, mockJsonModelOnce } from "./structuredModelFakes.js";
 
 const { buildApp } = await import("../src/app.js");
-const { MAX_SUBGOALS, MAX_SUBGOAL_CHARS, MAX_GOAL_CHARS, buildPlanPrompt } = await import("../src/ai/browsePlan.js");
+const { MAX_SUBGOALS, MAX_SUBGOAL_CHARS, MAX_GOAL_CHARS, buildPlanPrompt, normalizeSubgoals } = await import("../src/ai/browsePlan.js");
 
 const GOAL = "Add a tent, a sleeping bag and a pad to the cart";
 
@@ -46,6 +46,22 @@ describe("POST /api/browse/plan", () => {
     const prompt = buildPlanPrompt("Build a cart with everything needed for a 2-day hike", undefined);
     expect(prompt).toMatch(/goal may ask you to choose them/);
     expect(prompt).toMatch(/Never invent personal data/);
+  });
+
+  it("asks for a checkable Done when / Does not count clause per sub-goal", () => {
+    const prompt = buildPlanPrompt("Add three different items to a cart", undefined);
+    expect(prompt).toContain("Done when:");
+    expect(prompt).toContain("Does not count:");
+  });
+
+  it("strips Does not count, then Done when, from an over-long sub-goal", () => {
+    const base = "Add a tent to the cart.";
+    const dwhen = " Done when: the tent is in the cart.";
+    const dnc = ` Does not count: ${"x".repeat(MAX_SUBGOAL_CHARS)}`;
+    expect(normalizeSubgoals([base + dwhen + dnc])).toEqual([base + dwhen]);
+    const longDone = ` Done when: ${"y".repeat(MAX_SUBGOAL_CHARS)}`;
+    expect(normalizeSubgoals([base + longDone + " Does not count: z"])).toEqual([base]);
+    expect(normalizeSubgoals(["w".repeat(MAX_SUBGOAL_CHARS + 1)])).toBeNull();
   });
 
   it("returns a single-flow goal unchanged", async () => {

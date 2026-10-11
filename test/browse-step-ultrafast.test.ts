@@ -8,7 +8,7 @@ vi.mock("../src/ai/provider.js", async (importOriginal) =>
 
 import { createModel, mockJsonModelOnce } from "./structuredModelFakes.js";
 import { choice, fakeClient } from "./browseFakes.js";
-import { MAX_DECISION_CHOICES, containsWholeTyped, goalWantsMultipleUnits, matchesTyped, pickSuggestion, repeatsCommittedClick, repeatsNoEffectClick } from "../src/ai/browseStepUltrafast.js";
+import { DONE_WHEN_RULE, MAX_DECISION_CHOICES, containsWholeTyped, goalWantsMultipleUnits, matchesTyped, pickSuggestion, repeatsCommittedClick, repeatsNoEffectClick } from "../src/ai/browseStepUltrafast.js";
 import type { SystemOneAnswer, SystemOneEvaluateParams, SystemOneQuestion } from "../src/services/systemone.js";
 import type { BrowseStepElement, BrowseStepInput } from "../src/ai/browseStep.js";
 
@@ -886,5 +886,82 @@ describe("field text prompt", () => {
     expect(prompt()).toContain("MUST come from the goal");
     expect(prompt()).toContain("Never copy text from the page");
     expect(prompt()).toContain("return the first one");
+  });
+});
+
+describe("done-after-no-effect gate", () => {
+  const noEffect = { operation: "CLICK", label: "CLICK Add to cart (no effect)", ok: true, index: 5 };
+  const worked = { operation: "CLICK", label: "CLICK Add to cart → effect: counter became 1", ok: true, index: 5 };
+  const doneAnswers = (clickP = 0.3) => ({
+    operation: choice("DONE", 0.6, { probabilities: { DONE: 0.6, CLICK: clickP } }),
+    click_target: choice("5", 0.9),
+  });
+
+  it("demotes DONE to a runner-up on another target after one no-effect action", async () => {
+    const { result } = await decide(
+      { ...doneAnswers(), click_target: choice("4", 0.9) },
+      { history: [worked, noEffect] },
+    );
+    expect(result).toMatchObject({ outcome: "act", operation: "CLICK", index: 4 });
+    expect(result.diag?.gates).toContainEqual(expect.objectContaining({ head: "done-after-no-effect" }));
+  });
+
+  it("does not demote to a runner-up that redoes the no-effect click", async () => {
+    const { result } = await decide(doneAnswers(), { history: [worked, noEffect] });
+    expect(result.outcome).toBe("done");
+  });
+
+  it("skips the repeated click and takes the next non-terminal runner-up", async () => {
+    const answers = {
+      operation: choice("DONE", 0.5, { probabilities: { DONE: 0.5, CLICK: 0.3, TYPE_TEXT: 0.2 } }),
+      click_target: choice("5", 0.9),
+      type_text_target: choice("1", 0.9),
+    };
+    mockFieldText("Petrova");
+    const { result } = await decide(answers, { history: [worked, noEffect] });
+    expect(result).toMatchObject({ outcome: "act", operation: "TYPE_TEXT", index: 1 });
+  });
+
+  it("counts two in a row only for the same operation and target", async () => {
+    const other = { operation: "CLICK", label: "CLICK I accept the terms (no effect)", ok: true, index: 4 };
+    const { result } = await decide({ ...doneAnswers(), click_target: choice("4", 0.9) }, { history: [other, noEffect] });
+    expect(result).toMatchObject({ outcome: "act", operation: "CLICK", index: 4 });
+  });
+
+  it("allows DONE after two no-effect actions in a row", async () => {
+    const { result } = await decide(doneAnswers(), { history: [noEffect, noEffect] });
+    expect(result.outcome).toBe("done");
+  });
+
+  it("allows DONE when the last action had an effect", async () => {
+    const { result } = await decide(doneAnswers(), { history: [noEffect, worked] });
+    expect(result.outcome).toBe("done");
+  });
+
+  it("ignores a carried-over no-effect entry", async () => {
+    const carried = { ...noEffect, label: `${noEffect.label} (earlier sub-goal)` };
+    const { result } = await decide(doneAnswers(), { history: [carried] });
+    expect(result.outcome).toBe("done");
+  });
+
+  it("keeps DONE when the runner-up is below 0.15", async () => {
+    const { result } = await decide({ ...doneAnswers(0.1), click_target: choice("4", 0.9) }, { history: [noEffect] });
+    expect(result.outcome).toBe("done");
+  });
+});
+
+describe("goal clauses", () => {
+  it("ignores Done when / Does not count text when counting units", () => {
+    expect(goalWantsMultipleUnits("Add a lamp to the cart. Done when: 2 items are in the cart.")).toBe(false);
+    expect(goalWantsMultipleUnits("Add 2 lamps to the cart. Done when: 2 items are in the cart.")).toBe(true);
+  });
+});
+
+describe("DONE_WHEN_RULE", () => {
+  it("is in the step rules and the Luna instructions", () => {
+    const { questions } = buildUltrafastQuestions("g", FORM, undefined, { luna: true, history: [] });
+    expect(JSON.stringify(questions)).toContain(DONE_WHEN_RULE);
+    const plain = buildUltrafastQuestions("g", FORM, undefined);
+    expect(JSON.stringify(plain.questions)).toContain("Done when");
   });
 });

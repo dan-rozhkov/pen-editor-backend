@@ -19,6 +19,7 @@ import {
   hasProbabilities,
   historyEntryLandedNoEffect,
   isCarriedOverEntry,
+  stripGoalClauses,
   peakProbability,
   resolveTypedPlaceholder,
   stripCarriedOverSuffix,
@@ -63,6 +64,9 @@ export const COMMIT_EFFECT_RULE =
 /** DONE for a goal that adds to a cart or submits something needs proof (prompt guidance only). */
 export const DONE_COMMIT_RULE =
   "For a goal that adds to a cart or submits something, answer DONE only after you see that the add/submit took effect (an effect note, a changed button or counter, a confirmation).";
+
+export const DONE_WHEN_RULE =
+  "If the goal states 'Done when: …', answer DONE only when that condition is visible; 'Does not count' items never satisfy it.";
 
 // questions.py NEXT_ACTION, adapted to this loop's operation set.
 const NEXT_ACTION_RULES = [
@@ -140,6 +144,7 @@ function safeModalName(modal: string | undefined): string | undefined {
 function lunaInstructions(goal: string, head?: TargetHead, vision = false, calendar = false, modal = false): string {
   return (
     `Goal: ${goal}\n\nChoose only the next single step. Do not repeat an action that already had no effect or was just repeated.\n${COMMIT_EFFECT_RULE}\n${DONE_COMMIT_RULE}` +
+    (head ? "" : `\n${DONE_WHEN_RULE}`) +
     (head ? `\nChoose the target element for the operation ${head}.` : "") +
     (calendar ? `\n${CALENDAR_HINT}` : "") +
     (modal ? `\n${MODAL_NOTE}` : "") +
@@ -157,6 +162,53 @@ export const TERMINAL_MIN_PEAK = 0.5;
 export const LUNA_TERMINAL_MARGIN = 0.15;
 
 const TERMINAL_OPERATIONS = new Set(["DONE", "BLOCKED"]);
+
+/** Offered operations that are neither DONE nor BLOCKED, most probable first. */
+function rankedNonTerminal(answer: SystemOneChoiceAnswer, offered: string[]): string[] {
+  return offered
+    .filter((op) => !TERMINAL_OPERATIONS.has(op))
+    .sort((a, b) => (answer.probabilities[b] ?? 0) - (answer.probabilities[a] ?? 0));
+}
+
+/** The most probable offered operation that is neither DONE nor BLOCKED. */
+function bestNonTerminal(answer: SystemOneChoiceAnswer, offered: string[]): string | undefined {
+  return rankedNonTerminal(answer, offered)[0];
+}
+
+/** DONE right after one action that changed nothing yields to a runner-up at
+ * least this likely. */
+export const DONE_AFTER_NO_EFFECT_MIN_RUNNER_UP = 0.15;
+
+/** The label of the control a history entry acted on (empty when none). */
+function entryTargetLabel(entry: BrowseStepInput["history"][number]): string {
+  if (entry.operation === "TYPE_TEXT") return normalize(parseTypedLabel(entry.label)?.fieldLabel ?? "");
+  return normalize(clickTargetLabel(entry.label));
+}
+
+/** True when the last own entry landed with no effect and the one before it
+ * was not the same operation on the same target (two in a row: allow DONE so
+ * the sub-goal cannot loop). */
+function justHadOneNoEffect(history: BrowseStepInput["history"]): boolean {
+  const last = lastOwnEntry(history);
+  if (!last || !historyEntryLandedNoEffect(last)) return false;
+  const prev = history[history.length - 2];
+  if (!prev || !historyEntryLandedNoEffect(prev) || prev.operation !== last.operation) return true;
+  return entryTargetLabel(prev) !== entryTargetLabel(last);
+}
+
+/** True when doing `op` on `el` would redo the last (no-effect) entry. */
+function redoesEntry(
+  op: string,
+  el: BrowseStepElement | undefined,
+  entry: BrowseStepInput["history"][number],
+): boolean {
+  if (op !== entry.operation) return false;
+  if (op.startsWith("SCROLL_")) return true;
+  if (!el) return false;
+  if (entry.index !== undefined && entry.index === el.index) return true;
+  const label = normalize(el.label);
+  return label !== "" && label === entryTargetLabel(entry);
+}
 
 /** The operation to act on: Jev's pick, unless it is an unconfident
  * DONE/BLOCKED — then the most probable operation that is neither. */
@@ -178,9 +230,7 @@ function chooseOperation(
       .sort((a, b) => b - a);
     if (peakProbability(answer) - (others[0] ?? 0) >= LUNA_TERMINAL_MARGIN) return { operation: answer.choice, demoted: false };
   }
-  const runnerUp = offered
-    .filter((op) => !TERMINAL_OPERATIONS.has(op))
-    .sort((a, b) => (answer.probabilities[b] ?? 0) - (answer.probabilities[a] ?? 0))[0];
+  const runnerUp = bestNonTerminal(answer, offered);
   return runnerUp && (answer.probabilities[runnerUp] ?? 0) > 0
     ? { operation: runnerUp, demoted: true }
     : { operation: answer.choice, demoted: false };
@@ -316,7 +366,7 @@ function goalTokens(goal: string): Set<string> {
 export function capChoices(entries: Map<string, Target>, limit: number, goal: string): Map<string, Target> {
   if (entries.size <= limit) return entries;
   const all = [...entries];
-  const wanted = goalTokens(goal);
+  const wanted = goalTokens(stripGoalClauses(goal));
   const matches = (t: Target) =>
     t.option !== undefined && foldWords(t.option).split(" ").some((w) => wanted.has(w));
   const roundRobin = (list: [string, Target][], n: number): [string, Target][] => {
@@ -592,7 +642,7 @@ export function buildUltrafastQuestions(
       criteria: operations,
       instructions: luna
         ? lunaInstructions(goal, undefined, vision, calendarOpen, modal !== undefined)
-        : { goal, rules: NEXT_ACTION_RULES, ...(modal ? { dialog_note: MODAL_NOTE } : {}), ...(vision ? SCREENSHOT_NOTE : {}) },
+        : { goal, rules: `${NEXT_ACTION_RULES}\n${DONE_WHEN_RULE}`, ...(modal ? { dialog_note: MODAL_NOTE } : {}), ...(vision ? SCREENSHOT_NOTE : {}) },
     },
   };
   for (const head of Object.keys(targets) as TargetHead[]) {
@@ -771,7 +821,8 @@ function looksPlural(word: string): boolean {
  * bottles", "two bottles of water", "x2", "3 pcs", "quantity 2"). Numbers that
  * are attributes (price, size, capacity, party size, year, model number) do
  * not count. */
-export function goalWantsMultipleUnits(goal: string): boolean {
+export function goalWantsMultipleUnits(rawGoal: string): boolean {
+  const goal = stripGoalClauses(rawGoal);
   if (QUANTIFIER_WORD_RE.test(goal)) return true;
   for (const re of [MULTIPLIER_AFTER_RE, MULTIPLIER_BEFORE_RE]) {
     for (const m of goal.matchAll(re)) if (Number(m[1]) >= 2) return true;
@@ -906,15 +957,30 @@ export async function decideBrowseStepUltrafast(
   if (!opAnswer || !operations.includes(opAnswer.choice)) {
     return finish(retry("malformed operation answer", model));
   }
-  const chosen = chooseOperation(opAnswer, operations, luna);
-  const operation = chosen.operation as BrowseOperation;
-  const confidence = chosen.demoted ? (opAnswer.probabilities[operation] ?? 0) : opAnswer.confidence;
+  let chosen = chooseOperation(opAnswer, operations, luna);
   gates.push({
     head: "op",
     peak: peakProbability(opAnswer),
     threshold: TERMINAL_OPERATIONS.has(opAnswer.choice) ? TERMINAL_MIN_PEAK : 0,
     jevPick: opAnswer.choice,
   });
+  if (chosen.operation === "DONE" && justHadOneNoEffect(input.history)) {
+    const lastEntry = lastOwnEntry(input.history)!;
+    const runnerUp = rankedNonTerminal(opAnswer, operations).find((op) => {
+      if ((opAnswer.probabilities[op] ?? 0) < DONE_AFTER_NO_EFFECT_MIN_RUNNER_UP) return false;
+      const h = targetHeadFor(op as BrowseOperation);
+      const a = h ? choiceAnswer(answers[TARGET_QUESTION_ID[h]]) : null;
+      const t = h && a ? targets[h].get(a.choice) : undefined;
+      return !redoesEntry(op, t ? elements.find((e) => e.index === t.index) : undefined, lastEntry);
+    });
+    if (runnerUp) {
+      const runnerUpP = opAnswer.probabilities[runnerUp] ?? 0;
+      gates.push({ head: "done-after-no-effect", peak: runnerUpP, threshold: DONE_AFTER_NO_EFFECT_MIN_RUNNER_UP, jevPick: "DONE" });
+      chosen = { operation: runnerUp, demoted: true };
+    }
+  }
+  const operation = chosen.operation as BrowseOperation;
+  const confidence = chosen.demoted ? (opAnswer.probabilities[operation] ?? 0) : opAnswer.confidence;
 
   if (operation === "DONE") return finish({ outcome: "done", operation, confidence, model });
   if (operation === "BLOCKED") return finish(blocked("Jev chose BLOCKED", model, confidence));
@@ -961,9 +1027,8 @@ export async function decideBrowseStepUltrafast(
   if (luna && targetAnswer?.choice === NONE_KEY) {
     // The model says no candidate fits this operation: take its next-best
     // operation that still has a real target instead.
-    const alt = operations
-      .filter((op) => op !== operation && !TERMINAL_OPERATIONS.has(op) && (opAnswer.probabilities[op] ?? 0) >= LUNA_FALLBACK_MIN_PROBABILITY)
-      .sort((a, b) => (opAnswer.probabilities[b] ?? 0) - (opAnswer.probabilities[a] ?? 0))
+    const alt = rankedNonTerminal(opAnswer, operations)
+      .filter((op) => op !== operation && (opAnswer.probabilities[op] ?? 0) >= LUNA_FALLBACK_MIN_PROBABILITY)
       .find((op) => {
         const h = targetHeadFor(op as BrowseOperation);
         const a = h ? choiceAnswer(answers[TARGET_QUESTION_ID[h]]) : null;

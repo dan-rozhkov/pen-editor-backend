@@ -37,7 +37,7 @@ export const BROWSE_PLAN_INSTRUCTIONS = [
   "- Keep the order of the goal. Return at most 12 sub-goals.",
   "- Each sub-goal is self-contained: a person who reads only that sub-goal knows what to do.",
   "- Each sub-goal names its concrete item or value explicitly. Write search terms in the language of the site when the goal implies it.",
-  "- Each sub-goal says what \"done\" means for it (for example \"...and add it to the cart\").",
+  "- Each sub-goal ends with a short checkable condition: \"Done when: <visible state that proves this sub-goal is complete>.\" When there is an obvious near-miss, add \"Does not count: <look-alike that must not be accepted>.\" Examples: \"Done when: a confirmation message is visible.\"; \"Done when: the price of the item is visible on the page.\"; \"Done when: the item appears in the cart. Does not count: an accessory for that item.\" Keep the clause short; the whole sub-goal stays under 1000 characters.",
   "- Copy every shared constraint from the goal into each sub-goal it applies to (budget, size, brand, quantity, site, delivery place).",
   "- Setup that happens once (open the site, accept cookies, pass a log-in wall) goes into the FIRST sub-goal only.",
   "- When the goal asks for a final report (for example \"list what is in the cart with prices and the total\"), make it its own LAST sub-goal.",
@@ -65,7 +65,14 @@ export function buildPlanPrompt(promptGoal: string, url: string | undefined): st
 export function normalizeSubgoals(raw: readonly string[]): string[] | null {
   const out: string[] = [];
   for (const item of raw) {
-    const text = item.trim();
+    let text = item.trim();
+    // Too long: drop the trailing "Does not count: …", then "Done when: …"
+    // clause first (they are optional extras, not the task itself).
+    for (const marker of ["Does not count:", "Done when:"]) {
+      if (text.length <= MAX_SUBGOAL_CHARS) break;
+      const at = text.lastIndexOf(marker);
+      if (at > 0) text = text.slice(0, at).trimEnd();
+    }
     if (text.length > MAX_SUBGOAL_CHARS) return null;
     if (text && !out.includes(text)) out.push(text);
     if (out.length >= MAX_SUBGOALS) break;
