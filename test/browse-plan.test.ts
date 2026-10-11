@@ -9,7 +9,7 @@ vi.mock("../src/ai/provider.js", async (importOriginal) =>
 import { createModel, jsonModel, mockJsonModelOnce } from "./structuredModelFakes.js";
 
 const { buildApp } = await import("../src/app.js");
-const { MAX_SUBGOALS, MAX_SUBGOAL_CHARS, MAX_GOAL_CHARS } = await import("../src/ai/browsePlan.js");
+const { MAX_SUBGOALS, MAX_SUBGOAL_CHARS, MAX_GOAL_CHARS, buildPlanPrompt } = await import("../src/ai/browsePlan.js");
 
 const GOAL = "Add a tent, a sleeping bag and a pad to the cart";
 
@@ -40,6 +40,12 @@ describe("POST /api/browse/plan", () => {
   ])("400s on %s", async (_name, payload) => {
     expect((await postPlan(payload)).statusCode).toBe(400);
     expect(createModel).not.toHaveBeenCalled();
+  });
+
+  it("lets the planner choose the items when the goal asks it to, but never personal data", () => {
+    const prompt = buildPlanPrompt("Build a cart with everything needed for a 2-day hike", undefined);
+    expect(prompt).toMatch(/goal may ask you to choose them/);
+    expect(prompt).toMatch(/Never invent personal data/);
   });
 
   it("returns a single-flow goal unchanged", async () => {
