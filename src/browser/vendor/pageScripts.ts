@@ -1,4 +1,4 @@
-// VENDORED from pen-editor-desktop/src/main/browser/pageScripts.ts @ 7b093f4.
+// VENDORED from pen-editor-desktop/src/main/browser/pageScripts.ts @ 273dbea.
 // Do not edit: regenerate with `npm run browser:sync` (scripts/sync-browser-vendor.mjs).
 // ---- end of vendor header ----
 // Scripts injected into a browser tab's real page via
@@ -94,6 +94,41 @@ const DEEP_QUERY_HELPER_JS = `
  * ancestor that merely encloses it.
  */
 /**
+ * THE text -> label/value producer: `penCleanText(root)` is textContent minus
+ * what is never visible text — <style>/<script>/<noscript>/<template>
+ * subtrees (an inline CSS comment used to become a button's label) and the
+ * cursor / marks overlays. Fast path: a node with none of those inside gives
+ * its textContent straight back. Otherwise a bounded walk: the element
+ * budget limits how many ELEMENT subtrees are entered, but direct text nodes
+ * are always collected ("<button><svg>…3500 nodes…</svg>Download</button>").
+ */
+const TEXT_CLEAN_JS = `
+  var PEN_NON_TEXT_TAGS = { STYLE: 1, SCRIPT: 1, NOSCRIPT: 1, TEMPLATE: 1 };
+  function penCleanText(root) {
+    if (!root) return "";
+    if (!root.querySelector || !root.querySelector("style, script, noscript, template, [data-pen-cursor], [data-pen-marks]")) {
+      return root.textContent || "";
+    }
+    var parts = [];
+    var budget = 3000;
+    (function walk(n) {
+      for (var c = n.firstChild; c; c = c.nextSibling) {
+        if (c.nodeType === 3) {
+          parts.push(c.nodeValue);
+        } else if (c.nodeType === 1) {
+          if (PEN_NON_TEXT_TAGS[String(c.tagName).toUpperCase()]) continue;
+          if (c.hasAttribute("data-pen-cursor") || c.hasAttribute("data-pen-marks")) continue;
+          if (budget <= 0) continue;
+          budget--;
+          walk(c);
+        }
+      }
+    })(root);
+    return parts.join("");
+  }
+`;
+
+/**
  * The one "visible without the viewport-margin clause" predicate (the test
  * SNAPSHOT_JS's isVisible applies, minus its margin): FIND_BY_TEXT_JS,
  * relocation and the radio/checkbox label proxy all use this copy.
@@ -126,6 +161,7 @@ const BOX_VISIBLE_JS = `
  */
 const FIND_BY_TEXT_JS = `
   ${DEEP_QUERY_HELPER_JS}
+  ${TEXT_CLEAN_JS}
   ${BOX_VISIBLE_JS}
   function findByText(needle) {
     var wanted = needle.trim().toLowerCase();
@@ -133,7 +169,7 @@ const FIND_BY_TEXT_JS = `
     var clickableSelector = "a, button, [role='button'], input, select, textarea, [onclick]";
 
     function textOf(el) {
-      return (el.textContent || "").trim().toLowerCase();
+      return penCleanText(el).trim().toLowerCase();
     }
 
     function innermost(elements) {
@@ -280,6 +316,7 @@ const FIND_BY_TEXT_JS = `
  * itself (once).
  */
 const POPUP_OPTION_JS = `
+  ${TEXT_CLEAN_JS}
   var PEN_POPUP_ITEM_CAP = 100;
   var PEN_POPUP_OWNER_CAP = 8;
   var PEN_POPUP_SCAN_CAP = 1500;
@@ -412,7 +449,7 @@ const POPUP_OPTION_JS = `
       if (st.display === "none" || st.visibility === "hidden" || parseFloat(st.opacity) === 0) continue;
       if (st.pointerEvents === "none" || st.cursor === "not-allowed") continue;
       if (!penPopupHasBox(el) || penTooSmallToShow(el)) continue;
-      var text = String(el.getAttribute("aria-label") || el.textContent || "").toLowerCase();
+      var text = String(el.getAttribute("aria-label") || penCleanText(el)).toLowerCase();
       if (!prefix.test(text)) continue;
       hits.push(el);
     }
@@ -519,7 +556,7 @@ const POPUP_OPTION_JS = `
       if (!opts.length) continue;
       roots.push(t);
       for (var oi = 0; oi < opts.length; oi++) {
-        var label = (opts[oi].getAttribute("aria-label") || opts[oi].textContent || "").trim();
+        var label = (opts[oi].getAttribute("aria-label") || penCleanText(opts[oi])).trim();
         if (label) labels.push(label);
       }
     }
@@ -561,7 +598,7 @@ const POPUP_OPTION_JS = `
       // A role-less wrapper around a real control (a <label> around a
       // checkbox) is not an item: the inner control is listed as itself.
       if (explicit !== "option" && el.querySelector(PEN_POPUP_CONTROL_SELECTOR)) continue;
-      var label = (el.getAttribute("aria-label") || el.getAttribute("title") || el.textContent || "").trim();
+      var label = (el.getAttribute("aria-label") || el.getAttribute("title") || penCleanText(el)).trim();
       if (!label) continue;
       signals.push(el);
       strength.set(el, strong ? 3 : tabbable ? 2 : 1);
@@ -627,7 +664,7 @@ const POPUP_OPTION_JS = `
     var all = layer.querySelectorAll("*");
     var n = Math.min(all.length, PEN_POPUP_SCAN_CAP);
     for (var i = 0; i < n; i++) {
-      if (labels.indexOf((all[i].textContent || "").trim()) >= 0) return true;
+      if (labels.indexOf(penCleanText(all[i]).trim()) >= 0) return true;
     }
     return false;
   }
@@ -973,6 +1010,7 @@ const ARIA_SLIDER_HELPER_JS = `
  * reported and silently never match.
  */
 const LABEL_HELPER_JS = `
+  ${TEXT_CLEAN_JS}
   ${ARIA_SLIDER_HELPER_JS}
 
   // Review finding 7: a machine-generated id (React useId's ":r3:", Ember's
@@ -1006,7 +1044,7 @@ const LABEL_HELPER_JS = `
   function accessibleNameOf(el) {
     var aria = el.getAttribute("aria-label");
     if (aria && aria.trim()) return aria.trim();
-    var text = (el.textContent || "").trim().replace(/\\s+/g, " ");
+    var text = penCleanText(el).trim().replace(/\\s+/g, " ");
     if (text) return text;
     var title = el.getAttribute("title");
     if (title && title.trim()) return title.trim();
@@ -1025,7 +1063,7 @@ const LABEL_HELPER_JS = `
         if (!ids[i]) continue;
         var ref = document.getElementById(ids[i]);
         if (!ref) continue;
-        var refText = (ref.textContent || "").trim().replace(/\\s+/g, " ");
+        var refText = penCleanText(ref).trim().replace(/\\s+/g, " ");
         if (refText) combined.push(refText);
       }
       var joined = combined.join(" ").trim();
@@ -1046,14 +1084,14 @@ const LABEL_HELPER_JS = `
         var clone = el.labels[li].cloneNode(true);
         var controls = clone.querySelectorAll("input, select, textarea, button");
         for (var ci = 0; ci < controls.length; ci++) controls[ci].remove();
-        var labelText = (clone.textContent || "").trim().replace(/\\s+/g, " ");
+        var labelText = penCleanText(clone).trim().replace(/\\s+/g, " ");
         if (labelText) labelTexts.push(labelText);
       }
       var labelJoined = labelTexts.join(" ").trim();
       if (labelJoined) return labelJoined;
     }
 
-    var text = (el.textContent || "").trim().replace(/\\s+/g, " ");
+    var text = penCleanText(el).trim().replace(/\\s+/g, " ");
     // A calendar day or a numbered cell reads "14" (or "14$34" with a price)
     // while its real name — "Saturday, November 14, 2026" — sits on a child.
     // Bare digits there made every month's 14th the same label, and the
@@ -1142,7 +1180,7 @@ const LABEL_HELPER_JS = `
     for (var a = 0; a < ancestors.length; a++) {
       if ((ancestors[a].tagName || "").toLowerCase() !== "fieldset") continue;
       var legend = ancestors[a].querySelector(":scope > legend");
-      var legendText = legend ? clean(legend.textContent) : "";
+      var legendText = legend ? clean(penCleanText(legend)) : "";
       if (legendText) return legendText;
     }
     for (var b = 0; b < ancestors.length; b++) {
@@ -1157,7 +1195,7 @@ const LABEL_HELPER_JS = `
         var gParts = [];
         for (var g = 0; g < gIds.length; g++) {
           var gRef = gIds[g] ? document.getElementById(gIds[g]) : null;
-          var gText = gRef ? clean(gRef.textContent) : "";
+          var gText = gRef ? clean(penCleanText(gRef)) : "";
           if (gText) gParts.push(gText);
         }
         if (gParts.length) return gParts.join(" ").slice(0, 50);
@@ -2794,6 +2832,7 @@ export const CLICK_RESOLVE_JS = `(() => {
  * and returns true; false leaves nothing stamped.
  */
 const DISMISS_DIALOG_HELPER_JS = `
+  ${TEXT_CLEAN_JS}
   function penDialogOf(node) {
     var cur = node;
     while (cur) {
@@ -2818,7 +2857,7 @@ const DISMISS_DIALOG_HELPER_JS = `
     var control = el.closest ? el.closest("button, [role='button'], a, input[type='button'], input[type='submit']") || el : el;
     var aria = (control.getAttribute("aria-label") || "").trim().toLowerCase();
     if (/(^|[^\\p{L}\\p{N}])close(?![\\p{L}\\p{N}])/u.test(aria)) return true;
-    var name = (aria || control.value || control.textContent || control.getAttribute("title") || "")
+    var name = (aria || control.value || penCleanText(control) || control.getAttribute("title") || "")
       .toString().replace(/\\s+/g, " ").trim().toLowerCase();
     if (!name) return false;
     if (name === "×" || name === "✕" || name === "✖" || name === "✗") return true;
@@ -3427,7 +3466,7 @@ export const SNAPSHOT_JS = `(() => {
     // report it as the value, or "One way" reads as an unset control that
     // still needs setting.
     if (ariaRole === "combobox" && tag !== "input" && tag !== "select" && tag !== "textarea") {
-      var shown = (el.textContent || "").trim().replace(/\\s+/g, " ");
+      var shown = penCleanText(el).trim().replace(/\\s+/g, " ");
       if (shown) entry.value = shown.slice(0, 100);
     }
     if (tag !== "input") {
@@ -3593,7 +3632,7 @@ export const SNAPSHOT_JS = `(() => {
         var lbParts = [];
         for (var lbi = 0; lbi < lbIds.length; lbi++) {
           var lbRef = lbIds[lbi] ? document.getElementById(lbIds[lbi]) : null;
-          var lbText = lbRef ? (lbRef.textContent || "").trim().replace(/\\s+/g, " ") : "";
+          var lbText = lbRef ? penCleanText(lbRef).trim().replace(/\\s+/g, " ") : "";
           if (lbText) lbParts.push(lbText);
         }
         text = lbParts.join(" ");
@@ -3601,7 +3640,7 @@ export const SNAPSHOT_JS = `(() => {
     }
     if (!text) {
       var heading = m.querySelector("h1, h2, h3, h4, h5, h6");
-      if (heading) text = (heading.textContent || "").trim().replace(/\\s+/g, " ");
+      if (heading) text = penCleanText(heading).trim().replace(/\\s+/g, " ");
     }
     return text.slice(0, 80);
   }
@@ -3790,10 +3829,10 @@ export const SNAPSHOT_JS = `(() => {
     // Unlabelled icon buttons are exactly what cookie banners are made of —
     // still include the element, labelled by its tag and position, rather
     // than dropping it.
-    var label = item.label ? item.label.slice(0, PEN_LABEL_MAX) : item.tag + " #" + idx;
+    var label = item.label ? item.label.slice(0, PEN_LABEL_MAX) : String(item.tag).slice(0, 40) + " #" + idx;
     item.el.setAttribute("data-pen-snap", snapshotId + ":" + idx);
-    var out = { index: idx, tag: item.tag, label: label, ops: item.ops };
-    if (item.role) out.role = item.role;
+    var out = { index: idx, tag: String(item.tag).slice(0, 40), label: label, ops: item.ops };
+    if (item.role) out.role = String(item.role).slice(0, 60);
     if (item.options) out.options = item.options;
     if (item.value !== undefined) out.value = item.value;
     if (item.hasValue !== undefined) out.hasValue = item.hasValue;
@@ -3882,10 +3921,10 @@ export const SNAPSHOT_JS = `(() => {
     if (aria && aria.trim()) return aria.trim().slice(0, 60);
     var heading = el.querySelector("h1, h2, h3, h4, h5, h6");
     if (heading) {
-      var headingText = (heading.textContent || "").trim().replace(/\\s+/g, " ");
+      var headingText = penCleanText(heading).trim().replace(/\\s+/g, " ");
       if (headingText) return headingText.slice(0, 60);
     }
-    var text = (el.textContent || "").trim().replace(/\\s+/g, " ");
+    var text = penCleanText(el).trim().replace(/\\s+/g, " ");
     if (text) return text.slice(0, 60);
     return tagOf(el) + " (scrollable)";
   }

@@ -1,4 +1,4 @@
-// VENDORED from pen-editor-desktop/src/main/browser/controller.ts @ 7b093f4.
+// VENDORED from pen-editor-desktop/src/main/browser/controller.ts @ 273dbea.
 // Do not edit: regenerate with `npm run browser:sync` (scripts/sync-browser-vendor.mjs).
 // ---- end of vendor header ----
 // The built-in browser's command surface (design doc
@@ -706,22 +706,30 @@ function errorResult(message: string): BrowserCommandResult {
   return { error: message };
 }
 
+const FRAME_LABEL_MAX = 80;
+const FRAME_NAME_MAX = 60;
+
 /** Wave 3 reliability, item 2: the `frame: "…"` label stamped onto every
- * element/text-digest entry that came from a child frame — the frame's own
- * `document.title` (from that frame's own SNAPSHOT_JS/READ_JS/FIND_IMAGES_JS
- * result, when it returned a non-blank one) first, else the iframe's `name`
- * attribute, else its resolved URL's host, else the raw url as a last
- * resort. */
+ * element/text-digest entry that came from a child frame. Order: the frame's
+ * own `document.title` (from its own SNAPSHOT_JS/READ_JS/FIND_IMAGES_JS
+ * result, when non-blank), else the iframe's `name` when it is a VALID name
+ * (<= FRAME_NAME_MAX chars, not starting with `{` or `[`, no "://" — the
+ * `name` attribute is page-controlled and an ad iframe's was a 45 KB JSON
+ * blob; short digit-only names are fine), else its URL's host, else the raw
+ * url. Always whitespace-collapsed and capped at FRAME_LABEL_MAX, since it
+ * travels in every element-table entry. */
 function frameLabel(frame: { url: string; name: string }, title?: string): string {
-  if (title && title.trim()) return title.trim();
-  if (frame.name && frame.name.trim()) return frame.name.trim();
+  const cap = (value: string): string => value.trim().replace(/\s+/g, " ").slice(0, FRAME_LABEL_MAX);
+  if (title && title.trim()) return cap(title);
+  const name = (frame.name ?? "").trim();
+  if (name && name.length <= FRAME_NAME_MAX && !/^[{[]/.test(name) && !name.includes("://")) return cap(name);
   try {
     const host = new URL(frame.url).host;
-    if (host) return host;
+    if (host) return cap(host);
   } catch {
     // fall through
   }
-  return frame.url || "frame";
+  return cap(frame.url || "") || "frame";
 }
 
 function toMessage(err: unknown): string {
@@ -4411,6 +4419,10 @@ interface ElementFingerprint {
  * `"<tag> #<index>"` (not a property of the node, so useless for matching). */
 function fingerprintOf(el: Record<string, unknown>): ElementFingerprint | null {
   if (typeof el.index !== "number" || typeof el.tag !== "string" || typeof el.label !== "string") return null;
+  // SNAPSHOT_JS caps tag at 40 and role at 60: a value at the cap may have
+  // been truncated, so relocation (which compares the real node's tag/role)
+  // could never match it. No fingerprint = fail closed.
+  if (el.tag.length >= 40 || (typeof el.role === "string" && el.role.length >= 60)) return null;
   if (!Array.isArray(el.ops) || el.ops.length === 0) return null;
   if (el.label === "" || el.label === `${el.tag} #${el.index}`) return null;
   const fp: ElementFingerprint = { tag: el.tag, label: el.label };
