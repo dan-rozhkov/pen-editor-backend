@@ -577,21 +577,6 @@ describe("OpenAI Decisions (Luna) profile", () => {
     expect(blocked.result).toMatchObject({ outcome: "act", operation: "CLICK", index: 5 });
   });
 
-  it("demotes a Luna DONE below the minimum peak even with a clear lead", async () => {
-    const { result } = await decideLuna({
-      operation: choice("DONE", 0.25, { probabilities: { DONE: 0.25, CLICK: 0.08, SCROLL_DOWN: 0.05 } }),
-      click_target: choice("5", 0.9),
-    });
-    expect(result).toMatchObject({ outcome: "act", operation: "CLICK", index: 5 });
-  });
-
-  it("keeps a Luna DONE at 0.35 that leads the runner-up by the margin", async () => {
-    const { result } = await decideLuna({
-      operation: choice("DONE", 0.35, { probabilities: { DONE: 0.35, CLICK: 0.15, SCROLL_DOWN: 0.05 } }),
-    });
-    expect(result.outcome).toBe("done");
-  });
-
   it("falls back to the next-best operation when the target is 'none'", async () => {
     const { result } = await decideLuna({
       operation: choice("TYPE_TEXT", 0.6, { probabilities: { TYPE_TEXT: 0.6, CLICK: 0.3, DONE: 0.1 } }),

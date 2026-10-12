@@ -161,11 +161,6 @@ export const TERMINAL_MIN_PEAK = 0.5;
 /** Luna: DONE/BLOCKED stands when it leads the runner-up by this much. */
 export const LUNA_TERMINAL_MARGIN = 0.15;
 
-/** Luna's margin exception also needs this absolute peak: a correct Luna DONE
- * peaks at 0.3-0.4. Live run: a false DONE at peak 0.2 after 6 scrolls passed
- * the margin rule. Below it the normal runner-up demotion applies. */
-export const LUNA_DONE_MIN_PEAK = 0.3;
-
 const TERMINAL_OPERATIONS = new Set(["DONE", "BLOCKED"]);
 
 /** Offered operations that are neither DONE nor BLOCKED, most probable first. */
@@ -258,10 +253,7 @@ function chooseOperation(
       .filter((op) => op !== answer.choice)
       .map((op) => answer.probabilities[op] ?? 0)
       .sort((a, b) => b - a);
-    if (
-      peakProbability(answer) >= LUNA_DONE_MIN_PEAK &&
-      peakProbability(answer) - (others[0] ?? 0) >= LUNA_TERMINAL_MARGIN
-    ) return { operation: answer.choice, demoted: false };
+    if (peakProbability(answer) - (others[0] ?? 0) >= LUNA_TERMINAL_MARGIN) return { operation: answer.choice, demoted: false };
   }
   const runnerUp = bestNonTerminal(answer, offered);
   return runnerUp && (answer.probabilities[runnerUp] ?? 0) > 0
