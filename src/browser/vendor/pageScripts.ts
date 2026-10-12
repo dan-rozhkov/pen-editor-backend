@@ -1,4 +1,4 @@
-// VENDORED from pen-editor-desktop/src/main/browser/pageScripts.ts @ 6dfac76.
+// VENDORED from pen-editor-desktop/src/main/browser/pageScripts.ts @ 329b87f.
 // Do not edit: regenerate with `npm run browser:sync` (scripts/sync-browser-vendor.mjs).
 // ---- end of vendor header ----
 // Scripts injected into a browser tab's real page via
@@ -196,10 +196,488 @@ const FIND_BY_TEXT_JS = `
 `;
 
 /**
+ * Option-like items of OPEN POPUPS, whatever library drew them. Custom
+ * dropdowns routinely render each visible option as a role-less
+ * <div aria-selected> (or a bare <li style="cursor:pointer">) in a floating
+ * layer, while their only role=option nodes sit in a 0x0 a11y-only mirror
+ * listbox (the motivating case: Ant Design Select). Without this an open
+ * select showed no options and the agent stalled on "no candidate fits
+ * CLICK". A page-wide "aria-selected without a role" rule was rejected: it
+ * turned selected table rows and carousel slides into options and hid the
+ * controls inside them. So the rule is scoped to an OPEN POPUP, with NO
+ * library class names. A missed option is better than an invented one on a
+ * page with no open list, so every step errs on the side of "not a popup":
+ *
+ *  1. Owners: visible elements with aria-expanded="true" that are
+ *     role=combobox, carry aria-haspopup (listbox/menu/true/tree/grid/dialog)
+ *     or sit inside a role=combobox wrapper.
+ *  2. An owner's popup is, in order:
+ *     a. its aria-controls/aria-owns target (on it or its combobox wrapper)
+ *        when that target is rendered, not too small to show (>= 4x4px, no
+ *        overflow-clipping ancestor under 4px, no clip:rect(0,0,0,0)) and
+ *        holds an item OR any interactive content (role=menuitem/option/
+ *        treeitem/gridcell, a[href], button, input...). It IS the popup:
+ *        there is no fallback, even with zero role-less items (the ordinary
+ *        snapshot rules list its role-bearing controls). Strong signal.
+ *     b. else, ONLY for listbox-type owners (role=combobox, inside a
+ *        role=combobox wrapper, or aria-haspopup listbox/true/tree/grid;
+ *        never aria-haspopup=menu/dialog, whose popups use roles) the
+ *        floating layer (computed position fixed/absolute, not containing
+ *        the owner, non-zero box, not a wall >= 85% of the viewport in both
+ *        axes) ADJACENT to the owner or its combobox wrapper: vertical gap
+ *        <= 24px, and its left edge within 32px of the owner's left edge or
+ *        overlapping >= 50% of the owner's width. A layer that is/contains a
+ *        dialog (role=dialog/alertdialog, aria-modal, <dialog>) or an h1-h3,
+ *        or contains a text input outside the owner, is never a popup. Layers
+ *        are looked for among the descendants (depth <= 3, <= 300 nodes per
+ *        base) of <body>, of the owner's dialog and of its three nearest
+ *        ancestors; a layer must hold an item to be chosen, nearest first
+ *        (smaller area on a tie).
+ *     c. Mirror anchoring (strong signal, wins over geometry): when the owner
+ *        has an aria-controls listbox that is a MIRROR (rendered but too
+ *        small to show, holding role=option) and a candidate layer (dialog/
+ *        heading exclusions and the wall rule still apply, adjacency is
+ *        relaxed to <= 400px) contains an element whose trimmed text equals
+ *        one of the mirror options' labels, that layer is the popup.
+ *  3. Items inside a popup: visible, non-aria-hidden, not aria-disabled, not
+ *     pointer-events:none / cursor:not-allowed, with a visible text or label,
+ *     and a signal: aria-selected, role=option, tabindex, or computed
+ *     cursor:pointer that STARTS at the element (its parent's cursor, the
+ *     popup root included, is not pointer: children inherit it, so a pointer
+ *     root gives its direct children only the other signals). A role-less
+ *     item must also be shown (>= 4px); an explicit role=option is not
+ *     size-checked (open/scale transitions). An element with another role is
+ *     never an item; natively interactive tags are already candidates, and an
+ *     element that CONTAINS a native control or an interactive role (a
+ *     <label> around a checkbox) is not an item either: the inner control is
+ *     listed as itself. Nested chains collapse to the outermost element,
+ *     except that an element holding two or more separate item branches, any
+ *     descendant item with a stronger signal (role=option / aria-selected >
+ *     tabindex > inherited cursor), or (when tabindex is its ONLY signal) any
+ *     item descendant at all, is a container (a tabindex scroll wrapper) and
+ *     yields to them.
+ *  4. Mirror options: an explicit role=option inside a mirror listbox is
+ *     dropped from the snapshot only when its owner has a popup with items
+ *     elsewhere (penIsMirrorOption). Every other role=option is listed
+ *     whenever the ordinary visibility test passes.
+ *
+ * Bounded: <= 8 owners, <= 1500 elements scanned per popup root, <= 100 items
+ * in all; getComputedStyle runs only inside popups. Shared by SNAPSHOT_JS,
+ * FIND_BY_SNAPSHOT_JS and AUTOCOMPLETE_STATE_JS so the three agree on what an
+ * option is. Light DOM only inside a popup (owners are found through open
+ * shadow roots). The embedding script must include DEEP_QUERY_HELPER_JS
+ * itself (once).
+ */
+const POPUP_OPTION_JS = `
+  var PEN_POPUP_ITEM_CAP = 100;
+  var PEN_POPUP_OWNER_CAP = 8;
+  var PEN_POPUP_SCAN_CAP = 1500;
+  var PEN_POPUP_LAYER_NODE_CAP = 300;
+  var PEN_POPUP_LAYER_DEPTH = 3;
+  var PEN_POPUP_MAX_GAP = 400;
+  var PEN_POPUP_ADJ_GAP = 24;
+  var PEN_POPUP_ADJ_LEFT = 32;
+  var PEN_POPUP_WALL_RATIO = 0.85;
+  var PEN_POPUP_DIALOG_SELECTOR = '[role="dialog"], [role="alertdialog"], [aria-modal="true"], dialog';
+  var penPopupCache = null;
+  // [aria-expanded="true"] elements collected by penCandidates' single deep
+  // walk (SNAPSHOT_JS / FIND_BY_SNAPSHOT_JS). Null = no walk ran yet (the
+  // AUTOCOMPLETE_STATE_JS path), so penPopupOwners walks for itself. One
+  // combined walk instead of a second one: a native querySelector pre-check
+  // cannot see open shadow roots, and deepQueryAll is the bounded way in.
+  var penExpandedFound = null;
+
+  function penPopupHasBox(el) {
+    if (!el || el.nodeType !== 1 || !el.getClientRects || el.getClientRects().length === 0) return false;
+    var r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  }
+
+  // True when \`el\` cannot show anything to a user although it has a box:
+  // it, or an overflow-clipping ancestor, is under 4px on an axis, or a
+  // clip:rect(0,0,0,0) hides it (the standard sr-only mirror). A scroll
+  // container that merely scrolls the element out of view does NOT count.
+  var penSmallCache = new Map();
+  function penTooSmallToShow(el) {
+    var r = el.getBoundingClientRect();
+    if (r.width < 4 || r.height < 4) return true;
+    var node = el.parentElement;
+    for (var up = 0; node && node !== document.body && node !== document.documentElement && up < 12; up++) {
+      if (!penSmallCache.has(node)) {
+        var st = getComputedStyle(node);
+        var clips = st.overflowX !== "visible" || st.overflowY !== "visible";
+        var zeroClip = /rect\\(\\s*0(px)?[ ,]+0(px)?[ ,]+0(px)?[ ,]+0(px)?\\s*\\)/.test(st.clip || "");
+        var nr = node.getBoundingClientRect();
+        penSmallCache.set(node, zeroClip || (clips && (nr.width < 4 || nr.height < 4)));
+      }
+      if (penSmallCache.get(node)) return true;
+      node = node.parentElement;
+    }
+    return false;
+  }
+
+  var PEN_POPUP_CONTROL_SELECTOR =
+    "a[href], button, input, select, textarea, summary, [contenteditable='true'], [contenteditable=''], " +
+    "[role='button'], [role='link'], [role='checkbox'], [role='radio'], [role='tab'], [role='menuitem'], " +
+    "[role='menuitemcheckbox'], [role='menuitemradio'], [role='combobox'], [role='slider'], [role='switch'], " +
+    "[role='textbox'], [role='searchbox'], [role='spinbutton']";
+  // Anything a popup target may hold that proves it is the real popup.
+  var PEN_POPUP_INTERACTIVE_SELECTOR =
+    PEN_POPUP_CONTROL_SELECTOR + ", [role='option'], [role='treeitem'], [role='gridcell']";
+
+  function penPopupOwners() {
+    var found = penExpandedFound || deepQueryAll(document, '[aria-expanded="true"]');
+    var owners = [];
+    for (var oi = 0; oi < found.length && owners.length < PEN_POPUP_OWNER_CAP; oi++) {
+      var el = found[oi];
+      var role = (el.getAttribute("role") || "").toLowerCase();
+      var hp = (el.getAttribute("aria-haspopup") || "").toLowerCase();
+      var ok =
+        role === "combobox" ||
+        /^(true|listbox|menu|tree|grid|dialog)$/.test(hp) ||
+        !!(el.closest && el.closest('[role="combobox"]'));
+      if (!ok) continue;
+      if (el.closest && (el.closest("[data-pen-cursor]") || el.closest("[data-pen-marks]"))) continue;
+      // Loose on purpose: a readonly select input is often opacity:0.
+      if (!penPopupHasBox(el)) continue;
+      var st = getComputedStyle(el);
+      if (st.display === "none" || st.visibility === "hidden") continue;
+      owners.push(el);
+    }
+    return owners;
+  }
+
+  // Only a listbox-type owner may fall back to a geometric guess: a menu or
+  // dialog trigger's popup carries roles of its own.
+  function penIsListboxOwner(el) {
+    var role = (el.getAttribute("role") || "").toLowerCase();
+    var hp = (el.getAttribute("aria-haspopup") || "").toLowerCase();
+    return role === "combobox" || /^(true|listbox|tree|grid)$/.test(hp) || !!(el.closest && el.closest('[role="combobox"]'));
+  }
+
+  // The elements the owner (or its combobox wrapper) names through
+  // aria-controls / aria-owns, whatever their state.
+  function penRefTargets(owner) {
+    var hosts = [owner];
+    var wrap = owner.closest ? owner.closest('[role="combobox"]') : null;
+    if (wrap && wrap !== owner) hosts.push(wrap);
+    var doc = owner.getRootNode ? owner.getRootNode() : document;
+    var out = [];
+    for (var hi = 0; hi < hosts.length; hi++) {
+      var ids = ((hosts[hi].getAttribute("aria-controls") || "") + " " + (hosts[hi].getAttribute("aria-owns") || "")).split(/\\s+/);
+      for (var ii = 0; ii < ids.length; ii++) {
+        if (!ids[ii]) continue;
+        var t = (doc && doc.getElementById && doc.getElementById(ids[ii])) || document.getElementById(ids[ii]);
+        if (!t || t === owner || t.contains(owner) || out.indexOf(t) >= 0) continue;
+        out.push(t);
+      }
+    }
+    return out;
+  }
+
+  function penHasInteractive(root) {
+    return !!((root.matches && root.matches(PEN_POPUP_INTERACTIVE_SELECTOR)) || root.querySelector(PEN_POPUP_INTERACTIVE_SELECTOR));
+  }
+
+  // The a11y-only mirrors among \`targets\`: rendered (so not the closed
+  // display:none list) yet too small to show, holding role=option. Returns
+  // the mirror roots and the labels of their options.
+  function penMirrors(targets) {
+    var roots = [];
+    var labels = [];
+    for (var ti = 0; ti < targets.length; ti++) {
+      var t = targets[ti];
+      if (t.getClientRects().length === 0 || !penTooSmallToShow(t)) continue;
+      var opts = t.getAttribute("role") === "option" ? [t] : [];
+      var inner = t.querySelectorAll('[role="option"]');
+      for (var ii = 0; ii < inner.length; ii++) opts.push(inner[ii]);
+      if (!opts.length) continue;
+      roots.push(t);
+      for (var oi = 0; oi < opts.length; oi++) {
+        var label = (opts[oi].getAttribute("aria-label") || opts[oi].textContent || "").trim();
+        if (label) labels.push(label);
+      }
+    }
+    return { roots: roots, labels: labels };
+  }
+
+  // The option-like items under \`root\` (rules in the comment above).
+  function penPopupItemsIn(root) {
+    var all = root.querySelectorAll("*");
+    var n = Math.min(all.length, PEN_POPUP_SCAN_CAP);
+    var cursorOf = new Map();
+    function cursor(node) {
+      if (!cursorOf.has(node)) cursorOf.set(node, getComputedStyle(node).cursor);
+      return cursorOf.get(node);
+    }
+    var signals = [];
+    var strength = new Map();
+    var tabOnly = new Set();
+    for (var i = 0; i < n; i++) {
+      var el = all[i];
+      if (!(el instanceof HTMLElement)) continue;
+      var explicit = (el.getAttribute("role") || "").toLowerCase();
+      if (explicit && explicit !== "option") continue;
+      if (!explicit && el.matches("a[href], button, input, select, textarea, summary, [contenteditable='true']")) continue;
+      if (el.getAttribute("aria-hidden") === "true" || el.getAttribute("aria-disabled") === "true") continue;
+      if (el.hasAttribute("disabled")) continue;
+      if (el.closest('[aria-hidden="true"]')) continue;
+      var st = getComputedStyle(el);
+      if (st.display === "none" || st.visibility === "hidden" || parseFloat(st.opacity) === 0) continue;
+      if (st.pointerEvents === "none" || st.cursor === "not-allowed") continue;
+      var strong = explicit === "option" || el.hasAttribute("aria-selected");
+      var tabbable = el.hasAttribute("tabindex");
+      // cursor is inherited: the item is where pointer STARTS, so the parent
+      // (the popup root included) must not already be pointer.
+      var pointerStart = st.cursor === "pointer" && !(el.parentElement && cursor(el.parentElement) === "pointer");
+      if (!strong && !tabbable && !pointerStart) continue;
+      if (!penPopupHasBox(el)) continue;
+      if (explicit !== "option" && penTooSmallToShow(el)) continue;
+      // A role-less wrapper around a real control (a <label> around a
+      // checkbox) is not an item: the inner control is listed as itself.
+      if (explicit !== "option" && el.querySelector(PEN_POPUP_CONTROL_SELECTOR)) continue;
+      var label = (el.getAttribute("aria-label") || el.getAttribute("title") || el.textContent || "").trim();
+      if (!label) continue;
+      signals.push(el);
+      strength.set(el, strong ? 3 : tabbable ? 2 : 1);
+      // tabindex alone is a weak signal (a scroll wrapper / focus sink).
+      if (!strong && tabbable && !pointerStart) tabOnly.add(el);
+    }
+    // Collapse: outermost wins, unless it holds two or more item branches (a
+    // container), a descendant with a STRONGER signal (role=option /
+    // aria-selected > tabindex > inherited cursor), or it is tabindex-only
+    // and holds any item at all: those win then.
+    var inSet = new Set(signals);
+    var kids = new Map();
+    var tops = [];
+    for (var si = 0; si < signals.length; si++) {
+      var parent = signals[si].parentElement;
+      while (parent && parent !== root && !inSet.has(parent)) parent = parent.parentElement;
+      if (parent && parent !== root) {
+        if (!kids.has(parent)) kids.set(parent, []);
+        kids.get(parent).push(signals[si]);
+      } else {
+        tops.push(signals[si]);
+      }
+    }
+    var maxBelow = new Map();
+    function strongestBelow(node) {
+      if (maxBelow.has(node)) return maxBelow.get(node);
+      var best = 0;
+      var sub = kids.get(node) || [];
+      for (var bi = 0; bi < sub.length; bi++) best = Math.max(best, strength.get(sub[bi]), strongestBelow(sub[bi]));
+      maxBelow.set(node, best);
+      return best;
+    }
+    var items = [];
+    var stack = tops.slice().reverse();
+    while (stack.length) {
+      var cur = stack.pop();
+      var ch = kids.get(cur) || [];
+      if (ch.length >= 2 || strongestBelow(cur) > strength.get(cur) || (ch.length >= 1 && tabOnly.has(cur))) {
+        for (var ci = ch.length - 1; ci >= 0; ci--) stack.push(ch[ci]);
+      } else {
+        items.push(cur);
+      }
+    }
+    return items;
+  }
+
+  // A layer that is (or holds) a dialog, a heading, or a text field of its
+  // own is a panel / modal, never an option list.
+  function penLayerRejected(layer, owner) {
+    if ((layer.matches && layer.matches(PEN_POPUP_DIALOG_SELECTOR)) || layer.querySelector(PEN_POPUP_DIALOG_SELECTOR)) return true;
+    if (layer.querySelector("h1, h2, h3")) return true;
+    var fields = layer.querySelectorAll("input, textarea, [contenteditable='true'], [contenteditable=''], [role='textbox'], [role='searchbox']");
+    for (var fi = 0; fi < fields.length; fi++) {
+      var type = (fields[fi].getAttribute("type") || "").toLowerCase();
+      if (/^(checkbox|radio|button|submit|reset|image|file|range|color|hidden)$/.test(type)) continue;
+      if (owner.contains(fields[fi])) continue;
+      return true;
+    }
+    return false;
+  }
+
+  function penLayerHasLabel(layer, labels) {
+    var all = layer.querySelectorAll("*");
+    var n = Math.min(all.length, PEN_POPUP_SCAN_CAP);
+    for (var i = 0; i < n; i++) {
+      if (labels.indexOf((all[i].textContent || "").trim()) >= 0) return true;
+    }
+    return false;
+  }
+
+  // The floating layer that best belongs to \`owner\`: see rule 2b/2c above.
+  // \`labels\` are the owner's mirror-option labels (may be empty).
+  function penPopupFloating(owner, labels) {
+    var bases = [document.body];
+    var dlg = owner.closest ? owner.closest(PEN_POPUP_DIALOG_SELECTOR) : null;
+    if (dlg) bases.push(dlg);
+    var up = owner.parentElement;
+    for (var k = 0; k < 3 && up && up !== document.body && up !== document.documentElement; k++) {
+      bases.push(up);
+      up = up.parentElement;
+    }
+    var layers = [];
+    for (var bi = 0; bi < bases.length; bi++) {
+      var queue = [];
+      var kidsOfBase = bases[bi].children;
+      for (var ki = 0; ki < kidsOfBase.length; ki++) queue.push({ node: kidsOfBase[ki], depth: 1 });
+      var visited = 0;
+      while (queue.length && visited < PEN_POPUP_LAYER_NODE_CAP) {
+        var q = queue.shift();
+        var node = q.node;
+        visited++;
+        if (!(node instanceof HTMLElement) || /^(script|style|template|link|meta)$/i.test(node.tagName)) continue;
+        if (node.contains(owner) || node.hasAttribute("data-pen-cursor") || node.hasAttribute("data-pen-marks")) continue;
+        var st = getComputedStyle(node);
+        if (st.display === "none") continue;
+        if ((st.position === "fixed" || st.position === "absolute") && st.visibility !== "hidden" && penPopupHasBox(node)) {
+          if (layers.indexOf(node) < 0) layers.push(node);
+          continue;
+        }
+        if (q.depth < PEN_POPUP_LAYER_DEPTH) {
+          for (var ci = 0; ci < node.children.length; ci++) queue.push({ node: node.children[ci], depth: q.depth + 1 });
+        }
+      }
+    }
+    var wrap = owner.closest ? owner.closest('[role="combobox"]') : null;
+    var refs = [owner.getBoundingClientRect()];
+    if (wrap && wrap !== owner) refs.push(wrap.getBoundingClientRect());
+    var cands = [];
+    for (var li = 0; li < layers.length; li++) {
+      var r = layers[li].getBoundingClientRect();
+      if (r.width >= window.innerWidth * PEN_POPUP_WALL_RATIO && r.height >= window.innerHeight * PEN_POPUP_WALL_RATIO) continue;
+      // An a11y-only mirror (sr-only 1px clip) is itself an absolute layer
+      // near the owner: it shows nothing, so it is never the popup.
+      if (penTooSmallToShow(layers[li])) continue;
+      var gap = Infinity;
+      var adjacent = false;
+      for (var ri = 0; ri < refs.length; ri++) {
+        var o = refs[ri];
+        var g = Math.max(0, r.top - o.bottom, o.top - r.bottom);
+        gap = Math.min(gap, g);
+        var overlap = Math.min(r.right, o.right) - Math.max(r.left, o.left);
+        if (g <= PEN_POPUP_ADJ_GAP && (Math.abs(r.left - o.left) <= PEN_POPUP_ADJ_LEFT || overlap >= o.width * 0.5)) adjacent = true;
+      }
+      if (gap > PEN_POPUP_MAX_GAP) continue;
+      if (penLayerRejected(layers[li], owner)) continue;
+      cands.push({ layer: layers[li], gap: gap, area: r.width * r.height, adjacent: adjacent });
+    }
+    cands.sort(function (a, b) {
+      return a.gap - b.gap || a.area - b.area;
+    });
+    if (labels && labels.length) {
+      for (var ai = 0; ai < cands.length; ai++) {
+        if (!penLayerHasLabel(cands[ai].layer, labels)) continue;
+        var anchoredItems = penPopupItemsIn(cands[ai].layer);
+        if (anchoredItems.length) return { roots: [cands[ai].layer], items: anchoredItems, anchored: true };
+      }
+    }
+    for (var sc = 0; sc < cands.length; sc++) {
+      if (!cands[sc].adjacent) continue;
+      var items = penPopupItemsIn(cands[sc].layer);
+      if (items.length) return { roots: [cands[sc].layer], items: items, anchored: false };
+    }
+    return null;
+  }
+
+  // [{ owner, roots, items, strong, mirrors }] for every open popup (cached
+  // per script run). \`strong\`: found through aria-controls or a mirror
+  // anchor, not by geometry alone. \`mirrors\`: the owner's a11y-only
+  // role=option listboxes.
+  function penPopups() {
+    if (penPopupCache) return penPopupCache;
+    var out = [];
+    var total = 0;
+    var owners = penPopupOwners();
+    for (var oi = 0; oi < owners.length && total < PEN_POPUP_ITEM_CAP; oi++) {
+      var owner = owners[oi];
+      var targets = penRefTargets(owner);
+      var roots = [];
+      var items = [];
+      var strong = false;
+      for (var ti = 0; ti < targets.length; ti++) {
+        if (!penPopupHasBox(targets[ti]) || penTooSmallToShow(targets[ti])) continue;
+        var own = penPopupItemsIn(targets[ti]);
+        if (own.length || penHasInteractive(targets[ti])) {
+          roots.push(targets[ti]);
+          items = items.concat(own);
+          strong = true;
+        }
+      }
+      var mirror = penMirrors(targets);
+      if (!strong && penIsListboxOwner(owner)) {
+        var fl = penPopupFloating(owner, mirror.labels);
+        if (fl) {
+          roots = fl.roots;
+          items = fl.items;
+          strong = fl.anchored;
+        }
+      }
+      items = items.slice(0, PEN_POPUP_ITEM_CAP - total);
+      total += items.length;
+      out.push({ owner: owner, roots: roots, items: items, strong: strong, mirrors: mirror.roots });
+    }
+    penPopupCache = out;
+    return out;
+  }
+
+  function penPopupItems() {
+    var seen = new Set();
+    var items = [];
+    var pops = penPopups();
+    for (var pi = 0; pi < pops.length; pi++) {
+      for (var ii = 0; ii < pops[pi].items.length; ii++) {
+        if (!seen.has(pops[pi].items[ii])) {
+          seen.add(pops[pi].items[ii]);
+          items.push(pops[pi].items[ii]);
+        }
+      }
+    }
+    return items;
+  }
+
+  var penPopupItemSetCache = null;
+  function penPopupItemSet() {
+    if (!penPopupItemSetCache) penPopupItemSetCache = new Set(penPopupItems());
+    return penPopupItemSetCache;
+  }
+
+  // True for an explicit role=option inside an owner's a11y-only mirror
+  // listbox WHEN that owner's visible popup (with items) is found elsewhere:
+  // it would repeat the visible option. Any other role=option stays listed.
+  function penIsMirrorOption(el) {
+    var pops = penPopups();
+    for (var pi = 0; pi < pops.length; pi++) {
+      if (!pops[pi].items.length) continue;
+      for (var mi = 0; mi < pops[pi].mirrors.length; mi++) {
+        if (pops[pi].mirrors[mi] === el || pops[pi].mirrors[mi].contains(el)) return true;
+      }
+    }
+    return false;
+  }
+
+  // The open popup owned by \`field\`: the owner is the field, holds it, sits
+  // inside it, or shares its role=combobox wrapper. Null when none.
+  function penPopupFor(field) {
+    var pops = penPopups();
+    var fieldWrap = field.closest ? field.closest('[role="combobox"]') : null;
+    for (var pi = 0; pi < pops.length; pi++) {
+      var owner = pops[pi].owner;
+      if (owner === field || owner.contains(field) || field.contains(owner)) return pops[pi];
+      if (fieldWrap && owner.closest && owner.closest('[role="combobox"]') === fieldWrap) return pops[pi];
+    }
+    return null;
+  }
+`;
+
+/**
  * The candidate selector SNAPSHOT_JS walks, shared with FIND_BY_SNAPSHOT_JS's
  * fingerprint relocation so both look at exactly the same set of elements.
  */
 const INTERACTIVE_SELECTOR_JS = `
+  ${POPUP_OPTION_JS}
   var INTERACTIVE_SELECTOR =
     "a[href], button, input, select, textarea, [role='button'], [role='link'], " +
     "[role='checkbox'], [role='radio'], [role='tab'], [role='menuitem'], " +
@@ -211,6 +689,37 @@ const INTERACTIVE_SELECTOR_JS = `
     // not controls.
     "[role='option'], [role='menuitemradio'], [role='menuitemcheckbox'], " +
     "[role='switch'], [role='treeitem'], [role='gridcell'][tabindex], [role='gridcell'][aria-selected]";
+
+  // INTERACTIVE_SELECTOR's matches plus the option-like items of open popups
+  // (POPUP_OPTION_JS): role-less to the selector, options to the step model.
+  function penCandidates() {
+    var walked = deepQueryAll(document, INTERACTIVE_SELECTOR + ', [aria-expanded="true"]');
+    var base = [];
+    penExpandedFound = [];
+    for (var wi = 0; wi < walked.length; wi++) {
+      // One deep walk for both sets. An element that does not carry
+      // aria-expanded="true" matched through INTERACTIVE_SELECTOR; only an
+      // expanded one needs the (second) membership test.
+      var expanded = walked[wi].getAttribute("aria-expanded") === "true";
+      if (expanded) penExpandedFound.push(walked[wi]);
+      if (!expanded || walked[wi].matches(INTERACTIVE_SELECTOR)) base.push(walked[wi]);
+    }
+    var seen = new Set(base);
+    var items = penPopupItems();
+    for (var pi = 0; pi < items.length; pi++) {
+      if (!seen.has(items[pi])) base.push(items[pi]);
+    }
+    return base;
+  }
+
+  // The role the element table reports: the role attribute as written, or
+  // "option" for an item of an open popup (penPopupItemSet) so the step model
+  // treats it as a list option.
+  function penRoleOf(el) {
+    var explicit = el.getAttribute("role");
+    if (explicit) return explicit;
+    return penPopupItemSet().has(el) ? "option" : "";
+  }
 
   // Roles whose on/off state lives in aria-checked vs aria-selected. Reported
   // as the element table's \`checked\`: without it "One way" and "Round trip"
@@ -642,12 +1151,12 @@ const FIND_BY_SNAPSHOT_JS = `
     if (!snapDoc || snapDoc.id !== String(snapshotId) || snapDoc.href !== location.href) return null;
     var ownPrefix = String(snapshotId) + ":";
     var wantedRole = fingerprint.role || "";
-    var candidates = deepQueryAll(document, INTERACTIVE_SELECTOR);
+    var candidates = penCandidates();
     var match = null;
     for (var ri = 0; ri < candidates.length; ri++) {
       var cand = candidates[ri];
       if ((cand.tagName || "").toLowerCase() !== fingerprint.tag) continue;
-      if ((cand.getAttribute("role") || "") !== wantedRole) continue;
+      if (penRoleOf(cand) !== wantedRole) continue;
       if (fingerprint.tag === "input" && (cand.getAttribute("type") || "").toLowerCase() === "password") continue;
       // Never take a node stamped for another index of this snapshot (two
       // "Remove" buttons: a retry of a removed one must not hit its sibling).
@@ -1426,6 +1935,8 @@ const TARGET_BUSY_HELPER_JS = `
 export const AUTOCOMPLETE_STATE_JS = `(() => {
   var args = ${ARGS_MARKER};
   ${SIG_TARGET_HELPER_JS}
+  ${DEEP_QUERY_HELPER_JS}
+  ${POPUP_OPTION_JS}
 
   function visible(node) {
     var r = node.getBoundingClientRect();
@@ -1451,8 +1962,14 @@ export const AUTOCOMPLETE_STATE_JS = `(() => {
 
   // The option nodes of the listbox(es) \`field\` names via aria-controls/
   // aria-owns (on it or its combobox wrapper), or null when none resolves (an
-  // existing but still EMPTY listbox is an own list with zero options).
+  // existing but still EMPTY listbox is an own list with zero options; so is
+  // a display:none one, the closed list). Two generic exceptions: a rendered
+  // referenced listbox whose options are ALL too small to show (0x0 or an
+  // sr-only 1px clip) is an a11y-only mirror, not the field's own list; and a field that owns an open popup
+  // (penPopupFor) has that popup's items as its own options.
   function penOwnOptions(field) {
+    var pop = penPopupFor(field);
+    if (pop && pop.items.length) return pop.items.slice();
     var cb = field.closest ? field.closest('[role="combobox"]') : null;
     var hostEl = cb || field;
     var refs = ((hostEl.getAttribute("aria-controls") || "") + " " + (hostEl.getAttribute("aria-owns") || "") + " " +
@@ -1464,40 +1981,55 @@ export const AUTOCOMPLETE_STATE_JS = `(() => {
       var root = refs[ri] ? document.getElementById(refs[ri]) : null;
       if (!root || seenRoots.indexOf(root) >= 0) continue;
       seenRoots.push(root);
-      resolved = true;
-      if (root.getAttribute("role") === "option") found.push(root);
+      var rootOpts = root.getAttribute("role") === "option" ? [root] : [];
       var inner = root.querySelectorAll('[role="option"]');
-      for (var ii = 0; ii < inner.length; ii++) found.push(inner[ii]);
+      for (var ii = 0; ii < inner.length; ii++) rootOpts.push(inner[ii]);
+      if (root.getClientRects().length > 0 && rootOpts.length > 0) {
+        var shown = false;
+        for (var oi2 = 0; oi2 < rootOpts.length && !shown; oi2++) shown = !penTooSmallToShow(rootOpts[oi2]);
+        if (!shown) continue;
+      }
+      resolved = true;
+      for (var fi = 0; fi < rootOpts.length; fi++) found.push(rootOpts[fi]);
     }
     return resolved ? found : null;
   }
 
-  var allOptions = Array.prototype.slice.call(document.querySelectorAll('[role="option"]'));
-  var docWide = digest(allOptions);
+  // Every role=option node plus every open popup's items (computed only once
+  // a field exists, and past the autocomplete gate for the full probe).
+  function penAllOptions() {
+    var allOptions = Array.prototype.slice.call(document.querySelectorAll('[role="option"]'));
+    var popupItems = penPopupItems();
+    for (var pk = 0; pk < popupItems.length; pk++) {
+      if (allOptions.indexOf(popupItems[pk]) < 0) allOptions.push(popupItems[pk]);
+    }
+    return allOptions;
+  }
 
+  var el = penFindSigTarget();
   // args.baseline: the pre-typing probe — no stamp needed (focus/typing may
   // still re-target), just what is visible document-wide right now.
   if (args.baseline) {
-    var baseOut = { docOptions: docWide.count, docHash: docWide.hash };
-    var baseField = penFindSigTarget();
-    if (baseField) {
-      var own = penOwnOptions(baseField);
-      if (own) {
-        var ownDigest = digest(own);
-        baseOut.ownOptions = ownDigest.count;
-        baseOut.ownHash = ownDigest.hash;
-      }
+    if (!el) return { docOptions: 0, docHash: 0 };
+    var baseDigest = digest(penAllOptions());
+    var baseOut = { docOptions: baseDigest.count, docHash: baseDigest.hash };
+    var baseOwn = penOwnOptions(el);
+    if (baseOwn) {
+      var ownDigest = digest(baseOwn);
+      baseOut.ownOptions = ownDigest.count;
+      baseOut.ownHash = ownDigest.hash;
     }
     return baseOut;
   }
 
-  var el = penFindSigTarget();
   if (!el) return { autocomplete: false };
   var combo = el.closest ? el.closest('[role="combobox"]') : null;
   var auto = (el.getAttribute("aria-autocomplete") || "").toLowerCase();
   var popup = (el.getAttribute("aria-haspopup") || "").toLowerCase();
   if (!combo && auto !== "list" && auto !== "both" && popup !== "listbox") return { autocomplete: false };
 
+  var allOptions = penAllOptions();
+  var docWide = digest(allOptions);
   var own = penOwnOptions(el);
   var candidates = own || allOptions;
   var scoped = candidates === allOptions ? docWide : digest(candidates);
@@ -2335,8 +2867,8 @@ export const SNAPSHOT_JS = `(() => {
   // while this still matches the requested snapshot and the current URL.
   window.__penSnapDoc = { id: String(snapshotId), href: location.href };
 
-  ${INTERACTIVE_SELECTOR_JS}
   ${DEEP_QUERY_HELPER_JS}
+  ${INTERACTIVE_SELECTOR_JS}
   ${SCROLL_CONTAINER_HELPER_JS}
   ${HIT_TEST_HELPER_JS}
 
@@ -2464,7 +2996,7 @@ export const SNAPSHOT_JS = `(() => {
   }
 
   // Wave 3 reliability, item 1: pierces open shadow roots.
-  var candidates = deepQueryAll(document, INTERACTIVE_SELECTOR);
+  var candidates = penCandidates();
   var found = [];
   for (var i = 0; i < candidates.length; i++) {
     var el = candidates[i];
@@ -2474,8 +3006,12 @@ export const SNAPSHOT_JS = `(() => {
     // Likewise a native range the user cannot move (own attribute or a
     // disabled fieldset: :disabled matches both).
     if (penIsRange(el) && el.matches(":disabled")) continue;
-    var ariaRole = (el.getAttribute("role") || "").toLowerCase();
+    var rawRole = penRoleOf(el);
+    var ariaRole = rawRole.toLowerCase();
     if (PEN_SKIP_WHEN_ARIA_DISABLED[ariaRole] && el.getAttribute("aria-disabled") === "true") continue;
+    // The a11y-only mirror of a custom select (sr-only 1px listbox): its
+    // option is not something a user can see or click.
+    if (ariaRole === "option" && penIsMirrorOption(el)) continue;
     // The page itself says this control is not there (a past calendar day,
     // an inert copy of a menu).
     if (el.getAttribute("aria-hidden") === "true") continue;
@@ -2511,7 +3047,7 @@ export const SNAPSHOT_JS = `(() => {
       el: el,
       box: box,
       tag: tag,
-      role: el.getAttribute("role") || undefined,
+      role: rawRole || undefined,
       label: labelOf(el),
       ops: ops,
       isPassword: isPassword,
@@ -2837,7 +3373,15 @@ export const SNAPSHOT_JS = `(() => {
         var ref = (root && root.getElementById && root.getElementById(refIds[ri])) || document.getElementById(refIds[ri]);
         if (ref && penComposedContains(layer, ref)) return true;
       }
-      if (deepQueryAll(layer, "[role=listbox],[role=option]").length > 0) return true;
+      if (deepQueryAll(layer, "[role=listbox], [role=option]").length > 0) return true;
+      // The popup the shared rule assigns to the focused field (role-less
+      // options in a floating layer).
+      // Only a popup found through aria-controls or a mirror anchor counts,
+      // never one guessed from geometry alone.
+      var fieldPopup = penPopupFor(act);
+      for (var pri = 0; fieldPopup && fieldPopup.strong && pri < fieldPopup.roots.length; pri++) {
+        if (penComposedContains(layer, fieldPopup.roots[pri]) || penComposedContains(fieldPopup.roots[pri], layer)) return true;
+      }
     }
     return false;
   }

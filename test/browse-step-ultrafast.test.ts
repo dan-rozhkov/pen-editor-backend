@@ -93,6 +93,8 @@ describe("buildUltrafastQuestions", () => {
     const rules = JSON.stringify(withCombo.questions.operation.instructions);
     expect(rules).toContain("already shows the requested choice is set");
     expect(rules).toContain("When a list is open (expanded)");
+    expect(rules).toContain("never CLICK that same element again");
+    expect(rules).toContain("answer BLOCKED (its options are not visible)");
   });
 
   it("makes every unselected, non-empty <select> option its own target", () => {

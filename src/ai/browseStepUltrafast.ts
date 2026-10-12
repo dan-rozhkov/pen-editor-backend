@@ -80,6 +80,7 @@ const NEXT_ACTION_RULES = [
   "Do not toggle a checkbox, switch, or radio already in the requested state.",
   "A dropdown whose current_value already shows the requested choice is set; do not open it again.",
   "When a list is open (expanded), CLICK the wanted option in it; clicking the dropdown itself again only closes it.",
+  "An element marked expanded:true is already open: never CLICK that same element again. If none of its options are in the element table, answer BLOCKED (its options are not visible) instead of clicking the field.",
   "Submit populated search fields (CLICK the search button, or PRESS_ENTER right after typing) before opening a result; a populated field alone is not an applied search.",
   "WAIT only when the needed control is absent/disabled, or submitted results are still loading.",
   "If Search/Submit is visible and the required fields are ready, CLICK it immediately.",
