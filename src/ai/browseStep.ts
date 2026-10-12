@@ -406,8 +406,20 @@ function targetHeadFor(operation: BrowseOperation): TargetableOp | undefined {
   return isTargetableOp(operation) ? operation : undefined;
 }
 
+/** The one rule text about disabled controls, shared by the ultrafast rules,
+ * the Luna instructions and the legacy cascade prompt. */
+export const DISABLED_CONTROL_RULE =
+  "A control marked disabled cannot be used yet. If it is also marked busy (it became disabled right after your own action on it), WAIT. Otherwise, if the control the goal needs is disabled, an earlier choice on the page is still unanswered: make that earlier choice first; if the goal does not specify it, pick the standard option that adds no extra cost; if no such option exists, answer BLOCKED.";
+
+/** Can `el` be targeted by `op`? Not disabled, and it offers the op. */
+export function isActionable(el: BrowseStepElement, op: "CLICK" | "TYPE_TEXT" | "SELECT"): boolean {
+  return !el.disabled && el.ops.includes(op);
+}
+
 export interface BrowseStepElement {
   index: number;
+  /** Natively disabled control: shown in the state, never a target. */
+  disabled?: boolean;
   tag: string;
   role?: string;
   label: string;
@@ -662,6 +674,7 @@ export function truncateLabel(label: string, max = 120): string {
 function elementDigestLine(el: BrowseStepElement): string {
   const flags = [
     el.isPassword ? "password" : null,
+    el.disabled ? "disabled" : null,
     el.hasValue ? "filled" : null,
     el.checked ? "checked" : null,
     el.scrollable ? "scrollable" : null,
@@ -813,12 +826,18 @@ export function buildBrowseStepQuestions(
       type: "choice",
       instructions:
         "Given the goal, the current page, and the available elements, which single operation should be performed next?",
-      criteria: { ...OP_DESCRIPTIONS },
+      // CLICK/TYPE_TEXT/SELECT are offered only while an actionable
+      // candidate of that kind exists (a disabled control is not one).
+      criteria: Object.fromEntries(
+        Object.entries(OP_DESCRIPTIONS).filter(
+          ([op]) => !(TARGETABLE_OPS as readonly string[]).includes(op) || elements.some((el) => isActionable(el, op as TargetableOp)),
+        ),
+      ),
     },
   };
 
   for (const op of TARGETABLE_OPS) {
-    const candidates = elements.filter((el) => el.ops.includes(op));
+    const candidates = elements.filter((el) => isActionable(el, op));
     if (candidates.length === 0) continue;
     const criteria: Record<string, string | null> = {};
     for (const el of candidates) {
@@ -831,7 +850,7 @@ export function buildBrowseStepQuestions(
     };
   }
 
-  if (textCandidates.length > 0 && elements.some((el) => el.ops.includes("TYPE_TEXT"))) {
+  if (textCandidates.length > 0 && elements.some((el) => isActionable(el, "TYPE_TEXT"))) {
     questions[TEXT_CANDIDATE_ID] = {
       type: "choice",
       instructions:
@@ -2395,6 +2414,7 @@ async function cascadeStep({
                 "concrete next operation instead, no matter how the page looks.",
               ]),
           "Never choose TYPE_TEXT or PRESS_ENTER on a password field.",
+          DISABLED_CONTROL_RULE,
           "index must be one of the element indices shown above, required for",
           "CLICK/TYPE_TEXT/SELECT/HOVER and omitted otherwise. For SELECT, text",
           "must be copied verbatim from that element's own options. Report your",
@@ -2467,7 +2487,7 @@ async function cascadeStep({
   // from — never Number() coercion, same discipline as addendum E elsewhere
   // in this file.
   const targetElement = elements.find(
-    (el) => el.index === object.index && el.ops.includes(headOp),
+    (el) => el.index === object.index && isActionable(el, headOp),
   );
   if (!targetElement) return reject(`index ${object.index} is not a ${headOp} candidate`);
 

@@ -45,6 +45,9 @@ export const elementSchema = z
     // aria-expanded of a combobox/menu button: whether its list is open.
     expanded: z.boolean().optional(),
     isPassword: z.boolean().optional(),
+    // Natively disabled control (desktop snapshot): shown to the model but
+    // never offered as a target.
+    disabled: z.boolean().optional(),
     // Browse-speed contract (2026-09-24), scroll containers: a scroll
     // container entry (`{index, tag, label, ops: [], scrollable: true}`) has
     // no CLICK/TYPE_TEXT/SELECT of its own — it exists only so browse_act's

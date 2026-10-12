@@ -1,4 +1,4 @@
-// VENDORED from pen-editor-desktop/src/main/browser/pageScripts.ts @ 8a360a5.
+// VENDORED from pen-editor-desktop/src/main/browser/pageScripts.ts @ ebf1544.
 // Do not edit: regenerate with `npm run browser:sync` (scripts/sync-browser-vendor.mjs).
 // ---- end of vendor header ----
 // Scripts injected into a browser tab's real page via
@@ -1541,7 +1541,7 @@ const LOCATE_TARGET_JS = `
       }
     }
     if (hidden) return { el: null, hidden: true };
-    if (el) penRevealIfNeeded(el);
+    if (el && !args.skipReveal) penRevealIfNeeded(el);
     return { el: el, hidden: false, relocated: penRelocated };
   }
 `;
@@ -2018,7 +2018,8 @@ export const FIND_IMAGES_JS = `(() => {
  * a filter that greys out while it refetches). Upstream jev-ultrafast's PR
  * #58 describes the failure it causes: the input lands, the handler starts,
  * and the next observation ~50ms later sees the acted control `:disabled`
- * (so SNAPSHOT_JS skips it) while the controls the handler will enable are
+ * (SNAPSHOT_JS then lists it with \`disabled: true\`, which reads as locked,
+ * not busy) while the controls the handler will enable are
  * not actionable yet — the model is offered neither what it just used nor
  * what it is waiting for, and answers BLOCKED. WAIT cannot rescue it: one
  * WAIT is 400ms, so sitting out a 3s handler costs ~8 paid decision round
@@ -2030,6 +2031,27 @@ export const FIND_IMAGES_JS = `(() => {
  * <fieldset> already disables its controls, which shows up as `el.disabled`.
  */
 const TARGET_BUSY_HELPER_JS = `
+  // A natively disabled form control (own attribute or a disabled fieldset
+  // ancestor; :disabled matches both): it ignores clicks, keys and typing.
+  // SNAPSHOT_JS LISTS such a control with \`disabled: true\` (a locked step
+  // tells the agent an earlier choice is missing), so every acting script
+  // must refuse it; controller.ts first gives a merely BUSY one (a handler
+  // that disables it for a moment) a short chance to re-enable.
+  function penNativelyDisabled(el) {
+    var t = (el.tagName || "").toLowerCase();
+    return (t === "input" || t === "select" || t === "textarea" || t === "button") && el.matches(":disabled");
+  }
+
+  // THE one refusal: null when el may be acted on, else the error text.
+  // A disabled native range keeps its own older "a disabled slider." message
+  // on TYPE_TEXT (the slider path reports it); a CLICK on it is refused here.
+  function penDisabledError(el, operation) {
+    if (!el || !el.matches || !penNativelyDisabled(el)) return null;
+    var isRange = (el.tagName || "").toLowerCase() === "input" && (el.getAttribute("type") || "").toLowerCase() === "range";
+    if (isRange && operation === "TYPE_TEXT") return null;
+    return "the control is disabled";
+  }
+
   function penTargetIsBusy(el) {
     if (!el) return false;
     if (el.disabled === true) return true;
@@ -2228,6 +2250,8 @@ export const CLICK_JS = `(() => {
     return { error: "target is not visible (hidden element)" };
   }
   if (!el) return { error: "No element matched: " + target };
+  var penRefusalC = penDisabledError(el, "CLICK");
+  if (penRefusalC) return { error: penRefusalC };
 
   penStampSigTarget(el);
   var scopedBefore = scopedSignatureOf(el);
@@ -2395,6 +2419,8 @@ export const TYPE_JS = `(() => {
     return { error: "target is not visible (hidden element)" };
   }
   if (!el) return { error: "No element matched: " + target };
+  var penRefusalT = penDisabledError(el, "TYPE_TEXT");
+  if (penRefusalT) return { error: penRefusalT };
 
   penStampSigTarget(el);
   var scopedBefore = scopedSignatureOf(el);
@@ -2500,6 +2526,9 @@ export const CLICK_RESOLVE_JS = `(() => {
   if (located.hidden) return { error: "target is not visible (hidden element)" };
   var el = located.el;
   if (!el) return { error: "No element matched: " + (args.target || "index " + args.index) };
+
+  var penRefusal = penDisabledError(el, args.operation);
+  if (penRefusal) return { error: penRefusal };
 
   penStampSigTarget(el);
 
@@ -2652,9 +2681,16 @@ export const REVEAL_TARGET_JS = `(() => {
 
   ${LOCATE_TARGET_JS}
   ${DISMISS_DIALOG_HELPER_JS}
+  ${TARGET_BUSY_HELPER_JS}
 
-  var located = locateTarget(args);
+  // Resolve WITHOUT scrolling, so a refused (disabled) target causes no
+  // scroll, no dismiss-dialog stamp and — since the controller stops here —
+  // no cursor move and no signature capture.
+  var located = locateTarget({ target: args.target, index: args.index, snapshotId: args.snapshotId, fingerprint: args.fingerprint, skipReveal: true });
   if (!located.el) return { found: false, hidden: located.hidden === true };
+  var penRefusalR = penDisabledError(located.el, args.operation);
+  if (penRefusalR) return { found: true, disabled: true, error: penRefusalR };
+  penRevealIfNeeded(located.el);
   var hitOk = penClickPoint(located.el).hitOk;
   var revealResult = { found: true, hitOk: hitOk };
   if (located.relocated) revealResult.relocated = true;
@@ -2992,6 +3028,7 @@ export const SNAPSHOT_JS = `(() => {
   ${SCROLL_CONTAINER_HELPER_JS}
   ${HIT_TEST_HELPER_JS}
   ${TOGGLE_PROXY_JS}
+  ${TARGET_BUSY_HELPER_JS}
 
   function isVisible(el) {
     // The cursor overlay (pageScripts.ts's CURSOR_JS) and the screenshot
@@ -3125,13 +3162,9 @@ export const SNAPSHOT_JS = `(() => {
     // A disabled ARIA slider ignores keys, so offering it only invites a
     // TYPE_TEXT that cannot work.
     if (penIsAriaSlider(el) && el.getAttribute("aria-disabled") === "true") continue;
-    // A natively disabled form field (own attribute or a disabled fieldset
-    // ancestor; :disabled matches both) ignores clicks, keys and typing, so
-    // listing it only invites a no-effect loop. Buttons are NOT skipped: a
-    // disabled "Continue" is information, and busy buttons are tracked
-    // elsewhere (TARGET_BUSY_HELPER_JS).
-    var nativeTag = tagOf(el);
-    if ((nativeTag === "input" || nativeTag === "select" || nativeTag === "textarea") && el.matches(":disabled")) continue;
+    // Natively disabled controls stay listed (reported as \`disabled: true\`
+    // below): a disabled step tells the agent an earlier choice is missing.
+    // A disabled ARIA slider ignores keys, so it is still skipped.
     var rawRole = penRoleOf(el);
     var ariaRole = rawRole.toLowerCase();
     if (PEN_SKIP_WHEN_ARIA_DISABLED[ariaRole] && el.getAttribute("aria-disabled") === "true") continue;
@@ -3197,6 +3230,7 @@ export const SNAPSHOT_JS = `(() => {
     // open list" look the same, and the agent toggled a list open and shut.
     var expandedAttr = el.getAttribute("aria-expanded");
     if (expandedAttr === "true" || expandedAttr === "false") entry.expanded = expandedAttr === "true";
+    if (penNativelyDisabled(el)) entry.disabled = true;
     // A custom (non-input) combobox shows its current choice as its text —
     // report it as the value, or "One way" reads as an unset control that
     // still needs setting.
@@ -3441,7 +3475,7 @@ export const SNAPSHOT_JS = `(() => {
     return a.top - b.top || a.left - b.left;
   }
   found.sort(function (a, b) {
-    return a.distance - b.distance || Number(a.cell) - Number(b.cell) || penReadingOrder(a, b);
+    return a.distance - b.distance || Number(!!a.disabled) - Number(!!b.disabled) || Number(a.cell) - Number(b.cell) || penReadingOrder(a, b);
   });
   var capped = [];
   for (var cf = 0; cf < found.length && capped.length < maxElements; cf++) {
@@ -3578,6 +3612,7 @@ export const SNAPSHOT_JS = `(() => {
     if (item.isPassword) out.isPassword = true;
     if (item.checked !== undefined) out.checked = item.checked;
     if (item.expanded !== undefined) out.expanded = item.expanded;
+    if (item.disabled === true) out.disabled = true;
     elements.push(out);
   }
 
@@ -3824,6 +3859,9 @@ export const PERFORM_JS = `(() => {
   if (!el) {
     return { error: "No element at index " + index + " for this snapshot (stale or removed)." };
   }
+
+  var penRefusal2 = penDisabledError(el, operation);
+  if (penRefusal2) return { error: penRefusal2 };
 
   penStampSigTarget(el);
   var scopedBefore = scopedSignatureOf(el);

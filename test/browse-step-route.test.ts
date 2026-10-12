@@ -392,3 +392,14 @@ describe("POST /api/browse/step — irreversible-action guard", () => {
     expect(bodySchema.safeParse({ ...base, permissions: { allowPasswordEntry: "yes" } }).success).toBe(false);
   });
 });
+
+describe("disabled element field", () => {
+  it("is accepted by the step schema", async () => {
+    const { bodySchema } = await import("../src/routes/browseStep.js");
+    const base = { goal: "g", url: "https://x.test", title: "t", history: [] };
+    const el = { index: 1, tag: "input", label: "Chip", ops: ["CLICK"], disabled: true };
+    const parsed = bodySchema.safeParse({ ...base, elements: [el] });
+    expect(parsed.success && parsed.data.elements[0]?.disabled).toBe(true);
+    expect(bodySchema.safeParse({ ...base, elements: [{ ...el, disabled: "yes" }] }).success).toBe(false);
+  });
+});

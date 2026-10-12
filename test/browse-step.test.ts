@@ -17,6 +17,7 @@ createModel.mockImplementation(() => jsonModel({ text: "hello world" }));
 const {
   decideBrowseStep,
   buildBrowseStepQuestions,
+  DISABLED_CONTROL_RULE,
   MAX_SNAPSHOT_ELEMENTS,
   MAX_ELEMENT_OPTIONS,
   MAX_OPTION_CHARS,
@@ -4114,5 +4115,38 @@ describe("allowPasswordEntry (legacy policy)", () => {
     });
     expect(result.outcome).toBe("blocked");
     expect(result.reason).toContain("the goal gives no value");
+  });
+});
+
+describe("disabled elements (legacy policy)", () => {
+  it("excludes a disabled element from the target candidates, and flags it in the digest", async () => {
+    const captures: SystemOneEvaluateParams<Record<string, SystemOneQuestion>>[] = [];
+    const client = sequentialClient([{ op: choice("CLICK", 0.9), target_click: choice("3", 0.9) }], { captures });
+    const off: BrowseStepElement = { index: 4, tag: "input", label: "Chip", ops: ["CLICK"], disabled: true };
+    await decideBrowseStep(client, makeConfig(), baseInput([clickable, off]));
+    const q = captures[0]!.questions.target_click;
+    expect(q?.type === "choice" ? Object.keys(q.criteria) : []).toEqual(["3"]);
+    expect(JSON.stringify(captures[0]!.state)).toContain("disabled");
+  });
+});
+
+describe("disabled elements: op head, cascade validator and prompt", () => {
+  const off: BrowseStepElement = { index: 4, tag: "input", label: "Chip", ops: ["CLICK"], disabled: true };
+
+  it("does not offer CLICK in the op head when every click candidate is disabled", () => {
+    const op = buildBrowseStepQuestions([off, typeable]).op;
+    const keys = op?.type === "choice" ? Object.keys(op.criteria) : [];
+    expect(keys).not.toContain("CLICK");
+    expect(keys).toContain("TYPE_TEXT");
+    const withClick = buildBrowseStepQuestions([off, clickable]).op;
+    expect(withClick?.type === "choice" ? Object.keys(withClick.criteria) : []).toContain("CLICK");
+  });
+
+  it("rejects a cascade pick of a disabled index, and the cascade prompt carries the shared rule", async () => {
+    const prompt = mockCascadeOnce({ operation: "CLICK", index: 4, done: false, confidence: 0.95, reason: "the chip" }).seenPrompt;
+    const client = fakeClient({ op: choice("CLICK", PEAK_THRESHOLD_OP - 0.1), target_click: choice("3", 0.9) });
+    const result = await decideBrowseStep(client, makeConfig(), baseInput([clickable, off]));
+    expect(result.cascade).not.toBe(true);
+    expect(prompt()).toContain(DISABLED_CONTROL_RULE);
   });
 });

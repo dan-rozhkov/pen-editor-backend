@@ -207,3 +207,13 @@ describe("decideBrowseLocate", () => {
     });
   });
 });
+
+describe("disabled elements", () => {
+  it("never treats a disabled element as a candidate", async () => {
+    let called = false;
+    const client = fakeClient(choice("3", 0.9), { capture: () => (called = true) });
+    const result = await decideBrowseLocate(client, baseInput([{ ...continueButton, disabled: true }]));
+    expect(result.outcome).toBe("not_found");
+    expect(called).toBe(false);
+  });
+});

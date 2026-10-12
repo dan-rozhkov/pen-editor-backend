@@ -10,6 +10,7 @@ import {
   capAndScrubElements,
   elementCriterionLabel,
   hasProbabilities,
+  isActionable,
   peakProbability,
   truncateLabel,
   type BrowseStepElement,
@@ -80,9 +81,9 @@ const NONE_CRITERION_KEY = "none";
  * for the same borrowing on the browse_task side), and for FOCUS, ANY of
  * CLICK/TYPE_TEXT/SELECT — see BrowseLocateOperation's comment on FOCUS. */
 function isCandidateFor(operation: BrowseLocateOperation, el: BrowseStepElement): boolean {
-  if (operation === "HOVER") return el.ops.includes("CLICK");
-  if (operation === "FOCUS") return el.ops.length > 0;
-  return el.ops.includes(operation);
+  if (operation === "HOVER") return isActionable(el, "CLICK");
+  if (operation === "FOCUS") return !el.disabled && el.ops.length > 0;
+  return isActionable(el, operation);
 }
 
 function notFound(reason: string, confidence: number, model: string): BrowseLocateResult {

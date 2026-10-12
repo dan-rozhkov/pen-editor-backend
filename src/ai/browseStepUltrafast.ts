@@ -17,7 +17,9 @@ import {
   NUMBERED_PLACEHOLDER_PROMPT_LINES,
   buildNumberedPlaceholderGoal,
   capAndScrubElements,
+  DISABLED_CONTROL_RULE,
   hasProbabilities,
+  isActionable,
   historyEntryLandedNoEffect,
   isCarriedOverEntry,
   stripGoalClauses,
@@ -83,7 +85,8 @@ const NEXT_ACTION_RULES = [
   "When a list is open (expanded), CLICK the wanted option in it; clicking the dropdown itself again only closes it.",
   "An element marked expanded:true is already open: never CLICK that same element again. If none of its options are in the element table, answer BLOCKED (its options are not visible) instead of clicking the field.",
   "Submit populated search fields (CLICK the search button, or PRESS_ENTER right after typing) before opening a result; a populated field alone is not an applied search.",
-  "WAIT only when the needed control is absent/disabled, or submitted results are still loading.",
+  "WAIT only when the needed control is absent, or submitted results are still loading.",
+  DISABLED_CONTROL_RULE,
   "If Search/Submit is visible and the required fields are ready, CLICK it immediately.",
   "A form whose results are already shown for the requested values is applied: do not CLICK its Search/Submit again; move on to the next requirement (or DONE).",
   "Recent WAIT actions are not evidence of loading. Prefer a useful visible control over WAIT.",
@@ -145,7 +148,7 @@ function safeModalName(modal: string | undefined): string | undefined {
 
 function lunaInstructions(goal: string, head?: TargetHead, vision = false, calendar = false, modal = false): string {
   return (
-    `Goal: ${goal}\n\nChoose only the next single step. Do not repeat an action that already had no effect or was just repeated.\n${COMMIT_EFFECT_RULE}\n${DONE_COMMIT_RULE}` +
+    `Goal: ${goal}\n\nChoose only the next single step. Do not repeat an action that already had no effect or was just repeated.\n${COMMIT_EFFECT_RULE}\n${DONE_COMMIT_RULE}\n${DISABLED_CONTROL_RULE}` +
     (head ? "" : `\n${DONE_WHEN_RULE}`) +
     (head ? `\nChoose the target element for the operation ${head}.` : "") +
     (calendar ? `\n${CALENDAR_HINT}` : "") +
@@ -321,7 +324,15 @@ export function withRememberedSelections(
   });
 }
 
-function stateElement(el: BrowseStepElement): Record<string, unknown> {
+/** A control that is disabled right after OUR OWN last action on it is busy. */
+function isBusy(el: BrowseStepElement, history: BrowseStepInput["history"]): boolean {
+  if (!el.disabled) return false;
+  const last = lastOwnEntry(history);
+  if (!last?.ok) return false;
+  return last.index === el.index || (last.index === undefined && clickTargetLabel(last.label) === el.label);
+}
+
+function stateElement(el: BrowseStepElement, history: BrowseStepInput["history"] = []): Record<string, unknown> {
   const out: Record<string, unknown> = {
     index: el.index,
     role: el.role ?? el.tag,
@@ -332,6 +343,8 @@ function stateElement(el: BrowseStepElement): Record<string, unknown> {
   else if (el.value !== undefined || el.ops.includes("TYPE_TEXT") || el.ops.includes("SELECT")) out.value = currentValue(el);
   if (el.expanded !== undefined) out.expanded = el.expanded;
   if (el.isPassword) out.password = true;
+  if (el.disabled) out.disabled = true;
+  if (isBusy(el, history)) out.busy = true;
   if (el.frame) out.frame = truncateLabel(el.frame, 40);
   return out;
 }
@@ -361,9 +374,10 @@ function buildTargets(elements: BrowseStepElement[]): Record<TargetHead, Map<str
     SELECT: new Map(),
   };
   for (const el of elements) {
-    if (el.ops.includes("CLICK")) targets.CLICK.set(String(el.index), { index: el.index });
-    if (el.ops.includes("TYPE_TEXT")) targets.TYPE_TEXT.set(String(el.index), { index: el.index });
-    if (el.ops.includes("SELECT") && el.options) {
+    if (el.disabled) continue;
+    if (isActionable(el, "CLICK")) targets.CLICK.set(String(el.index), { index: el.index });
+    if (isActionable(el, "TYPE_TEXT")) targets.TYPE_TEXT.set(String(el.index), { index: el.index });
+    if (isActionable(el, "SELECT") && el.options) {
       const current = el.value !== undefined ? normalize(el.value) : null;
       el.options.forEach((option, i) => {
         if (!option.trim() || (current !== null && normalize(option) === current)) return;
@@ -965,7 +979,7 @@ export async function decideBrowseStepUltrafast(
   try {
     const stateObject = {
       page: { url: scrubPii(input.url), title: scrubPii(input.title), text: pageText },
-      elements: elements.map(stateElement),
+      elements: elements.map((el) => stateElement(el, input.history)),
       recent_actions: history,
       ...(input.scroll ? { scroll: input.scroll } : {}),
       ...(modalName ? { open_dialog: modalName } : {}),

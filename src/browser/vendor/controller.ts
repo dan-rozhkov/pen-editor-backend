@@ -1,4 +1,4 @@
-// VENDORED from pen-editor-desktop/src/main/browser/controller.ts @ 8a360a5.
+// VENDORED from pen-editor-desktop/src/main/browser/controller.ts @ ebf1544.
 // Do not edit: regenerate with `npm run browser:sync` (scripts/sync-browser-vendor.mjs).
 // ---- end of vendor header ----
 // The built-in browser's command surface (design doc
@@ -420,6 +420,9 @@ const CLICK_LOAD_SETTLE_TIMEOUT_MS = 8_000;
  * existed. */
 const BUSY_SETTLE_TIMEOUT_MS = 3_000;
 const BUSY_POLL_INTERVAL_MS = 50;
+/** How long a CLICK/TYPE_TEXT on a natively disabled target waits for it to
+ * re-enable (a busy control) before refusing it as locked. */
+const DISABLED_WAIT_MS = 1_500;
 
 /** Bounds `moveCursor`'s own CURSOR_JS call — a little above CURSOR_JS's own
  * internal ~1.15s backstop, so that backstop (which always resolves with a
@@ -1628,13 +1631,31 @@ export class BrowserController {
   private async revealTarget(
     page: BrowserPageHandle,
     locateArgs: { target?: string; index?: number; snapshotId?: string },
-  ): Promise<boolean> {
-    try {
-      const revealed = await this.executeScript(page, "REVEAL_TARGET_JS", locateArgs);
-      return revealed.dismissDialog === true;
-    } catch {
-      // Best-effort.
-      return false;
+    operation: "CLICK" | "TYPE_TEXT",
+    deadlineAt?: number,
+  ): Promise<{ dismissDialog: boolean; error?: string }> {
+    // A natively disabled target is refused by REVEAL_TARGET_JS itself,
+    // before any scroll/stamp. A merely BUSY one (a handler disabling it for
+    // a moment) gets a short chance to re-enable first: re-run the reveal
+    // every BUSY_POLL_INTERVAL_MS up to DISABLED_WAIT_MS (and the command
+    // deadline minus SETTLE_HEADROOM_MS), same cadence as settleWhileTargetBusy.
+    const budget = Math.min(
+      DISABLED_WAIT_MS,
+      deadlineAt === undefined ? this.timeoutMs : deadlineAt - SETTLE_HEADROOM_MS - Date.now(),
+    );
+    const until = Date.now() + Math.max(0, budget);
+    while (true) {
+      try {
+        const revealed = await this.executeScript(page, "REVEAL_TARGET_JS", { ...locateArgs, operation });
+        if (revealed.disabled !== true) return { dismissDialog: revealed.dismissDialog === true };
+        if (Date.now() + BUSY_POLL_INTERVAL_MS >= until) {
+          return { dismissDialog: false, error: typeof revealed.error === "string" ? revealed.error : "the control is disabled" };
+        }
+      } catch {
+        // Best-effort.
+        return { dismissDialog: false };
+      }
+      await new Promise((resolve) => setTimeout(resolve, BUSY_POLL_INTERVAL_MS));
     }
   }
 
@@ -1823,7 +1844,7 @@ export class BrowserController {
     if (!page.sendCdp) {
       return this.legacyTypeFallback(page, locateArgs, text, deadlineAt, baseline);
     }
-    const located = await this.executeScript(page, "CLICK_RESOLVE_JS", locateArgs);
+    const located = await this.executeScript(page, "CLICK_RESOLVE_JS", { ...locateArgs, operation: "TYPE_TEXT" });
     if ("error" in located) return located;
 
     // Code review finding 4: check editability BEFORE any trusted click —
@@ -2374,7 +2395,9 @@ export class BrowserController {
     // Before the before-signature capture, deliberately — see CURSOR_JS's
     // doc comment (pageScripts.ts) for why the overlay's own DOM/scroll
     // footprint must never land between the two evidence-of-effect captures.
-    const dismissDialog = await this.revealTarget(page, { target });
+    const reveal = await this.revealTarget(page, { target }, "CLICK", deadlineAt);
+    if (reveal.error) return errorResult(reveal.error);
+    const dismissDialog = reveal.dismissDialog;
     await this.moveCursor(page, { action: "click", target });
     const before = await this.captureSignature(page, "before");
     // Armed/captured before CLICK_JS runs — Wave 1 speed: a navigation, or a
@@ -3322,8 +3345,12 @@ export class BrowserController {
         // the same treatment as a target-based one.
         const tabsBefore = await this.listPagesSafe();
         // Before the before-signature capture — see runClick's comment.
-        const dismissDialog =
-          frameRoute.frameId === null ? await this.revealTarget(page, { index, snapshotId }) : false;
+        const reveal =
+          frameRoute.frameId === null
+            ? await this.revealTarget(page, { index, snapshotId }, "CLICK")
+            : { dismissDialog: false, error: undefined };
+        if (reveal.error) return errorResult(reveal.error);
+        const dismissDialog = reveal.dismissDialog;
         await this.moveCursor(page, { action: "click", snapshotId, index, point: cursorPoint });
         const before = await this.captureSignature(page, "before");
         // Armed/captured before the click runs — see runClick's comment.
@@ -3370,7 +3397,10 @@ export class BrowserController {
 
       if (operation === "TYPE_TEXT") {
         // Before the before-signature capture — see runClick's comment.
-        if (frameRoute.frameId === null) await this.revealTarget(page, { index, snapshotId });
+        if (frameRoute.frameId === null) {
+          const reveal = await this.revealTarget(page, { index, snapshotId }, "TYPE_TEXT");
+          if (reveal.error) return errorResult(reveal.error);
+        }
         await this.moveCursor(page, { action: "type", snapshotId, index, point: cursorPoint });
         const before = await this.captureSignature(page, "before");
         // Wave 2 reliability item 2: trusted CDP typing, falling back to
@@ -3484,7 +3514,8 @@ export class BrowserController {
   ): Promise<BrowserCommandResult> {
     const page = this.target.currentPage();
     if (!page) return errorResult("No browser tab is open — call browse_open first.");
-    await this.revealTarget(page, locateArgs);
+    const reveal = await this.revealTarget(page, locateArgs, "TYPE_TEXT", deadlineAt);
+    if (reveal.error) return errorResult(reveal.error);
     await this.moveCursor(page, { action: "type", target: locateArgs.target, index: locateArgs.index, snapshotId: locateArgs.snapshotId });
     const before = await this.captureSignature(page, "before");
     const baseline = this.autocompleteBaseline(page, null);

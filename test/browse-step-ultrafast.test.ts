@@ -10,7 +10,7 @@ import { createModel, mockJsonModelOnce } from "./structuredModelFakes.js";
 import { choice, fakeClient } from "./browseFakes.js";
 import { DONE_WHEN_RULE, MAX_DECISION_CHOICES, containsWholeTyped, goalWantsMultipleUnits, matchesTyped, pickSuggestion, repeatsCommittedClick, repeatsNoEffectClick } from "../src/ai/browseStepUltrafast.js";
 import type { SystemOneAnswer, SystemOneEvaluateParams, SystemOneQuestion } from "../src/services/systemone.js";
-import type { BrowseStepElement, BrowseStepInput } from "../src/ai/browseStep.js";
+import { DISABLED_CONTROL_RULE, type BrowseStepElement, type BrowseStepInput } from "../src/ai/browseStep.js";
 
 const { decideBrowseStepUltrafast, buildUltrafastQuestions, withRememberedSelections } = await import("../src/ai/browseStepUltrafast.js");
 
@@ -1153,5 +1153,71 @@ describe("DONE_WHEN_RULE", () => {
     expect(JSON.stringify(questions)).toContain(DONE_WHEN_RULE);
     const plain = buildUltrafastQuestions("g", FORM, undefined);
     expect(JSON.stringify(plain.questions)).toContain("Done when");
+  });
+});
+
+describe("disabled elements", () => {
+  const DISABLED = "A control marked disabled cannot be used yet.";
+  const elements: BrowseStepElement[] = [
+    { index: 0, tag: "input", role: "radio", label: "M5 Pro chip", ops: ["CLICK"], disabled: true },
+    { index: 1, tag: "input", role: "radio", label: "Display standard", ops: ["CLICK"] },
+  ];
+
+  it("never offers a disabled element as a target but keeps it in the state", async () => {
+    const { captured } = await decide({ operation: choice("CLICK", 0.9), click_target: choice("1", 0.9) }, { elements });
+    const state = captured.state as { elements: Array<Record<string, unknown>> };
+    expect(state.elements.find((e) => e.index === 0)).toMatchObject({ label: "M5 Pro chip", disabled: true });
+    expect(state.elements.find((e) => e.index === 1)).not.toHaveProperty("disabled");
+    const click = captured.questions.click_target;
+    expect(click?.type === "choice" ? Object.keys(click.criteria) : []).toEqual(["1"]);
+  });
+
+  it("states the rule", () => {
+    const built = buildUltrafastQuestions("goal", elements, undefined, { history: [] });
+    expect(JSON.stringify(built.questions.operation.instructions)).toContain(DISABLED);
+  });
+});
+
+describe("disabled elements (Luna profile)", () => {
+  const elements: BrowseStepElement[] = [
+    { index: 0, tag: "input", role: "radio", label: "M5 Pro chip", ops: ["CLICK"], disabled: true },
+    { index: 1, tag: "input", role: "radio", label: "Display standard", ops: ["CLICK"] },
+  ];
+  it("puts the rule in the operation and target instructions and flags the state element", async () => {
+    const lunaConfig = makeConfig({ TYPESAFE_API_KEY: "key", TYPESAFE_MODEL: "openai/gpt-6-luna-decisions" });
+    let captured: Captured | undefined;
+    await decideBrowseStepUltrafast(
+      fakeClient({ operation: choice("CLICK", 0.9), click_target: choice("1", 0.9) }, { capture: (p) => (captured = p) }),
+      lunaConfig,
+      input({ elements }),
+    );
+    const state = captured!.state as { elements: Array<Record<string, unknown>> };
+    expect(state.elements.find((e) => e.index === 0)).toMatchObject({ disabled: true });
+    expect(JSON.stringify(captured!.questions.operation.instructions)).toContain("marked disabled cannot be used yet");
+    expect(JSON.stringify(captured!.questions.click_target?.instructions)).toContain("marked disabled cannot be used yet");
+  });
+});
+
+describe("busy control (disabled right after our own action)", () => {
+  const history = [{ operation: "CLICK", label: "Save", ok: true, index: 7 }];
+  const elements: BrowseStepElement[] = [{ index: 7, tag: "button", label: "Save", ops: ["CLICK"], disabled: true }];
+
+  it("marks the element busy and the shared rule tells the model to WAIT", async () => {
+    const { captured } = await decide({ operation: choice("WAIT", 0.9) }, { elements, history });
+    const state = captured.state as { elements: Array<Record<string, unknown>> };
+    expect(state.elements[0]).toMatchObject({ disabled: true, busy: true });
+    expect(JSON.stringify(captured.questions.operation.instructions)).toContain(DISABLED_CONTROL_RULE);
+    expect(DISABLED_CONTROL_RULE).toContain("WAIT");
+  });
+
+  it("does not mark a disabled control busy when our last action was on another element", async () => {
+    const { captured } = await decide({ operation: choice("WAIT", 0.9) }, { elements, history: [{ ...history[0]!, index: 1 }] });
+    const state = captured.state as { elements: Array<Record<string, unknown>> };
+    expect(state.elements[0]).not.toHaveProperty("busy");
+  });
+
+  it("uses the reworded rule", () => {
+    expect(DISABLED_CONTROL_RULE).toContain("the standard option that adds no extra cost");
+    expect(DISABLED_CONTROL_RULE).toContain("answer BLOCKED");
   });
 });
