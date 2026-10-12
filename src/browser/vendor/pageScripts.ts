@@ -1,4 +1,4 @@
-// VENDORED from pen-editor-desktop/src/main/browser/pageScripts.ts @ 329b87f.
+// VENDORED from pen-editor-desktop/src/main/browser/pageScripts.ts @ 8a360a5.
 // Do not edit: regenerate with `npm run browser:sync` (scripts/sync-browser-vendor.mjs).
 // ---- end of vendor header ----
 // Scripts injected into a browser tab's real page via
@@ -94,6 +94,22 @@ const DEEP_QUERY_HELPER_JS = `
  * ancestor that merely encloses it.
  */
 /**
+ * The one "visible without the viewport-margin clause" predicate (the test
+ * SNAPSHOT_JS's isVisible applies, minus its margin): FIND_BY_TEXT_JS,
+ * relocation and the radio/checkbox label proxy all use this copy.
+ * Nodes inside the cursor / marks overlays are never visible to it.
+ */
+const BOX_VISIBLE_JS = `
+  function penBoxVisible(node) {
+    if (node.closest && (node.closest("[data-pen-cursor]") || node.closest("[data-pen-marks]"))) return false;
+    var r = node.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) return false;
+    var st = getComputedStyle(node);
+    return st.display !== "none" && st.visibility !== "hidden" && parseFloat(st.opacity) !== 0;
+  }
+`;
+
+/**
  * Wave 2 reliability, item 3: prefers a VISIBLE match over a hidden one — a
  * bench run found a bare word ("Details", say) matching a `display:none`
  * menu item that happened to share the wanted text with the real, visible
@@ -110,6 +126,7 @@ const DEEP_QUERY_HELPER_JS = `
  */
 const FIND_BY_TEXT_JS = `
   ${DEEP_QUERY_HELPER_JS}
+  ${BOX_VISIBLE_JS}
   function findByText(needle) {
     var wanted = needle.trim().toLowerCase();
     if (!wanted) return null;
@@ -138,13 +155,7 @@ const FIND_BY_TEXT_JS = `
     // margin clause (item 3: a text search should still find something
     // below the fold, just not something the page itself hides).
     function isVisibleForText(el) {
-      if (el.closest && (el.closest("[data-pen-cursor]") || el.closest("[data-pen-marks]"))) return false;
-      var rect = el.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) return false;
-      var style = getComputedStyle(el);
-      if (style.display === "none" || style.visibility === "hidden") return false;
-      if (parseFloat(style.opacity) === 0) return false;
-      return true;
+      return penBoxVisible(el);
     }
 
     // Code review finding 5: never match a <style>/<script>/<noscript>/
@@ -1090,6 +1101,79 @@ const LABEL_HELPER_JS = `
 `;
 
 /**
+ * Radio/checkbox "tiles": the native input is routinely made invisible on
+ * purpose (opacity:0 stretched over a styled <label>, or a 1x1 clip-hidden box
+ * beside a swatch label) while the label is what the user sees and clicks.
+ * isVisible drops such an input, so the choice never reached the element
+ * table. `penToggleProxy(el)` is THE one place that picks the label standing
+ * in for the input: used by SNAPSHOT_JS (box), MARKS_JS (mark placement), the
+ * click/reveal path and fingerprint relocation, so the listed label and the
+ * clicked label are always the same node. It is null unless the input is
+ * "hidden on purpose" (`penToggleHidden`: opacity 0, a box under 2px on an
+ * axis, or clip-hidden) and some associated label (`el.labels`, first visible
+ * wins) is visible. Fail-closed: null when the input, or anything above it,
+ * is display:none / visibility:hidden / content-visibility hidden. Cached per
+ * input for the life of one page-script run.
+ */
+const TOGGLE_PROXY_JS = `
+  ${BOX_VISIBLE_JS}
+
+  function penToggleInput(el) {
+    if (!el || el.nodeType !== 1 || (el.tagName || "").toLowerCase() !== "input") return false;
+    var t = (el.getAttribute("type") || "").toLowerCase();
+    return t === "radio" || t === "checkbox";
+  }
+
+  var PEN_CLIP_ZERO = /^rect\\(\\s*0(px)?[\\s,]+0(px)?[\\s,]+0(px)?[\\s,]+0(px)?\\s*\\)$/;
+  function penToggleHidden(el) {
+    if (!penToggleInput(el)) return false;
+    var r = el.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2) return true;
+    var st = getComputedStyle(el);
+    if (parseFloat(st.opacity) === 0) return true;
+    if (PEN_CLIP_ZERO.test(String(st.clip || "").trim())) return true;
+    var cp = String(st.clipPath || "").replace(/\\s+/g, "");
+    return cp === "inset(50%)" || cp === "inset(100%)";
+  }
+
+  // Whether el and everything above it are rendered (opacity is NOT checked:
+  // an opacity:0 input is the whole point).
+  function penRenderedChain(el) {
+    if (typeof el.checkVisibility === "function") {
+      return el.checkVisibility({ checkVisibilityCSS: true, contentVisibilityAuto: true });
+    }
+    var own = getComputedStyle(el);
+    if (own.display === "none" || own.visibility === "hidden") return false;
+    var depth = 0;
+    var up = el.parentNode;
+    while (up && up.nodeType !== 9 && depth < 12) {
+      if (up.nodeType === 1 && getComputedStyle(up).display === "none") return false;
+      up = up.nodeType === 11 && up.host ? up.host : up.parentNode;
+      depth++;
+    }
+    return true;
+  }
+
+  var penToggleProxyCache = new Map();
+  function penToggleProxy(el) {
+    if (!penToggleInput(el)) return null;
+    if (penToggleProxyCache.has(el)) return penToggleProxyCache.get(el);
+    var found = null;
+    if (el.labels && el.labels.length && penToggleHidden(el) && penRenderedChain(el)) {
+      for (var li = 0; li < el.labels.length; li++) {
+        var label = el.labels[li];
+        if (label !== el && penBoxVisible(label)) {
+          found = label;
+          break;
+        }
+      }
+    }
+    penToggleProxyCache.set(el, found);
+    return found;
+  }
+`;
+
+/**
  * Shared `findBySnapshot` body, interpolated into FOCUS_JS/HOVER_TARGET_JS
  * (review finding 5). Both used to embed `args.snapshotId` straight into a
  * `[data-pen-snap="' + snapshotId + ":" + index + '"]'` selector string —
@@ -1107,6 +1191,7 @@ const FIND_BY_SNAPSHOT_JS = `
   ${DEEP_QUERY_HELPER_JS}
   ${INTERACTIVE_SELECTOR_JS}
   ${LABEL_HELPER_JS}
+  ${TOGGLE_PROXY_JS}
 
   // Set true when findBySnapshot re-found a re-mounted node by fingerprint
   // (see below); read by the script that interpolated this snippet so it can
@@ -1124,12 +1209,9 @@ const FIND_BY_SNAPSHOT_JS = `
       var rs = getComputedStyle(el);
       return rs.display !== "none" && rs.visibility !== "hidden" && el.getClientRects().length > 0;
     }
-    var rect = el.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return false;
-    var style = getComputedStyle(el);
-    if (style.display === "none" || style.visibility === "hidden") return false;
-    if (parseFloat(style.opacity) === 0) return false;
-    return true;
+    // Likewise a hidden-on-purpose radio/checkbox, listed via its label.
+    if (penToggleProxy(el)) return true;
+    return penBoxVisible(el);
   }
 
   // Re-finds a node the page re-mounted between snapshot and action
@@ -1338,13 +1420,59 @@ const HIT_TEST_HELPER_JS = `
  */
 const REVEAL_IF_NEEDED_JS = `
   ${HIT_TEST_HELPER_JS}
+  ${TOGGLE_PROXY_JS}
+
+  // Descendants of a label that a click must never land on (a link in a tile).
+  var PEN_LABEL_INTERACTIVE = "a, button, input, select, textarea, [role='link'], [role='button'], [onclick]";
+  function penHitOnLabelControl(hit, label, input) {
+    var node = hit;
+    while (node && node !== label) {
+      if (node.nodeType === 1 && node !== input && node.matches && node.matches(PEN_LABEL_INTERACTIVE)) return true;
+      node = node.parentNode;
+    }
+    return false;
+  }
+
+  function penPointInViewport(x, y) {
+    return x >= 0 && y >= 0 && x <= window.innerWidth && y <= window.innerHeight;
+  }
+
+  // Where a click on el should land: { box, x, y, hitOk }. Normally el's own
+  // centre. For a hidden-on-purpose radio/checkbox (penToggleProxy): its own
+  // centre when it is a real, hit-testable box (the stretched opacity:0
+  // tile), else the first of centre / 25% / 75% points of its label whose hit
+  // is inside the label and NOT on another control in it. No such point:
+  // hitOk false (the caller falls back to the DOM click on the input itself).
+  function penClickPoint(el) {
+    var proxy = penToggleProxy(el);
+    var r = el.getBoundingClientRect();
+    var x = r.left + r.width / 2;
+    var y = r.top + r.height / 2;
+    if (!proxy || (r.width >= 8 && r.height >= 8 && penPointInViewport(x, y) && penHitIsRelated(el, elementFromPointDeep(x, y)))) {
+      var ok = r.width > 0 && r.height > 0 && penPointInViewport(x, y) && penHitIsRelated(el, elementFromPointDeep(x, y));
+      return { box: el, x: x, y: y, hitOk: ok };
+    }
+    var lr = proxy.getBoundingClientRect();
+    var fracs = [[0.5, 0.5], [0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]];
+    for (var fi = 0; fi < fracs.length; fi++) {
+      var px = lr.left + lr.width * fracs[fi][0];
+      var py = lr.top + lr.height * fracs[fi][1];
+      if (!penPointInViewport(px, py)) continue;
+      var hit = elementFromPointDeep(px, py);
+      if (hit && (hit === proxy || proxy.contains(hit)) && !penHitOnLabelControl(hit, proxy, el)) {
+        return { box: proxy, x: px, y: py, hitOk: true };
+      }
+    }
+    return { box: proxy, x: lr.left + lr.width / 2, y: lr.top + lr.height / 2, hitOk: false };
+  }
 
   function penRevealIfNeeded(el) {
-    var r = el.getBoundingClientRect();
-    if (r.width > 0 && r.height > 0 && r.left >= 0 && r.top >= 0 && r.right <= window.innerWidth && r.bottom <= window.innerHeight) {
-      if (penHitIsRelated(el, elementFromPointDeep(r.left + r.width / 2, r.top + r.height / 2))) return false;
+    var cp = penClickPoint(el);
+    var r = cp.box.getBoundingClientRect();
+    if (cp.hitOk && r.width > 0 && r.height > 0 && r.left >= 0 && r.top >= 0 && r.right <= window.innerWidth && r.bottom <= window.innerHeight) {
+      return false;
     }
-    el.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
+    cp.box.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
     return true;
   }
 `;
@@ -2377,16 +2505,14 @@ export const CLICK_RESOLVE_JS = `(() => {
 
   var rect, x, y, hitOk;
   function hitTestTarget() {
-    rect = el.getBoundingClientRect();
-    x = rect.left + rect.width / 2;
-    y = rect.top + rect.height / 2;
-    hitOk = false;
-    var hitEl = null;
-    if (rect.width > 0 && rect.height > 0 && x >= 0 && y >= 0 && x <= window.innerWidth && y <= window.innerHeight) {
-      hitEl = elementFromPointDeep(x, y);
-      hitOk = penHitIsRelated(el, hitEl);
-    }
-    return hitEl;
+    // A hidden-on-purpose radio/checkbox is aimed at its label (or its own
+    // box): see penClickPoint.
+    var cp = penClickPoint(el);
+    rect = cp.box.getBoundingClientRect();
+    x = cp.x;
+    y = cp.y;
+    hitOk = cp.hitOk;
+    return null;
   }
 
   // No reveal-scroll here: any scroll must happen BEFORE the controller's
@@ -2529,13 +2655,7 @@ export const REVEAL_TARGET_JS = `(() => {
 
   var located = locateTarget(args);
   if (!located.el) return { found: false, hidden: located.hidden === true };
-  var rect = located.el.getBoundingClientRect();
-  var x = rect.left + rect.width / 2;
-  var y = rect.top + rect.height / 2;
-  var hitOk =
-    rect.width > 0 && rect.height > 0 && x >= 0 && y >= 0 && x <= window.innerWidth && y <= window.innerHeight
-      ? penHitIsRelated(located.el, elementFromPointDeep(x, y))
-      : false;
+  var hitOk = penClickPoint(located.el).hitOk;
   var revealResult = { found: true, hitOk: hitOk };
   if (located.relocated) revealResult.relocated = true;
   if (penMarkDismissDialog(located.el)) revealResult.dismissDialog = true;
@@ -2871,6 +2991,7 @@ export const SNAPSHOT_JS = `(() => {
   ${INTERACTIVE_SELECTOR_JS}
   ${SCROLL_CONTAINER_HELPER_JS}
   ${HIT_TEST_HELPER_JS}
+  ${TOGGLE_PROXY_JS}
 
   function isVisible(el) {
     // The cursor overlay (pageScripts.ts's CURSOR_JS) and the screenshot
@@ -2998,14 +3119,19 @@ export const SNAPSHOT_JS = `(() => {
   // Wave 3 reliability, item 1: pierces open shadow roots.
   var candidates = penCandidates();
   var found = [];
+  var penProxyLabels = new Set();
   for (var i = 0; i < candidates.length; i++) {
     var el = candidates[i];
     // A disabled ARIA slider ignores keys, so offering it only invites a
     // TYPE_TEXT that cannot work.
     if (penIsAriaSlider(el) && el.getAttribute("aria-disabled") === "true") continue;
-    // Likewise a native range the user cannot move (own attribute or a
-    // disabled fieldset: :disabled matches both).
-    if (penIsRange(el) && el.matches(":disabled")) continue;
+    // A natively disabled form field (own attribute or a disabled fieldset
+    // ancestor; :disabled matches both) ignores clicks, keys and typing, so
+    // listing it only invites a no-effect loop. Buttons are NOT skipped: a
+    // disabled "Continue" is information, and busy buttons are tracked
+    // elsewhere (TARGET_BUSY_HELPER_JS).
+    var nativeTag = tagOf(el);
+    if ((nativeTag === "input" || nativeTag === "select" || nativeTag === "textarea") && el.matches(":disabled")) continue;
     var rawRole = penRoleOf(el);
     var ariaRole = rawRole.toLowerCase();
     if (PEN_SKIP_WHEN_ARIA_DISABLED[ariaRole] && el.getAttribute("aria-disabled") === "true") continue;
@@ -3020,7 +3146,15 @@ export const SNAPSHOT_JS = `(() => {
     // selection state and a click on it lands on the child anyway.
     if (penInsideSelectableCell(el)) continue;
     var box = el;
-    if (!isVisible(el)) {
+    var toggleProxy = penToggleProxy(el);
+    if (toggleProxy) {
+      // Transparent / clip-hidden native radio or checkbox over a visible
+      // <label>: the label stands in for the box (same node the click and
+      // mark paths use), and must itself be near the viewport.
+      if (!isVisible(toggleProxy)) continue;
+      box = toggleProxy;
+      penProxyLabels.add(toggleProxy);
+    } else if (!isVisible(el)) {
       box = penRangeProxy(el);
       if (!box) continue;
     }
@@ -3141,6 +3275,14 @@ export const SNAPSHOT_JS = `(() => {
       }
     }
     found.push(entry);
+  }
+  // A label that is itself a candidate (onclick, role) would list the same
+  // tile twice — but only drop it when its toggle really got an entry above
+  // (an aria-hidden / cell-nested input gets none, and its label must stay).
+  if (penProxyLabels.size) {
+    found = found.filter(function (f) {
+      return !(f.tag === "label" && penProxyLabels.has(f.el));
+    });
   }
 
   // Reachability (booking.com finding). The table used to list every control
@@ -5486,6 +5628,7 @@ export const MARKS_JS = `(() => {
 
   var vw = window.innerWidth || document.documentElement.clientWidth || 0;
   var vh = window.innerHeight || document.documentElement.clientHeight || 0;
+  ${TOGGLE_PROXY_JS}
   var marked = document.querySelectorAll('[data-pen-snap^="' + snapshotId + ':"]');
 
   // Pass 1: every visible marked element and its box. Collected up front so a
@@ -5493,7 +5636,9 @@ export const MARKS_JS = `(() => {
   var items = [];
   for (var i = 0; i < marked.length; i++) {
     var el = marked[i];
-    var rect = el.getBoundingClientRect();
+    // A hidden-on-purpose radio/checkbox is marked on its label, the same
+    // box the snapshot listed it with.
+    var rect = (penToggleProxy(el) || el).getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) continue;
     // Off-screen: no box, no label.
     if (rect.right <= 0 || rect.bottom <= 0 || rect.left >= vw || rect.top >= vh) continue;
