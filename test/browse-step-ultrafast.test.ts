@@ -577,6 +577,21 @@ describe("OpenAI Decisions (Luna) profile", () => {
     expect(blocked.result).toMatchObject({ outcome: "act", operation: "CLICK", index: 5 });
   });
 
+  it("demotes a Luna DONE below the minimum peak even with a clear lead", async () => {
+    const { result } = await decideLuna({
+      operation: choice("DONE", 0.25, { probabilities: { DONE: 0.25, CLICK: 0.08, SCROLL_DOWN: 0.05 } }),
+      click_target: choice("5", 0.9),
+    });
+    expect(result).toMatchObject({ outcome: "act", operation: "CLICK", index: 5 });
+  });
+
+  it("keeps a Luna DONE at 0.35 that leads the runner-up by the margin", async () => {
+    const { result } = await decideLuna({
+      operation: choice("DONE", 0.35, { probabilities: { DONE: 0.35, CLICK: 0.15, SCROLL_DOWN: 0.05 } }),
+    });
+    expect(result.outcome).toBe("done");
+  });
+
   it("falls back to the next-best operation when the target is 'none'", async () => {
     const { result } = await decideLuna({
       operation: choice("TYPE_TEXT", 0.6, { probabilities: { TYPE_TEXT: 0.6, CLICK: 0.3, DONE: 0.1 } }),
@@ -998,6 +1013,86 @@ describe("done-after-no-effect gate", () => {
   it("keeps DONE when the runner-up is below 0.15", async () => {
     const { result } = await decide({ ...doneAnswers(0.1), click_target: choice("4", 0.9) }, { history: [noEffect] });
     expect(result.outcome).toBe("done");
+  });
+});
+
+describe("click-empty-field-typed gate", () => {
+  const field = (extra: Partial<BrowseStepElement> = {}): BrowseStepElement[] => [
+    { index: 0, tag: "input", label: "Search", ops: ["TYPE_TEXT", "CLICK"], value: "", ...extra },
+    { index: 1, tag: "button", label: "Close", ops: ["CLICK"] },
+  ];
+  const clickAnswers = { operation: choice("CLICK", 0.39), click_target: choice("0", 0.8) };
+  const quotedGoal = 'Search for "tent" in the shop';
+
+  it("turns a CLICK on an empty text field into TYPE_TEXT with the written text", async () => {
+    mockFieldText("Tent");
+    const { result } = await decide(clickAnswers, { elements: field(), goal: quotedGoal });
+    expect(result).toMatchObject({ outcome: "act", operation: "TYPE_TEXT", index: 0, text: "Tent" });
+    expect(result.diag?.gates).toContainEqual(expect.objectContaining({ head: "click-empty-field-typed" }));
+  });
+
+  it.each([
+    ["single quotes", "Add 'tent' to the cart"],
+    ["guillemets", "Найди «tent»"],
+  ])("reads a quoted phrase in %s", async (_name, goal) => {
+    mockFieldText("tent");
+    const { result } = await decide(clickAnswers, { elements: field(), goal });
+    expect(result).toMatchObject({ operation: "TYPE_TEXT", index: 0, text: "tent" });
+  });
+
+  it("does not read an apostrophe as a quote", async () => {
+    createModel.mockClear();
+    const { result } = await decide(clickAnswers, { elements: field(), goal: "Don't stop, it's a tent" });
+    expect(result).toMatchObject({ operation: "CLICK", index: 0 });
+    expect(createModel).not.toHaveBeenCalled();
+  });
+
+  it("keeps the click when the field already has a value", async () => {
+    const { result } = await decide(clickAnswers, { elements: field({ value: "old" }) });
+    expect(result).toMatchObject({ operation: "CLICK", index: 0 });
+    expect(result.diag?.gates.some((g) => g.head === "click-empty-field-typed")).toBe(false);
+  });
+
+  it("keeps the click on a password field", async () => {
+    const { result } = await decide(clickAnswers, { elements: field({ isPassword: true }) });
+    expect(result).toMatchObject({ operation: "CLICK", index: 0 });
+  });
+
+  it("keeps the click and skips the text helper when the goal quotes nothing", async () => {
+    createModel.mockClear();
+    const { result } = await decide(clickAnswers, { elements: field() });
+    expect(result).toMatchObject({ operation: "CLICK", index: 0 });
+    expect(createModel).not.toHaveBeenCalled();
+    expect(result.diag?.gates.some((g) => g.head === "click-empty-field-typed")).toBe(false);
+  });
+
+  it("keeps the click when the written text is not a quoted phrase", async () => {
+    mockFieldText("2026-10-12");
+    const { result } = await decide(clickAnswers, { elements: field(), goal: quotedGoal });
+    expect(result).toMatchObject({ operation: "CLICK", index: 0 });
+  });
+
+  it("keeps the click when the same field already got a landed TYPE_TEXT", async () => {
+    const typed = { operation: "TYPE_TEXT", label: 'TYPE_TEXT "tent" into "Search"', ok: true, index: 0 };
+    const { result } = await decide(clickAnswers, { elements: field(), goal: quotedGoal, history: [typed] });
+    expect(result).toMatchObject({ operation: "CLICK", index: 0 });
+  });
+
+  it("still converts when the earlier TYPE_TEXT is from an earlier sub-goal", async () => {
+    mockFieldText("tent");
+    const typed = { operation: "TYPE_TEXT", label: 'TYPE_TEXT "tent" into "Search" (earlier sub-goal)', ok: true, index: 0 };
+    const { result } = await decide(clickAnswers, { elements: field(), goal: quotedGoal, history: [typed] });
+    expect(result).toMatchObject({ operation: "TYPE_TEXT", index: 0 });
+  });
+
+  it("keeps the click when the goal has nothing to type", async () => {
+    mockFieldText(null);
+    const { result } = await decide(
+      { ...clickAnswers, type_text_target: choice("0", 0.8) },
+      { elements: field(), goal: quotedGoal },
+    );
+    expect(result).toMatchObject({ outcome: "act", operation: "CLICK", index: 0 });
+    expect(result.diag?.gates.some((g) => g.head === "no-text-runner-up")).toBe(false);
   });
 });
 

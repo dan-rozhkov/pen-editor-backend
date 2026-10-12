@@ -161,6 +161,11 @@ export const TERMINAL_MIN_PEAK = 0.5;
 /** Luna: DONE/BLOCKED stands when it leads the runner-up by this much. */
 export const LUNA_TERMINAL_MARGIN = 0.15;
 
+/** Luna's margin exception also needs this absolute peak: a correct Luna DONE
+ * peaks at 0.3-0.4. Live run: a false DONE at peak 0.2 after 6 scrolls passed
+ * the margin rule. Below it the normal runner-up demotion applies. */
+export const LUNA_DONE_MIN_PEAK = 0.3;
+
 const TERMINAL_OPERATIONS = new Set(["DONE", "BLOCKED"]);
 
 /** Offered operations that are neither DONE nor BLOCKED, most probable first. */
@@ -182,6 +187,27 @@ export const DONE_AFTER_NO_EFFECT_MIN_RUNNER_UP = 0.15;
 /** TYPE_TEXT found no value in the goal: continue with a runner-up at least
  * this likely, otherwise BLOCKED. */
 export const NO_TEXT_RUNNER_UP_MIN_PROBABILITY = 0.15;
+
+/** Lowercased, trimmed phrases the goal quotes ("...", “...”, «...» or '...'). */
+function quotedPhrases(goal: string): string[] {
+  const out: string[] = [];
+  // Single quotes only at word edges, so an apostrophe ("don't") opens none.
+  for (const m of goal.matchAll(/"([^"]+)"|“([^”]+)”|«([^»]+)»|(?<![\p{L}\p{N}])'([^']+)'(?![\p{L}\p{N}])/gu)) {
+    const phrase = (m[1] ?? m[2] ?? m[3] ?? m[4] ?? "").trim().toLowerCase();
+    if (phrase) out.push(phrase);
+  }
+  return out;
+}
+
+/** True when the current sub-goal already landed a TYPE_TEXT into a field
+ * with this label (entries carried over from an earlier sub-goal ignored). */
+function typedIntoFieldBefore(history: BrowseStepInput["history"], fieldLabel: string): boolean {
+  const want = normalize(fieldLabel);
+  return (
+    want !== "" &&
+    history.some((h) => !isCarriedOverEntry(h) && h.ok && h.operation === "TYPE_TEXT" && entryTargetLabel(h) === want)
+  );
+}
 
 /** The label of the control a history entry acted on (empty when none). */
 function entryTargetLabel(entry: BrowseStepInput["history"][number]): string {
@@ -232,7 +258,10 @@ function chooseOperation(
       .filter((op) => op !== answer.choice)
       .map((op) => answer.probabilities[op] ?? 0)
       .sort((a, b) => b - a);
-    if (peakProbability(answer) - (others[0] ?? 0) >= LUNA_TERMINAL_MARGIN) return { operation: answer.choice, demoted: false };
+    if (
+      peakProbability(answer) >= LUNA_DONE_MIN_PEAK &&
+      peakProbability(answer) - (others[0] ?? 0) >= LUNA_TERMINAL_MARGIN
+    ) return { operation: answer.choice, demoted: false };
   }
   const runnerUp = bestNonTerminal(answer, offered);
   return runnerUp && (answer.probabilities[runnerUp] ?? 0) > 0
@@ -1128,6 +1157,45 @@ export async function decideBrowseStepUltrafast(
         model,
         textSource: "llm",
         reason: "repeated click on a text field changed nothing: type into it",
+      });
+    }
+  }
+  if (
+    operation === "CLICK" &&
+    el.ops.includes("TYPE_TEXT") &&
+    !el.isPassword &&
+    !el.hasValue &&
+    (el.value ?? "") === "" &&
+    quotedPhrases(input.goal).length > 0 &&
+    !typedIntoFieldBefore(input.history, el.label)
+  ) {
+    // Clicking an empty text field only focuses it, and TYPE_TEXT focuses it
+    // anyway. But on a date picker or combobox the click is what OPENS the
+    // picker, so typing may replace it only when the text is a phrase the
+    // goal quotes verbatim, never a derived value such as a date. A field
+    // already typed into earlier (some sites clear it on submit) keeps the
+    // click, so there is no retype loop.
+    const quoted = quotedPhrases(input.goal);
+    const textStart = Date.now();
+    let text: string | null = null;
+    try {
+      text = await writeFieldText(config, input, el, pageText, AbortSignal.timeout(BROWSE_TEXT_TIMEOUT_MS));
+    } catch {
+      // Text helper failed: fall back to the model's own click.
+    }
+    timings.textMs = Date.now() - textStart;
+    if (text !== null && quoted.includes(text.trim().toLowerCase())) {
+      gates.push({ head: "click-empty-field-typed", peak: peakProbability(targetAnswer), threshold: 0, jevPick: `CLICK ${target.index}` });
+      ruleTier = true;
+      return finish({
+        outcome: "act",
+        operation: "TYPE_TEXT",
+        index: target.index,
+        text,
+        confidence: stepConfidence,
+        model,
+        textSource: "llm",
+        reason: "clicked an empty text field: type into it",
       });
     }
   }
