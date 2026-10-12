@@ -257,6 +257,63 @@ describe("decideBrowseStepUltrafast", () => {
     expect(result.outcome).toBe("blocked");
   });
 
+  describe("permissions.allowPasswordEntry", () => {
+    const withPassword = { elements: [...FORM, { index: 9, tag: "input", label: "Password", ops: ["TYPE_TEXT" as const], isPassword: true }] };
+    const typePw = { operation: choice("TYPE_TEXT", 0.9), type_text_target: choice("9", 0.9) };
+
+    it("types exactly the password the goal states, without the text helper", async () => {
+      vi.mocked(createModel).mockClear();
+      const { result } = await decide(typePw, {
+        ...withPassword,
+        goal: 'Log in as me@x.com with password "hunter2"',
+        permissions: { allowPasswordEntry: true },
+      });
+      expect(result).toMatchObject({ outcome: "act", operation: "TYPE_TEXT", index: 9, text: "hunter2" });
+      expect(createModel).not.toHaveBeenCalled();
+    });
+
+    it("never sends the plaintext password in the Jev evaluate call", async () => {
+      const { result, captured } = await decide(typePw, {
+        ...withPassword,
+        goal: 'Log in with password "hunter2"',
+        permissions: { allowPasswordEntry: true },
+      });
+      expect(result.text).toBe("hunter2");
+      expect(JSON.stringify(captured)).not.toContain("hunter2");
+      expect(JSON.stringify(captured)).toContain("[password]");
+    });
+
+    it("blocks when the goal states no password", async () => {
+      const { result } = await decide(typePw, { ...withPassword, permissions: { allowPasswordEntry: true } });
+      expect(result.outcome).toBe("blocked");
+      expect(result.reason).toContain("the goal gives no value");
+    });
+
+    it("honors the flag in the Luna click-to-Enter rewrite", async () => {
+      const lunaCfg = makeConfig({ TYPESAFE_API_KEY: "key", TYPESAFE_MODEL: "openai/gpt-6-luna-decisions" });
+      const run = async (permissions?: { allowPasswordEntry: boolean }) =>
+        decideBrowseStepUltrafast(
+          fakeClient({ operation: choice("CLICK", 0.9), click_target: choice("1", 0.9) }, { model: "openai/gpt-6-luna-decisions" }),
+          lunaCfg,
+          input({
+            elements: [
+              { index: 1, tag: "input", label: "Username", ops: ["CLICK", "TYPE_TEXT"], value: "x" },
+              { index: 9, tag: "input", label: "Password", ops: ["TYPE_TEXT"], isPassword: true },
+            ],
+            permissions,
+            history: [{ operation: "TYPE_TEXT", label: 'TYPE_TEXT "x" into "Username"', ok: true, index: 1 }],
+          }),
+        );
+      expect((await run({ allowPasswordEntry: true })).operation).toBe("PRESS_ENTER");
+      expect((await run()).operation).not.toBe("PRESS_ENTER");
+    });
+
+    it("lets PRESS_ENTER through with a password field on the page", async () => {
+      const { result } = await decide({ operation: choice("PRESS_ENTER", 0.9) }, { ...withPassword, permissions: { allowPasswordEntry: true } });
+      expect(result).toMatchObject({ outcome: "act", operation: "PRESS_ENTER" });
+    });
+  });
+
   it.each([
     ["an operation that was not offered", { operation: choice("SCROLL_UP", 0.9) }],
     ["a target that was not offered", { operation: choice("CLICK", 0.9), click_target: choice("0", 0.9) }],

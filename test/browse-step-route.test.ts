@@ -351,3 +351,44 @@ describe("modal body field", () => {
     expect(bodySchema.safeParse({ ...base, modal: "x".repeat(201) }).success).toBe(false);
   });
 });
+
+describe("POST /api/browse/step — irreversible-action guard", () => {
+  const reserveBody = {
+    goal: "Find free slots. Do not book; stop before booking.",
+    url: "https://example.com/r/1",
+    title: "Restaurant",
+    elements: [{ index: 3, tag: "button", label: "6:30 PM Reserve table at Tropical Restaurant", ops: ["CLICK"] }],
+    history: [],
+  };
+  const cfg = () => makeConfig({ TYPESAFE_API_KEY: "key" });
+
+  it("turns a policy CLICK on a Reserve control into a terminal blocked result", async () => {
+    stubJev({ operation: choice("CLICK"), click_target: choice("3"), commit_check: choice("yes") });
+    const res = await postStep(reserveBody, cfg());
+    expect(res.statusCode).toBe(200);
+    const json = res.json();
+    expect(json).toMatchObject({ outcome: "blocked", operation: "BLOCKED", confidence: 1 });
+    expect(json.reason).toContain("stopped before");
+    expect(json.diag).toBeUndefined();
+  });
+
+  it("keeps the CLICK when the model says the goal allows it", async () => {
+    stubJev({ operation: choice("CLICK"), click_target: choice("3"), commit_check: choice("no") });
+    const res = await postStep(reserveBody, cfg());
+    expect(res.json()).toMatchObject({ outcome: "act", operation: "CLICK", index: 3 });
+  });
+
+  it("keeps the original CLICK when confirmIrreversible is false", async () => {
+    stubJev({ operation: choice("CLICK"), click_target: choice("3") });
+    const res = await postStep({ ...reserveBody, permissions: { confirmIrreversible: false } }, cfg());
+    expect(res.json()).toMatchObject({ outcome: "act", operation: "CLICK", index: 3 });
+  });
+
+  it("accepts the permissions shape and rejects non-booleans", async () => {
+    const { bodySchema } = await import("../src/routes/browseStep.js");
+    const base = { goal: "g", url: "https://x.test", title: "t", elements: [], history: [] };
+    expect(bodySchema.safeParse({ ...base, permissions: { allowPasswordEntry: true, confirmIrreversible: false } }).success).toBe(true);
+    expect(bodySchema.safeParse({ ...base, permissions: {} }).success).toBe(true);
+    expect(bodySchema.safeParse({ ...base, permissions: { allowPasswordEntry: "yes" } }).success).toBe(false);
+  });
+});

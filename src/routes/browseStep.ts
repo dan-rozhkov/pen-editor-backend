@@ -5,9 +5,11 @@ import { createSystemOne, isJevModel, type SystemOneClient } from "../services/s
 import { decideBrowseStepUltrafast } from "../ai/browseStepUltrafast.js";
 import {
   decideBrowseStep,
+  BROWSE_STEP_OVERALL_DEADLINE_MS,
   MAX_SNAPSHOT_ELEMENTS,
   type BrowseStepInput,
 } from "../ai/browseStep.js";
+import { commitGuard } from "../ai/browseCommitGuard.js";
 import { botWallResult, detectBotWall } from "../ai/browseCaptcha.js";
 
 // POST /api/browse/step — the backend half of the browse_task loop (see
@@ -112,6 +114,14 @@ export const bodySchema = z.object({
   // Marked screenshot (experiment, BROWSE_STEP_VISION). A malformed value is
   // dropped by normalizeScreenshot, never a 400.
   screenshot: z.string().max(4_000_000).optional(),
+  // User switches. Absent (older clients): allowPasswordEntry=false,
+  // confirmIrreversible=true.
+  permissions: z
+    .object({
+      allowPasswordEntry: z.boolean().optional(),
+      confirmIrreversible: z.boolean().optional(),
+    })
+    .optional(),
 });
 
 const DATA_IMAGE_PREFIX_RE = /^data:image\/(jpeg|png|webp)(?:;[^,;]+)*;base64,/i;
@@ -216,6 +226,7 @@ export async function browseStepRoutes(
     path: "/api/browse/step",
     bodySchema,
     decide: async (client, body) => {
+      const startedAt = Date.now();
       const input: BrowseStepInput = {
         goal: body.goal,
         url: body.url,
@@ -226,14 +237,22 @@ export async function browseStepRoutes(
         pageText: body.pageText,
         modal: body.modal,
         screenshot: visionOn ? normalizeScreenshot(body.screenshot) : undefined,
+        permissions: body.permissions,
       };
       // Deterministic CAPTCHA guard, before either policy (no Jev call).
       const wall = detectBotWall(input);
+      // Irreversible-action guard after either policy (one call site).
       const result = wall
         ? botWallResult(wall)
-        : config.BROWSE_STEP_POLICY === "ultrafast"
-          ? await decideBrowseStepUltrafast(client, stepConfig, input)
-          : await decideBrowseStep(client, config, input);
+        : await commitGuard(
+            client,
+            input,
+            config.BROWSE_STEP_POLICY === "ultrafast"
+              ? await decideBrowseStepUltrafast(client, stepConfig, input)
+              : await decideBrowseStep(client, config, input),
+            // The guard gets only what is left of the step budget.
+            { timeoutMs: BROWSE_STEP_OVERALL_DEADLINE_MS + 1_000 - (Date.now() - startedAt) },
+          );
       // One line per decision so a stuck browse_task can be diagnosed from
       // the server log. Only the decision's own fields — never page text;
       // a cascade `reason` is model-written and may quote the page.

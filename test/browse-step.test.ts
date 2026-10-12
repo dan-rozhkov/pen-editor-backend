@@ -4092,3 +4092,27 @@ describe("decideBrowseStep diag", () => {
     }
   });
 });
+
+describe("allowPasswordEntry (legacy policy)", () => {
+  it("types exactly the goal's password and never sends it to Jev", async () => {
+    const captures: SystemOneEvaluateParams<Record<string, SystemOneQuestion>>[] = [];
+    const client = sequentialClient([{ op: choice("TYPE_TEXT", 0.9), target_type: choice("9", 0.9) }], { captures });
+    const result = await decideBrowseStep(client, makeConfig(), {
+      ...baseInput([passwordInput]),
+      goal: 'log in with password "hunter2"',
+      permissions: { allowPasswordEntry: true },
+    });
+    expect(result).toMatchObject({ outcome: "act", operation: "TYPE_TEXT", index: 9, text: "hunter2" });
+    expect(JSON.stringify(captures)).not.toContain("hunter2");
+  });
+
+  it("blocks when the goal states no password", async () => {
+    const client = sequentialClient([{ op: choice("TYPE_TEXT", 0.9), target_type: choice("9", 0.9) }]);
+    const result = await decideBrowseStep(client, makeConfig(), {
+      ...baseInput([passwordInput]),
+      permissions: { allowPasswordEntry: true },
+    });
+    expect(result.outcome).toBe("blocked");
+    expect(result.reason).toContain("the goal gives no value");
+  });
+});

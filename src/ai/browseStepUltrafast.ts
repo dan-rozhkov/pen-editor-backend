@@ -1,3 +1,4 @@
+import { withRedactedGoal } from "./browseCommitGuard.js";
 import { generateObject } from "ai";
 import { z } from "zod";
 import type { Config } from "../config.js";
@@ -911,8 +912,10 @@ export function repeatsCommittedClick(history: BrowseStepInput["history"], el: B
 export async function decideBrowseStepUltrafast(
   client: SystemOneClient,
   config: Config,
-  input: BrowseStepInput,
+  rawInput: BrowseStepInput,
 ): Promise<BrowseStepResult> {
+  // No model ever sees a password the goal states (see browseCommitGuard.ts).
+  const input = withRedactedGoal(rawInput);
   const start = Date.now();
   const timings: NonNullable<BrowseStepResult["timings"]> = { jevMs: 0, totalMs: 0 };
   const gates: NonNullable<BrowseStepResult["diag"]>["gates"] = [];
@@ -1031,7 +1034,8 @@ export async function decideBrowseStepUltrafast(
   if (operation === "DONE") return finish({ outcome: "done", operation, confidence, model });
   if (operation === "BLOCKED") return finish(blocked("Jev chose BLOCKED", model, confidence));
   // Hard rule kept from the legacy policy: the agent can't see what has focus.
-  if (operation === "PRESS_ENTER" && elements.some((el) => el.isPassword)) {
+  const passwordAllowed = input.permissions?.allowPasswordEntry === true;
+  if (operation === "PRESS_ENTER" && !passwordAllowed && elements.some((el) => el.isPassword)) {
     return finish(
       blocked("refusing to press Enter while a password field is present on the page — the user must log in themselves", model, confidence),
     );
@@ -1103,7 +1107,7 @@ export async function decideBrowseStepUltrafast(
     // TYPE_TEXT) and re-clicks the field it just typed into: that click means
     // "submit it".
     const lastStep = lastOwnEntry(input.history);
-    if (lastStep?.ok && lastStep.operation === "TYPE_TEXT" && lastStep.index === target.index && !elements.some((e) => e.isPassword)) {
+    if (lastStep?.ok && lastStep.operation === "TYPE_TEXT" && lastStep.index === target.index && (passwordAllowed || !elements.some((e) => e.isPassword))) {
       gates.push({ head: "enter", peak: peakProbability(targetAnswer), threshold: 0, jevPick: `CLICK ${target.index}` });
       return finish({ outcome: "act", operation: "PRESS_ENTER", confidence: stepConfidence, model, reason: "clicked the field just typed into: submit it" });
     }
@@ -1196,8 +1200,17 @@ export async function decideBrowseStepUltrafast(
     return finish({ outcome: "act", operation, index: target.index, confidence: stepConfidence, model });
   }
 
-  if (el.isPassword) {
+  if (el.isPassword && !passwordAllowed) {
     return finish(blocked("refusing to type into a password field — the user must log in themselves", model, stepConfidence));
+  }
+  if (el.isPassword) {
+    // Allowed password entry types exactly the goal's own password; no LLM
+    // text helper sees or writes it.
+    const password = input.typedPassword ?? null;
+    if (password === null) {
+      return finish(blocked(`the goal gives no value for the field "${truncateLabel(el.label, 60)}"`, model, stepConfidence));
+    }
+    return finish({ outcome: "act", operation, index: target.index, text: password, confidence: stepConfidence, model, textSource: "goal" });
   }
   const textStart = Date.now();
   let text: string | null;
@@ -1222,7 +1235,7 @@ export async function decideBrowseStepUltrafast(
           exclude: (op, t) =>
             op === "TYPE_TEXT" ||
             // PRESS_ENTER with a password field on the page is refused above.
-            (op === "PRESS_ENTER" && elements.some((e) => e.isPassword)) ||
+            (op === "PRESS_ENTER" && !passwordAllowed && elements.some((e) => e.isPassword)) ||
             // A click on the field that just returned no text would only refocus it.
             (op === "CLICK" && t?.index === target.index),
         });

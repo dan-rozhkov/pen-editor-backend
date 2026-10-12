@@ -1,3 +1,4 @@
+import { withRedactedGoal } from "./browseCommitGuard.js";
 import { generateObject, NoObjectGeneratedError } from "ai";
 import { z } from "zod";
 import type { Config } from "../config.js";
@@ -489,6 +490,23 @@ export interface BrowseStepInput {
   /** Marked (Set-of-Marks) screenshot as a data: URL. Only the ultrafast
    * policy with BROWSE_STEP_VISION=on reads it. Never logged. */
   screenshot?: string;
+  /** User-controlled switches (request body `permissions`). Absent on older
+   * clients: allowPasswordEntry=false, confirmIrreversible=true. */
+  permissions?: BrowsePermissions;
+  /** Set by the policies' entry point only: the password the goal states,
+   * kept aside for deterministic typing. `goal` itself is redacted. Never
+   * sent to a model, never logged. */
+  typedPassword?: string | null;
+}
+
+/** Per-task user switches for browse_task. */
+export interface BrowsePermissions {
+  /** When true the policies may type into a password field / press Enter
+   * with one on the page — still only a value the goal itself contains. */
+  allowPasswordEntry?: boolean;
+  /** When not false, the route stops before an irreversible commit click
+   * the goal does not authorize (see browseCommitGuard.ts). */
+  confirmIrreversible?: boolean;
 }
 
 export interface BrowseStepResult {
@@ -575,6 +593,11 @@ export interface BrowseStepDiag {
   /** Ultrafast only: System One `usage.input_tokens` of the step's evaluate
    * call; absent when no call completed. */
   inputTokens?: number;
+  /** Set by the route's irreversible-action guard: the commit kind it stopped. */
+  commitGuard?: string;
+  /** The model's verdict on the guarded action. */
+  commitGuardAnswer?: "yes" | "no" | "error";
+  commitGuardProbability?: number;
 }
 
 const OP_ID = "op";
@@ -2564,8 +2587,10 @@ type BrowseStepDiagState = Omit<BrowseStepDiag, "tier"> & { tier?: BrowseStepDia
 export async function decideBrowseStep(
   client: SystemOneClient,
   config: Config,
-  input: BrowseStepInput,
+  rawInput: BrowseStepInput,
 ): Promise<BrowseStepResult> {
+  // No model ever sees a password the goal states (see browseCommitGuard.ts).
+  const input = withRedactedGoal(rawInput);
   const start = Date.now();
   // Review finding #3: one overall deadline for the WHOLE decision, started
   // here and threaded through to every timed call the core makes
@@ -3152,7 +3177,11 @@ async function decideBrowseStepCore(
   // field being present on the page at all, not just the one the target
   // head would have picked (PRESS_ENTER is targetless — there is no target
   // head to check).
-  if (operation === "PRESS_ENTER" && scrubbedElements.some((el) => el.isPassword)) {
+  if (
+    operation === "PRESS_ENTER" &&
+    input.permissions?.allowPasswordEntry !== true &&
+    scrubbedElements.some((el) => el.isPassword)
+  ) {
     diag.tier = "rule";
     return blocked(
       "refusing to press Enter while a password field is present on the page — the user must log in themselves",
@@ -3283,13 +3312,37 @@ async function decideBrowseStepCore(
   if (operation === "TYPE_TEXT") {
     // Hard rule, not a threshold: never generate text for, or type into, a
     // password field. The user logs in themselves in the visible tab.
-    if (targetElement.isPassword) {
+    const passwordAllowed = input.permissions?.allowPasswordEntry === true;
+    if (targetElement.isPassword && !passwordAllowed) {
       diag.tier = "rule";
       return blocked(
         "refusing to type into a password field — the user must log in themselves",
         model,
         targetConfidence,
       );
+    }
+    if (targetElement.isPassword) {
+      // Allowed password entry types exactly the goal's own password, with
+      // no text helper involved.
+      const password = input.typedPassword ?? null;
+      if (password === null) {
+        diag.tier = "rule";
+        return blocked(
+          `the goal gives no value for the field "${truncateLabel(targetElement.label, 60)}"`,
+          model,
+          targetConfidence,
+        );
+      }
+      timing.textMs = 0;
+      return {
+        outcome: "act",
+        operation,
+        index: targetIndex,
+        text: password,
+        confidence: targetConfidence,
+        model,
+        textSource: "goal",
+      };
     }
     // Fast path (browse-speed contract): the text to type is almost always
     // already a literal substring of the RAW goal (never scrubbedGoal — see
