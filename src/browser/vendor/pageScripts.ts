@@ -1,4 +1,4 @@
-// VENDORED from pen-editor-desktop/src/main/browser/pageScripts.ts @ ebf1544.
+// VENDORED from pen-editor-desktop/src/main/browser/pageScripts.ts @ 7b093f4.
 // Do not edit: regenerate with `npm run browser:sync` (scripts/sync-browser-vendor.mjs).
 // ---- end of vendor header ----
 // Scripts injected into a browser tab's real page via
@@ -358,6 +358,120 @@ const POPUP_OPTION_JS = `
     return owners;
   }
 
+  // A plain text field with no ARIA autocomplete hints: the only kind whose
+  // suggestions can only be found by watching what typing sets in motion.
+  function penPlainField(f) {
+    var tag = (f.tagName || "").toLowerCase();
+    var type = (f.getAttribute("type") || "text").toLowerCase();
+    if (!(tag === "textarea" || (tag === "input" && /^(text|search|url|tel|email)$/.test(type)))) return false;
+    if (f.closest && f.closest('[role="combobox"]')) return false;
+    var au = (f.getAttribute("aria-autocomplete") || "").toLowerCase();
+    return au !== "list" && au !== "both" && (f.getAttribute("aria-haspopup") || "").toLowerCase() !== "listbox";
+  }
+
+  // The focused PLAIN text field with something typed in it: an owner even
+  // without aria-expanded (a plain <input type=text> whose suggestion list is
+  // a floating <ul> of role=button rows). Looks through open shadow roots.
+  // Never a password field. Returns { el, word } or null; \`word\` is the
+  // first token of 2+ letters or digits of the current value, lower-cased
+  // (used ONLY to match suggestion rows, it never leaves the page).
+  function penFocusOwner() {
+    var a = document.activeElement;
+    var guard = 0;
+    while (a && a.shadowRoot && a.shadowRoot.activeElement && guard < 20) {
+      a = a.shadowRoot.activeElement;
+      guard++;
+    }
+    if (!a || a.nodeType !== 1 || !penPlainField(a)) return null;
+    if (a.closest && (a.closest("[data-pen-cursor]") || a.closest("[data-pen-marks]"))) return null;
+    var m = /[\\p{L}\\p{N}]{2,}/u.exec(String(a.value || ""));
+    if (!m || !penPopupHasBox(a)) return null;
+    var st = getComputedStyle(a);
+    if (st.display === "none" || st.visibility === "hidden") return null;
+    return { el: a, word: m[0].toLowerCase() };
+  }
+
+  // Extra suggestion rows for a focus owner: role=button elements and native
+  // li / a / button inside \`root\`, shown, enabled, whose text has a word
+  // STARTING with \`word\` (prefix match). The innermost matching row wins:
+  // a matching container is dropped when it holds another matching row.
+  // Same filters as penPopupItemsIn; at most PEN_POPUP_LAYER_NODE_CAP nodes.
+  var penExtraItems = new Set();
+  function penFocusItemsIn(root, owner, word) {
+    var nodes = root.querySelectorAll("[role='button'], li, a, button");
+    var n = Math.min(nodes.length, PEN_POPUP_LAYER_NODE_CAP);
+    var escaped = word.replace(/[.*+?^$()|[\\]{}\\\\]/g, "\\\\$&");
+    var prefix = new RegExp("(^|[^\\p{L}\\p{N}])" + escaped, "u");
+    var hits = [];
+    for (var i = 0; i < n; i++) {
+      var el = nodes[i];
+      if (el === owner || el.contains(owner)) continue;
+      if (el.getAttribute("aria-hidden") === "true" || el.getAttribute("aria-disabled") === "true" || el.hasAttribute("disabled")) continue;
+      if (el.closest('[aria-hidden="true"]')) continue;
+      var st = getComputedStyle(el);
+      if (st.display === "none" || st.visibility === "hidden" || parseFloat(st.opacity) === 0) continue;
+      if (st.pointerEvents === "none" || st.cursor === "not-allowed") continue;
+      if (!penPopupHasBox(el) || penTooSmallToShow(el)) continue;
+      var text = String(el.getAttribute("aria-label") || el.textContent || "").toLowerCase();
+      if (!prefix.test(text)) continue;
+      hits.push(el);
+    }
+    var set = new Set(hits);
+    var out = [];
+    for (var h = 0; h < hits.length; h++) {
+      var holdsOther = false;
+      for (var k = 0; k < hits.length && !holdsOther; k++) {
+        if (k !== h && hits[h].contains(hits[k])) holdsOther = true;
+      }
+      if (!holdsOther) out.push(hits[h]);
+    }
+    return out;
+  }
+
+  // The new rows of \`root\` for a focus owner, minus any that hold or sit
+  // inside an item the ordinary rules already found (the ordinary item wins).
+  function penExtraRows(root, owner, word, ordinary) {
+    var rows = penFocusItemsIn(root, owner, word);
+    return rows.filter(function (row) {
+      for (var oi = 0; oi < ordinary.length; oi++) {
+        if (ordinary[oi] === row || ordinary[oi].contains(row) || row.contains(ordinary[oi])) return false;
+      }
+      return true;
+    });
+  }
+
+  // Floating layers present BEFORE typing next to a plain field are stamped
+  // data-pen-pre-type, so a nav / menu already on screen can never become the
+  // field's "suggestions". The stamps deliberately OUTLIVE the type command:
+  // the next snapshot is a separate script run that must still tell that menu
+  // from the list typing produced. They are replaced at the next typing's
+  // baseline (old stamps cleared first), and a layer that is the field's OWN
+  // current suggestion list (a retype of the same field) is never stamped.
+  function penStampPreType(owner) {
+    penClearPreType();
+    var ownRoots = [];
+    var fo = penFocusOwner();
+    if (fo && fo.el === owner) {
+      var own = penPopupFor(owner);
+      if (own && own.focusOwner) ownRoots = own.roots;
+    }
+    var layers = penFloatingLayers(owner);
+    for (var i = 0; i < layers.length; i++) {
+      var skip = false;
+      for (var r = 0; r < ownRoots.length; r++) {
+        if (ownRoots[r] === layers[i] || layers[i].contains(ownRoots[r]) || ownRoots[r].contains(layers[i])) skip = true;
+      }
+      if (!skip) layers[i].setAttribute("data-pen-pre-type", "1");
+    }
+  }
+  function penClearPreType() {
+    var stamped = document.querySelectorAll("[data-pen-pre-type]");
+    for (var i = 0; i < stamped.length; i++) stamped[i].removeAttribute("data-pen-pre-type");
+  }
+  function penIsPreType(node) {
+    return !!(node.hasAttribute && node.hasAttribute("data-pen-pre-type")) || !!(node.closest && node.closest("[data-pen-pre-type]"));
+  }
+
   // Only a listbox-type owner may fall back to a geometric guess: a menu or
   // dialog trigger's popup carries roles of its own.
   function penIsListboxOwner(el) {
@@ -520,7 +634,7 @@ const POPUP_OPTION_JS = `
 
   // The floating layer that best belongs to \`owner\`: see rule 2b/2c above.
   // \`labels\` are the owner's mirror-option labels (may be empty).
-  function penPopupFloating(owner, labels) {
+  function penFloatingLayers(owner) {
     var bases = [document.body];
     var dlg = owner.closest ? owner.closest(PEN_POPUP_DIALOG_SELECTOR) : null;
     if (dlg) bases.push(dlg);
@@ -552,6 +666,11 @@ const POPUP_OPTION_JS = `
         }
       }
     }
+    return layers;
+  }
+
+  function penPopupFloating(owner, labels, word) {
+    var layers = penFloatingLayers(owner);
     var wrap = owner.closest ? owner.closest('[role="combobox"]') : null;
     var refs = [owner.getBoundingClientRect()];
     if (wrap && wrap !== owner) refs.push(wrap.getBoundingClientRect());
@@ -573,6 +692,7 @@ const POPUP_OPTION_JS = `
       }
       if (gap > PEN_POPUP_MAX_GAP) continue;
       if (penLayerRejected(layers[li], owner)) continue;
+      if (word && penIsPreType(layers[li])) continue;
       cands.push({ layer: layers[li], gap: gap, area: r.width * r.height, adjacent: adjacent });
     }
     cands.sort(function (a, b) {
@@ -588,7 +708,8 @@ const POPUP_OPTION_JS = `
     for (var sc = 0; sc < cands.length; sc++) {
       if (!cands[sc].adjacent) continue;
       var items = penPopupItemsIn(cands[sc].layer);
-      if (items.length) return { roots: [cands[sc].layer], items: items, anchored: false };
+      var extra = word ? penExtraRows(cands[sc].layer, owner, word, items) : [];
+      if (items.length || extra.length) return { roots: [cands[sc].layer], items: items.concat(extra), extra: extra, anchored: false };
     }
     return null;
   }
@@ -629,6 +750,52 @@ const POPUP_OPTION_JS = `
       items = items.slice(0, PEN_POPUP_ITEM_CAP - total);
       total += items.length;
       out.push({ owner: owner, roots: roots, items: items, strong: strong, mirrors: mirror.roots });
+    }
+    // The focused, non-empty PLAIN text field as an additional owner: its
+    // popup is its aria-controls target, else the adjacent floating layer —
+    // either way only one that did not exist before typing (penStampPreType).
+    // Items = the ordinary item rules plus NEW rows (role=button / li / a /
+    // button) whose text starts a word with the first token of its value.
+    // No item = no popup (fail closed). Items an earlier owner already
+    // listed are not listed twice.
+    var fo = total < PEN_POPUP_ITEM_CAP ? penFocusOwner() : null;
+    if (fo) {
+      var fTargets = penRefTargets(fo.el);
+      var fRoots = [];
+      var fItems = [];
+      var fExtra = [];
+      var fStrong = false;
+      for (var ft = 0; ft < fTargets.length; ft++) {
+        if (!penPopupHasBox(fTargets[ft]) || penTooSmallToShow(fTargets[ft]) || penIsPreType(fTargets[ft])) continue;
+        var fOrd = penPopupItemsIn(fTargets[ft]);
+        var fNew = penExtraRows(fTargets[ft], fo.el, fo.word, fOrd);
+        if (fOrd.length || fNew.length) {
+          fRoots.push(fTargets[ft]);
+          fItems = fItems.concat(fOrd, fNew);
+          fExtra = fExtra.concat(fNew);
+          fStrong = true;
+        }
+      }
+      if (!fItems.length) {
+        var flayer = penPopupFloating(fo.el, [], fo.word);
+        if (flayer) {
+          fRoots = flayer.roots;
+          fItems = flayer.items;
+          fExtra = flayer.extra || [];
+        }
+      }
+      var taken = new Set();
+      for (var po = 0; po < out.length; po++) for (var pi2 = 0; pi2 < out[po].items.length; pi2++) taken.add(out[po].items[pi2]);
+      fItems = fItems.filter(function (it, ix) {
+        return fItems.indexOf(it) === ix && !taken.has(it);
+      });
+      if (fItems.length) {
+        fItems = fItems.slice(0, PEN_POPUP_ITEM_CAP - total);
+        total += fItems.length;
+        var fItemSet = new Set(fItems);
+        for (var xi = 0; xi < fExtra.length; xi++) if (fItemSet.has(fExtra[xi])) penExtraItems.add(fExtra[xi]);
+        out.push({ owner: fo.el, roots: fRoots, items: fItems, strong: fStrong, mirrors: [], focusOwner: true });
+      }
     }
     penPopupCache = out;
     return out;
@@ -673,6 +840,9 @@ const POPUP_OPTION_JS = `
   // inside it, or shares its role=combobox wrapper. Null when none.
   function penPopupFor(field) {
     var pops = penPopups();
+    // A field that is itself the focus owner gets its own popup, never an
+    // enclosing aria-expanded wrapper's.
+    for (var fp = 0; fp < pops.length; fp++) if (pops[fp].focusOwner && pops[fp].owner === field) return pops[fp];
     var fieldWrap = field.closest ? field.closest('[role="combobox"]') : null;
     for (var pi = 0; pi < pops.length; pi++) {
       var owner = pops[pi].owner;
@@ -728,7 +898,9 @@ const INTERACTIVE_SELECTOR_JS = `
   // treats it as a list option.
   function penRoleOf(el) {
     var explicit = el.getAttribute("role");
-    if (explicit) return explicit;
+    // A suggestion row of a focus-owner popup (role=button / li / a) is an
+    // option like any other popup item, whatever role it carries.
+    if (explicit && !(penPopupItemSet().has(el) && penExtraItems.has(el))) return explicit;
     return penPopupItemSet().has(el) ? "option" : "";
   }
 
@@ -2156,13 +2328,20 @@ export const AUTOCOMPLETE_STATE_JS = `(() => {
     return allOptions;
   }
 
+  if (args.clearPreType) {
+    penClearPreType();
+    return { cleared: true };
+  }
   var el = penFindSigTarget();
   // args.baseline: the pre-typing probe — no stamp needed (focus/typing may
   // still re-target), just what is visible document-wide right now.
   if (args.baseline) {
     if (!el) return { docOptions: 0, docHash: 0 };
     var baseDigest = digest(penAllOptions());
-    var baseOut = { docOptions: baseDigest.count, docHash: baseDigest.hash };
+    var plainNow = penPlainField(el);
+    // Layers already floating beside a plain field are not its suggestions.
+    if (plainNow) penStampPreType(el);
+    var baseOut = { docOptions: baseDigest.count, docHash: baseDigest.hash, plain: plainNow };
     var baseOwn = penOwnOptions(el);
     if (baseOwn) {
       var ownDigest = digest(baseOwn);
@@ -2176,7 +2355,16 @@ export const AUTOCOMPLETE_STATE_JS = `(() => {
   var combo = el.closest ? el.closest('[role="combobox"]') : null;
   var auto = (el.getAttribute("aria-autocomplete") || "").toLowerCase();
   var popup = (el.getAttribute("aria-haspopup") || "").toLowerCase();
-  if (!combo && auto !== "list" && auto !== "both" && popup !== "listbox") return { autocomplete: false };
+  if (!combo && auto !== "list" && auto !== "both" && popup !== "listbox") {
+    // A plain text field only counts once its (focus-owner) suggestion popup
+    // is actually showing: without ARIA hints, "autocomplete-style" cannot be
+    // known earlier, and waiting on every plain field would cost the cap.
+    var focusPop = penPopupFor(el);
+    if (!(focusPop && focusPop.focusOwner && focusPop.owner === el)) {
+      var fo2 = penPlainField(el) ? penFocusOwner() : null;
+      return { autocomplete: false, plainEligible: !!(fo2 && fo2.el === el) };
+    }
+  }
 
   var allOptions = penAllOptions();
   var docWide = digest(allOptions);
@@ -3230,6 +3418,10 @@ export const SNAPSHOT_JS = `(() => {
     // open list" look the same, and the agent toggled a list open and shut.
     var expandedAttr = el.getAttribute("aria-expanded");
     if (expandedAttr === "true" || expandedAttr === "false") entry.expanded = expandedAttr === "true";
+    else if (tag === "input" || tag === "textarea") {
+      var fieldPopup = penPopupFor(el);
+      if (fieldPopup && fieldPopup.focusOwner && fieldPopup.owner === el) entry.expanded = true;
+    }
     if (penNativelyDisabled(el)) entry.disabled = true;
     // A custom (non-input) combobox shows its current choice as its text —
     // report it as the value, or "One way" reads as an unset control that
@@ -6060,6 +6252,65 @@ export const WAIT_TEXT_JS = `(() => {
   var needle = String(args.text || "").toLowerCase();
   var body = (document.body && document.body.innerText) || "";
   return { found: body.toLowerCase().indexOf(needle) !== -1 };
+})()`;
+
+/**
+ * Activity watcher for plain-field suggestions (controller.ts
+ * settleAutocomplete): like WAIT_DOM_ACTIVITY_JS, but it only counts
+ * mutations that ADD ELEMENT nodes (outside the cursor / marks overlays) — a
+ * ticking clock or counter only swaps text, which is not a suggestion list
+ * being rendered. `check` returns { mutated, ageMs }.
+ */
+export const SUGGEST_ACTIVITY_JS = `(() => {
+  var args = ${ARGS_MARKER};
+  var action = args.action;
+  if (action === "install") {
+    if (window.__penSuggestDom && window.__penSuggestDom.observer) {
+      try {
+        window.__penSuggestDom.observer.disconnect();
+      } catch (e) {}
+    }
+    var state = { observer: null, lastAt: null };
+    try {
+      var observer = new MutationObserver(function (records) {
+        if (penCounts(records)) state.lastAt = Date.now();
+      });
+      if (document.body) observer.observe(document.body, { childList: true, subtree: true });
+      state.observer = observer;
+    } catch (e) {
+      state.observer = null;
+    }
+    window.__penSuggestDom = state;
+    return { installed: true };
+  }
+  if (action === "uninstall") {
+    if (window.__penSuggestDom && window.__penSuggestDom.observer) {
+      try {
+        window.__penSuggestDom.observer.disconnect();
+      } catch (e) {}
+    }
+    window.__penSuggestDom = null;
+    return { uninstalled: true };
+  }
+  function penCounts(records) {
+    for (var i = 0; i < records.length; i++) {
+      var added = records[i].addedNodes;
+      for (var j = 0; j < added.length; j++) {
+        var n = added[j];
+        if (n.nodeType !== 1) continue;
+        if (n.closest && (n.closest("[data-pen-cursor]") || n.closest("[data-pen-marks]"))) continue;
+        return true;
+      }
+    }
+    return false;
+  }
+  var st = window.__penSuggestDom;
+  if (!st || !st.observer) return { mutated: false, ageMs: null };
+  try {
+    if (penCounts(st.observer.takeRecords())) st.lastAt = Date.now();
+  } catch (e) {}
+  if (st.lastAt === null) return { mutated: false, ageMs: null };
+  return { mutated: true, ageMs: Date.now() - st.lastAt };
 })()`;
 
 /**

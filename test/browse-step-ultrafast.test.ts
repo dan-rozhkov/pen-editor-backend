@@ -8,7 +8,7 @@ vi.mock("../src/ai/provider.js", async (importOriginal) =>
 
 import { createModel, mockJsonModelOnce } from "./structuredModelFakes.js";
 import { choice, fakeClient } from "./browseFakes.js";
-import { DONE_WHEN_RULE, MAX_DECISION_CHOICES, containsWholeTyped, goalWantsMultipleUnits, matchesTyped, pickSuggestion, repeatsCommittedClick, repeatsNoEffectClick } from "../src/ai/browseStepUltrafast.js";
+import { shortenRetypedQuery, DONE_WHEN_RULE, MAX_DECISION_CHOICES, containsWholeTyped, goalWantsMultipleUnits, matchesTyped, pickSuggestion, repeatsCommittedClick, repeatsNoEffectClick } from "../src/ai/browseStepUltrafast.js";
 import type { SystemOneAnswer, SystemOneEvaluateParams, SystemOneQuestion } from "../src/services/systemone.js";
 import { DISABLED_CONTROL_RULE, type BrowseStepElement, type BrowseStepInput } from "../src/ai/browseStep.js";
 
@@ -778,7 +778,7 @@ describe("open dialog (modal) and repeated no-effect clicks", () => {
     }
   });
 
-  it("leaves a first click, an effective click, another target and a non-editable element alone", async () => {
+  it("leaves a first click, an effective click, another target and a once-retried non-editable click alone", async () => {
     for (const history of [
       [],
       [{ operation: "CLICK", label: 'CLICK "Search"', ok: true, index: 0 }],
@@ -791,6 +791,7 @@ describe("open dialog (modal) and repeated no-effect clicks", () => {
     }
     const button: BrowseStepElement[] = [{ index: 0, tag: "button", label: "Search", ops: ["CLICK"] }];
     const result = await decideClick([{ operation: "CLICK", label: "Search (no effect)", ok: false, index: 0 }], button, false);
+    // A single no-effect click may be retried once (the guard stops the third attempt).
     expect(result).toMatchObject({ operation: "CLICK", index: 0 });
   });
 
@@ -1219,5 +1220,139 @@ describe("busy control (disabled right after our own action)", () => {
   it("uses the reworded rule", () => {
     expect(DISABLED_CONTROL_RULE).toContain("the standard option that adds no extra cost");
     expect(DISABLED_CONTROL_RULE).toContain("answer BLOCKED");
+  });
+});
+
+describe("repeated no-effect click guard", () => {
+  const els: BrowseStepElement[] = [
+    { index: 5, tag: "button", label: "Search properties", ops: ["CLICK"] },
+    { index: 6, tag: "button", label: "Refine location", ops: ["CLICK"] },
+  ];
+  const noEffect = (extra: Record<string, unknown> = {}) => ({
+    operation: "CLICK",
+    label: "Search properties (no effect)",
+    ok: true,
+    index: 5,
+    ...extra,
+  });
+  const scroll = { y: 0, height: 900 };
+  const clickSearch = (ops: Record<string, number>) => ({
+    operation: choice("CLICK", ops.CLICK ?? 0.7, { probabilities: ops }),
+    click_target: choice("5", 0.9),
+  });
+
+  it("diverts the third identical attempt to the runner-up and records the gate", async () => {
+    const { result } = await decide(clickSearch({ CLICK: 0.7, SCROLL_DOWN: 0.3 }), { elements: els, scroll, history: [noEffect(), noEffect()] });
+    expect(result).toMatchObject({ outcome: "act", operation: "SCROLL_DOWN" });
+    expect(result.diag?.gates).toContainEqual(expect.objectContaining({ head: "repeat-no-effect" }));
+    expect(result.diag?.tier).toBe("rule");
+  });
+
+  it("blocks the third attempt when there is no runner-up", async () => {
+    const { result } = await decide(clickSearch({ CLICK: 0.9 }), { elements: els, scroll, history: [noEffect(), noEffect()] });
+    expect(result).toMatchObject({ outcome: "blocked", reason: "the same click had no effect twice" });
+  });
+
+  it("matches by label when entries carry no index", async () => {
+    const e = noEffect({ index: undefined });
+    const { result } = await decide(clickSearch({ CLICK: 0.9 }), { elements: els, scroll, history: [e, e] });
+    expect(result.outcome).toBe("blocked");
+  });
+
+  it("allows a retry after one no-effect click", async () => {
+    const { result } = await decide(clickSearch({ CLICK: 0.9 }), { elements: els, scroll, history: [noEffect()] });
+    expect(result).toMatchObject({ operation: "CLICK", index: 5 });
+  });
+
+  it("allows a retry after any other step in between", async () => {
+    const between = { operation: "TYPE_TEXT", label: 'TYPE_TEXT "x" into "Last name"', ok: true, index: 1 };
+    const history = [noEffect(), noEffect(), between];
+    const { result } = await decide(clickSearch({ CLICK: 0.9 }), { elements: els, scroll, history });
+    expect(result).toMatchObject({ operation: "CLICK", index: 5 });
+  });
+
+  it("allows Create account after a no-effect click, a TYPE_TEXT and the pick again", async () => {
+    const history = [
+      { operation: "CLICK", label: "Create account (no effect)", ok: true, index: 5 },
+      { operation: "TYPE_TEXT", label: 'TYPE_TEXT "Petrova" into "Last name"', ok: true, index: 1 },
+    ];
+    const { result } = await decide(
+      { operation: choice("CLICK", 0.9), click_target: choice("5", 0.9) },
+      { history },
+    );
+    expect(result).toMatchObject({ operation: "CLICK", index: 5 });
+  });
+
+  it("ignores carried-over entries and a different element", async () => {
+    const carried = noEffect({ label: "Search properties (no effect) (earlier sub-goal)" });
+    expect((await decide(clickSearch({ CLICK: 0.9 }), { elements: els, scroll, history: [carried, carried] })).result).toMatchObject({ operation: "CLICK", index: 5 });
+    const other = { operation: "CLICK", label: "Refine location (no effect)", ok: true, index: 6 };
+    expect((await decide(clickSearch({ CLICK: 0.9 }), { elements: els, scroll, history: [other, noEffect()] })).result).toMatchObject({ operation: "CLICK", index: 5 });
+  });
+});
+
+describe("retyped query shortening", () => {
+  const field = (label: string, extra: Partial<BrowseStepElement> = {}): BrowseStepElement => ({ index: 1, tag: "input", label, ops: ["TYPE_TEXT"], ...extra });
+  const typed = (text: string, label: string) => ({ operation: "TYPE_TEXT", label: `TYPE_TEXT "${text}" into "${label}"`, ok: true, index: 1 });
+  const CJ = "Clapham Junction station, London";
+
+  it("shortens an identical retype in a location field when no option was clicked", () => {
+    const f = field("Location");
+    expect(shortenRetypedQuery([typed(CJ, "Location")], f, [f], CJ)).toBe("Clapham Junction station");
+    expect(shortenRetypedQuery([typed(CJ, "Location")], f, [f], "clapham  junction station, london")).toBe("Clapham Junction station");
+  });
+  it("works for combobox/searchbox roles regardless of label", () => {
+    const f = field("Anything", { role: "combobox" });
+    expect(shortenRetypedQuery([typed(CJ, "Anything")], f, [f], CJ)).toBe("Clapham Junction station");
+  });
+  it("leaves plain name/address fields alone", () => {
+    const f = field("Last name");
+    expect(shortenRetypedQuery([typed("Smith, Jr.", "Last name")], f, [f], "Smith, Jr.")).toBe("Smith, Jr.");
+    const a = field("Street address");
+    expect(shortenRetypedQuery([typed("1 Main St, Apt 2", "Street address")], a, [a], "1 Main St, Apt 2")).toBe("1 Main St, Apt 2");
+  });
+  it("leaves a different model text alone", () => {
+    const f = field("Destination");
+    expect(shortenRetypedQuery([typed("Paris, France", "Destination")], f, [f], "Lyon, France")).toBe("Lyon, France");
+  });
+  it("leaves the text alone after an option click landed, or without a comma, or a first typing", () => {
+    const f = field("Location");
+    const opt: BrowseStepElement = { index: 9, tag: "li", role: "option", label: "Clapham Junction Station, London", ops: ["CLICK"] };
+    const pick = { operation: "CLICK", label: "Clapham Junction Station, London", ok: true, index: 9 };
+    expect(shortenRetypedQuery([typed(CJ, "Location"), pick], f, [f, opt], CJ)).toBe(CJ);
+    expect(shortenRetypedQuery([typed("Paris", "Location")], f, [f], "Paris")).toBe("Paris");
+    expect(shortenRetypedQuery([], f, [f], CJ)).toBe(CJ);
+  });
+  it("keeps the text when the head is shorter than 3 characters", () => {
+    const f = field("Location");
+    expect(shortenRetypedQuery([typed("LA, USA", "Location")], f, [f], "LA, USA")).toBe("LA, USA");
+  });
+
+  it("is applied by the policy on a retype, with the gate and reason, and the prompt is unchanged", async () => {
+    const prompt = mockFieldText(CJ);
+    const elements: BrowseStepElement[] = [
+      { index: 1, tag: "input", label: "Location", ops: ["TYPE_TEXT"], value: "" },
+      { index: 5, tag: "button", label: "Search properties", ops: ["CLICK"] },
+    ];
+    const history = [typed(CJ, "Location"), { operation: "CLICK", label: "Search properties (no effect)", ok: true, index: 5 }];
+    const { result } = await decide({ operation: choice("TYPE_TEXT", 0.9), type_text_target: choice("1", 0.9) }, { elements, history });
+    expect(result).toMatchObject({ outcome: "act", operation: "TYPE_TEXT", index: 1, text: "Clapham Junction station", reason: "shortened a query that found nothing" });
+    expect(result.diag?.gates).toContainEqual(expect.objectContaining({ head: "retype-shorten" }));
+    expect(result.diag?.tier).toBe("rule");
+    expect(prompt()).not.toContain("shorter form");
+  });
+});
+
+describe("pending suggestions for a plain text field reported as expanded", () => {
+  const elements: BrowseStepElement[] = [
+    { index: 0, tag: "input", label: "Location", ops: ["TYPE_TEXT"], value: "Clapham Junction station", expanded: true },
+    { index: 1, tag: "button", label: "Search properties", ops: ["CLICK"] },
+    { index: 2, tag: "div", role: "option", label: "Clapham Junction Station, London", ops: ["CLICK"] },
+  ];
+  const history = [{ operation: "TYPE_TEXT", label: 'TYPE_TEXT "Clapham Junction station" into "Location"', ok: true, index: 0 }];
+  it("clicks the matching option row before the search button", async () => {
+    const { result } = await decide({ operation: choice("CLICK", 0.9), click_target: choice("1", 0.9) }, { elements, history });
+    expect(result).toMatchObject({ outcome: "act", operation: "CLICK", index: 2 });
+    expect(result.reason).toContain("suggestion");
   });
 });

@@ -808,12 +808,59 @@ function becameNotes(label: string): { from: string; to: string }[] {
  * refused/failed one) on this same element. Same element = exactly equal
  * normalized label (indices are per snapshot), and equal index when both
  * sides carry one. */
-export function repeatsNoEffectClick(history: BrowseStepInput["history"], el: BrowseStepElement): boolean {
-  const last = lastOwnEntry(history);
-  if (!last || last.operation !== "CLICK" || !historyEntryLandedNoEffect(last)) return false;
-  if (last.index !== undefined && last.index !== el.index) return false;
+export function repeatsNoEffectClick(history: BrowseStepInput["history"], el: BrowseStepElement, window = 1): boolean {
   const label = normalize(el.label);
-  return label !== "" && normalize(clickTargetLabel(last.label)) === label;
+  if (label === "" || history.length < window) return false;
+  return history
+    .slice(-window)
+    .every(
+      (h) =>
+        !isCarriedOverEntry(h) &&
+        h.operation === "CLICK" &&
+        historyEntryLandedNoEffect(h) &&
+        (h.index === undefined || h.index === el.index) &&
+        normalize(clickTargetLabel(h.label)) === label,
+    );
+}
+
+const SEARCH_LIKE_LABEL_RE =
+  /search|location|where|destination|city|town|place|address search|query|(?<![\p{L}\p{N}])(?:from|to)(?![\p{L}\p{N}])|поиск|где|куда|откуда|город/iu;
+
+/** Search/location-like fields only: plain address/name/company/notes fields
+ * never qualify. */
+function isSearchLikeField(el: BrowseStepElement): boolean {
+  return el.role === "combobox" || el.role === "searchbox" || SEARCH_LIKE_LABEL_RE.test(el.label);
+}
+
+/** A query retyped unchanged after a comma-bearing attempt found nothing: the
+ * part before the first comma. All of these must hold: a search-like field;
+ * typed into before in this task; the previous text had a comma; no click on
+ * an option landed after it; the model's new text equals the previous one.
+ * Otherwise `text` is returned untouched. */
+export function shortenRetypedQuery(
+  history: BrowseStepInput["history"],
+  field: BrowseStepElement,
+  elements: BrowseStepElement[],
+  text: string,
+): string {
+  if (!isSearchLikeField(field)) return text;
+  const want = normalize(field.label);
+  let at = -1;
+  history.forEach((h, i) => {
+    if (!isCarriedOverEntry(h) && h.ok && h.operation === "TYPE_TEXT" && entryTargetLabel(h) === want) at = i;
+  });
+  if (at < 0) return text;
+  const prev = parseTypedLabel(history[at]!.label);
+  if (!prev || !prev.typed.includes(",") || normalize(prev.typed) !== normalize(text)) return text;
+  const optionLabels = new Set(elements.filter((e) => e.role === "option").map((e) => normalize(e.label)));
+  const pickedOption = history.slice(at + 1).some((h) => {
+    if (isCarriedOverEntry(h) || h.operation !== "CLICK" || !h.ok || historyEntryLandedNoEffect(h)) return false;
+    const byIndex = h.index !== undefined ? elements.find((e) => e.index === h.index) : undefined;
+    return byIndex?.role === "option" || optionLabels.has(normalize(clickTargetLabel(h.label)));
+  });
+  if (pickedOption) return text;
+  const shortened = prev.typed.split(",")[0]!.trim();
+  return shortened.length >= 3 ? shortened : text;
 }
 
 const COUNT_WORDS = "two|three|four|five|six|seven|eight|nine|ten|eleven|twelve";
@@ -1022,6 +1069,7 @@ export async function decideBrowseStepUltrafast(
       return !opts.exclude(op, t);
     });
   const opProbabilities = opAnswer.probabilities;
+  const noEffectExcluded = new Set<number>();
   let chosen = chooseOperation(opAnswer, operations, luna);
   gates.push({
     head: "op",
@@ -1210,6 +1258,28 @@ export async function decideBrowseStepUltrafast(
       });
     }
   }
+  if (operation === "CLICK" && !el.ops.includes("TYPE_TEXT") && repeatsNoEffectClick(input.history, el, 2)) {
+    // The same click landed with no effect twice in a row: a third identical
+    // attempt cannot help. (A retry after any other step is allowed.)
+    noEffectExcluded.add(el.index);
+    gates.push({ head: "repeat-no-effect", peak: peakProbability(targetAnswer), threshold: 0, jevPick: `CLICK ${target.index}` });
+    ruleTier = true;
+    const alt = pickRunnerUp({
+      minP: NO_TEXT_RUNNER_UP_MIN_PROBABILITY,
+      requireTarget: true,
+      exclude: (op, t) =>
+        (op === "CLICK" && t !== undefined && noEffectExcluded.has(t.index)) ||
+        (op === "PRESS_ENTER" && !passwordAllowed && elements.some((e) => e.isPassword)),
+    });
+    if (alt) {
+      const altP = opProbabilities[alt] ?? 0;
+      gates.push({ head: "no-text-runner-up", peak: altP, threshold: NO_TEXT_RUNNER_UP_MIN_PROBABILITY, jevPick: `CLICK ${target.index}` });
+      const altHead = targetHeadFor(alt as BrowseOperation);
+      if (!altHead) return finish({ outcome: "act", operation: alt as BrowseOperation, confidence: altP, model });
+      return decideTarget(alt as BrowseOperation, altHead, choiceAnswer(answers[TARGET_QUESTION_ID[altHead]]), altP);
+    }
+    return finish(blocked("the same click had no effect twice", model, stepConfidence));
+  }
   if (operation !== "TYPE_TEXT") {
     return finish({ outcome: "act", operation, index: target.index, confidence: stepConfidence, model });
   }
@@ -1263,14 +1333,20 @@ export async function decideBrowseStepUltrafast(
     }
     return finish(blocked(`the goal gives no value for the field "${truncateLabel(el.label, 60)}"`, model, stepConfidence));
   }
+  const finalText = shortenRetypedQuery(input.history, el, elements, text);
+  if (finalText !== text) {
+    gates.push({ head: "retype-shorten", peak: peakProbability(targetAnswer), threshold: 0, jevPick: `TYPE_TEXT ${target.index}` });
+    ruleTier = true;
+  }
   return finish({
     outcome: "act",
     operation,
     index: target.index,
-    text,
+    text: finalText,
     confidence: stepConfidence,
     model,
     textSource: "llm",
+    ...(finalText !== text ? { reason: "shortened a query that found nothing" } : {}),
   });
   }
 }

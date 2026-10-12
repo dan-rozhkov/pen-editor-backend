@@ -1,4 +1,4 @@
-// VENDORED from pen-editor-desktop/src/main/browser/controller.ts @ ebf1544.
+// VENDORED from pen-editor-desktop/src/main/browser/controller.ts @ 7b093f4.
 // Do not edit: regenerate with `npm run browser:sync` (scripts/sync-browser-vendor.mjs).
 // ---- end of vendor header ----
 // The built-in browser's command surface (design doc
@@ -49,6 +49,7 @@ import {
   FOCUS_JS,
   WAIT_TEXT_JS,
   WAIT_DOM_ACTIVITY_JS,
+  SUGGEST_ACTIVITY_JS,
   CLICK_RESOLVE_JS,
   REVEAL_TARGET_JS,
   SELECT_ALL_CONTENT_JS,
@@ -78,6 +79,7 @@ const SCRIPT_TEMPLATES = {
   FOCUS_JS,
   WAIT_TEXT_JS,
   WAIT_DOM_ACTIVITY_JS,
+  SUGGEST_ACTIVITY_JS,
   CLICK_RESOLVE_JS,
   REVEAL_TARGET_JS,
   SELECT_ALL_CONTENT_JS,
@@ -193,8 +195,17 @@ interface AutocompleteBaseline {
   /** The field's OWN list (aria-controls/aria-owns) digest, when it named one
    * with visible options at baseline time. */
   ownKey: string | null;
+  /** A plain text field (no ARIA autocomplete hints): see settlePlainSuggestions. */
+  plain: boolean;
+  /** networkStats generation when the baseline was taken (plain fields only). */
+  netGen: number | null;
   taken: boolean;
   take(): Promise<void>;
+  /** Undoes what a plain field's baseline left on the page (the activity
+   * observer). The pre-type layer stamps stay on purpose: the next snapshot
+   * needs them (see penStampPreType). Idempotent; owners call it in a finally
+   * around the whole type path. */
+  release(): Promise<void>;
 }
 
 function isPageSignature(value: unknown): value is PageSignature {
@@ -238,6 +249,12 @@ const NON_CLICK_SETTLE_MS = 50;
  * before and one probe after, and no wait. */
 export const AUTOCOMPLETE_SETTLE_MS = 2_000;
 const AUTOCOMPLETE_POLL_INTERVAL_MS = 100;
+/** Plain-field suggestions: activity window, overall cap, activity poll. */
+const PLAIN_SUGGEST_ACTIVITY_MS = 400;
+const PLAIN_SUGGEST_MAX_MS = 1_200;
+const PLAIN_SUGGEST_POLL_MS = 50;
+/** Activity must have been quiet this long, with no popup, to stop waiting. */
+const PLAIN_SUGGEST_QUIET_MS = 300;
 
 /** The optional waits above (autocomplete, dialog dismissal, the late-click
  * re-check) used to be capped by the command's own `deadlineAt`, so a wait
@@ -3408,21 +3425,25 @@ export class BrowserController {
         // reliability item 2: same frame-routing skip-trusted-CDP rule as
         // CLICK above.
         const baseline = this.autocompleteBaseline(page, frameRoute.frameId);
-        let result: BrowserCommandResult;
-        if (frameRoute.frameId === null) {
-          result = await this.dispatchType(page, { index, snapshotId }, text!, deadlineAt, baseline);
-        } else {
-          await baseline.take();
-          result = await this.frameClickOrType(page, frameRoute.frameId, "TYPE_TEXT", frameRoute.localIndex, snapshotId, deadlineAt, text);
+        try {
+          let result: BrowserCommandResult;
+          if (frameRoute.frameId === null) {
+            result = await this.dispatchType(page, { index, snapshotId }, text!, deadlineAt, baseline);
+          } else {
+            await baseline.take();
+            result = await this.frameClickOrType(page, frameRoute.frameId, "TYPE_TEXT", frameRoute.localIndex, snapshotId, deadlineAt, text);
+          }
+          if ("error" in result && !extractSliderPartial(result)) return result;
+          const scopedBefore = extractScopedBefore(result);
+          const selfDisabled = extractTargetSelfDisabled(result);
+          await this.settleShort();
+          await this.settleAutocomplete(page, frameRoute.frameId, deadlineAt, baseline);
+          if (selfDisabled) await this.settleWhileTargetBusy(page);
+          const after = await this.captureSignature(page, "after");
+          return { ...result, ...this.diffSignatures(before, after, { scopedBefore }) };
+        } finally {
+          await baseline.release();
         }
-        if ("error" in result && !extractSliderPartial(result)) return result;
-        const scopedBefore = extractScopedBefore(result);
-        const selfDisabled = extractTargetSelfDisabled(result);
-        await this.settleShort();
-        await this.settleAutocomplete(page, frameRoute.frameId, deadlineAt, baseline);
-        if (selfDisabled) await this.settleWhileTargetBusy(page);
-        const after = await this.captureSignature(page, "after");
-        return { ...result, ...this.diffSignatures(before, after, { scopedBefore }) };
       }
 
       // Review finding 3: SELECT/SCROLL_UP/SCROLL_DOWN get a short settle
@@ -3519,15 +3540,19 @@ export class BrowserController {
     await this.moveCursor(page, { action: "type", target: locateArgs.target, index: locateArgs.index, snapshotId: locateArgs.snapshotId });
     const before = await this.captureSignature(page, "before");
     const baseline = this.autocompleteBaseline(page, null);
-    const result = await this.dispatchType(page, locateArgs, text, deadlineAt, baseline);
-    if ("error" in result && !extractSliderPartial(result)) return result;
-    const scopedBefore = extractScopedBefore(result);
-    const selfDisabled = extractTargetSelfDisabled(result);
-    await this.settleShort();
-    await this.settleAutocomplete(page, null, deadlineAt, baseline);
-    if (selfDisabled) await this.settleWhileTargetBusy(page);
-    const after = await this.captureSignature(page, "after");
-    return { ...result, ...this.diffSignatures(before, after, { scopedBefore }) };
+    try {
+      const result = await this.dispatchType(page, locateArgs, text, deadlineAt, baseline);
+      if ("error" in result && !extractSliderPartial(result)) return result;
+      const scopedBefore = extractScopedBefore(result);
+      const selfDisabled = extractTargetSelfDisabled(result);
+      await this.settleShort();
+      await this.settleAutocomplete(page, null, deadlineAt, baseline);
+      if (selfDisabled) await this.settleWhileTargetBusy(page);
+      const after = await this.captureSignature(page, "after");
+      return { ...result, ...this.diffSignatures(before, after, { scopedBefore }) };
+    } finally {
+      await baseline.release();
+    }
   }
 
   /** A one-shot "what options are visible right now" recorder for
@@ -3541,6 +3566,8 @@ export class BrowserController {
     const baseline: AutocompleteBaseline = {
       key: null,
       ownKey: null,
+      plain: false,
+      netGen: null,
       taken: false,
       take: async () => {
         if (baseline.taken) return;
@@ -3556,8 +3583,24 @@ export class BrowserController {
           if (!("error" in state) && typeof state.ownOptions === "number" && state.ownOptions > 0) {
             baseline.ownKey = `${state.ownOptions}:${String(state.ownHash)}`;
           }
+          if (!("error" in state) && state.plain === true && frameId === null) {
+            // Plain text field: remember what typing starts from, so a later
+            // network request or DOM mutation can be told apart from noise.
+            baseline.plain = true;
+            baseline.netGen = page.networkStats?.(NETWORK_REQUEST_DROP_MS).generation ?? null;
+            await this.executeScript(page, "SUGGEST_ACTIVITY_JS", { action: "install" });
+          }
         } catch {
           // Best-effort: no baseline ⇒ the plain "stable across two polls" rule.
+        }
+      },
+      release: async () => {
+        if (!baseline.plain || frameId !== null) return;
+        baseline.plain = false;
+        try {
+          await this.executeScript(page, "SUGGEST_ACTIVITY_JS", { action: "uninstall" });
+        } catch {
+          // Best-effort.
         }
       },
     };
@@ -3586,9 +3629,16 @@ export class BrowserController {
     deadlineAt: number,
     baseline?: AutocompleteBaseline,
   ): Promise<void> {
-    const until = Math.min(Date.now() + AUTOCOMPLETE_SETTLE_MS, deadlineAt - SETTLE_HEADROOM_MS);
+    const start = Date.now();
+    const plainField = frameId === null && baseline?.plain === true;
+    // A plain field (no ARIA hints) only waits when typing set something in
+    // motion, and under a tighter cap (PLAIN_SUGGEST_MAX_MS).
+    const until = Math.min(start + (plainField ? PLAIN_SUGGEST_MAX_MS : AUTOCOMPLETE_SETTLE_MS), deadlineAt - SETTLE_HEADROOM_MS);
     if (Date.now() >= until) return;
     let previous: string | null = null;
+    let activitySeen = false;
+    let lastActiveAt = start;
+    let lastGen = baseline?.netGen ?? null;
     while (true) {
       let state: BrowserCommandResult;
       try {
@@ -3599,21 +3649,47 @@ export class BrowserController {
       } catch {
         return;
       }
-      if ("error" in state || state.autocomplete !== true) return;
-      const options = typeof state.options === "number" ? state.options : 0;
-      const key = `${options}:${String(state.hash)}`;
-      const docKey = `${String(state.docOptions)}:${String(state.docHash)}`;
-      // A field that names its own list is judged on that list alone; the
-      // document-wide digest only stands in when it falls back to page-wide
-      // options (an unrelated always-visible option list must not hold it).
-      const fresh =
-        state.ownList === true
-          ? baseline?.ownKey == null || key !== baseline.ownKey
-          : baseline?.key == null || docKey !== baseline.key;
-      if (options > 0 && key === previous && fresh) return;
-      previous = key;
-      if (Date.now() + AUTOCOMPLETE_POLL_INTERVAL_MS >= until) return;
-      await new Promise((resolve) => setTimeout(resolve, AUTOCOMPLETE_POLL_INTERVAL_MS));
+      if ("error" in state) return;
+      let pollMs = AUTOCOMPLETE_POLL_INTERVAL_MS;
+      if (state.autocomplete !== true) {
+        // Not (yet) autocomplete-style. A plain eligible field keeps waiting
+        // only while there is activity to wait for.
+        if (!(plainField && state.plainEligible === true)) return;
+        const now = Date.now();
+        const stats = page.networkStats?.(NETWORK_REQUEST_DROP_MS, baseline?.netGen ?? undefined);
+        if (stats && (stats.pending > 0 || (lastGen !== null && stats.generation > lastGen))) {
+          activitySeen = true;
+          lastActiveAt = now;
+          lastGen = stats.generation;
+        }
+        try {
+          const dom = await this.executeScript(page, "SUGGEST_ACTIVITY_JS", { action: "check" });
+          if (dom.mutated === true) {
+            activitySeen = true;
+            lastActiveAt = Math.max(lastActiveAt, now - (typeof dom.ageMs === "number" ? dom.ageMs : 0));
+          }
+        } catch {
+          // Best-effort: no DOM signal.
+        }
+        if (!activitySeen && now - start >= PLAIN_SUGGEST_ACTIVITY_MS) return;
+        if (activitySeen && now - lastActiveAt >= PLAIN_SUGGEST_QUIET_MS) return;
+        pollMs = PLAIN_SUGGEST_POLL_MS;
+      } else {
+        const options = typeof state.options === "number" ? state.options : 0;
+        const key = `${options}:${String(state.hash)}`;
+        const docKey = `${String(state.docOptions)}:${String(state.docHash)}`;
+        // A field that names its own list is judged on that list alone; the
+        // document-wide digest only stands in when it falls back to page-wide
+        // options (an unrelated always-visible option list must not hold it).
+        const fresh =
+          state.ownList === true
+            ? baseline?.ownKey == null || key !== baseline.ownKey
+            : baseline?.key == null || docKey !== baseline.key;
+        if (options > 0 && key === previous && fresh) return;
+        previous = key;
+      }
+      if (Date.now() + pollMs >= until) return;
+      await new Promise((resolve) => setTimeout(resolve, pollMs));
     }
   }
 
