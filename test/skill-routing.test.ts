@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   routeSkill,
   resetSkillRouteCacheForTests,
@@ -96,8 +96,20 @@ function pass2Response(opts: {
 type Stage = (params: SystemOneEvaluateParams<Record<string, SystemOneQuestion>>) => {
   model: string;
   answers: Record<string, SystemOneAnswer>;
+  refused?: string[];
   usage: { input_tokens: number; output_tokens: number };
 };
+
+// The client drops a question the vendor refused (HTTP 502 "refused to answer
+// question") and lists its id in `refused`; every other answer comes back.
+function refusing(stage: Stage, ids: string[]): Stage {
+  return (params) => {
+    const result = stage(params);
+    const answers = { ...result.answers };
+    for (const id of ids) delete answers[id];
+    return { ...result, answers, refused: ids };
+  };
+}
 
 function stagedClient(
   stages: Stage[],
@@ -1056,5 +1068,116 @@ describe("routeSkill", () => {
     expect(verdict.skill).toBeNull();
     expect(verdict.reason).toBe("unavailable");
     expect(called).toBe(false);
+  });
+
+  describe("a refused Choice question", () => {
+    const refusalOpts = { ...baseOpts, messageText: "buy a red sneaker on shop.test" };
+    const probabilities = { prototype: 0.5, slides: 0.3, critique: 0.2 };
+    const pass1Stage = pass1Response({ winner: "prototype", probabilities, confidence: 0.9 });
+    let warn: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+      warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    });
+    afterEach(() => {
+      warn.mockRestore();
+    });
+
+    it("pass 1 'which' refused resolves to reason refused without pass 2, a warning, or a second call", async () => {
+      let calls = 0;
+      const client = stagedClient([refusing(pass1Stage, ["which"])], { capture: () => (calls += 1) });
+
+      const first = await routeSkill(client, refusalOpts);
+      expect(first.skill).toBeNull();
+      expect(first.reason).toBe("refused");
+      expect(first.model).toBe("jev-latest");
+      expect(first.gateValues).toEqual({
+        documented_workflow: 0.9,
+        substantial_new_work: 0.9,
+        direct_edit_suffices: 0.9,
+      });
+      expect(first.gate).toBeCloseTo(0.9);
+      expect(first.refusedIds).toEqual(["which"]);
+      expect(calls).toBe(1);
+      expect(warn).not.toHaveBeenCalled();
+
+      const second = await routeSkill(client, refusalOpts);
+      expect(second).toEqual(first);
+      expect(calls).toBe(1);
+    });
+
+    it("pass 2 'which' refused resolves to reason refused, nothing injected, pass 1 winner reported", async () => {
+      const pass2Stage = pass2Response({ winner: "prototype", confidence: 0.9, fits: { prototype: 0.9 } });
+      let calls = 0;
+      const pass2Refused = refusing(pass2Stage, ["which"]);
+      const client = stagedClient([pass1Stage, pass2Refused, pass1Stage, pass2Refused], {
+        capture: () => (calls += 1),
+      });
+
+      const first = await routeSkill(client, refusalOpts);
+      expect(first.skill).toBeNull();
+      expect(first.reason).toBe("refused");
+      expect(first.pass1Winner).toBe("prototype");
+      expect(first.pass1Confidence).toBe(0.9);
+      expect(first.fits).toBeUndefined();
+      expect(first.refusedIds).toEqual(["which"]);
+      expect(calls).toBe(2);
+      expect(warn).not.toHaveBeenCalled();
+
+      const second = await routeSkill(client, refusalOpts);
+      expect(second).toEqual(first);
+      expect(calls).toBe(2);
+
+      // Short TTL only: the client's round cap can also list `which` in
+      // `refused`, so a pass-2 refusal must not pin for the full 10 minutes.
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        vi.setSystemTime(Date.now() + 61_000);
+        await routeSkill(client, refusalOpts);
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(calls).toBe(4);
+    });
+
+    it("pass 1 'which' refused with gates below the threshold resolves to gated", async () => {
+      const lowGates = pass1Response({
+        winner: "prototype",
+        probabilities,
+        confidence: 0.9,
+        gate: { documented_workflow: 0.05, substantial_new_work: 0.05, direct_edit_suffices: 0.9 },
+      });
+      const client = stagedClient([refusing(lowGates, ["which"])]);
+      const verdict = await routeSkill(client, refusalOpts);
+      expect(verdict.reason).toBe("gated");
+      expect(verdict.skill).toBeNull();
+      expect(verdict.refusedIds).toBeUndefined();
+    });
+
+    it("pass 1 'which' refused without gate answers still resolves to refused", async () => {
+      const client = stagedClient([refusing(pass1Stage, ["which", "gate::documented_workflow"])]);
+      const verdict = await routeSkill(client, refusalOpts);
+      expect(verdict.reason).toBe("refused");
+      expect(verdict.gate).toBeUndefined();
+      expect(verdict.refusedIds).toEqual(["which", "gate::documented_workflow"]);
+    });
+
+    it("a refused gate noul with 'which' answered is still an error", async () => {
+      const client = stagedClient([refusing(pass1Stage, ["gate::documented_workflow"])]);
+      const verdict = await routeSkill(client, refusalOpts);
+      expect(verdict.reason).toBe("error");
+      expect(warn).toHaveBeenCalled();
+    });
+
+    it("a missing 'which' that is NOT listed in refused is still an error", async () => {
+      const client = stagedClient([
+        (params) => {
+          const { which: _which, ...answers } = pass1Stage(params).answers;
+          return { model: "jev-latest", answers, usage: { input_tokens: 1, output_tokens: 1 } };
+        },
+      ]);
+      const verdict = await routeSkill(client, refusalOpts);
+      expect(verdict.reason).toBe("error");
+    });
   });
 });

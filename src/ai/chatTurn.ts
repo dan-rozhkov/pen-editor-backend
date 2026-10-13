@@ -509,7 +509,7 @@ export async function prepareChatTurn(
       };
 
       // Logs EVERY verdict, in BOTH modes, including every no-pick reason
-      // ("gated"/"no-fit"/"low-confidence"/"unavailable"/"error") — the
+      // ("gated"/"no-fit"/"low-confidence"/"refused"/"unavailable"/"error") — the
       // previous version returned early on `!verdict.skill`, which made
       // shadow mode's false-NEGATIVE rate unmeasurable: it only ever showed
       // the turns where routing WOULD have fired. Deliberately NOT gated

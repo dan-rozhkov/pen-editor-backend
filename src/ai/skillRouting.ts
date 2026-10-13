@@ -248,6 +248,16 @@ export type SkillRouteReason =
   // would skip exactly the check that whole pass exists to run. See
   // pass1Budget's doc comment.
   | "budget"
+  // The vendor REFUSED to answer a Choice question ("which") — System One
+  // reports it in `refused`, not in `answers`. With the production decision
+  // model (gpt-6-luna-decisions) this is what an agentic web task no design
+  // skill fits ("buy a sneaker on shop.test") gets: pass 1's Choice has no
+  // "none" option, so a refusal there is the model's considered "none of
+  // these skills fits", not a transport failure. Same for pass 2's Choice,
+  // where the pass-1 winner is reported in pass1Winner/pass1Confidence.
+  // `skill` is null; a pass-1 refusal is cached at the full TTL like
+  // "no-fit", a pass-2 one at the short TTL (see runPass2's caller).
+  | "refused"
   | "error";
 
 // Deliberately JSON-serializable and free of any user text or raw state —
@@ -269,7 +279,8 @@ export interface SkillRouteVerdict {
    * `confidence` whenever pass 2 ran, so shadow logs carry both. */
   peak?: number;
   /** Mean of the three (oriented) gate nouls from pass 1. Absent only for
-   * "unavailable" (no candidates) and "error" (pass 1 itself failed). */
+   * "unavailable" (no candidates) and "error" (pass 1 itself failed), and for a pass-1 "refused" whose gate
+   * answers did not all come back. */
   gate?: number;
   /** The three gate nouls, ALREADY oriented (direct_edit_suffices inverted)
    * so a higher value always means "more likely to need a skill". */
@@ -285,11 +296,13 @@ export interface SkillRouteVerdict {
    * entry in `fits` at all, which fails the gate closed. */
   winnerFit?: number;
   model: string | null;
+  /** Only for reason "refused": the question ids the vendor left unanswered. */
+  refusedIds?: string[];
   pass1Ms?: number;
   pass2Ms?: number;
   inputTokens?: number;
   outputTokens?: number;
-  /** Present only for reason "budget": the winner pass 1's own Choice named
+  /** Present only for reason "budget" (and a pass-2 "refused"): the winner pass 1's own Choice named
    * before pass 2 ran (or before it could be trusted). NEVER injected — see
    * reason "budget"'s comment — this exists purely so shadow-mode logs can
    * measure how often the enforce budget starves pass 2 of a real fit
@@ -399,7 +412,26 @@ function isNoulAnswer(
   return !!answer && answer.type === "noul";
 }
 
+// Pass 1 or 2's Choice question came back in `refused` instead of `answers`
+// (see SkillRouteReason "refused").
+interface PassRefused {
+  refused: true;
+  /** Every question id the vendor (or the client's round cap) left unanswered. */
+  refusedIds: string[];
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  elapsedMs: number;
+}
+
+interface Pass1Refused extends PassRefused {
+  /** Only when all three gate nouls came back alongside the refusal. */
+  gate?: number;
+  gateValues?: Record<string, number>;
+}
+
 interface Pass1Result {
+  refused?: false;
   model: string;
   winner: string;
   confidence: number;
@@ -411,12 +443,37 @@ interface Pass1Result {
   elapsedMs: number;
 }
 
+// The three gate nouls, oriented so higher always means "more likely to need
+// a skill", and their mean. A gate that is missing or not a noul throws when
+// `strict`, otherwise the result is null (the refused path reports whatever
+// it has and must not fail on a gate the vendor also dropped).
+function readGates(
+  answers: Record<string, SystemOneAnswer | undefined>,
+  strict: boolean,
+): { gate: number; gateValues: Record<string, number> } | null {
+  const gateValues: Record<string, number> = {};
+  const oriented: number[] = [];
+  for (const key of Object.keys(GATE_QUESTIONS)) {
+    const answer = answers[`gate::${key}`];
+    if (!isNoulAnswer(answer)) {
+      if (!strict) return null;
+      throw new Error(
+        `skillRouting pass 1: expected a noul answer for "gate::${key}", got "${answer?.type}"`,
+      );
+    }
+    const value = INVERTED_GATE_KEYS.has(key) ? 1 - answer.noul : answer.noul;
+    gateValues[key] = value;
+    oriented.push(value);
+  }
+  return { gate: oriented.reduce((a, b) => a + b, 0) / oriented.length, gateValues };
+}
+
 async function runPass1(
   client: SystemOneClient,
   state: Record<string, unknown>,
   candidates: SkillRouteCandidate[],
   signal: AbortSignal,
-): Promise<Pass1Result> {
+): Promise<Pass1Result | Pass1Refused> {
   const criteria: Record<string, string | null> = {};
   for (const candidate of candidates) criteria[candidate.name] = candidate.description;
 
@@ -428,8 +485,24 @@ async function runPass1(
   }
 
   const started = Date.now();
-  const { model, answers, usage } = await client.evaluate({ state, questions, signal });
+  const { model, answers, refused, usage } = await client.evaluate({ state, questions, signal });
   const elapsedMs = Date.now() - started;
+
+  // A refused "which" is a considered answer, not a malformed one — only
+  // when the id is listed in `refused`; a merely missing answer still throws
+  // below. The client resends the gate questions, so their values are
+  // normally present and are reported when all three are.
+  if (refused?.includes("which")) {
+    return {
+      refused: true,
+      model,
+      ...readGates(answers, false),
+      refusedIds: refused,
+      inputTokens: usage.input_tokens,
+      outputTokens: usage.output_tokens,
+      elapsedMs,
+    };
+  }
 
   const which = answers.which;
   if (!isChoiceAnswer(which)) {
@@ -453,19 +526,7 @@ async function runPass1(
     throw new Error("skillRouting pass 1: the choice answer's probability distribution was empty");
   }
 
-  const gateValues: Record<string, number> = {};
-  const oriented: number[] = [];
-  for (const key of Object.keys(GATE_QUESTIONS)) {
-    const answer = answers[`gate::${key}`];
-    if (!isNoulAnswer(answer)) {
-      throw new Error(
-        `skillRouting pass 1: expected a noul answer for "gate::${key}", got "${answer?.type}"`,
-      );
-    }
-    const value = INVERTED_GATE_KEYS.has(key) ? 1 - answer.noul : answer.noul;
-    gateValues[key] = value;
-    oriented.push(value);
-  }
+  const gates = readGates(answers, true)!;
 
   const ranked = Object.entries(which.probabilities).sort((a, b) => b[1] - a[1]);
 
@@ -474,8 +535,8 @@ async function runPass1(
     winner: which.choice,
     confidence: which.confidence,
     ranked,
-    gate: oriented.reduce((a, b) => a + b, 0) / oriented.length,
-    gateValues,
+    gate: gates.gate,
+    gateValues: gates.gateValues,
     inputTokens: usage.input_tokens,
     outputTokens: usage.output_tokens,
     elapsedMs,
@@ -483,6 +544,7 @@ async function runPass1(
 }
 
 interface Pass2Result {
+  refused?: false;
   model: string;
   winner: string;
   confidence: number;
@@ -500,7 +562,7 @@ async function runPass2(
   state: Record<string, unknown>,
   shortlist: SkillRouteCandidate[],
   signal: AbortSignal,
-): Promise<Pass2Result> {
+): Promise<Pass2Result | PassRefused> {
   const criteria: Record<string, string | null> = {};
   for (const candidate of shortlist) {
     // candidate.content is already frontmatter-free — see the comment by
@@ -522,8 +584,20 @@ async function runPass2(
   }
 
   const started = Date.now();
-  const { model, answers, usage } = await client.evaluate({ state, questions, signal });
+  const { model, answers, refused, usage } = await client.evaluate({ state, questions, signal });
   const elapsedMs = Date.now() - started;
+
+  // Same rule as pass 1: a refused Choice is "no pick", not a failure.
+  if (refused?.includes("which")) {
+    return {
+      refused: true,
+      refusedIds: refused,
+      model,
+      inputTokens: usage.input_tokens,
+      outputTokens: usage.output_tokens,
+      elapsedMs,
+    };
+  }
 
   const which = answers.which;
   if (!isChoiceAnswer(which)) {
@@ -609,8 +683,8 @@ export async function routeSkill(
   };
 
   const remember = (verdict: SkillRouteVerdict): SkillRouteVerdict => {
-    // Only a verdict pass 2 actually produced is worth pinning at the full
-    // TTL. An "error" verdict is a transport fact, not an answer about this
+    // Only a considered answer about this message (pass 2's verdict, or the
+    // vendor's "refused") is worth pinning at the full TTL. An "error" verdict is a transport fact, not an answer about this
     // message: caching it would turn one blip into ten minutes of no
     // routing, and the very next step of the same turn is a free chance to
     // succeed. A "budget" verdict is the same class of fact, just discovered
@@ -658,7 +732,30 @@ export async function routeSkill(
 
   let pass1: Pass1Result;
   try {
-    pass1 = await runPass1(client, state, opts.candidates, perCallSignal());
+    const result = await runPass1(client, state, opts.candidates, perCallSignal());
+    if (result.refused) {
+      // The vendor declined the Choice: no skill fits this message. A
+      // considered answer about the input, so it is cached at the full TTL —
+      // every step of the turn re-runs routeSkill on identical input. Safe
+      // for pass 1 specifically: its 4 questions fit the client's 4 rounds,
+      // so a `which` still pending in the last round was sent alone and its
+      // refusal is real (unlike pass 2, below). Gates that already say "no
+      // skill needed" win the ordering and give today's "gated" verdict.
+      const base = {
+        skill: null,
+        model: result.model,
+        gate: result.gate,
+        gateValues: result.gateValues,
+        pass1Ms: result.elapsedMs,
+        inputTokens: result.inputTokens,
+        outputTokens: result.outputTokens,
+      };
+      if (result.gate !== undefined && result.gate < gateThreshold) {
+        return remember({ ...base, reason: "gated" });
+      }
+      return remember({ ...base, reason: "refused", refusedIds: result.refusedIds });
+    }
+    pass1 = result;
   } catch (err) {
     console.warn("[skillRouting] pass 1 failed, falling back to no auto-pick:", err);
     return { skill: null, reason: "error", model: null };
@@ -689,17 +786,20 @@ export async function routeSkill(
   // fields, so shadow-mode logs can measure how often the enforce budget
   // starves pass 2 without that measurement ever being mistaken for a pick.
   // Cached — see rememberShort's comment — under the short TTL.
+  const pass1Fields = {
+    pass1Winner: pass1.winner,
+    pass1Confidence: pass1.confidence,
+    gate: pass1.gate,
+    gateValues: pass1.gateValues,
+    top3,
+    pass1Ms: pass1.elapsedMs,
+  };
   const pass1Budget = (): SkillRouteVerdict =>
     rememberShort({
       skill: null,
       reason: "budget",
-      pass1Winner: pass1.winner,
-      pass1Confidence: pass1.confidence,
+      ...pass1Fields,
       model: pass1.model,
-      gate: pass1.gate,
-      gateValues: pass1.gateValues,
-      top3,
-      pass1Ms: pass1.elapsedMs,
       inputTokens: pass1.inputTokens,
       outputTokens: pass1.outputTokens,
     });
@@ -735,7 +835,25 @@ export async function routeSkill(
 
   let pass2: Pass2Result;
   try {
-    pass2 = await runPass2(client, state, shortlist, perCallSignal());
+    const result = await runPass2(client, state, shortlist, perCallSignal());
+    if (result.refused) {
+      // Pass 2's Choice was declined: no pick. Pass 1's winner is reported
+      // for measurement only, exactly as for "budget"; nothing is injected.
+      // Short TTL, unlike pass 1: the client also lists questions still
+      // pending after its round cap in `refused`, and pass 2 (which + 3-4
+      // fits nouls) can hit that cap without a real refusal of `which`.
+      return rememberShort({
+        skill: null,
+        reason: "refused",
+        refusedIds: result.refusedIds,
+        ...pass1Fields,
+        model: result.model,
+        pass2Ms: result.elapsedMs,
+        inputTokens: pass1.inputTokens + result.inputTokens,
+        outputTokens: pass1.outputTokens + result.outputTokens,
+      });
+    }
+    pass2 = result;
   } catch (err) {
     console.warn(
       "[skillRouting] pass 2 failed or the overall budget ran out, resolving to reason \"budget\":",
