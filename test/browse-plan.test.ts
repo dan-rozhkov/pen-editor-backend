@@ -9,7 +9,7 @@ vi.mock("../src/ai/provider.js", async (importOriginal) =>
 import { createModel, jsonModel, mockJsonModelOnce } from "./structuredModelFakes.js";
 
 const { buildApp } = await import("../src/app.js");
-const { MAX_SUBGOALS, MAX_SUBGOAL_CHARS, MAX_GOAL_CHARS, buildPlanPrompt, normalizeSubgoals } = await import("../src/ai/browsePlan.js");
+const { MAX_SUBGOALS, MAX_SUBGOAL_CHARS, MAX_GOAL_CHARS, buildPlanPrompt, normalizeSubgoals, isReadOnlySubgoal, dropReadOnlySubgoals } = await import("../src/ai/browsePlan.js");
 
 const GOAL = "Add a tent, a sleeping bag and a pad to the cart";
 
@@ -71,6 +71,64 @@ describe("POST /api/browse/plan", () => {
     const longDone = ` Done when: ${"y".repeat(MAX_SUBGOAL_CHARS)}`;
     expect(normalizeSubgoals([base + longDone + " Does not count: z"])).toEqual([base]);
     expect(normalizeSubgoals(["w".repeat(MAX_SUBGOAL_CHARS + 1)])).toBeNull();
+  });
+
+  it("never asks for a read-only or final-report sub-goal", () => {
+    const prompt = buildPlanPrompt("Find the first three results and report their prices", undefined);
+    expect(prompt).not.toMatch(/final report[^\n]*own LAST sub-goal/);
+    expect(prompt).toMatch(/reporting values is NEVER a sub-goal/);
+    expect(prompt).toMatch(/several results of ONE search or list[^\n]*single flow/);
+    // A report that needs a page no sub-goal reaches gets an action that opens it.
+    expect(prompt).toMatch(/LAST sub-goal an action that opens that page/);
+    expect(prompt).not.toMatch(/starts with[^\n]*Reply/);
+  });
+
+  it("tests only the first word for a read-only verb", () => {
+    for (const s of [
+      "Report: the 3 shops",
+      "note the name of the first result",
+      "Read the first listing. Report its price.",
+      "Write down the total",
+      "  - Extract the prices",
+      "Reply with the title",
+      "1. Report the prices",
+      "2) Note the first price",
+      "Step 3: Summarize the reviews",
+    ]) {
+      expect(isReadOnlySubgoal(s), s).toBe(true);
+    }
+    for (const s of [
+      "Open the first listing. Report its price.",
+      "Reply to the message",
+      "Answer the survey question",
+      "Return to the results",
+      "List the bike for sale",
+      "State/Province: select California",
+      "Note: accept cookies first, then add the tent to the cart",
+      "Read and accept the terms, then tick the checkbox",
+      "Writer filter: pick Tolkien",
+      "1. Search for flats",
+    ]) {
+      expect(isReadOnlySubgoal(s), s).toBe(false);
+    }
+  });
+
+  it("drops read-only sub-goals and keeps a real split", async () => {
+    const plan = ["Add a tent to the cart.", "Add a pad to the cart.", "Report the cart total."];
+    expect(dropReadOnlySubgoals(plan)).toEqual(plan.slice(0, 2));
+    createModel.mockImplementationOnce(() => jsonModel({ subgoals: plan }));
+    const res = await postPlan({ goal: GOAL });
+    expect(res.json()).toEqual({ subgoals: plan.slice(0, 2) });
+  });
+
+  it("falls back to the whole goal when one action sub-goal is left", async () => {
+    const goal = "Search for flats near the station and list the first three prices";
+    createModel.mockImplementationOnce(() =>
+      jsonModel({ subgoals: ["Search for flats near the station.", "Note the first price.", "Note the second price.", "Report the prices."] }),
+    );
+    const res = await postPlan({ goal });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ subgoals: [goal] });
   });
 
   it("returns a single-flow goal unchanged", async () => {
