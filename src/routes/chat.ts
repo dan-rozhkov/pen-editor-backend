@@ -6,6 +6,7 @@ import {
   type ToolSet,
   type StepResult,
 } from "ai";
+import { cachedSystemPrompt, usesAnthropicPromptCache } from "../ai/anthropicCache.js";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import {
@@ -494,7 +495,10 @@ export async function chatRoutes(
 
       const result = streamText({
       model,
-      system,
+      // Anthropic caches only at an explicit breakpoint (anthropicCache.ts).
+      system: usesAnthropicPromptCache(selectedModelId)
+        ? cachedSystemPrompt(system)
+        : system,
       messages: modelMessages,
       tools,
       stopWhen: stepCountIs(maxSteps),

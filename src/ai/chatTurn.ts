@@ -6,6 +6,7 @@ import {
   type UIMessage,
   type DynamicToolUIPart,
 } from "ai";
+import { markCacheBreakpoint, usesAnthropicPromptCache } from "./anthropicCache.js";
 import { createHash } from "node:crypto";
 import type { Config } from "../config.js";
 import { bareModelId, createModel, parseModelRef, providerHandlesToolResultImages } from "./provider.js";
@@ -1008,6 +1009,11 @@ export async function prepareChatTurn(
   // Skipped entirely when this turn has no canvas context (headless
   // callers — the showcase runner, review runs) so that path stays
   // byte-for-byte what it was before this change.
+  // Anthropic caches only at an explicit breakpoint: mark the end of the
+  // stable history BEFORE canvas_context goes on (see anthropicCache.ts).
+  if (usesAnthropicPromptCache(selectedModelId)) {
+    modelMessages.splice(0, modelMessages.length, ...markCacheBreakpoint(modelMessages));
+  }
   if (canvasContext) {
     modelMessages.push({
       role: "user",
