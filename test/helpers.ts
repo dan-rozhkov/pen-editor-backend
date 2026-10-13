@@ -78,6 +78,7 @@ export function makeConfig(overrides: Partial<Config> = {}): Config {
     TYPESAFE_MODEL: "jev-latest",
     TYPESAFE_BASE_URL: "https://api.typesafe.ai/v1",
     SKILL_ROUTING_MODE: "off",
+    BROWSE_MODE: "manual",
     SKILL_ROUTING_MIN_CONFIDENCE: 0.7,
     SKILL_ROUTING_GATE_THRESHOLD: 0.3,
     SKILL_ROUTING_FITS_THRESHOLD: 0.3,

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { AGENT_MODES, buildSystemPrompt, BROWSER_TASKS_GUIDANCE } from "../src/ai/system-prompt.js";
+import { AGENT_MODES, buildSystemPrompt, BROWSER_TASKS_GUIDANCE, MANUAL_BROWSER_GUIDANCE } from "../src/ai/system-prompt.js";
 
 describe("AGENT_MODES", () => {
   it("remains exported for legacy request-body validation", () => {
@@ -217,7 +217,7 @@ describe("embed fit-to-canvas: no inner scrolling", () => {
 describe("browser tasks guidance", () => {
   it("is absent by default and present with browserGuidance", () => {
     expect(buildSystemPrompt()).not.toContain("## Browser tasks");
-    const prompt = buildSystemPrompt([], { browserGuidance: true });
+    const prompt = buildSystemPrompt([], { browserGuidance: "task" });
     expect(prompt).toContain("## Browser tasks");
     expect(prompt).toContain(BROWSER_TASKS_GUIDANCE);
     expect(BROWSER_TASKS_GUIDANCE).toMatch(/starts with `browse_task`/);
@@ -240,5 +240,14 @@ describe("browser tasks guidance", () => {
     expect(BROWSER_TASKS_GUIDANCE).not.toMatch(/within N attempts/);
     expect(BROWSER_TASKS_GUIDANCE).toContain("small remaining step");
     expect(BROWSER_TASKS_GUIDANCE).toMatch(/never invent reasons|never claim the thing does not exist/i);
+  });
+
+  it("renders the manual rule for browserGuidance manual, never the task rule", () => {
+    const prompt = buildSystemPrompt([], { browserGuidance: "manual" });
+    expect(prompt).toContain("## Browser tasks");
+    expect(prompt).toContain(MANUAL_BROWSER_GUIDANCE);
+    expect(prompt).not.toContain(BROWSER_TASKS_GUIDANCE);
+    expect(MANUAL_BROWSER_GUIDANCE).not.toContain("browse_task");
+    expect(MANUAL_BROWSER_GUIDANCE).toContain("Never type a password");
   });
 });

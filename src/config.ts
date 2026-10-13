@@ -411,6 +411,12 @@ export const envSchema = z.object({
   // itself add a user-facing network call to every chat turn. The mode has
   // to be turned on explicitly, deployment by deployment.
   SKILL_ROUTING_MODE: z.enum(["off", "shadow", "enforce"]).default("off"),
+  // Browser driving mode. "manual" (default): the chat model drives the
+  // browse_* tools itself and browse_task (the Jev/Luna step loop) is NOT
+  // offered. "task": the previous behavior - browse_task is offered when
+  // TYPESAFE_API_KEY is set, together with the "Browser tasks" rule. One env
+  // var to roll back.
+  BROWSE_MODE: z.enum(["manual", "task"]).default("manual"),
   // Injecting the wrong skill wastes context and can mislead the whole
   // turn, so only a confident pick acts; everything below this falls back
   // to today's behavior (the model calling load_skill itself). Despite the

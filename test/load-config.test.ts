@@ -225,6 +225,13 @@ describe("loadConfig", () => {
     expect(config.SKILL_ROUTING_MODE).toBe("off");
   });
 
+  it("defaults BROWSE_MODE to manual and accepts task", () => {
+    process.env = { ...BASE_ENV } as NodeJS.ProcessEnv;
+    expect(loadConfig().BROWSE_MODE).toBe("manual");
+    process.env = { ...BASE_ENV, BROWSE_MODE: "task" } as NodeJS.ProcessEnv;
+    expect(loadConfig().BROWSE_MODE).toBe("task");
+  });
+
   it("defaults the scenario confirmation threshold to 3 and accepts an override", () => {
     process.env = { ...BASE_ENV } as NodeJS.ProcessEnv;
     expect(loadConfig().SCENARIO_CONFIRM_THRESHOLD).toBe(

@@ -531,7 +531,7 @@ describe("prepareChatTurn", () => {
 
       const messages = [userMessage("log in and get to the pricing page")];
       const turn = await prepareChatTurn({
-        config: makeConfig({ TYPESAFE_API_KEY: "key" }),
+        config: makeConfig({ TYPESAFE_API_KEY: "key", BROWSE_MODE: "task" }),
         messages,
         clientCapabilities: { desktopBrowser: true },
       });
@@ -543,7 +543,7 @@ describe("prepareChatTurn", () => {
       const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
       const messages = [userMessage("open skroutz.gr and build a cart")];
       const on = await prepareChatTurn({
-        config: makeConfig({ TYPESAFE_API_KEY: "key" }),
+        config: makeConfig({ TYPESAFE_API_KEY: "key", BROWSE_MODE: "task" }),
         messages,
         clientCapabilities: { desktopBrowser: true },
       });
@@ -552,21 +552,23 @@ describe("prepareChatTurn", () => {
       expect(on.system).toContain("starts with `browse_task`");
 
       const noKey = await prepareChatTurn({
-        config: makeConfig({ TYPESAFE_API_KEY: undefined }),
+        config: makeConfig({ TYPESAFE_API_KEY: undefined, BROWSE_MODE: "task" }),
         messages,
         clientCapabilities: { desktopBrowser: true },
       });
-      expect(noKey.system).not.toContain("## Browser tasks");
+      expect(noKey.tools.browse_task).toBeUndefined();
+      expect(noKey.system).not.toContain("starts with `browse_task`");
+      expect(noKey.system).toContain("Drive the built-in browser yourself");
 
       const noBrowser = await prepareChatTurn({
-        config: makeConfig({ TYPESAFE_API_KEY: "key" }),
+        config: makeConfig({ TYPESAFE_API_KEY: "key", BROWSE_MODE: "task" }),
         messages,
       });
       expect(noBrowser.system).not.toContain("## Browser tasks");
 
       // Constant across requests (prompt caching).
       const again = await prepareChatTurn({
-        config: makeConfig({ TYPESAFE_API_KEY: "key" }),
+        config: makeConfig({ TYPESAFE_API_KEY: "key", BROWSE_MODE: "task" }),
         messages: [userMessage("something else entirely")],
         clientCapabilities: { desktopBrowser: true },
       });
@@ -578,11 +580,54 @@ describe("prepareChatTurn", () => {
 
       const messages = [userMessage("log in and get to the pricing page")];
       const turn = await prepareChatTurn({
-        config: makeConfig({ TYPESAFE_API_KEY: "key" }),
+        config: makeConfig({ TYPESAFE_API_KEY: "key", BROWSE_MODE: "task" }),
         messages,
       });
 
       expect(turn.tools.browse_task).toBeUndefined();
+    });
+  });
+
+  describe("BROWSE_MODE manual (default)", () => {
+    it("offers no browse_task, renders the manual rule, even with the TypeSafe key", async () => {
+      const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+      const { MANUAL_BROWSER_GUIDANCE, BROWSER_TASKS_GUIDANCE } = await import("../src/ai/system-prompt.js");
+      const messages = [userMessage("open skroutz.gr and build a cart")];
+      const turn = await prepareChatTurn({
+        config: makeConfig({ TYPESAFE_API_KEY: "key" }),
+        messages,
+        clientCapabilities: { desktopBrowser: true },
+      });
+      expect(turn.tools.browse_task).toBeUndefined();
+      expect(turn.tools.browse_open).toBeDefined();
+      expect(turn.tools.browse_snapshot).toBeDefined();
+      expect(turn.tools.browse_act).toBeDefined();
+      expect(turn.system).toContain("## Browser tasks");
+      expect(turn.system).toContain(MANUAL_BROWSER_GUIDANCE);
+      expect(turn.system).not.toContain(BROWSER_TASKS_GUIDANCE);
+    });
+
+    it("task mode without the TypeSafe key falls back to the manual rule", async () => {
+      const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+      const { MANUAL_BROWSER_GUIDANCE } = await import("../src/ai/system-prompt.js");
+      const turn = await prepareChatTurn({
+        config: makeConfig({ TYPESAFE_API_KEY: undefined, BROWSE_MODE: "task" }),
+        messages: [userMessage("open skroutz.gr")],
+        clientCapabilities: { desktopBrowser: true },
+      });
+      expect(turn.tools.browse_task).toBeUndefined();
+      expect(turn.system).toContain(MANUAL_BROWSER_GUIDANCE);
+    });
+
+    it("no browser renders neither rule", async () => {
+      const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+      for (const mode of ["manual", "task"] as const) {
+        const turn = await prepareChatTurn({
+          config: makeConfig({ TYPESAFE_API_KEY: "key", BROWSE_MODE: mode }),
+          messages: [userMessage("hello")],
+        });
+        expect(turn.system).not.toContain("## Browser tasks");
+      }
     });
   });
 
