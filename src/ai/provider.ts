@@ -67,6 +67,21 @@ export function supportsReasoningControl(modelId: string): boolean {
   return REASONING_MODEL_PREFIXES.some((prefix) => modelId.startsWith(prefix));
 }
 
+// Anthropic models served through OpenRouter cache a prompt only when the
+// request opts in with an explicit breakpoint; without one the cache-read
+// share is 0% (measured on anthropic/claude-haiku-5.5, 2026-10-13). A
+// top-level `cache_control` is OpenRouter's "automatic caching": it moves the
+// breakpoint to the last cacheable block on every request, so the whole
+// growing tool-loop history is cached without us placing per-message
+// breakpoints. Other families (OpenAI, DeepSeek, ...) cache on their own, and
+// sending the field to them is untested, so it stays Anthropic-only. Only the
+// chat agent opts in (see createModel): helper roles (vision, analysis,
+// review, ...) send one-shot prompts, where a cache write is a 1.25x input
+// premium that is never read back.
+export function usesAnthropicPromptCache(modelId: string): boolean {
+  return modelId.startsWith("anthropic/");
+}
+
 export interface CreateModelOptions {
   /**
    * True when this model IS the chat agent for a turn — the /api/chat route
@@ -243,8 +258,17 @@ export function createModel(
     apiKey: config.OPENROUTER_API_KEY,
   });
   const modelId = ref.modelId;
+  // Shared by every openrouter(...) call below, the reasoning-mandatory
+  // fallback included, so the retry differs only by the missing `reasoning`.
+  // `undefined` for other families and for helper roles keeps their calls
+  // byte-identical to before. "Chat agent" is the same predicate
+  // resolveReasoningEffort uses.
+  const isChatAgent = modelOverride === undefined || options.chatAgent === true;
+  const cache = isChatAgent && usesAnthropicPromptCache(modelId)
+    ? { cache_control: { type: "ephemeral" as const } }
+    : undefined;
   if (!supportsReasoningControl(modelId)) {
-    return openrouter(modelId);
+    return openrouter(modelId, cache);
   }
   // See resolveReasoningEffort's own doc comment for why a modelOverride
   // without `chatAgent` deliberately stays on "minimal".
@@ -255,7 +279,7 @@ export function createModel(
     options.reasoningEffort,
   );
   return withReasoningMandatoryFallback(
-    openrouter(modelId, { reasoning: { effort } }),
-    () => openrouter(modelId),
+    openrouter(modelId, { reasoning: { effort }, ...cache }),
+    () => openrouter(modelId, cache),
   );
 }
