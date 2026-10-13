@@ -263,6 +263,13 @@ function stopped(
 type GuardInput = Pick<BrowseStepInput, "goal" | "elements" | "permissions"> &
   Partial<Pick<BrowseStepInput, "history" | "url" | "title">>;
 
+// "switch" is excluded on purpose: a switch often saves on toggle, so toggling can BE the commit.
+const CHOICE_ROLES = new Set(["radio", "checkbox", "option", "menuitemradio"]);
+
+function isChoiceControl(el: { tag: string; role?: string; checked?: boolean }): boolean {
+  return (el.role !== undefined && CHOICE_ROLES.has(el.role.toLowerCase())) || (el.tag === "input" && el.checked !== undefined);
+}
+
 /** Prefilter finds a candidate commit control (CLICK, or the form's button
  * for an Enter that submits a non-search field); the model then decides
  * whether the goal authorizes it. yes/error -> terminal blocked result. */
@@ -278,7 +285,9 @@ export async function commitGuard(
   let candidate: { kind: CommitKind; label: string; action: string; what: string } | undefined;
   if (result.operation === "CLICK" && result.index !== undefined) {
     const el = input.elements.find((e) => e.index === result.index);
-    const kind = el ? commitKind(el.label) : null;
+    // A choice control (radio, checkbox, option) only selects a value and never submits.
+    // Its label can still read like a purchase ("Buy $2,399 Pay with ..."), so it is no commit candidate.
+    const kind = el && !isChoiceControl(el) ? commitKind(el.label) : null;
     if (el && kind) {
       const label = scrubPii(truncate(el.label, 120));
       candidate = { kind, label: el.label, action: `click the control "${label}"`, what: "click" };
@@ -294,7 +303,8 @@ export async function commitGuard(
       if (!SEARCH_LIKE.test(`${fieldLabel} ${field?.role ?? ""}`)) {
         for (const el of input.elements) {
           const submitLike =
-            el.tag === "button" || (el.tag === "input" && el.ops.includes("CLICK") && !el.ops.includes("TYPE_TEXT"));
+            !isChoiceControl(el) &&
+            (el.tag === "button" || (el.tag === "input" && el.ops.includes("CLICK") && !el.ops.includes("TYPE_TEXT")));
           const kind = submitLike ? commitKind(el.label) : null;
           if (!kind) continue;
           const f = scrubPii(truncate(fieldLabel, 120));

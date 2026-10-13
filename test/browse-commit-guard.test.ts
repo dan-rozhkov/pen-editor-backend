@@ -125,6 +125,26 @@ describe("commitGuard (model-decided)", () => {
     expect((await commitGuard(missing.client, reserveInput(), clickOn())).outcome).toBe("blocked");
   });
 
+  it("never treats a click on a choice control as a commit candidate", async () => {
+    const { client, calls } = spy(yes());
+    const radio = reserveInput({
+      elements: [{ index: 4, tag: "input", role: "radio", checked: false, label: "Buy $2,399.00 Pay with Apple Pay or other payment methods", ops: ["CLICK" as const] }],
+    });
+    const original = clickOn();
+    expect(await commitGuard(client, radio, original)).toBe(original);
+    const box = reserveInput({ elements: [{ index: 4, tag: "div", role: "Radio", label: "Buy It Now", ops: ["CLICK" as const] }] });
+    expect(await commitGuard(client, box, original)).toBe(original);
+    expect(calls).toHaveLength(0);
+    const button = reserveInput({
+      elements: [{ index: 4, tag: "button", label: "Buy $2,399.00 Pay with Apple Pay or other payment methods", ops: ["CLICK" as const] }],
+    });
+    await commitGuard(client, button, original);
+    expect(calls).toHaveLength(1);
+    const toggle = reserveInput({ elements: [{ index: 4, tag: "button", role: "switch", label: "Subscribe and pay $9.99/mo", ops: ["CLICK" as const] }] });
+    await commitGuard(client, toggle, original);
+    expect(calls).toHaveLength(2);
+  });
+
   it("makes no client call on a prefilter miss", async () => {
     const { client, calls } = spy(yes());
     const input = reserveInput({ elements: [{ index: 4, tag: "button", label: "Add to bag", ops: ["CLICK" as const] }] });
@@ -174,6 +194,17 @@ describe("commitGuard PRESS_ENTER", () => {
     expect(JSON.stringify(calls[0])).toContain("press Enter in the field");
     expect(r.reason).toContain("key press");
     expect(r.diag?.commitGuard).toBe("purchase");
+  });
+
+  it("ignores a choice control as the Enter submit candidate", async () => {
+    const { client, calls } = spy(yes());
+    const input = form("Email");
+    input.elements = [
+      input.elements[0]!,
+      { index: 2, tag: "input", role: "radio", checked: false, label: "Buy $2,399.00 Pay with Apple Pay or other payment methods", ops: ["CLICK" as const] } as never,
+    ];
+    expect(await commitGuard(client, input, enter)).toBe(enter);
+    expect(calls).toHaveLength(0);
   });
 
   it("lets Enter through when the model says no (a ZIP code box beside a header Checkout)", async () => {

@@ -409,7 +409,7 @@ function targetHeadFor(operation: BrowseOperation): TargetableOp | undefined {
 /** The one rule text about disabled controls, shared by the ultrafast rules,
  * the Luna instructions and the legacy cascade prompt. */
 export const DISABLED_CONTROL_RULE =
-  "A control marked disabled cannot be used yet. If it is also marked busy (it became disabled right after your own action on it), WAIT. Otherwise, if the control the goal needs is disabled, an earlier choice on the page is still unanswered: make that earlier choice first; if the goal does not specify it, pick the standard option that adds no extra cost; if no such option exists, answer BLOCKED.";
+  "A control marked disabled cannot be used yet. If it is also marked busy (it became disabled right after your own action on it), WAIT. Otherwise, if the control the goal needs is disabled, an earlier choice on the page is still unanswered: make that earlier choice first; if the goal does not specify it and the choice only adds an optional extra (an add-on, a protection plan, a trade-in), decline it (an option like 'No ...' or 'None'); otherwise pick the standard option that adds no extra cost; if no such option exists, answer BLOCKED.";
 
 /** Can `el` be targeted by `op`? Not disabled, and it offers the op. */
 export function isActionable(el: BrowseStepElement, op: "CLICK" | "TYPE_TEXT" | "SELECT"): boolean {

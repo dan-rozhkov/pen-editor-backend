@@ -1218,7 +1218,8 @@ describe("busy control (disabled right after our own action)", () => {
   });
 
   it("uses the reworded rule", () => {
-    expect(DISABLED_CONTROL_RULE).toContain("the standard option that adds no extra cost");
+    expect(DISABLED_CONTROL_RULE).toContain("only adds an optional extra");
+    expect(DISABLED_CONTROL_RULE).toContain("decline it (an option like 'No ...' or 'None'); otherwise pick the standard option that adds no extra cost");
     expect(DISABLED_CONTROL_RULE).toContain("answer BLOCKED");
   });
 });

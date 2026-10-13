@@ -1,4 +1,4 @@
-// VENDORED from pen-editor-desktop/src/main/browser/pageScripts.ts @ 273dbea.
+// VENDORED from pen-editor-desktop/src/main/browser/pageScripts.ts @ 3d8f975.
 // Do not edit: regenerate with `npm run browser:sync` (scripts/sync-browser-vendor.mjs).
 // ---- end of vendor header ----
 // Scripts injected into a browser tab's real page via
@@ -3257,7 +3257,7 @@ export const SNAPSHOT_JS = `(() => {
   ${TOGGLE_PROXY_JS}
   ${TARGET_BUSY_HELPER_JS}
 
-  function isVisible(el) {
+  function isVisible(el, ignoreMargin) {
     // The cursor overlay (pageScripts.ts's CURSOR_JS) and the screenshot
     // annotation overlay (MARKS_JS) are both pointer-events:none and never a
     // real interactive control — skip anything inside either so neither can
@@ -3270,8 +3270,10 @@ export const SNAPSHOT_JS = `(() => {
     if (parseFloat(style.opacity) === 0) return false;
     // Viewport-ish region with a generous margin — infinite-scroll grids
     // just outside the fold still matter to a browsing task.
+    // ignoreMargin: a far-away radio option pulled in next to a disabled
+    // button (see the "unanswered choice" block after the cap below).
     var margin = Math.max(window.innerHeight, 600);
-    if (rect.bottom < -margin || rect.top > window.innerHeight + margin) return false;
+    if (!ignoreMargin && (rect.bottom < -margin || rect.top > window.innerHeight + margin)) return false;
     return true;
   }
 
@@ -3361,6 +3363,19 @@ export const SNAPSHOT_JS = `(() => {
   // How far a box is scrolled out of its nearest scrolling ancestor (0 when
   // it shows inside it). Scroll-ness is cached per ancestor: a year-long
   // date picker is hundreds of candidates under the same few ancestors.
+  function penClippedByAncestor(el, rect) {
+    var node = el.parentElement;
+    while (node && node !== document.body && node !== document.documentElement) {
+      var st = getComputedStyle(node);
+      if (/^(hidden|clip)$/.test(st.overflowX) || /^(hidden|clip)$/.test(st.overflowY)) {
+        var cr = node.getBoundingClientRect();
+        if (cr.height <= 0 || cr.width <= 0) return true;
+        if (rect.bottom <= cr.top || rect.top >= cr.bottom || rect.right <= cr.left || rect.left >= cr.right) return true;
+      }
+      node = node.parentElement;
+    }
+    return false;
+  }
   var penScrollableCache = new Map();
   function penCachedScrollable(node) {
     if (!penScrollableCache.has(node)) penScrollableCache.set(node, isScrollableContainer(node));
@@ -3384,39 +3399,42 @@ export const SNAPSHOT_JS = `(() => {
   var candidates = penCandidates();
   var found = [];
   var penProxyLabels = new Set();
-  for (var i = 0; i < candidates.length; i++) {
-    var el = candidates[i];
+  // Builds the element-table entry for one candidate, or null when it is not
+  // listable. \`forced\` (far-away radio options chosen by the "unanswered
+  // choice" block below) lifts only the viewport-distance margin; every other
+  // rule, the label logic and the toggle-proxy handling stay the same.
+  function penBuildEntry(el, forced) {
     // A disabled ARIA slider ignores keys, so offering it only invites a
     // TYPE_TEXT that cannot work.
-    if (penIsAriaSlider(el) && el.getAttribute("aria-disabled") === "true") continue;
+    if (penIsAriaSlider(el) && el.getAttribute("aria-disabled") === "true") return null;
     // Natively disabled controls stay listed (reported as \`disabled: true\`
     // below): a disabled step tells the agent an earlier choice is missing.
     // A disabled ARIA slider ignores keys, so it is still skipped.
     var rawRole = penRoleOf(el);
     var ariaRole = rawRole.toLowerCase();
-    if (PEN_SKIP_WHEN_ARIA_DISABLED[ariaRole] && el.getAttribute("aria-disabled") === "true") continue;
+    if (PEN_SKIP_WHEN_ARIA_DISABLED[ariaRole] && el.getAttribute("aria-disabled") === "true") return null;
     // The a11y-only mirror of a custom select (sr-only 1px listbox): its
     // option is not something a user can see or click.
-    if (ariaRole === "option" && penIsMirrorOption(el)) continue;
+    if (ariaRole === "option" && penIsMirrorOption(el)) return null;
     // The page itself says this control is not there (a past calendar day,
     // an inert copy of a menu).
-    if (el.getAttribute("aria-hidden") === "true") continue;
+    if (el.getAttribute("aria-hidden") === "true") return null;
     // The clickable child of a listed cell/option (a day cell wrapping a
     // role=button) would list the same day twice; the cell carries the
     // selection state and a click on it lands on the child anyway.
-    if (penInsideSelectableCell(el)) continue;
+    if (penInsideSelectableCell(el)) return null;
     var box = el;
     var toggleProxy = penToggleProxy(el);
     if (toggleProxy) {
       // Transparent / clip-hidden native radio or checkbox over a visible
       // <label>: the label stands in for the box (same node the click and
       // mark paths use), and must itself be near the viewport.
-      if (!isVisible(toggleProxy)) continue;
+      if (!isVisible(toggleProxy, forced)) return null;
       box = toggleProxy;
       penProxyLabels.add(toggleProxy);
-    } else if (!isVisible(el)) {
+    } else if (!isVisible(el, forced)) {
       box = penRangeProxy(el);
-      if (!box) continue;
+      if (!box) return null;
     }
     var tag = tagOf(el);
     var isPassword = tag === "input" && (el.getAttribute("type") || "").toLowerCase() === "password";
@@ -3437,6 +3455,12 @@ export const SNAPSHOT_JS = `(() => {
     // renders a whole year in a scrolling list): not visible either. Without
     // this the months above and below the shown one ate the cap.
     distance = Math.max(distance, penClippedDistance(box, rect));
+    if (forced) {
+      // Only the viewport margin is lifted: an option hidden inside a clipping
+      // ancestor (closed accordion, max-height:0) is still not there.
+      if (penClippedByAncestor(box, rect)) return null;
+      distance = 0;
+    }
     var entry = {
       el: el,
       box: box,
@@ -3539,7 +3563,11 @@ export const SNAPSHOT_JS = `(() => {
         entry.hasValue = rawValue.length > 0;
       }
     }
-    found.push(entry);
+    return entry;
+  }
+  for (var i = 0; i < candidates.length; i++) {
+    var built = penBuildEntry(candidates[i], false);
+    if (built) found.push(built);
   }
   // A label that is itself a candidate (onclick, role) would list the same
   // tile twice — but only drop it when its toggle really got an entry above
@@ -3820,6 +3848,130 @@ export const SNAPSHOT_JS = `(() => {
       }
     } else {
       overlayEl = null;
+    }
+  }
+
+  // Unanswered required choice far above a disabled goal button. A configurator
+  // keeps its primary button natively disabled until radio groups ABOVE it are
+  // answered, often 2-3 screens up; the near-viewport table then shows the
+  // disabled button but never the choice that unlocks it, and the step rule
+  // "a disabled control means an earlier choice is unanswered" has nothing to
+  // act on (the agent scrolled up and down forever). So when a natively
+  // disabled button is listed, also list the enabled options of the (at most
+  // 2 nearest) radio groups before it that have no checked option, even outside
+  // the viewport margin (PERFORM scrolls the target into view). Same entry
+  // builder as every other element (only the viewport-distance margin is
+  // lifted; a clipped-away option is still rejected); nothing changes without
+  // a disabled button, behind a modal or a reported overlay. The table never
+  // exceeds maxElements: the farthest ordinary entries make room.
+  var PEN_EXTRA_GROUPS = 2;
+  var PEN_EXTRA_OPTIONS = 6;
+  function penIsDisabledButtonLike(e) {
+    if (!e.disabled) return false;
+    var itype = (e.el.getAttribute("type") || "").toLowerCase();
+    var erole = (e.role || "").toLowerCase();
+    return (!erole || erole === "button") && (e.tag === "button" || (e.tag === "input" && /^(submit|button)$/.test(itype)));
+  }
+  // The same wall test as penIsCovered, WITHOUT tallying penWallHits: forced
+  // extras must not feed the overlay statistics.
+  function penIsCoveredQuiet(el, boxEl) {
+    var probe = penProbe(el, boxEl);
+    return probe.testable > 0 && !probe.related && probe.walled === probe.testable;
+  }
+  if (!modalScoped && !overlayEl) {
+    var penIdx = new Map();
+    for (var xi = 0; xi < candidates.length; xi++) penIdx.set(candidates[xi], xi);
+    // a before b in document order (candidate order across shadow roots).
+    var penBefore = function (a, b) {
+      var pos = a.compareDocumentPosition(b);
+      if (pos & Node.DOCUMENT_POSITION_DISCONNECTED) return (penIdx.get(a) || 0) < (penIdx.get(b) || 0);
+      return !!(pos & Node.DOCUMENT_POSITION_FOLLOWING);
+    };
+    var penAnchor = null;
+    for (var bi = 0; bi < capped.length; bi++) {
+      if (!penIsDisabledButtonLike(capped[bi])) continue;
+      if (!penAnchor || penBefore(penAnchor.el, capped[bi].el)) penAnchor = capped[bi];
+    }
+    if (penAnchor) {
+      var penGroups = new Map();
+      for (var ri = 0; ri < candidates.length; ri++) {
+        var radio = candidates[ri];
+        if (!penToggleInput(radio) || (radio.getAttribute("type") || "").toLowerCase() !== "radio") continue;
+        var rname = radio.getAttribute("name");
+        if (!rname) continue;
+        var gkey = radio.form || radio.getRootNode();
+        var gmap = penGroups.get(gkey);
+        if (!gmap) {
+          gmap = new Map();
+          penGroups.set(gkey, gmap);
+        }
+        var grp = gmap.get(rname);
+        if (!grp) {
+          grp = { form: radio.form, checked: false, opts: [], last: -1 };
+          gmap.set(rname, grp);
+        }
+        if (radio.checked) grp.checked = true;
+        if (penNativelyDisabled(radio) || radio.getAttribute("aria-hidden") === "true") continue;
+        if (penBefore(radio, penAnchor.el)) {
+          grp.opts.push(radio);
+          grp.last = ri;
+        }
+      }
+      var penOpen = [];
+      penGroups.forEach(function (gm) {
+        gm.forEach(function (g) {
+          if (!g.checked && g.opts.length > 0) penOpen.push(g);
+        });
+      });
+      // The anchor's own form wins when it holds a qualifying group.
+      var anchorForm = penAnchor.el.form;
+      if (anchorForm) {
+        var inForm = penOpen.filter(function (g) {
+          return g.form === anchorForm;
+        });
+        if (inForm.length) penOpen = inForm;
+      }
+      penOpen.sort(function (a, b) {
+        return b.last - a.last;
+      });
+      var penListed = new Set();
+      for (var ci = 0; ci < capped.length; ci++) {
+        penListed.add(capped[ci].el);
+        penListed.add(capped[ci].box);
+      }
+      var penExtras = [];
+      var penGroupSlots = PEN_EXTRA_GROUPS;
+      var penRoom = Math.max(0, maxElements - 1);
+      for (var gi = 0; gi < penOpen.length && penExtras.length < penRoom; gi++) {
+        var added = 0;
+        for (var oi = 0; oi < penOpen[gi].opts.length && added < PEN_EXTRA_OPTIONS && penExtras.length < penRoom; oi++) {
+          var opt = penOpen[gi].opts[oi];
+          if (penListed.has(opt)) continue;
+          var extra = penBuildEntry(opt, true);
+          if (!extra || penListed.has(extra.box) || penIsCoveredQuiet(extra.el, extra.box)) continue;
+          penListed.add(extra.el);
+          penListed.add(extra.box);
+          penExtras.push(extra);
+          added++;
+        }
+        if (added > 0 && --penGroupSlots === 0) break;
+      }
+      if (penExtras.length) {
+        // Make room: evict the farthest ordinary entries, never the anchor.
+        var evictable = capped.filter(function (c) {
+          return c !== penAnchor;
+        });
+        evictable.sort(function (a, b) {
+          return b.distance - a.distance || penReadingOrder(b, a);
+        });
+        var need = capped.length + penExtras.length - maxElements;
+        var evict = new Set(evictable.slice(0, Math.max(0, need)));
+        capped = capped.filter(function (c) {
+          return !evict.has(c);
+        });
+        capped = capped.concat(penExtras);
+        capped.sort(penReadingOrder);
+      }
     }
   }
 
