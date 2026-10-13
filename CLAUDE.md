@@ -1012,3 +1012,7 @@ into `showcase_screens` — `showcase:generate`, `showcase:ingest`,
 `showcase:pin`, `showcase:delete` — is an operator-run CLI with no HTTP
 surface), and there is no unpublish route: cleanup after a bad publish is an
 operator running `npm run showcase:delete --app <runId>` by hand.
+
+## Browse task: policy and cloud browser live in `@sideform/browser-agent`
+
+The browse_task step policy (step, ultrafast, commit guard, CAPTCHA wall, locate, plan, the `browse*BodySchema` zod schemas) and the cloud-browser controller/Playwright adapter are not in this repo: they come from `@sideform/browser-agent` (`github:dan-rozhkov/browser-agent#<tag>`, built by its `prepare` script on `npm ci`). Change them there, then bump the tag in `package.json`. Backend glue only: `src/ai/browsePolicy.ts` (Config -> `BrowsePolicyOptions`; model built on every call), `src/routes/browse{Step,Locate,Plan}.ts` (Fastify, rate limit, logging, the `BROWSE_STEP_VISION=on` + `jev*` warning), `src/services/systemone.ts` (thin wrapper over `createSystemOneClient`; returns `null` without `TYPESAFE_API_KEY`), `src/browser/connect.ts` and `cloudSessions.ts`. `src/analysis/pii.ts` re-exports the package's PII scrubber. `npm run browser:sync` and `src/browser/vendor/` no longer exist.

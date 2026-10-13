@@ -488,7 +488,7 @@ describe("routeSkill", () => {
 
   // Finding #3: an empty/missing `probabilities` map on an otherwise
   // well-formed pass-1 choice answer is a vendor glitch (the same class
-  // browseStep.ts's hasProbabilities guards against), not a confident "no
+  // the package's hasProbabilities (@sideform/browser-agent/policy) guards against), not a confident "no
   // ranking" — must fail open with reason "error", uncached, rather than
   // flowing into an empty shortlist.
   it("fails open with reason error, uncached, when pass 1's choice answer has an empty probabilities map", async () => {

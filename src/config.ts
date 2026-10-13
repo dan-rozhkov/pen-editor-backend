@@ -200,8 +200,8 @@ export const envSchema = z.object({
   // the schema is pushed into a system message instead, which drifts out of
   // shape and throws generateObject's NoObjectGeneratedError.
   STRUCTURED_MODEL: z.string().default("openrouter:deepseek/deepseek-v4.1-flash"),
-  // Model for browse_task's second-opinion cascade (src/ai/browseStep.ts,
-  // cascadeStep) — a separate role from STRUCTURED_MODEL (which
+  // Model for browse_task's second-opinion cascade (browseStep.ts in
+  // @sideform/browser-agent/policy, cascadeStep) — a separate role from STRUCTURED_MODEL (which
   // generateTypeText still uses) because the cascade's own latency IS the
   // step's latency: it only runs after a Jev peak-probability gate has
   // already failed, so the frontend's browse loop is blocked on it.
@@ -215,8 +215,8 @@ export const envSchema = z.object({
   // 2026-09-28) 400 on every cascade call: OpenAI strict json_schema needs
   // every key in `required`, and cascadeSchema's index/text are .optional().
   BROWSE_CASCADE_MODEL: z.string().default("openrouter:google/gemini-2.5-flash"),
-  // How /api/browse/step decides (src/ai/browseStep.ts vs
-  // src/ai/browseStepUltrafast.ts). "ultrafast" is the jev-ultrafast scheme:
+  // How /api/browse/step decides (browseStep.ts vs
+  // browseStepUltrafast.ts, both in @sideform/browser-agent/policy). "ultrafast" is the jev-ultrafast scheme:
   // rules and current field state in the Jev questions, argmax, text from a
   // small LLM that sees the chosen field. "legacy" is the gated/cascaded
   // policy it replaced.

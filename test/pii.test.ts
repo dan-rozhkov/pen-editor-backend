@@ -55,7 +55,7 @@ describe("containsPii", () => {
   });
 });
 
-// browseStep.ts's extractTextCandidates (review finding #1) locates PII
+// the package's browseStep.ts extractTextCandidates (@sideform/browser-agent/policy) (review finding #1) locates PII
 // spans in the RAW goal to drop any candidate that overlaps one without
 // being it — these assert the span itself lands on the exact PII substring,
 // not merely somewhere in the string.

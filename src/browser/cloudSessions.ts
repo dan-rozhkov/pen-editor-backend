@@ -1,10 +1,10 @@
 // Session registry for the cloud browser (spec §3.4/§5): signed handles, an
-// in-memory map of live Steel sessions with a vendored BrowserController each,
+// in-memory map of live Steel sessions with a BrowserController each,
 // reconnect-after-restart, quotas and an idle sweeper. Nothing here touches the
 // network directly — Steel and the CDP connector are injected.
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { SteelClient } from "../services/steel.js";
-import { redactedError } from "./redact.js";
+import { redactedError } from "@sideform/browser-agent/adapters/playwright";
 
 export const COMMAND_NAMES = ["open", "act", "findImages", "read", "snapshot", "screenshot", "tabs", "perform"] as const;
 export type CommandName = (typeof COMMAND_NAMES)[number];

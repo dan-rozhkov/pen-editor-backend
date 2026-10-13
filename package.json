@@ -27,8 +27,7 @@
     "check:dup": "jscpd src",
     "flaky:summary": "node scripts/flaky-summary.mjs",
     "test:mutation": "stryker run",
-    "check:dup:tests": "node scripts/check-test-dup.mjs",
-    "browser:sync": "node scripts/sync-browser-vendor.mjs"
+    "check:dup:tests": "node scripts/check-test-dup.mjs"
   },
   "dependencies": {
     "@ai-sdk/mcp": "^1.0.23",
@@ -49,6 +48,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@openrouter/ai-sdk-provider": "^2.2.3",
     "@opentelemetry/api": "1.9.1",
+    "@sideform/browser-agent": "github:dan-rozhkov/browser-agent#v0.2.1",
     "ai": "^6.0.85",
     "better-auth": "1.7.7",
     "better-call": "1.4.0",

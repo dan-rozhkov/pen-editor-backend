@@ -1,6 +1,8 @@
 # Cloud browser for the web build (Steel)
 
 Date: 2026-09-29. Status: approved for implementation.
+
+> Update: the vendored controller (`src/browser/vendor/`, `npm run browser:sync`) and `playwrightHandle.ts`/`redact.ts` described below were replaced by `@sideform/browser-agent/adapters/playwright`; the package tag now plays the role of the pinned desktop commit.
 Spike: `bench/cloud-browser/` in the workspace root (outside every repo). Its results are summarized in §8.
 
 ## 1. Goal

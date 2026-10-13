@@ -4,6 +4,7 @@ import type {
   SystemOneQuestion,
 } from "../services/systemone.js";
 import { scrubPii } from "../analysis/pii.js";
+import { hasProbabilities, peakProbability } from "@sideform/browser-agent/policy";
 
 // Jev-backed auto-pick of which skill (if any) a user's message is asking
 // for. Today the model spends a whole extra round trip on this: it reads
@@ -398,32 +399,6 @@ function isNoulAnswer(
   return !!answer && answer.type === "noul";
 }
 
-/** Same vendor glitch browseStep.ts's `hasProbabilities` guards against: the
- * response schema permits an otherwise well-formed choice answer to carry
- * `probabilities: {}`. Left unguarded here, that flows straight into
- * `ranked = Object.entries({}).sort(...)` → `[]` → an empty shortlist →
- * pass1Budget with a CACHED verdict, even though pass 2 never got a chance
- * to run — the empty distribution is a malformed answer, not a considered
- * one, so it must fail the same way every other malformed pass-1 answer
- * does: an uncaught throw here is caught by routeSkill's pass-1 try/catch
- * and resolves to `reason: "error"`, uncached. */
-function hasProbabilities(answer: Extract<SystemOneAnswer, { type: "choice" }>): boolean {
-  return Object.keys(answer.probabilities).length > 0;
-}
-
-/** Mirrors browseStep.ts's own `peakProbability` (not exported there, so
- * duplicated rather than imported — see this module's and browseStep.ts's
- * headers for the shared reasoning): the winning Choice's peak probability,
- * `max(probabilities)`, rather than the vendor's `confidence` field. Used
- * ONLY to gate pass 2's winner (see RouteSkillOptions.threshold's comment
- * for why `confidence` is the wrong number for a 3-4-candidate shortlist) —
- * pass 1 has no equivalent gate on its Choice at all, only the separate gate
- * Nouls. */
-function peakProbability(answer: Extract<SystemOneAnswer, { type: "choice" }>): number {
-  const values = Object.values(answer.probabilities);
-  return values.length > 0 ? Math.max(...values) : 0;
-}
-
 interface Pass1Result {
   model: string;
   winner: string;
@@ -463,7 +438,7 @@ async function runPass1(
     );
   }
   // Membership check, not a bare trust of the vendor's string — same
-  // reasoning as browseStep.ts's target-index validation (finding #9
+  // reasoning as the package's browseStep.ts (@sideform/browser-agent/policy) target-index validation (finding #9
   // there): a vendor drift or a stray hallucinated name must surface as a
   // named error (caught below, resolves to `reason: "error"`, nothing
   // injected), never silently resolve to a "picked" verdict for a skill
@@ -565,7 +540,7 @@ async function runPass2(
   if (!Object.prototype.hasOwnProperty.call(criteria, which.choice)) {
     throw new Error(`skillRouting pass 2: Jev picked an unknown skill "${which.choice}"`);
   }
-  // Same vendor glitch pass 1 (and browseStep.ts) guard against: an
+  // Same vendor glitch pass 1 (and the package's browseStep.ts) guard against: an
   // otherwise well-formed choice answer can carry `probabilities: {}`. The
   // winner gate now reads peak probability (see peakProbability), so an
   // empty distribution here must not silently resolve to peak 0 and read as
@@ -806,7 +781,7 @@ export async function routeSkill(
     });
   }
   // Gate on the winner's PEAK PROBABILITY, not the vendor `confidence` field
-  // (round-3 review finding, same option-count artifact browseStep.ts's
+  // (round-3 review finding, same option-count artifact the package's browseStep.ts
   // peakProbability comment describes): `confidence` over pass 2's 3-4-item
   // shortlist demands a much higher peak than the same `confidence` bar did
   // over pass 1's full catalog, so a correctly shortlisted winner at, say,

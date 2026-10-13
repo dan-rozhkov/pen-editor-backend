@@ -13,7 +13,7 @@ import { createModel, jsonModel } from "./structuredModelFakes.js";
 createModel.mockImplementation(() => jsonModel({ text: "wireless headphones" }));
 
 const { buildApp } = await import("../src/app.js");
-const { PEAK_THRESHOLD_OP, PEAK_THRESHOLD_PASSIVE } = await import("../src/ai/browseStep.js");
+const { PEAK_THRESHOLD_OP, PEAK_THRESHOLD_PASSIVE } = await import("@sideform/browser-agent/policy");
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -343,7 +343,7 @@ describe("POST /api/browse/step — ultrafast policy (the default)", () => {
 
 describe("modal body field", () => {
   it("accepts and omits modal", async () => {
-    const { bodySchema } = await import("../src/routes/browseStep.js");
+    const { browseStepBodySchema: bodySchema } = await import("@sideform/browser-agent/policy");
     const base = { goal: "g", url: "https://x.test", title: "t", elements: [], history: [] };
     expect(bodySchema.safeParse(base).success).toBe(true);
     const withModal = bodySchema.safeParse({ ...base, modal: "Cart" });
@@ -385,7 +385,7 @@ describe("POST /api/browse/step — irreversible-action guard", () => {
   });
 
   it("accepts the permissions shape and rejects non-booleans", async () => {
-    const { bodySchema } = await import("../src/routes/browseStep.js");
+    const { browseStepBodySchema: bodySchema } = await import("@sideform/browser-agent/policy");
     const base = { goal: "g", url: "https://x.test", title: "t", elements: [], history: [] };
     expect(bodySchema.safeParse({ ...base, permissions: { allowPasswordEntry: true, confirmIrreversible: false } }).success).toBe(true);
     expect(bodySchema.safeParse({ ...base, permissions: {} }).success).toBe(true);
@@ -395,7 +395,7 @@ describe("POST /api/browse/step — irreversible-action guard", () => {
 
 describe("disabled element field", () => {
   it("is accepted by the step schema", async () => {
-    const { bodySchema } = await import("../src/routes/browseStep.js");
+    const { browseStepBodySchema: bodySchema } = await import("@sideform/browser-agent/policy");
     const base = { goal: "g", url: "https://x.test", title: "t", history: [] };
     const el = { index: 1, tag: "input", label: "Chip", ops: ["CLICK"], disabled: true };
     const parsed = bodySchema.safeParse({ ...base, elements: [el] });

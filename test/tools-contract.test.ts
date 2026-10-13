@@ -1373,7 +1373,7 @@ describe("browse_act schema (widened)", () => {
 
   // `element` (2026-09-23): a plain-language element description, resolved
   // client-side by browse_act instead of a snapshot index — see
-  // src/ai/browseLocate.ts / POST /api/browse/locate.
+  // locateTarget in @sideform/browser-agent / POST /api/browse/locate.
   it("accepts `element` as an alternative to target/index", () => {
     expect(
       schema.safeParse({ action: "click", element: "the Continue button in the cookie banner" })

@@ -80,7 +80,7 @@ describe("POST /api/browse/locate", () => {
   });
 
   // Browse-speed contract (2026-09-24), scroll containers: the same
-  // elementSchema is shared with /api/browse/step (browseStep.ts), so a
+  // elementSchema is shared with /api/browse/step (elementSchema in @sideform/browser-agent/policy), so a
   // scroll-container entry (`ops: [], scrollable: true`) must not 400 here
   // either, and a genuinely empty `ops` without `scrollable` still should.
   it("accepts an element with empty ops when scrollable is true, alongside a real candidate", async () => {
