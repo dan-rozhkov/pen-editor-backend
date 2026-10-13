@@ -8,6 +8,51 @@ While on `0.x`, minor bumps may include breaking changes.
 
 ## [Unreleased]
 
+## [0.40.0] - 2026-10-13
+
+The first release since 0.39.0 (2026-08-20), so it is large. Four themes: the
+agent drives a real browser, accounts and a remote MCP endpoint, design-system
+libraries for organizations, and the chat model picker.
+
+### Changed
+- **Manual browser mode is the default (`BROWSE_MODE=manual`).** The chat
+  model drives the `browse_*` tools itself and `browse_task` (the Jev/Luna
+  step loop) is not offered. Measured on the browse bench (13.10): live sites
+  18/30 each, p50 61 s vs 71 s, $0.012 vs $0.040 per task (94% of the manual
+  input hits the prompt cache); Online-Mind2Web (30 tasks) 57% vs 50%, p50
+  48 s vs 89 s. A new manual "Browser tasks" rule: report only observed
+  values, never type a password, ask before an irreversible step the user did
+  not ask for. This rule is prompt-only: the `browse_task` commit guard does
+  not run on direct `browse_act` calls. `BROWSE_MODE=task` rolls back.
+- The browse_task step policy and the cloud-browser controller now come from
+  `@sideform/browser-agent` (git tag, v0.2.7) instead of vendored code.
+
+### Added
+- **Browser use:** `browse_open`/`browse_snapshot`/`browse_screenshot`/
+  `browse_act`/`browse_tabs`/`browse_read`/`browse_find_images` schemas,
+  `/api/browse/step`, `/api/browse/plan` (multi-item goals as sub-goals) and
+  `/api/browse/locate`; a Steel cloud browser for the web build (off without
+  `STEEL_API_KEY`).
+- **Jev / OpenAI Decisions (TypeSafe System One)** as a cheap typed decision
+  model: browse steps, skill routing (`SKILL_ROUTING_MODE`), taste checks of
+  prototype screens. OpenAI Decisions model ids go to OpenRouter.
+- **Accounts (Better Auth)** and the account-scoped remote MCP endpoint
+  `/mcp` (API keys, OAuth 2.1), the Sideform canvas as an MCP Apps widget,
+  embed-first MCP instructions, support/privacy mail forwarding.
+- **Design-system libraries** with immutable semver versions, organizations
+  with owner/editor/viewer roles, an append-only audit log, counts-only usage
+  reports; tokens with collections, modes and aliases in
+  `get_variables`/`set_variables`; `get_design_system`, `lint_design`, embed
+  HTML components.
+- Per-user Mobbin MCP (replaces Refero), `generate_vector` (QuiverAI), the
+  image budget in the chat history, context size in the chat metadata.
+
+### Note
+- Of the entries below, the DeepSeek-direct provider lived one day and was
+  removed: the chat agent is on OpenRouter again (plus OpenCode BYOK), and the
+  user can pick the model. See `CLAUDE.md`, "Chat model provider".
+
+### Changed (earlier, carried over from Unreleased)
 ### Changed
 - **Refero MCP replaced with Mobbin MCP.** Refero's single server-held
   `REFERO_API_KEY` (one shared reference library for every user) is gone;
