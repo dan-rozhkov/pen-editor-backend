@@ -233,6 +233,10 @@ describe("browser tasks guidance", () => {
     expect(BROWSER_TASKS_GUIDANCE).toContain("already failed twice");
     expect(BROWSER_TASKS_GUIDANCE).toContain("real number of attempts");
     expect(BROWSER_TASKS_GUIDANCE).toContain("not found in the searches tried");
+    // Values come from what the tool observed, never from memory.
+    expect(BROWSER_TASKS_GUIDANCE).toMatch(/Report a value[^\n]*only if it is in the `observations`/);
+    expect(BROWSER_TASKS_GUIDANCE).toContain("Do not call `browse_task` again only to read a value");
+    expect(BROWSER_TASKS_GUIDANCE).toContain("Do not invent it");
     expect(BROWSER_TASKS_GUIDANCE).not.toMatch(/within N attempts/);
     expect(BROWSER_TASKS_GUIDANCE).toContain("small remaining step");
     expect(BROWSER_TASKS_GUIDANCE).toMatch(/never invent reasons|never claim the thing does not exist/i);

@@ -1574,6 +1574,8 @@ describe("browse tool descriptions steer to browse_task first", () => {
     expect(d).toContain("WHOLE goal in one call");
     expect(d).toContain("maxSteps 25");
     expect(d).not.toMatch(/split a big job|per sub-goal|per cart item/i);
+    // The page text the tool observed comes back in the transcript.
+    expect(d).toContain("observations: [{ subgoal?, url, text }]");
   });
   it("browse_task rejects a goal the step route would 400 on (> 2000 chars)", () => {
     const schema = (penTools.browse_task as unknown as { inputSchema: { safeParse: (v: unknown) => { success: boolean } } }).inputSchema;
