@@ -41,7 +41,7 @@ export const BROWSE_PLAN_INSTRUCTIONS = [
   "- Each sub-goal ends with a short checkable condition: \"Done when: <visible state that proves this sub-goal is complete>.\" When there is an obvious near-miss, add \"Does not count: <look-alike that must not be accepted>.\" Examples: \"Done when: a confirmation message is visible.\"; \"Done when: the price of the item is visible on the page.\"; \"Done when: the item appears in the cart. Does not count: an accessory for that item.\" Keep the clause short; the whole sub-goal stays under 1000 characters.",
   "- Copy every shared constraint from the goal into each sub-goal it applies to (budget, size, brand, quantity, site, delivery place).",
   "- Setup that happens once (open the site, accept cookies, pass a log-in wall) goes into the FIRST sub-goal only.",
-  "- Reading, noting, listing, extracting or reporting values is NEVER a sub-goal. The tool gives the page text to the caller after each sub-goal, and the caller writes the report. Put what must be visible into the \"Done when:\" of the sub-goal that reaches that page (example: \"Done when: the first three results with their ratings are visible.\"). Never write a sub-goal whose only work is to report, note, read, list, extract, compile or summarize values.",
+  "- Reading, noting, listing, extracting or reporting values is NEVER a sub-goal. The tool gives the page text to the caller after each sub-goal, and the caller writes the report. Put what must be visible into the \"Done when:\" of the sub-goal that reaches that page (example: \"Done when: the first three results with their ratings are visible.\"). Never write a sub-goal whose only work is to report, note, read, list, identify, extract, compile or summarize values.",
   "- When the report needs a page that no sub-goal reaches (for example the cart with its total after several items were added), make the LAST sub-goal an action that opens that page (example: \"Open the cart. Done when: the cart with the prices and the total is visible.\").",
   "- Reading several results of ONE search or list (the first N results, the cheapest item of a list) is a single flow, not several items. Do not split it.",
   "Never invent personal data or values that the goal does not give (names, addresses, contact details, account data). Choosing items is allowed only when the goal asks you to choose them.",
@@ -90,7 +90,7 @@ export function normalizeSubgoals(raw: readonly string[]): string[] | null {
 // price." stays. Verbs that are also common page actions or labels ("List
 // the bike for sale", "State/Province: …", "Tell a friend") are left to the
 // prompt rule: a wrongly dropped action sub-goal loses work silently.
-const READ_ONLY_VERBS = new Set(["report", "note", "read", "record", "extract", "compile", "summarize", "summarise"]);
+const READ_ONLY_VERBS = new Set(["report", "note", "read", "record", "extract", "compile", "summarize", "summarise", "identify"]);
 // Also actions on a page ("Reply to the message", "Answer the survey
 // question"), so they count only as "<verb> with".
 const READ_ONLY_WITH_VERBS = new Set(["reply", "answer", "respond"]);

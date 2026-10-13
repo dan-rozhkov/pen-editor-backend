@@ -94,6 +94,7 @@ describe("POST /api/browse/plan", () => {
       "1. Report the prices",
       "2) Note the first price",
       "Step 3: Summarize the reviews",
+      "Identify the second restaurant from the search results that has a free slot",
     ]) {
       expect(isReadOnlySubgoal(s), s).toBe(true);
     }
@@ -108,6 +109,7 @@ describe("POST /api/browse/plan", () => {
       "Read and accept the terms, then tick the checkbox",
       "Writer filter: pick Tolkien",
       "1. Search for flats",
+      "Identify and open the cheapest listing",
     ]) {
       expect(isReadOnlySubgoal(s), s).toBe(false);
     }
