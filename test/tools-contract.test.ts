@@ -1442,11 +1442,13 @@ describe("browse_act schema (widened)", () => {
     expect(schema.safeParse({ snapshotId: "snap-1" }).success).toBe(false);
   });
 
-  it("rejects a call with BOTH `action` and `actions`", () => {
+  // Strict-mode (OpenAI) models send BOTH: the call is normalized to one of
+  // the two shapes instead of rejected — see test/browse-act-schema.test.ts.
+  it("accepts a call with BOTH `action` and `actions` by normalizing it to one shape", () => {
     expect(
       schema.safeParse({ action: "click", actions: [{ action: "click", target: "Submit" }] })
         .success,
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it("rejects an `actions` entry with `snapshotId` on it (only the top-level one is valid)", () => {
