@@ -109,17 +109,15 @@ describe("bareModelId", () => {
 });
 
 describe("providerHandlesToolResultImages", () => {
-  it("is true only for openrouter", () => {
-    const expected: Record<ModelProviderId, boolean> = {
-      openrouter: true,
-      opencode: false,
-      "opencode-go": false,
-    };
-    for (const [provider, result] of Object.entries(expected) as [
-      ModelProviderId,
-      boolean,
-    ][]) {
-      expect(providerHandlesToolResultImages(provider)).toBe(result);
+  it("is true for openrouter and verified Go ids only", () => {
+    const cases: [ModelProviderId, string, boolean][] = [
+      ["openrouter", "google/gemini-2.5-flash", true],
+      ["opencode-go", "deepseek-v4.1-flash", true],
+      ["opencode-go", "glm-5.3-flash", false],
+      ["opencode", "deepseek-v4.1-flash", false],
+    ];
+    for (const [provider, modelId, result] of cases) {
+      expect(providerHandlesToolResultImages({ provider, modelId })).toBe(result);
     }
   });
 });

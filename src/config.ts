@@ -416,7 +416,16 @@ export const envSchema = z.object({
   // offered. "task": the previous behavior - browse_task is offered when
   // TYPESAFE_API_KEY is set, together with the "Browser tasks" rule. One env
   // var to roll back.
-  BROWSE_MODE: z.enum(["manual", "task"]).default("manual"),
+  // "agent": the chat model gets ONE browser tool, browse_agent, which runs the
+  // whole task in a browsing subagent (agentMode "browse") pinned to
+  // BROWSE_AGENT_MODEL with reasoning off — see
+  // docs/specs/2026-10-14-browse-subagent-design.md.
+  BROWSE_MODE: z.enum(["manual", "task", "agent"]).default("manual"),
+  // The model behind the browsing subagent. An OpenRouter id: an OpenCode
+  // reference is a boot failure (no server-side OpenCode key exists). A user
+  // with a Go key and an allowed OpenCode deepseek model picked uses that
+  // instead, per request.
+  BROWSE_AGENT_MODEL: z.string().default("deepseek/deepseek-v4.1-flash"),
   // Injecting the wrong skill wastes context and can mislead the whole
   // turn, so only a confident pick acts; everything below this falls back
   // to today's behavior (the model calling load_skill itself). Despite the
@@ -579,7 +588,7 @@ const LEGACY_ENV_ALIASES: Array<[newName: string, oldName: string]> = [
 // which OpenRouter answers with a 404 on every single turn — a runtime
 // failure for a config mistake, which belongs at boot instead.
 function rejectDeepSeekModelRef(env: Record<string, string | undefined>): void {
-  for (const name of ["CHAT_MODEL", "STRUCTURED_MODEL", "ANALYSIS_MODEL", "VISION_MODEL", "BROWSE_CASCADE_MODEL"]) {
+  for (const name of ["CHAT_MODEL", "STRUCTURED_MODEL", "ANALYSIS_MODEL", "VISION_MODEL", "BROWSE_CASCADE_MODEL", "BROWSE_AGENT_MODEL"]) {
     const value = env[name];
     if (value?.startsWith("deepseek:")) {
       console.error(
@@ -616,7 +625,7 @@ function rejectDeepSeekModelRef(env: Record<string, string | undefined>): void {
 //    key for it either.
 function rejectOpenCodeModelRef(env: Record<string, string | undefined>): void {
   const OPENCODE_COLON_PREFIXES = ["opencode-go:", "opencode:"];
-  for (const name of ["CHAT_MODEL", "STRUCTURED_MODEL", "ANALYSIS_MODEL", "VISION_MODEL", "BROWSE_CASCADE_MODEL"]) {
+  for (const name of ["CHAT_MODEL", "STRUCTURED_MODEL", "ANALYSIS_MODEL", "VISION_MODEL", "BROWSE_CASCADE_MODEL", "BROWSE_AGENT_MODEL"]) {
     const value = env[name];
     if (!value) continue;
     const colonPrefix = OPENCODE_COLON_PREFIXES.find((prefix) => value.startsWith(prefix));
@@ -863,7 +872,8 @@ export const DEFAULT_MODELS: ModelOption[] = [
   // (visionFallback), so the user still gets an answer.
   //
   // This is a DIFFERENT axis from providerHandlesToolResultImages
-  // (src/ai/modelRef.ts), which stays false for OpenCode: the
+  // (src/ai/modelRef.ts), which stays false for OpenCode
+  // except the verified Go model deepseek-v4.1-flash: the
   // @ai-sdk/openai-compatible integration carries a USER-attached image
   // natively but stringifies an image inside a TOOL RESULT. Both measurements
   // hold at once, and the smoke above confirms the user-attachment half.

@@ -109,6 +109,14 @@ export interface CreateOpenCodeModelOptions {
   /** Stable id for this conversation, sent as x-opencode-session. */
   sessionId: string;
   /**
+   * Send `reasoning_effort: "none"`. OpenCode ignores the OpenRouter shape
+   * `{reasoning: {effort}}` and accepts this OpenAI-style field instead
+   * (measured live 2026-10-14 on Go deepseek-v4.1-flash: 0 reasoning tokens
+   * vs ~80-130 without it; low/medium/high are noise, so off is the only
+   * real setting).
+   */
+  disableReasoning?: boolean;
+  /**
    * Test/DI-only override for the underlying fetch implementation (used to
    * intercept outgoing requests without a real network call). Defaults to
    * the global `fetch`. Never set by production callers.
@@ -136,8 +144,92 @@ function sanitizeSessionId(sessionId: string): string {
   return cleaned.length > 0 ? cleaned : randomUUID();
 }
 
+type ChatPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
+
+// Maps one v6 ToolResultOutput "content" part (plus the legacy v2 `media`
+// shape) to an OpenAI content part. Returns `undefined` for a part we cannot
+// express (file-id, non-image files, unknown shapes) — the caller then leaves
+// the whole message untouched. `isImage` reports whether it carried an image.
+function toChatPart(part: unknown): { part: ChatPart; isImage: boolean } | undefined {
+  if (typeof part !== "object" || part === null) return undefined;
+  const p = part as Record<string, unknown>;
+  const str = (v: unknown): v is string => typeof v === "string" && v.length > 0;
+  switch (p.type) {
+    case "text":
+      return typeof p.text === "string"
+        ? { part: { type: "text", text: p.text }, isImage: false }
+        : undefined;
+    case "media":
+    case "image-data":
+    case "file-data":
+      if (str(p.data) && typeof p.mediaType === "string" && p.mediaType.startsWith("image/")) {
+        return {
+          part: { type: "image_url", image_url: { url: `data:${p.mediaType};base64,${p.data}` } },
+          isImage: true,
+        };
+      }
+      return undefined;
+    case "image-url":
+      return str(p.url)
+        ? { part: { type: "image_url", image_url: { url: p.url } }, isImage: true }
+        : undefined;
+    case "file-url":
+      if (str(p.url) && typeof p.mediaType === "string" && p.mediaType.startsWith("image/")) {
+        return { part: { type: "image_url", image_url: { url: p.url } }, isImage: true };
+      }
+      return undefined;
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * @ai-sdk/openai-compatible serializes a tool result of output type "content"
+ * as `JSON.stringify(value)`, so an image arrives as a base64 JSON string.
+ * OpenCode Go accepts OpenAI-shaped content-part arrays on tool messages
+ * (verified live 2026-10-14), so rewrite exactly those messages. Any tool
+ * message that is not a JSON array containing at least one convertible image
+ * (and nothing unconvertible) is left byte-identical — no re-serialization,
+ * prompt caching depends on byte stability.
+ */
+export function restoreToolResultImages(args: Record<string, unknown>): Record<string, unknown> {
+  const messages = args.messages;
+  if (!Array.isArray(messages)) return args;
+  let changed = false;
+  const out = messages.map((m: unknown) => {
+    if (typeof m !== "object" || m === null) return m;
+    const msg = m as Record<string, unknown>;
+    if (msg.role !== "tool" || typeof msg.content !== "string") return m;
+    // Cheap pre-filter: skip the parse for results that cannot hold an image.
+    if (!msg.content.startsWith("[") || !/"(media|image-data|image-url|file-data|file-url)"/.test(msg.content)) {
+      return m;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(msg.content);
+    } catch {
+      return m;
+    }
+    if (!Array.isArray(parsed)) return m;
+    const parts: ChatPart[] = [];
+    let hasImage = false;
+    for (const raw of parsed) {
+      const mapped = toChatPart(raw);
+      if (!mapped) return m;
+      parts.push(mapped.part);
+      hasImage ||= mapped.isImage;
+    }
+    if (!hasImage) return m;
+    changed = true;
+    return { ...msg, content: parts };
+  });
+  return changed ? { ...args, messages: out } : args;
+}
+
 export function createOpenCodeModel(options: CreateOpenCodeModelOptions): LanguageModel {
-  const { provider, modelId, apiKey, sessionId } = options;
+  const { provider, modelId, apiKey, sessionId, disableReasoning } = options;
 
   if (!OPENCODE_CHAT_COMPLETIONS_MODELS[provider].includes(modelId)) {
     throw new Error(
@@ -221,6 +313,10 @@ export function createOpenCodeModel(options: CreateOpenCodeModelOptions): Langua
     // which is exactly the prompt-cache/cost measurement this repo treats
     // as load-bearing (see modelRef.ts's header and CLAUDE.md).
     includeUsage: true,
+    transformRequestBody: (args: Record<string, unknown>) => {
+      const withImages = restoreToolResultImages(args);
+      return disableReasoning ? { ...withImages, reasoning_effort: "none" } : withImages;
+    },
   });
 
   return openaiCompatible(modelId);

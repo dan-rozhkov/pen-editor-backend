@@ -225,11 +225,18 @@ describe("loadConfig", () => {
     expect(config.SKILL_ROUTING_MODE).toBe("off");
   });
 
-  it("defaults BROWSE_MODE to manual and accepts task", () => {
+  it("defaults BROWSE_MODE to manual and accepts task and agent", () => {
     process.env = { ...BASE_ENV } as NodeJS.ProcessEnv;
     expect(loadConfig().BROWSE_MODE).toBe("manual");
     process.env = { ...BASE_ENV, BROWSE_MODE: "task" } as NodeJS.ProcessEnv;
     expect(loadConfig().BROWSE_MODE).toBe("task");
+    process.env = { ...BASE_ENV, BROWSE_MODE: "agent" } as NodeJS.ProcessEnv;
+    expect(loadConfig().BROWSE_MODE).toBe("agent");
+  });
+
+  it("defaults BROWSE_AGENT_MODEL to the OpenRouter deepseek flash id", () => {
+    process.env = { ...BASE_ENV } as NodeJS.ProcessEnv;
+    expect(loadConfig().BROWSE_AGENT_MODEL).toBe("deepseek/deepseek-v4.1-flash");
   });
 
   it("defaults the scenario confirmation threshold to 3 and accepts an override", () => {
@@ -353,7 +360,7 @@ describe("loadConfig deepseek: model rejection", () => {
 // a valid OpenCode reference, but one none of these vars can ever actually
 // use, since they're all resolved without a per-request user key).
 describe("loadConfig opencode: / opencode-go: model rejection", () => {
-  it.each(["CHAT_MODEL", "STRUCTURED_MODEL", "ANALYSIS_MODEL", "VISION_MODEL"])(
+  it.each(["CHAT_MODEL", "STRUCTURED_MODEL", "ANALYSIS_MODEL", "VISION_MODEL", "BROWSE_AGENT_MODEL"])(
     "exits loudly when %s carries the colon form opencode-go:glm-5.3-flash",
     (name) => {
       process.env = {
@@ -365,7 +372,7 @@ describe("loadConfig opencode: / opencode-go: model rejection", () => {
     },
   );
 
-  it.each(["CHAT_MODEL", "STRUCTURED_MODEL", "ANALYSIS_MODEL", "VISION_MODEL"])(
+  it.each(["CHAT_MODEL", "STRUCTURED_MODEL", "ANALYSIS_MODEL", "VISION_MODEL", "BROWSE_AGENT_MODEL"])(
     "exits loudly when %s carries the colon form opencode:deepseek-v4-flash",
     (name) => {
       process.env = {
@@ -377,7 +384,7 @@ describe("loadConfig opencode: / opencode-go: model rejection", () => {
     },
   );
 
-  it.each(["CHAT_MODEL", "STRUCTURED_MODEL", "ANALYSIS_MODEL", "VISION_MODEL"])(
+  it.each(["CHAT_MODEL", "STRUCTURED_MODEL", "ANALYSIS_MODEL", "VISION_MODEL", "BROWSE_AGENT_MODEL"])(
     "exits loudly when %s carries the valid slash form opencode-go/glm-5.3-flash",
     (name) => {
       process.env = {
@@ -389,7 +396,7 @@ describe("loadConfig opencode: / opencode-go: model rejection", () => {
     },
   );
 
-  it.each(["CHAT_MODEL", "STRUCTURED_MODEL", "ANALYSIS_MODEL", "VISION_MODEL"])(
+  it.each(["CHAT_MODEL", "STRUCTURED_MODEL", "ANALYSIS_MODEL", "VISION_MODEL", "BROWSE_AGENT_MODEL"])(
     "exits loudly when %s carries the valid slash form opencode/deepseek-v4-flash",
     (name) => {
       process.env = {

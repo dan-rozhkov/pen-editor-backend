@@ -11,7 +11,7 @@ import { createHash } from "node:crypto";
 import type { Config } from "../config.js";
 import { bareModelId, createModel, parseModelRef, providerHandlesToolResultImages } from "./provider.js";
 import { penTools, makeBatchDesignTool, makeAnalyzeImageTool } from "./tools.js";
-import { buildSystemPrompt } from "./system-prompt.js";
+import { BROWSE_AGENT_PROMPT, buildSystemPrompt, type AgentMode } from "./system-prompt.js";
 import { resolveTaskPolicy, type TaskPolicy } from "./taskPolicy.js";
 import { applyImageBudget, planImageElision } from "./image-budget.js";
 import { freezeElidedSlots, resolveImageRescues } from "./imageRelevance.js";
@@ -138,8 +138,31 @@ export function sanitizeMessagesForProvider(
   return { messages, removedReasoningParts };
 }
 
+// The only tools a browsing-subagent turn (agentMode "browse") may carry. The
+// usual browser/vision gates still apply on top of this list.
+const BROWSE_SUBAGENT_TOOL_NAMES = [
+  "browse_open",
+  "browse_snapshot",
+  "browse_screenshot",
+  "browse_act",
+  "browse_tabs",
+  "browse_find_images",
+  "browse_read",
+] as const;
+
+// The one OpenCode model a browsing subagent may use (with the user's own Go
+// key); anything else runs on config.BROWSE_AGENT_MODEL.
+const BROWSE_SUBAGENT_OPENCODE_MODEL = "opencode-go/deepseek-v4.1-flash";
+
 export interface PrepareChatTurnInput {
   config: Config;
+  /**
+   * "browse" builds the browsing-subagent turn (browse tools only, a short
+   * dedicated prompt, no skills/memory/canvas context, pinned model with
+   * reasoning off — docs/specs/2026-10-14-browse-subagent-design.md). Every
+   * other value (and undefined) leaves the turn exactly as it was.
+   */
+  agentMode?: AgentMode;
   messages: Array<Record<string, unknown>>;
   canvasContext?: string;
   modelOverride?: string;
@@ -277,7 +300,18 @@ export interface PreparedChatTurn {
 export async function prepareChatTurn(
   input: PrepareChatTurnInput,
 ): Promise<PreparedChatTurn> {
-  const { config, messages, canvasContext, modelOverride } = input;
+  const { config, messages } = input;
+  const browseSub = input.agentMode === "browse";
+  // The subagent never sees the canvas.
+  const canvasContext = browseSub ? undefined : input.canvasContext;
+  // The model the turn actually runs on. A browsing subagent is never the
+  // user's main chat model: it takes the OpenCode Go deepseek flash when the
+  // user asked for exactly that and sent a key, else BROWSE_AGENT_MODEL.
+  const modelOverride = browseSub
+    ? input.modelOverride === BROWSE_SUBAGENT_OPENCODE_MODEL && input.opencodeApiKey?.trim()
+      ? input.modelOverride
+      : config.BROWSE_AGENT_MODEL
+    : input.modelOverride;
 
   // Every skill lookup below — the slash command, the catalog in the system
   // prompt, the load_skill tool — silently resolves to nothing on an empty
@@ -333,7 +367,8 @@ export async function prepareChatTurn(
   // usage counter below) are gated on this.
   const isFreshUserTurn = lastUserIndex === messages.length - 1;
   const lastMsg = lastUserIndex >= 0 ? messages[lastUserIndex] : undefined;
-  if (lastMsg && lastMsg.role === "user") {
+  // A subagent turn carries a plain task: no slash command, no skill routing.
+  if (lastMsg && lastMsg.role === "user" && !browseSub) {
     const parts = lastMsg.parts ?? lastMsg.content;
 
     // Extract the raw text and a setter to write back the stripped text
@@ -615,6 +650,7 @@ export async function prepareChatTurn(
     chatAgent: true,
     sessionId: input.sessionId,
     opencodeApiKey: input.opencodeApiKey,
+    ...(browseSub ? { reasoningEffort: "none" as const } : {}),
   });
 
   // Self-authored skills (phase 2). Everything here is additive and
@@ -623,7 +659,7 @@ export async function prepareChatTurn(
   // identity), and a slow/unreachable catalog read degrades to "no learned
   // skills this turn" rather than hanging the request — same race pattern
   // as the memory snapshot read above.
-  const learnedStore = config.SELF_SKILLS_ENABLED ? (input.learnedSkillStore ?? null) : null;
+  const learnedStore = config.SELF_SKILLS_ENABLED && !browseSub ? (input.learnedSkillStore ?? null) : null;
   let learnedSkills: LearnedSkill[] = [];
   if (learnedStore) {
     try {
@@ -647,7 +683,7 @@ export async function prepareChatTurn(
   // /api/chat; getUserSkillCatalog itself caches per (store, userId) for
   // 15s and catches thrown errors, so this timeout only covers the
   // "acquired but never responds" case a plain try/catch can't.
-  const userSkillStore = input.userSkillStore ?? null;
+  const userSkillStore = browseSub ? null : (input.userSkillStore ?? null);
   let userSkills: UserSkill[] = [];
   if (userSkillStore && input.userId) {
     try {
@@ -716,7 +752,7 @@ export async function prepareChatTurn(
     );
   }
 
-  const skillCatalog = [
+  const skillCatalog = browseSub ? [] : [
     ...getAllSkills().map((s) => ({ name: s.name, description: s.description })),
     ...boundedUserSkills.map((s) => ({
       name: s.name,
@@ -735,7 +771,7 @@ export async function prepareChatTurn(
   // failing the user's request — losing memory for one turn is recoverable,
   // losing the turn is not.
   const memoryStore = input.memoryStore ?? null;
-  const memoryEligible = Boolean(config.MEMORY_ENABLED && input.userId && memoryStore);
+  const memoryEligible = Boolean(!browseSub && config.MEMORY_ENABLED && input.userId && memoryStore);
   let memorySnapshotBlock = "";
   let memoryInjected = false;
   if (memoryEligible && memoryStore && input.userId) {
@@ -758,7 +794,7 @@ export async function prepareChatTurn(
   // tool set decides whether the prompt may talk about writing skills.
   // Guidance without the tool is an instruction the model cannot follow —
   // the same rule memoryGuidance already follows.
-  const auditDb = config.SELF_SKILLS_ENABLED ? (input.auditDb ?? null) : null;
+  const auditDb = config.SELF_SKILLS_ENABLED && !browseSub ? (input.auditDb ?? null) : null;
   const selfSkillsInjected = Boolean(learnedStore && auditDb);
 
   // Whether a canvas context is delivered at all this turn — headless
@@ -778,19 +814,26 @@ export async function prepareChatTurn(
   // the correct one, since browse_task is not in the tool set.
   const browseTaskOffered =
     config.BROWSE_MODE === "task" && hasBrowser && Boolean(config.TYPESAFE_API_KEY);
-  const browserGuidance: "task" | "manual" | undefined = browseTaskOffered
-    ? "task"
-    : hasBrowser
-      ? "manual"
-      : undefined;
+  // BROWSE_MODE=agent: the main model gets browse_agent only. The subagent
+  // turn itself drives the manual tools, so it is excluded.
+  const browseAgentOffered = config.BROWSE_MODE === "agent" && hasBrowser && !browseSub;
+  const browserGuidance: "task" | "manual" | "agent" | undefined = browseAgentOffered
+    ? "agent"
+    : browseTaskOffered
+      ? "task"
+      : hasBrowser
+        ? "manual"
+        : undefined;
 
-  const system = buildSystemPrompt(skillCatalog, {
-    browserGuidance,
-    memoryGuidance: memoryInjected,
-    memorySnapshot: memorySnapshotBlock,
-    selfSkillsGuidance: selfSkillsInjected,
-    canvasContextDelivered,
-  });
+  const system = browseSub
+    ? BROWSE_AGENT_PROMPT
+    : buildSystemPrompt(skillCatalog, {
+        browserGuidance,
+        memoryGuidance: memoryInjected,
+        memorySnapshot: memorySnapshotBlock,
+        selfSkillsGuidance: selfSkillsInjected,
+        canvasContextDelivered,
+      });
   // Bare — no provider prefix — since this id is what gets exposed via
   // traces/logs and compared against getModels()' bare ids (vision gating
   // below, GET /api/models). See src/ai/provider.ts's central invariant.
@@ -850,7 +893,7 @@ export async function prepareChatTurn(
   const imagesSurviveAsImages =
     modelSupportsVision(config, selectedModelId) &&
     providerHandlesToolResultImages(
-      parseModelRef(modelOverride ?? config.CHAT_MODEL).provider,
+      parseModelRef(modelOverride ?? config.CHAT_MODEL),
     );
 
   // Phase 2 (see docs/specs/2026-09-21-jev-image-relevance-design.md): Jev
@@ -862,7 +905,7 @@ export async function prepareChatTurn(
   // dedicated test, per the design doc's callout that SKILL_ROUTING_MODE
   // once shipped in enforce while everyone believed it was off.
   let rescuedToolCallIds: ReadonlySet<string> | undefined;
-  if (imagesSurviveAsImages && config.IMAGE_RELEVANCE_MODE !== "off") {
+  if (imagesSurviveAsImages && !browseSub && config.IMAGE_RELEVANCE_MODE !== "off") {
     // Candidates are bounded to phase 1's own eviction zone by
     // planImageElision — Jev is never even asked about a slot recency
     // would have kept live. Cheap to compute unconditionally when the mode
@@ -1029,7 +1072,7 @@ export async function prepareChatTurn(
   // the current slash command name, if any.
   const taskPolicy = resolveTaskPolicy({ messages, slashSkillName });
 
-  const mcpTools = await getMCPTools(config, {
+  const mcpTools = browseSub ? ({} as Awaited<ReturnType<typeof getMCPTools>>) : await getMCPTools(config, {
     mobbinAccessToken: input.mobbinAccessToken,
     // Same source of truth get_screenshot's own gate uses below — reused
     // rather than a second copy, so "can this model see" can never disagree
@@ -1057,16 +1100,18 @@ export async function prepareChatTurn(
     // did not — see SkillRunContext's doc comment for why this must be
     // fresh per request rather than shared across turns.
     const skillRunContext = createSkillRunContext();
-    const tools = {
-      ...penTools,
-      ...getWebTools(config),
-      ...mcpTools,
-      ...getSkillTools({
-        learnedStore,
-        runContext: skillRunContext,
-        userSkills: userSkillStore && input.userId ? { store: userSkillStore, userId: input.userId } : null,
-      }),
-    } as ToolSet;
+    const tools = (browseSub
+      ? ({ ...penTools } as ToolSet) // narrowed by the allowlist at the end
+      : {
+          ...penTools,
+          ...getWebTools(config),
+          ...mcpTools,
+          ...getSkillTools({
+            learnedStore,
+            runContext: skillRunContext,
+            userSkills: userSkillStore && input.userId ? { store: userSkillStore, userId: input.userId } : null,
+          }),
+        }) as ToolSet;
     // The spread above only copies mcpTools' own ENUMERABLE properties, which
     // drops the non-enumerable Mobbin-client release hook — reattach it onto
     // the merged object so the caller's eventual releaseMCPTools(tools) call
@@ -1156,8 +1201,8 @@ export async function prepareChatTurn(
     //   1. Can the model see at all (modelSupportsVision)?
     //   2. Can THIS PROVIDER'S AI SDK integration carry an image found inside
     //      a tool result through to the model natively
-    //      (providerHandlesToolResultImages)? OpenRouter can; both OpenCode
-    //      routes route through @ai-sdk/openai-compatible and cannot — that
+    //      (providerHandlesToolResultImages)? OpenRouter can, and so can
+    //      opencode-go deepseek-v4.1-flash (opencode.ts re-expands the images); other Go models and Zen route through @ai-sdk/openai-compatible and cannot — that
     //      package JSON.stringifies a tool-result image part into plain text
     //      instead (see providerHandlesToolResultImages's doc comment).
     // A vision-capable model on a provider that can't carry the image STILL
@@ -1171,7 +1216,7 @@ export async function prepareChatTurn(
     // AND 2 both true) OR a VISION_MODEL is configured to describe it instead.
     const chatModelRef = modelOverride ?? config.CHAT_MODEL;
     const toolResultImagesNative = providerHandlesToolResultImages(
-      parseModelRef(chatModelRef).provider,
+      parseModelRef(chatModelRef),
     );
     const nativeVisionPath =
       modelSupportsVision(config, selectedModelId) && toolResultImagesNative;
@@ -1218,6 +1263,17 @@ export async function prepareChatTurn(
       delete tools.browse_read;
     }
 
+    // browse_agent exists only in BROWSE_MODE=agent main turns; there the other
+    // browser tools move into the subagent. In every other turn (including
+    // the subagent's own) it is gone.
+    if (browseAgentOffered) {
+      for (const name of Object.keys(tools)) {
+        if (name.startsWith("browse_") && name !== "browse_agent") delete tools[name];
+      }
+    } else {
+      delete tools.browse_agent;
+    }
+
     // Key gate, browse_task only: unlike browse_open/browse_act/
     // browse_find_images (which act on the browser tab directly, no
     // backend call involved), browse_task's loop calls POST
@@ -1236,6 +1292,15 @@ export async function prepareChatTurn(
     if (!config.FAL_KEY) {
       delete tools.remove_background;
       delete tools.vectorize_image;
+    }
+
+    // The gates above add tools to a subagent turn too (analyze_image,
+    // batch_design on a non-native policy); the allowlist wins.
+    if (browseSub) {
+      const allowed = new Set<string>(BROWSE_SUBAGENT_TOOL_NAMES);
+      for (const name of Object.keys(tools)) {
+        if (!allowed.has(name)) delete tools[name];
+      }
     }
 
     return {

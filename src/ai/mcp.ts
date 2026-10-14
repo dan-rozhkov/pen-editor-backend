@@ -107,8 +107,8 @@ export function removeBase64Fields(value: unknown): unknown {
 // model rather than a human, and the shipped chat provider (OpenRouter,
 // the only one — see CLAUDE.md's "Chat model provider" section) carries a
 // tool-result image straight through to the model as a real image part
-// (`providerHandlesToolResultImages`, src/ai/modelRef.ts, unconditionally
-// true today). So the threshold below only needs to guard against a
+// (`providerHandlesToolResultImages`, src/ai/modelRef.ts, true for OpenRouter
+// and verified Go models). So the threshold below only needs to guard against a
 // genuinely oversized SINGLE payload — a full-resolution screenshot smuggled
 // into a result, or a pathological upstream response — not against ordinary
 // preview images. It used to be 24,000 chars (~6,000 tokens, tuned for

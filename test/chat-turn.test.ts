@@ -1,5 +1,7 @@
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadSkills, getSkill } from "../src/ai/skills.js";
+import { createModel } from "../src/ai/provider.js";
+import { AGENT_BROWSER_GUIDANCE, BROWSE_AGENT_PROMPT, MANUAL_BROWSER_GUIDANCE } from "../src/ai/system-prompt.js";
 import { makeConfig } from "./helpers.js";
 
 vi.mock("../src/ai/mcp.js", () => ({
@@ -8,6 +10,13 @@ vi.mock("../src/ai/mcp.js", () => ({
   attachMobbinRelease: vi.fn(),
   releaseMCPTools: vi.fn(),
 }));
+
+// Pass-through spy: the browse-subagent tests assert what prepareChatTurn
+// hands to createModel; every other test gets the real implementation.
+vi.mock("../src/ai/provider.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/ai/provider.js")>();
+  return { ...actual, createModel: vi.fn(actual.createModel) };
+});
 
 // Mocked so describeImage() never makes a live network call to VISION_MODEL
 // — used directly by the "get_screenshot vision preprocessing" describe
@@ -299,7 +308,33 @@ describe("prepareChatTurn", () => {
     // (src/services/vision.ts), a phantom tool exactly like the vision-less
     // case above. The old single-axis check kept the tool in this case
     // because it only asked "does the model see" — this pins the fix.
-    it("is absent for a vision-capable OpenCode model when no VISION_MODEL is configured", async () => {
+    it("is present for the verified opencode-go deepseek-v4.1-flash without VISION_MODEL (images re-expanded natively)", async () => {
+      const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+
+      const turn = await prepareChatTurn({
+        config: makeConfig({ VISION_MODEL: "" }),
+        messages: [userMessage("make the header bigger")],
+        modelOverride: "opencode-go/deepseek-v4.1-flash",
+        opencodeApiKey: "sk-test-key",
+      });
+
+      expect(turn.tools.get_screenshot).toBeDefined();
+    });
+
+    it("is absent for an unverified opencode-go model without VISION_MODEL", async () => {
+      const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+
+      const turn = await prepareChatTurn({
+        config: makeConfig({ VISION_MODEL: "" }),
+        messages: [userMessage("make the header bigger")],
+        modelOverride: "opencode-go/deepseek-v4-flash-vision-exp",
+        opencodeApiKey: "sk-test-key",
+      });
+
+      expect(turn.tools.get_screenshot).toBeUndefined();
+    });
+
+    it("is absent for a vision-capable OpenCode Zen model when no VISION_MODEL is configured", async () => {
       const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
 
       const config = makeConfig({ VISION_MODEL: "" });
@@ -308,7 +343,7 @@ describe("prepareChatTurn", () => {
       const turn = await prepareChatTurn({
         config,
         messages,
-        modelOverride: "opencode-go/deepseek-v4-flash-vision-exp",
+        modelOverride: "opencode/deepseek-v4-flash-vision-exp",
         opencodeApiKey: "sk-test-key",
       });
 
@@ -933,6 +968,134 @@ describe("prepareChatTurn", () => {
       // The budget's own placeholder wording must be absent — whatever
       // vision preprocessing did to these slots, the budget didn't do it.
       expect(bodyText).not.toContain("aged out of the live-image window");
+    });
+  });
+});
+
+const BROWSE_TOOLS = [
+  "browse_open",
+  "browse_snapshot",
+  "browse_screenshot",
+  "browse_act",
+  "browse_tabs",
+  "browse_find_images",
+  "browse_read",
+];
+const DESKTOP = { desktopBrowser: true };
+const GO_MODEL = "opencode-go/deepseek-v4.1-flash";
+
+async function prepare(overrides: Record<string, unknown>) {
+  const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+  return prepareChatTurn({
+    config: makeConfig(),
+    messages: [userMessage("find the price of X")],
+    ...overrides,
+  });
+}
+
+describe("browse subagent", () => {
+  beforeAll(async () => {
+    await loadSkills();
+  });
+  beforeEach(() => {
+    vi.mocked(createModel).mockClear();
+  });
+
+  describe("BROWSE_MODE=agent main turn", () => {
+    it("keeps only browse_agent among browser tools and renders the agent guidance", async () => {
+      const turn = await prepare({ config: makeConfig({ BROWSE_MODE: "agent" }), clientCapabilities: DESKTOP });
+      expect(Object.keys(turn.tools).filter((name) => name.startsWith("browse_"))).toEqual(["browse_agent"]);
+      expect(turn.system).toContain(AGENT_BROWSER_GUIDANCE);
+      expect(turn.system).not.toContain(MANUAL_BROWSER_GUIDANCE);
+    });
+
+    it("offers nothing browser-related without a browser", async () => {
+      const turn = await prepare({ config: makeConfig({ BROWSE_MODE: "agent" }) });
+      expect(Object.keys(turn.tools).filter((name) => name.startsWith("browse_"))).toEqual([]);
+      expect(turn.system).not.toContain("## Browser tasks");
+    });
+  });
+
+  it.each(["manual", "task"] as const)("BROWSE_MODE=%s never offers browse_agent", async (mode) => {
+    const turn = await prepare({
+      config: makeConfig({ BROWSE_MODE: mode, TYPESAFE_API_KEY: "key" }),
+      clientCapabilities: DESKTOP,
+    });
+    expect(turn.tools.browse_agent).toBeUndefined();
+    expect(turn.tools.browse_open).toBeDefined();
+  });
+
+  describe("agentMode browse", () => {
+    it("carries exactly the seven browse tools, the dedicated prompt and no canvas context", async () => {
+      const turn = await prepare({
+        config: makeConfig({ BROWSE_MODE: "agent" }),
+        agentMode: "browse",
+        canvasContext: "SECRET-CANVAS",
+        clientCapabilities: DESKTOP,
+      });
+      expect(Object.keys(turn.tools).sort()).toEqual([...BROWSE_TOOLS].sort());
+      expect(turn.system).toBe(BROWSE_AGENT_PROMPT);
+      expect(BROWSE_AGENT_PROMPT).not.toContain("confirm in chat");
+      expect(BROWSE_AGENT_PROMPT).toContain("already confirmed that exact step");
+      expect(AGENT_BROWSER_GUIDANCE).toContain("confirmed that exact step");
+      expect(JSON.stringify(turn.modelMessages)).not.toContain("canvas_context");
+      expect(JSON.stringify(turn.modelMessages)).not.toContain("SECRET-CANVAS");
+    });
+
+    it("does not run slash-command skill detection", async () => {
+      const turn = await prepare({
+        agentMode: "browse",
+        messages: [userMessage("/prototype a login screen")],
+        clientCapabilities: DESKTOP,
+      });
+      expect(turn.slashSkillName).toBeUndefined();
+      expect(turn.taskPolicy).toBe("native");
+      expect(turn.tools.batch_design).toBeUndefined();
+    });
+
+    it("has no tools without a browser", async () => {
+      const turn = await prepare({ agentMode: "browse" });
+      expect(Object.keys(turn.tools)).toEqual([]);
+    });
+
+    it("runs on BROWSE_AGENT_MODEL, not the user's chat model, with reasoning off", async () => {
+      const turn = await prepare({
+        agentMode: "browse",
+        modelOverride: "anthropic/claude-haiku-5.5",
+        clientCapabilities: DESKTOP,
+      });
+      expect(turn.selectedModelId).toBe("deepseek/deepseek-v4.1-flash");
+      expect(createModel).toHaveBeenCalledWith(
+        expect.anything(),
+        "deepseek/deepseek-v4.1-flash",
+        expect.objectContaining({ reasoningEffort: "none" }),
+      );
+    });
+
+    it("uses the OpenCode Go deepseek flash when requested with the user's key", async () => {
+      const turn = await prepare({
+        agentMode: "browse",
+        modelOverride: GO_MODEL,
+        opencodeApiKey: "user-key",
+        clientCapabilities: DESKTOP,
+      });
+      expect(turn.selectedModelId).toBe(GO_MODEL);
+      expect(createModel).toHaveBeenCalledWith(
+        expect.anything(),
+        GO_MODEL,
+        expect.objectContaining({ reasoningEffort: "none", opencodeApiKey: "user-key" }),
+      );
+    });
+
+    it("falls back to BROWSE_AGENT_MODEL when the OpenCode model arrives without a key", async () => {
+      const turn = await prepare({ agentMode: "browse", modelOverride: GO_MODEL, clientCapabilities: DESKTOP });
+      expect(turn.selectedModelId).toBe("deepseek/deepseek-v4.1-flash");
+    });
+
+    it("leaves the main model alone for every other agentMode", async () => {
+      const edits = await prepare({ agentMode: "edits", modelOverride: "anthropic/claude-haiku-5.5" });
+      expect(edits.selectedModelId).toBe("anthropic/claude-haiku-5.5");
+      expect(edits.system).not.toBe(BROWSE_AGENT_PROMPT);
     });
   });
 });

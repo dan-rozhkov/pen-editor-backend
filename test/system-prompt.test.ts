@@ -3,7 +3,7 @@ import { AGENT_MODES, buildSystemPrompt, BROWSER_TASKS_GUIDANCE, MANUAL_BROWSER_
 
 describe("AGENT_MODES", () => {
   it("remains exported for legacy request-body validation", () => {
-    expect(AGENT_MODES).toEqual(["edits", "prototype", "research"]);
+    expect(AGENT_MODES).toEqual(["edits", "prototype", "research", "browse"]);
   });
 });
 

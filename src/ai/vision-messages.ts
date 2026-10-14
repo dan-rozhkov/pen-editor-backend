@@ -777,7 +777,7 @@ export async function applyVisionPreprocessing(
   const { config, modelId } = opts;
   const vision = modelSupportsVision(config, modelId);
   const toolResultImagesNative = providerHandlesToolResultImages(
-    parseModelRef(opts.chatModelRef ?? config.CHAT_MODEL).provider,
+    parseModelRef(opts.chatModelRef ?? config.CHAT_MODEL),
   );
 
   // Fully native on both dimensions: nothing to rewrite.

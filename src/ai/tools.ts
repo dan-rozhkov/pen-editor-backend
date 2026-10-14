@@ -2498,6 +2498,23 @@ Returns the created/updated style ids and names (with a created|updated status) 
     }),
   }),
 
+  browse_agent: tool({
+    description:
+      "Run a whole browser task in the built-in browser through a dedicated browsing subagent, and get its final answer. The subagent does NOT see this chat: `goal` must carry the whole task with every constraint, every name and date, and what to report back (for example the prices, the names, the final URL). If the user wants a page placed on the canvas, say so in `goal`: the subagent can call browse_screenshot with placeOnCanvas. Pass `url` when you know the start page. Returns `{ status: \"done\" | \"error\" | \"aborted\" | \"step_limit\", answer, steps }`. `answer` is the subagent's plain-text report of what it saw; report only what it contains, and do not invent page content that `answer` does not state. The browser tab stays open between calls, so a follow-up (another detail on the same page, the next step) is another browse_agent call with a self-contained goal. This tool runs in the user's browser (client side) and has no server-side execute.",
+    inputSchema: z.object({
+      goal: z
+        .string()
+        .min(1)
+        .max(4000)
+        .describe("The whole task for the browsing subagent, self-contained (it sees nothing of this chat): all constraints, names, dates, and what to report back (max 4000 characters)."),
+      url: z
+        .string()
+        .max(2000)
+        .optional()
+        .describe("Optional start URL. If omitted, the subagent continues in the current browser tab or finds the page itself."),
+    }),
+  }),
+
   browse_task: tool({
     description:
       "Run a WHOLE multi-step browsing task in the built-in browser tab in ONE call — navigate, click through a cookie banner or login wall, fill a search box and press Enter to submit it, dismiss a modal with Escape, hover a menu to reveal a link, select a facet — without spending a chat turn per step. This is THE default first call for EVERY browser task: pass `url` and it opens that page itself before the loop starts, so no separate browse_open is needed. Pass the user's WHOLE goal in one call (all its constraints in `goal`, never shortened to the first step or broken into sub-goals) with maxSteps 25. If it returns a status other than \"done\", call it again with the REMAINING goal plus a short note of what is already done, again with maxSteps 25. Internally this repeats snapshot -> a cheap decision model -> act, driven by Jev (not the design model, with a second-opinion cascade model when a single step's confidence is too low to act on directly), until the goal is reached, nothing more can be done, or the step/time budget runs out. Example goal: \"open https://example.com and search for X, open the first result\". Prefer browse_find_images once you're on a page and want its images. Returns a transcript: `{ status: \"done\" | \"blocked\" | \"budget\" | \"stalled\", steps: [{ operation, label, ok, index?, via? }], url, title, reason?, observations? }` — `observations: [{ subgoal?, url, text }]` is the visible text of the final page and of the last sub-goals when they ended, capped in length (a text that ends with \"…[cut]\" is partial); read the values the user asked for (names, prices, ratings, times) from there, or with `browse_read` on the current page — a goal that repeats the same work for several items (e.g. several products to add to a cart) is planned into ordered sub-goals inside the tool and run one after another; the transcript then also carries `subgoals: [{ goal, status, reason? }]` (status is \"done\" only when every sub-goal is done), so a retry needs only the sub-goals that are not done — `stalled` means three steps in a row landed nothing (a target that keeps going stale), so the page, not the budget, is what stopped it; a step's `via` is \"cascade\" when the second-opinion cascade model decided it (Jev itself was not confident enough) or \"rule\" when a deterministic guard overrode the decision (e.g. refusing to retype into the same search box twice in a row and pressing Enter instead), and is omitted for an ordinary Jev decision. Never types into a password field — the user logs in themselves in the visible tab.",

@@ -223,10 +223,18 @@ export function createModel(
     // session id would deny OpenCode's own cache the same stable prefix we
     // go out of our way to preserve for OpenRouter.
     const sessionId = options.sessionId ?? randomUUID();
-    // CHAT_REASONING_EFFORT / {reasoning: {effort}} is an OpenRouter-shaped
-    // option (see supportsReasoningControl below) and must NEVER be sent to
-    // OpenCode's /chat/completions client — this branch does not touch
-    // reasoning at all, deliberately.
+    // {reasoning: {effort}} is an OpenRouter-shaped option and is never sent
+    // here. The one exception is an explicit per-call "none" (browse
+    // subagent) on a DeepSeek model: OpenCode takes it as `reasoning_effort: "none"` (see
+    // disableReasoning in opencode.ts). Without it an OpenCode chat always
+    // reasons while the same model on OpenRouter does not. Only measured on
+    // deepseek-*, so other families get nothing (a reasoning-mandatory model
+    // could answer 400, as 4 OpenRouter models did — see below).
+    // Only an EXPLICIT per-call "none" (the browse subagent turn) turns it
+    // off: the user's main chat keeps reasoning on, so CHAT_REASONING_EFFORT
+    // and the chatAgent default are deliberately not consulted here.
+    const disableReasoning =
+      ref.modelId.startsWith("deepseek-") && options.reasoningEffort === "none";
     return createOpenCodeModel({
       // isOpenCodeProvider(ref.provider) above already narrowed this to
       // "opencode" | "opencode-go" at runtime; it isn't a TS type predicate
@@ -236,6 +244,7 @@ export function createModel(
       modelId: ref.modelId,
       apiKey: options.opencodeApiKey,
       sessionId,
+      disableReasoning,
     });
   }
 

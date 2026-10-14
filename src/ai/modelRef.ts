@@ -99,7 +99,8 @@ export function parseModelRef(ref: string): ModelRef {
 // `{type: "image_url", image_url: {...}}` chat content part.
 //
 // OpenCode (both "opencode" and "opencode-go" route through
-// @ai-sdk/openai-compatible — see src/ai/opencode.ts): verified false
+// @ai-sdk/openai-compatible; opencode-go is repaired by a request-body
+// transform, see the note on the return below — see src/ai/opencode.ts): verified false
 // against that package's installed source
 // (node_modules/@ai-sdk/openai-compatible/dist/index.js:~290, the `case
 // "tool":` branch) — for ToolResultPart["output"].type === "content", it
@@ -113,9 +114,20 @@ export function parseModelRef(ref: string): ModelRef {
 // that stringifies tool-result images needs get_screenshot's output run
 // through the same vision-fallback description path a vision-less model's
 // user attachments already get.
-export function providerHandlesToolResultImages(provider: ModelProviderId): boolean {
-  return provider === "openrouter";
+export function providerHandlesToolResultImages(ref: ModelRef): boolean {
+  // "opencode-go": src/ai/opencode.ts rewrites the stringified tool-result
+  // back into image_url parts, but that was verified live only for the ids
+  // below. Other Go models and Zen stay false (images become text).
+  if (ref.provider === "openrouter") return true;
+  if (ref.provider === "opencode-go") {
+    return TOOL_RESULT_IMAGE_VERIFIED_GO_MODELS.has(ref.modelId);
+  }
+  return false;
 }
+
+const TOOL_RESULT_IMAGE_VERIFIED_GO_MODELS: ReadonlySet<string> = new Set([
+  "deepseek-v4.1-flash",
+]);
 
 // Whether `provider` is one of the two OpenCode routes (Go's flat
 // subscription or Zen's pay-as-you-go base) rather than OpenRouter. Used by

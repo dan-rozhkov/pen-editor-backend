@@ -5,6 +5,7 @@ import {
   OPENCODE_CHAT_COMPLETIONS_MODELS,
   OPENCODE_USER_AGENT,
   createOpenCodeModel,
+  restoreToolResultImages,
 } from "../src/ai/opencode.js";
 import { createModel } from "../src/ai/provider.js";
 import { makeConfig } from "./helpers.js";
@@ -224,6 +225,32 @@ describe("createOpenCodeModel streaming usage", () => {
   });
 });
 
+describe("createOpenCodeModel reasoning", () => {
+  async function sentBody(disableReasoning: boolean | undefined) {
+    const { fetchStub, calls } = fakeChatCompletionsFetch();
+    const model = createOpenCodeModel({
+      provider: "opencode-go",
+      modelId: "deepseek-v4.1-flash",
+      apiKey: "the-users-key",
+      sessionId: "session-abc",
+      disableReasoning,
+      fetch: fetchStub as unknown as typeof fetch,
+    });
+    await generateText({ model, prompt: "hello" });
+    return JSON.parse(calls[0].init?.body as string) as Record<string, unknown>;
+  }
+
+  it('sends reasoning_effort "none" when disableReasoning is set', async () => {
+    expect((await sentBody(true)).reasoning_effort).toBe("none");
+  });
+
+  it("sends no reasoning field by default", async () => {
+    const body = await sentBody(undefined);
+    expect(body).not.toHaveProperty("reasoning_effort");
+    expect(body).not.toHaveProperty("reasoning");
+  });
+});
+
 describe("OPENCODE_CHAT_COMPLETIONS_MODELS", () => {
   it("lists the default chat model for opencode-go", () => {
     expect(OPENCODE_CHAT_COMPLETIONS_MODELS["opencode-go"]).toContain(
@@ -243,6 +270,35 @@ describe("createModel with an OpenCode ref", () => {
     ).not.toThrow();
   });
 
+  it.each([
+    ["main chat agent, CHAT_REASONING_EFFORT none, deepseek: nothing sent", "none", "opencode-go/deepseek-v4.1-flash", true, undefined, undefined],
+    ["main chat agent, medium, deepseek", "medium", "opencode-go/deepseek-v4.1-flash", true, undefined, undefined],
+    ["explicit none (browse subagent), deepseek", "medium", "opencode-go/deepseek-v4.1-flash", true, "none", "none"],
+    ["explicit none, non-deepseek family", "none", "opencode-go/glm-5.3-flash", true, "none", undefined],
+    ["helper role (no chatAgent), deepseek", "none", "opencode-go/deepseek-v4.1-flash", false, undefined, undefined],
+  ] as const)("reasoning_effort on the wire: %s", async (_name, effort, ref, chatAgent, explicit, expected) => {
+    const calls: { init: RequestInit | undefined }[] = [];
+    const realFetch = globalThis.fetch;
+    const { fetchStub } = fakeChatCompletionsFetch();
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ init });
+      return fetchStub(input, init);
+    }) as typeof fetch;
+    try {
+      const model = createModel(makeConfig({ CHAT_REASONING_EFFORT: effort }), ref, {
+        opencodeApiKey: "user-key",
+        sessionId: "s",
+        chatAgent,
+        reasoningEffort: explicit,
+      });
+      await generateText({ model, prompt: "hello" });
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    const body = JSON.parse(calls[0].init?.body as string) as Record<string, unknown>;
+    expect(body.reasoning_effort).toBe(expected);
+  });
+
   it("throws when an opencode ref is used without a user key", () => {
     const config = makeConfig();
     expect(() => createModel(config, "opencode-go/glm-5.3-flash", {})).toThrow(
@@ -254,5 +310,98 @@ describe("createModel with an OpenCode ref", () => {
     const config = makeConfig({ CHAT_MODEL: "google/gemini-3.7-flash" });
     const model = createModel(config) as unknown as { modelId?: string };
     expect(model.modelId).toBe("google/gemini-3.7-flash");
+  });
+});
+
+describe("createOpenCodeModel tool-result images", () => {
+  const png = "iVBORw0KGgo=";
+  async function sentMessages(
+    output: unknown,
+    extra: { disableReasoning?: boolean } = {},
+  ): Promise<{ body: Record<string, unknown>; tool: Record<string, unknown> }> {
+    const { fetchStub, calls } = fakeChatCompletionsFetch();
+    const model = createOpenCodeModel({
+      provider: "opencode-go",
+      modelId: "deepseek-v4.1-flash",
+      apiKey: "k",
+      sessionId: "s",
+      fetch: fetchStub as unknown as typeof fetch,
+      ...extra,
+    });
+    await generateText({
+      model,
+      messages: [
+        { role: "user", content: "look" },
+        {
+          role: "assistant",
+          content: [{ type: "tool-call", toolCallId: "c1", toolName: "shot", input: {} }],
+        },
+        {
+          role: "tool",
+          content: [
+            { type: "tool-result", toolCallId: "c1", toolName: "shot", output: output as never },
+          ],
+        },
+      ],
+    });
+    const body = JSON.parse(String(calls[0].init?.body)) as { messages: Record<string, unknown>[] };
+    return { body, tool: body.messages.find((m) => m.role === "tool")! };
+  }
+
+  it("turns an image tool result into image_url parts", async () => {
+    const { tool } = await sentMessages({
+      type: "content",
+      value: [
+        { type: "text", text: "shot" },
+        { type: "image-data", data: png, mediaType: "image/png" },
+        { type: "file-data", data: png, mediaType: "image/jpeg" },
+      ],
+    });
+    expect(tool.content).toEqual([
+      { type: "text", text: "shot" },
+      { type: "image_url", image_url: { url: `data:image/png;base64,${png}` } },
+      { type: "image_url", image_url: { url: `data:image/jpeg;base64,${png}` } },
+    ]);
+  });
+
+  it("leaves text and json tool results byte-identical", async () => {
+    expect((await sentMessages({ type: "text", value: "ok [1]" })).tool.content).toBe("ok [1]");
+    expect((await sentMessages({ type: "json", value: [{ type: "text", text: "a" }] })).tool.content).toBe(
+      '[{"type":"text","text":"a"}]',
+    );
+  });
+
+  it("leaves a result with an unconvertible part unchanged", async () => {
+    const { tool } = await sentMessages({
+      type: "content",
+      value: [
+        { type: "image-data", data: png, mediaType: "image/png" },
+        { type: "file-data", data: png, mediaType: "application/pdf" },
+      ],
+    });
+    expect(typeof tool.content).toBe("string");
+  });
+
+  it("applies together with disableReasoning", async () => {
+    const { body, tool } = await sentMessages(
+      { type: "content", value: [{ type: "image-data", data: png, mediaType: "image/png" }] },
+      { disableReasoning: true },
+    );
+    expect(body.reasoning_effort).toBe("none");
+    expect(Array.isArray(tool.content)).toBe(true);
+  });
+});
+
+describe("restoreToolResultImages url parts", () => {
+  it("maps image-url and image file-url parts to their URL", () => {
+    const content = JSON.stringify([
+      { type: "image-url", url: "https://x.test/a.png" },
+      { type: "file-url", url: "https://x.test/b.png", mediaType: "image/png" },
+    ]);
+    const out = restoreToolResultImages({ messages: [{ role: "tool", tool_call_id: "c", content }] });
+    expect((out.messages as { content: unknown }[])[0].content).toEqual([
+      { type: "image_url", image_url: { url: "https://x.test/a.png" } },
+      { type: "image_url", image_url: { url: "https://x.test/b.png" } },
+    ]);
   });
 });

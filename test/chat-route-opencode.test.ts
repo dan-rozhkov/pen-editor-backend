@@ -104,3 +104,36 @@ describe("POST /api/chat — OpenCode BYOK model selection", () => {
     await res.text();
   });
 });
+
+describe("POST /api/chat — agentMode browse gate", () => {
+  it("400s browse_agent_disabled when BROWSE_MODE is not agent", async () => {
+    const { url, close } = await startApp(makeConfig({ BROWSE_MODE: "manual" }));
+    try {
+      const res = await postChat(url, {
+        messages: [userMessage("open a page")],
+        agentMode: "browse",
+      });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { code: string };
+      expect(body.code).toBe("browse_agent_disabled");
+    } finally {
+      await close();
+    }
+  });
+
+  it("does not 400 browse_agent_disabled when BROWSE_MODE is agent", async () => {
+    const { url, close } = await startApp(makeConfig({ BROWSE_MODE: "agent" }));
+    try {
+      const res = await postChat(url, {
+        messages: [userMessage("open a page")],
+        agentMode: "browse",
+      });
+      if (res.status === 400) {
+        expect(((await res.json()) as { code?: string }).code).not.toBe("browse_agent_disabled");
+      }
+      await res.text();
+    } finally {
+      await close();
+    }
+  });
+});

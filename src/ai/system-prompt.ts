@@ -2,7 +2,7 @@ import { EMBED_PROMPT_BLOCKS, FIRST_DECISION_BLOCK } from "./promptBlocks.js";
 import { MEMORY_GUIDANCE } from "./memory/prompts.js";
 import { SELF_SKILLS_GUIDANCE } from "./skills/prompts.js";
 
-export const AGENT_MODES = ["edits", "prototype", "research"] as const;
+export const AGENT_MODES = ["edits", "prototype", "research", "browse"] as const;
 export type AgentMode = (typeof AGENT_MODES)[number];
 
 export interface SkillCatalogEntry {
@@ -44,7 +44,7 @@ export interface SystemPromptMemory {
    * Omitted: no browser. Per-capability, not per-request: it is derived from
    * the client's browser capability plus server config, so it stays
    * byte-identical across a session's requests (prompt caching). */
-  browserGuidance?: "task" | "manual";
+  browserGuidance?: "task" | "manual" | "agent";
 }
 
 export const MANUAL_BROWSER_GUIDANCE = `Drive the built-in browser yourself with the browse tools: \`browse_open\`, \`browse_snapshot\`, \`browse_act\`, \`browse_read\`, \`browse_tabs\`, \`browse_find_images\`, and \`browse_screenshot\` when it is available.
@@ -54,6 +54,32 @@ export const MANUAL_BROWSER_GUIDANCE = `Drive the built-in browser yourself with
 - Never type a password. If a login, password, CAPTCHA or anti-bot wall stops you, tell the user what to do in the browser tab, then continue after they confirm.
 - Before an irreversible step that the user did not ask for (reserve, buy, pay, submit an order or a form that sends data), stop. Report what you found and ask the user to confirm in chat. Do the step only after the user confirms. If the user's request asks for that step, do it.
 - To put a screenshot of the browser page on the canvas, call \`browse_screenshot\` with \`placeOnCanvas: true\`.`;
+
+// The subagent has no chat to ask the user in, so the manual guidance's
+// "ask the user to confirm in chat" line is swapped for a stop-and-report
+// rule. MANUAL_BROWSER_GUIDANCE itself must stay byte-identical (prompt pin).
+const MANUAL_IRREVERSIBLE_LINE =
+  "- Before an irreversible step that the user did not ask for (reserve, buy, pay, submit an order or a form that sends data), stop. Report what you found and ask the user to confirm in chat. Do the step only after the user confirms. If the user's request asks for that step, do it.";
+const SUBAGENT_IRREVERSIBLE_LINE =
+  "- Before an irreversible step (purchase, booking, payment, sending, submitting a form with personal data, deleting), stop. Do not do the step. Give your final answer: say what is pending and what you found. Exception: if the task text says the user already confirmed that exact step, do it.";
+const SUBAGENT_BROWSER_GUIDANCE = MANUAL_BROWSER_GUIDANCE.replace(
+  MANUAL_IRREVERSIBLE_LINE,
+  SUBAGENT_IRREVERSIBLE_LINE,
+);
+
+export const AGENT_BROWSER_GUIDANCE = `Every task that needs the built-in browser goes through \`browse_agent\`. A dedicated browsing subagent runs the task and returns an answer. You have no other browser tools.
+- The subagent does not see this chat. Write \`goal\` so that it is complete without the chat: the whole task, every constraint (names, dates, prices, filters), and what it must report back. Pass \`url\` when you know the start page.
+- If the user wants a page or a screenshot placed on the canvas, say so in \`goal\`.
+- Report the answer to the user. Report only what the answer states. Do not invent page content, values or reasons that the answer does not contain.
+- If \`status\` is not \`done\`, tell the user what happened and what the answer says is missing. If a login, CAPTCHA or anti-bot wall stopped it, tell the user what to do in the browser tab, then call \`browse_agent\` again after they confirm.
+- Before an irreversible step (purchase, booking, payment, sending, submitting a form with personal data, deleting), ask the user. The subagent stops and reports what is pending. After the user confirms, call \`browse_agent\` again and state in \`goal\` that the user confirmed that exact step.
+- For a follow-up, call \`browse_agent\` again with a new self-contained goal. The browser tab stays open, so the subagent starts where the last call stopped.`;
+
+export const BROWSE_AGENT_PROMPT = `You are a browsing subagent working for a design assistant. The user message is your whole task. You do not see any earlier conversation. Work only in the browser with the browse tools. Do not ask questions: if the task is unclear, make the most reasonable choice and say so in your answer.
+
+${SUBAGENT_BROWSER_GUIDANCE}
+
+When the task is done, or when you are blocked (a CAPTCHA, a login or anti-bot wall, a missing page), stop calling tools and give your final answer in plain text. The final answer holds only facts you observed on the pages, the final URL, and what is missing or not completed. Do not add facts you did not see.`;
 
 export const BROWSER_TASKS_GUIDANCE = `Any task that needs the built-in browser starts with \`browse_task\`: navigating, searching, clicking through, filling forms, adding to a cart. Hand the WHOLE user goal to ONE \`browse_task\` call. Put the user's full goal with all its constraints in \`goal\` (do not shorten it to the first step, do not break it into sub-goals or per-item calls), pass \`url\` when you know it (instead of calling \`browse_open\` first), and set \`maxSteps: 25\`. The loop drives every step itself.
 - If a sub-goal of \`browse_task\` ends \`budget\`, \`stalled\` or \`blocked\` (not done), call \`browse_task\` again ONCE for ALL unfinished sub-goals together, never one call per item: the REMAINING goal plus a short note of what is already done (from the transcript) so done items are not redone, again with \`maxSteps: 25\`. Keep \`goal\` under 2000 characters. At most 2 such repeat calls in total per user request; a sub-goal that already failed twice is not tried again. After that, use the manual tools (\`browse_snapshot\`, \`browse_act\`, \`browse_tabs\`) for a small remaining step, else report.
@@ -89,7 +115,11 @@ export function buildSystemPrompt(
 
   if (memory.browserGuidance) {
     const guidance =
-      memory.browserGuidance === "task" ? BROWSER_TASKS_GUIDANCE : MANUAL_BROWSER_GUIDANCE;
+      memory.browserGuidance === "task"
+        ? BROWSER_TASKS_GUIDANCE
+        : memory.browserGuidance === "agent"
+          ? AGENT_BROWSER_GUIDANCE
+          : MANUAL_BROWSER_GUIDANCE;
     parts.push(`\n## Browser tasks\n\n${guidance}`);
   }
 

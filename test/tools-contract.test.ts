@@ -74,6 +74,7 @@ describe("penTools registry", () => {
         "browse_tabs",
         "browse_find_images",
         "browse_task",
+        "browse_agent",
         "browse_read",
       ].sort(),
     );
@@ -139,6 +140,7 @@ describe("penTools registry", () => {
       "browse_tabs",
       "browse_find_images",
       "browse_task",
+      "browse_agent",
       "browse_read",
     ] as const) {
       expect(hasExecute(name), `${name} must be client-executed`).toBe(false);
@@ -1489,6 +1491,23 @@ describe("browse_task schema", () => {
     expect(schema.safeParse({}).success).toBe(false);
     expect(schema.safeParse({ goal: "x", maxSteps: 26 }).success).toBe(false);
     expect(schema.safeParse({ goal: "x", maxSteps: 0 }).success).toBe(false);
+  });
+});
+
+describe("browse_agent schema", () => {
+  const schema = schemaOf("browse_agent");
+
+  it("accepts a goal with and without a start url", () => {
+    expect(schema.safeParse({ goal: "find the price of X" }).success).toBe(true);
+    expect(schema.safeParse({ goal: "find the price of X", url: "https://example.com" }).success).toBe(true);
+  });
+
+  it("rejects an empty or oversized goal and an oversized url", () => {
+    expect(schema.safeParse({ goal: "" }).success).toBe(false);
+    expect(schema.safeParse({}).success).toBe(false);
+    expect(schema.safeParse({ goal: "x".repeat(4001) }).success).toBe(false);
+    expect(schema.safeParse({ goal: "x".repeat(4000) }).success).toBe(true);
+    expect(schema.safeParse({ goal: "x", url: "u".repeat(2001) }).success).toBe(false);
   });
 });
 
