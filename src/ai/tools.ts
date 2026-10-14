@@ -1501,6 +1501,13 @@ const BROWSE_ACT_SINGLE_FIELDS = [
   "ms",
 ] as const;
 
+const BROWSE_ACT_NO_ELEMENT_ACTIONS = new Set([
+  "back",
+  "forward",
+  "reload",
+  "wait",
+]);
+
 // OpenAI models on OpenRouter answer in strict mode: they fill EVERY key of
 // the schema, so unused fields arrive as "" / 0 / null, and a single action
 // arrives as `action` plus a one-entry `actions` copy of itself. Before this,
@@ -1519,9 +1526,21 @@ function stripBrowseActPlaceholders(
   }
   // index 0 is a real element, but next to an explicit target/element (or
   // with no snapshotId to resolve it against) it is the placeholder zero.
+  // Strict-mode models also send index 0 for a window scroll and for actions
+  // that take no element: kept, it scrolled INSIDE element 0 instead of the
+  // page (gpt-6-luna, OM2W 2026-10-14).
   if (
     out.index === 0 &&
-    (!hasSnapshotId || out.target !== undefined || out.element !== undefined)
+    (!hasSnapshotId ||
+      out.target !== undefined ||
+      out.element !== undefined ||
+      out.action === "scroll")
+  ) {
+    delete out.index;
+  }
+  if (
+    typeof out.action === "string" &&
+    BROWSE_ACT_NO_ELEMENT_ACTIONS.has(out.action)
   ) {
     delete out.index;
   }

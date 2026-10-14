@@ -62,6 +62,30 @@ describe("browse_act input from strict-mode (OpenAI) models", () => {
     });
   });
 
+  it("drops the placeholder index 0 from a window scroll and from actions with no element", () => {
+    // Captured from openai/gpt-6-luna: index 0 here scrolled element 0, not the page.
+    expect(parse({ action: "scroll", index: 0, snapshotId: "s", amount: 2 })).toEqual({
+      action: "scroll",
+      snapshotId: "s",
+      amount: 2,
+    });
+    expect(parse({ action: "back", index: 0, snapshotId: "s", amount: 1 })).toEqual({
+      action: "back",
+      snapshotId: "s",
+      amount: 1,
+    });
+    expect(parse({ action: "wait", index: 4, snapshotId: "s", ms: 2000 })).toEqual({
+      action: "wait",
+      snapshotId: "s",
+      ms: 2000,
+    });
+  });
+
+  it("keeps a non-zero index on a scroll (scroll inside that element)", () => {
+    const input = { action: "scroll", index: 12, snapshotId: "s" };
+    expect(parse(input)).toEqual(input);
+  });
+
   it("leaves an ordinary call unchanged, including a real index 0", () => {
     const input = { action: "click", index: 0, snapshotId: "s" };
     expect(parse(input)).toEqual(input);
