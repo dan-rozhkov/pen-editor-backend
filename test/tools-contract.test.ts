@@ -1592,3 +1592,23 @@ describe("browse tool descriptions steer to browse_task first", () => {
     }
   });
 });
+
+describe("browse_screenshot schema", () => {
+  const schema = () => schemaOf("browse_screenshot");
+
+  it("accepts no arguments", () => {
+    expect(schema().safeParse({}).success).toBe(true);
+  });
+
+  it("accepts placeOnCanvas alone", () => {
+    expect(schema().safeParse({ placeOnCanvas: true }).success).toBe(true);
+  });
+
+  it("accepts placeOnCanvas with x and y", () => {
+    expect(schema().safeParse({ placeOnCanvas: true, x: 10, y: 20 }).success).toBe(true);
+  });
+
+  it("rejects a non-boolean placeOnCanvas", () => {
+    expect(schema().safeParse({ placeOnCanvas: "yes" }).success).toBe(false);
+  });
+});

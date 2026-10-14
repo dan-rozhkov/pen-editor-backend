@@ -2348,13 +2348,31 @@ Returns the created/updated style ids and names (with a created|updated status) 
   // get_screenshot's own vision gate (SCREENSHOT_TOOL_NAMES loop).
   browse_screenshot: tool({
     description:
-      "If browse_task is in your tool set, start browser tasks with it and use this tool for finishing or follow-up; if it is not, drive the browser with this tool directly (see Browser tasks in the system prompt). Take a screenshot of the browser tab's current viewport (not the whole page) for visual verification — use this when the layout itself matters (does a modal actually cover the CTA, is a canvas-rendered widget visible, does this look broken) rather than just \"what's clickable\", which browse_snapshot answers more cheaply. Returns `{ url, title, width, height }` plus the image; on a text-only model this costs a second vision-model call that returns a description rather than the image itself, same as get_screenshot. Pass `annotate: true` to additionally get numbered labels drawn over every interactive element PLUS `snapshotId` and `elements` (the same shape as browse_snapshot) in the same call — use this set-of-marks mode when you want to both see the page and act on it by index in one round trip, instead of calling browse_snapshot separately first.",
+      "If browse_task is in your tool set, start browser tasks with it and use this tool for finishing or follow-up; if it is not, drive the browser with this tool directly (see Browser tasks in the system prompt). Take a screenshot of the browser tab's current viewport (not the whole page) for visual verification — use this when the layout itself matters (does a modal actually cover the CTA, is a canvas-rendered widget visible, does this look broken) rather than just \"what's clickable\", which browse_snapshot answers more cheaply. Returns `{ url, title, width, height }` plus the image; on a text-only model this costs a second vision-model call that returns a description rather than the image itself, same as get_screenshot. Pass `annotate: true` to additionally get numbered labels drawn over every interactive element PLUS `snapshotId` and `elements` (the same shape as browse_snapshot) in the same call — use this set-of-marks mode when you want to both see the page and act on it by index in one round trip, instead of calling browse_snapshot separately first. When the user asks to capture, save, or put a browser page on the canvas or as a reference, call this tool with `placeOnCanvas: true`. The result then adds `placedNodeId`, the id of the new canvas layer, and the image is also returned to you as usual.",
     inputSchema: z.object({
       annotate: z
         .boolean()
         .optional()
         .describe(
           "If true, overlays numbered labels on interactive elements and also returns snapshotId + elements for acting by index. Default false (plain screenshot).",
+        ),
+      placeOnCanvas: z
+        .boolean()
+        .optional()
+        .describe(
+          "If true, also put the screenshot on the design canvas as a new image layer (a rectangle with an image fill, sized to the screenshot). The result then carries `placedNodeId`. The placed image never has the annotate labels on it. Default false.",
+        ),
+      x: z
+        .number()
+        .optional()
+        .describe(
+          "Canvas position (absolute) for the placed image's top-left corner. Only used with placeOnCanvas. If omitted, the image goes into empty space to the right of the existing content.",
+        ),
+      y: z
+        .number()
+        .optional()
+        .describe(
+          "Canvas position (absolute) for the placed image's top-left corner. Only used with placeOnCanvas. If omitted, the image goes into empty space to the right of the existing content.",
         ),
     }),
     // Same reasoning as get_screenshot's toModelOutput, but this tool also

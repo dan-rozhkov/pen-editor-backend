@@ -249,5 +249,6 @@ describe("browser tasks guidance", () => {
     expect(prompt).not.toContain(BROWSER_TASKS_GUIDANCE);
     expect(MANUAL_BROWSER_GUIDANCE).not.toContain("browse_task");
     expect(MANUAL_BROWSER_GUIDANCE).toContain("Never type a password");
+    expect(MANUAL_BROWSER_GUIDANCE).toContain("placeOnCanvas: true");
   });
 });
