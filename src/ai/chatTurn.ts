@@ -150,10 +150,6 @@ const BROWSE_SUBAGENT_TOOL_NAMES = [
   "browse_read",
 ] as const;
 
-// The one OpenCode model a browsing subagent may use (with the user's own Go
-// key); anything else runs on config.BROWSE_AGENT_MODEL.
-const BROWSE_SUBAGENT_OPENCODE_MODEL = "opencode-go/deepseek-v4.1-flash";
-
 export interface PrepareChatTurnInput {
   config: Config;
   /**
@@ -304,14 +300,11 @@ export async function prepareChatTurn(
   const browseSub = input.agentMode === "browse";
   // The subagent never sees the canvas.
   const canvasContext = browseSub ? undefined : input.canvasContext;
-  // The model the turn actually runs on. A browsing subagent is never the
-  // user's main chat model: it takes the OpenCode Go deepseek flash when the
-  // user asked for exactly that and sent a key, else BROWSE_AGENT_MODEL.
-  const modelOverride = browseSub
-    ? input.modelOverride === BROWSE_SUBAGENT_OPENCODE_MODEL && input.opencodeApiKey?.trim()
-      ? input.modelOverride
-      : config.BROWSE_AGENT_MODEL
-    : input.modelOverride;
+  // The model the turn actually runs on. A browsing subagent always runs on
+  // BROWSE_AGENT_MODEL (OpenRouter, with BROWSE_AGENT_PROVIDER_ORDER), never
+  // on the user's main chat model, also for an OpenCode Go user: OM2W 15.10,
+  // Go subagent p50 93 s vs OpenRouter + Together 53 s at the same success.
+  const modelOverride = browseSub ? config.BROWSE_AGENT_MODEL : input.modelOverride;
 
   // Every skill lookup below — the slash command, the catalog in the system
   // prompt, the load_skill tool — silently resolves to nothing on an empty

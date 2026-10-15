@@ -1072,24 +1072,19 @@ describe("browse subagent", () => {
       );
     });
 
-    it("uses the OpenCode Go deepseek flash when requested with the user's key", async () => {
+    it("ignores the OpenCode Go model even with the user's key", async () => {
       const turn = await prepare({
         agentMode: "browse",
         modelOverride: GO_MODEL,
         opencodeApiKey: "user-key",
         clientCapabilities: DESKTOP,
       });
-      expect(turn.selectedModelId).toBe(GO_MODEL);
+      expect(turn.selectedModelId).toBe("deepseek/deepseek-v4.1-flash");
       expect(createModel).toHaveBeenCalledWith(
         expect.anything(),
-        GO_MODEL,
-        expect.objectContaining({ reasoningEffort: "none", opencodeApiKey: "user-key" }),
+        "deepseek/deepseek-v4.1-flash",
+        expect.objectContaining({ reasoningEffort: "none", providerOrder: ["together"] }),
       );
-    });
-
-    it("falls back to BROWSE_AGENT_MODEL when the OpenCode model arrives without a key", async () => {
-      const turn = await prepare({ agentMode: "browse", modelOverride: GO_MODEL, clientCapabilities: DESKTOP });
-      expect(turn.selectedModelId).toBe("deepseek/deepseek-v4.1-flash");
     });
 
     it("leaves the main model alone for every other agentMode", async () => {
