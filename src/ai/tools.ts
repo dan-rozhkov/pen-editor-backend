@@ -1481,6 +1481,81 @@ export const findEmptySpaceOnCanvasInputShape = {
 // Pen Editor's host text is the slots (browseToolText.ts).
 const browseDefs = createBrowseToolDefinitions(PEN_EDITOR_BROWSE_SLOTS);
 
+// browse_agent `setup`: a PageFixture (@sideform/browser-agent/fixture) without
+// `version` and `url` (the tool's `url` is the start URL). The package parser is
+// the authority; these bounds only keep the model's input small and well-formed.
+const fixtureWaitMs = z.number().min(0).max(30_000);
+const fixtureText = z.string().min(1).max(2000);
+const fixtureHttpUrl = z.string().min(1).max(2000);
+const fixtureStringMap = z.record(z.string().max(500), z.string().max(10_000));
+const fixtureStep = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("goto"), url: fixtureHttpUrl }).strict(),
+  z.object({ action: z.literal("click"), selector: fixtureText }).strict(),
+  z.object({ action: z.literal("type"), selector: fixtureText, text: z.string().max(10_000) }).strict(),
+  z.object({ action: z.literal("press"), key: z.string().min(1).max(100), selector: fixtureText.optional() }).strict(),
+  z.object({ action: z.literal("waitFor"), selector: fixtureText, timeoutMs: fixtureWaitMs.optional() }).strict(),
+  z.object({ action: z.literal("wait"), ms: fixtureWaitMs }).strict(),
+]);
+const fixtureCookie = z
+  .object({
+    name: z.string().min(1).max(200),
+    value: z.string().max(4000),
+    domain: z.string().min(1).max(255).optional(),
+    path: z.string().min(1).max(500).optional(),
+    url: fixtureHttpUrl.optional(),
+    expires: z.number().finite().optional(),
+    httpOnly: z.boolean().optional(),
+    secure: z.boolean().optional(),
+    sameSite: z.enum(["Strict", "Lax", "None"]).optional(),
+  })
+  .strict()
+  .refine((c) => c.domain !== undefined || c.url !== undefined, { message: "A cookie needs `url` or `domain`." });
+const fixtureOrigin = z
+  .object({ origin: fixtureHttpUrl, localStorage: fixtureStringMap.optional(), sessionStorage: fixtureStringMap.optional() })
+  .strict();
+const fixtureNetworkRule = z
+  .object({
+    url: fixtureText,
+    method: z.string().min(1).max(20).optional(),
+    status: z.number().int().min(200).max(599).optional(),
+    headers: fixtureStringMap.optional(),
+    body: z.union([z.string().max(200_000), z.record(z.string(), z.unknown())]).optional(),
+    delayMs: fixtureWaitMs.optional(),
+    abort: z.boolean().optional(),
+    times: z.number().int().min(1).optional(),
+  })
+  .strict();
+const fixtureExpect = z
+  .object({
+    selector: fixtureText.optional(),
+    text: fixtureText.optional(),
+    url: fixtureText.optional(),
+    timeoutMs: fixtureWaitMs.optional(),
+  })
+  .strict()
+  .refine((e) => e.selector !== undefined || e.text !== undefined || e.url !== undefined, { message: "`expect` needs `selector`, `text` or `url`." });
+export const browseAgentSetup = z
+  .object({
+    tabs: z.array(fixtureHttpUrl).max(10).optional().describe("Extra tabs to open after the main tab (http/https URLs, at most 10). The main tab stays current."),
+    storage: z
+      .object({
+        cookies: z.array(fixtureCookie).max(20).optional(),
+        origins: z.array(fixtureOrigin).max(10).optional(),
+      })
+      .strict()
+      .optional()
+      .describe("Cookies (at most 20; each needs `url` or `domain`) and localStorage/sessionStorage per origin (at most 10 origins; `origin` is scheme+host only)."),
+    steps: z.array(fixtureStep).max(20).optional().describe("Deterministic steps on the main tab after `url` loads, no LLM (at most 20): goto, click, type, press, waitFor, wait."),
+    expect: fixtureExpect.optional().describe("Checked after the steps: the page is the right one. At least one of selector, text, url; all given must hold. If it fails, the agent does not run."),
+    network: z
+      .array(fixtureNetworkRule)
+      .max(20)
+      .optional()
+      .describe("API mocks, desktop and cloud browser (at most 20): `url` with `*` wildcards, optional method, status (200-599), headers, body (string or JSON object), delayMs, abort, times."),
+    fresh: z.boolean().optional().describe("Reset the session before anything else: close ALL browser tabs, open one blank tab, and clear cookies and storage. In the cloud browser it clears every site; in the desktop browser only the sites this setup names (url, tabs, storage origins, goto steps), so the user's other logins survive."),
+  })
+  .strict();
+
 export const penTools = {
   // ── Reading & Navigation ──────────────────────────────────────────
 
@@ -2326,7 +2401,7 @@ Returns the created/updated style ids and names (with a created|updated status) 
 
   browse_agent: tool({
     description:
-      "Run a whole browser task in the built-in browser through a dedicated browsing subagent, and get its final answer. The subagent does NOT see this chat: `goal` must carry the whole task with every constraint, every name and date, and what to report back (for example the prices, the names, the final URL). If the user wants a picture (screenshot) of the page on the canvas, say so in `goal`: the subagent then calls browse_screenshot with placeOnCanvas. If the user wants an editable copy of the page on the canvas, set `capture: true` and say in `goal` which page or part to copy. When the task names a site or a page, always pass its start URL in `url`: the browser opens it before the subagent starts, which saves a step. Returns `{ status: \"done\" | \"error\" | \"aborted\" | \"step_limit\", answer, steps }`, plus `captured: { nodeId, width, height, url, title }` when the page was copied onto the canvas. `answer` is the subagent's plain-text report of what it saw; report only what it contains, and do not invent page content that `answer` does not state. `answer` may be in a different language than the chat: report it to the user in the user's language. The browser tab stays open between calls, so a follow-up (another detail on the same page, the next step) is another browse_agent call with a self-contained goal. This tool runs in the user's browser (client side) and has no server-side execute.",
+      "Run a whole browser task in the built-in browser through a dedicated browsing subagent, and get its final answer. The subagent does NOT see this chat: `goal` must carry the whole task with every constraint, every name and date, and what to report back (for example the prices, the names, the final URL). If the user wants a picture (screenshot) of the page on the canvas, say so in `goal`: the subagent then calls browse_screenshot with placeOnCanvas. If the user wants an editable copy of the page on the canvas, set `capture: true` and say in `goal` which page or part to copy. When the task names a site or a page, always pass its start URL in `url`: the browser opens it before the subagent starts, which saves a step. To prepare the page first (a known state, API mocks, a check that it is the right page), pass `setup`. Returns `{ status: \"done\" | \"error\" | \"aborted\" | \"step_limit\" | \"setup_failed\", answer, steps }`, plus `captured: { nodeId, width, height, url, title }` when the page was copied onto the canvas. `answer` is the subagent's plain-text report of what it saw; report only what it contains, and do not invent page content that `answer` does not state. `answer` may be in a different language than the chat: report it to the user in the user's language. The browser tab stays open between calls, so a follow-up (another detail on the same page, the next step) is another browse_agent call with a self-contained goal. This tool runs in the user's browser (client side) and has no server-side execute.",
     inputSchema: z.object({
       goal: z
         .string()
@@ -2338,6 +2413,9 @@ Returns the created/updated style ids and names (with a created|updated status) 
         .max(2000)
         .optional()
         .describe("Optional start URL. If omitted, the subagent continues in the current browser tab or finds the page itself."),
+      setup: browseAgentSetup
+        .optional()
+        .describe("Optional page setup that runs BEFORE the subagent, with the start `url` as the main page. Use it for QA checks, to reach a known state first (steps, cookies, storage), or to simulate API errors (network). If setup fails, the subagent does not run and the result says which stage failed. Secrets the user gave (cookies, tokens) may go here."),
       capture: z
         .boolean()
         .optional()

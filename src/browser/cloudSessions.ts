@@ -6,7 +6,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import type { SteelClient } from "../services/steel.js";
 import { redactedError } from "@sideform/browser-agent/adapters/playwright";
 
-export const COMMAND_NAMES = ["open", "act", "findImages", "read", "snapshot", "screenshot", "capture", "tabs", "perform"] as const;
+export const COMMAND_NAMES = ["open", "act", "findImages", "read", "snapshot", "screenshot", "capture", "tabs", "perform", "applyFixture", "releaseFixture"] as const;
 export type CommandName = (typeof COMMAND_NAMES)[number];
 export type CommandResult = Record<string, unknown>;
 export type CommandRunner = Record<CommandName, (args?: unknown) => Promise<CommandResult>>;
@@ -74,7 +74,7 @@ export function verifyHandle(secret: string, userId: string, chatId: string, han
 }
 
 function createsSession(command: CommandName, args: unknown): boolean {
-  if (command === "open") return true;
+  if (command === "open" || command === "applyFixture") return true;
   if (command !== "tabs" || typeof args !== "object" || args === null) return false;
   return (args as { action?: unknown }).action === "new";
 }

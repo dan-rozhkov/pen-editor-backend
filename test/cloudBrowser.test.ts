@@ -32,6 +32,8 @@ function fakes() {
     capture: vi.fn(async () => ({ html: "<p>x</p>" })),
     tabs: vi.fn(async () => ({ tabs: [] })),
     perform: vi.fn(async () => ({ error: "stale snapshotId" })),
+    applyFixture: vi.fn(async () => ({ ok: true, summary: "applied", fixtureToken: "tok" })),
+    releaseFixture: vi.fn(async () => ({ ok: true })),
   };
   const connect = vi.fn(async (url: string): Promise<ConnectedBrowser> => ({
     controller,
@@ -115,6 +117,28 @@ describe("cloud browser routes", () => {
     const res = (await cmd("capture", { userId: USER, chatId: "c", handle, args: { index: 2 } })).json();
     expect(f.controller.capture).toHaveBeenCalledTimes(1);
     expect(res.result).toEqual({ html: "<p>x</p>" });
+  });
+
+  it("creates a session on applyFixture and forwards the fixture args", async () => {
+    const f = fakes();
+    const { cmd } = await start({}, f);
+    const fixture = { version: 1, url: "https://a.com", network: [{ url: "https://a.com/api*", status: 500 }] };
+    const res = (await cmd("applyFixture", { userId: USER, chatId: "c", args: { fixture } })).json();
+    expect(f.steel.createSession).toHaveBeenCalledTimes(1);
+    expect(res.handle).toBeTruthy();
+    expect(res.result).toEqual({ ok: true, summary: "applied", fixtureToken: "tok" });
+    expect(f.controller.applyFixture).toHaveBeenCalledWith({ fixture });
+  });
+
+  it("forwards releaseFixture's token to the session's controller", async () => {
+    const f = fakes();
+    const { cmd } = await start({}, f);
+    const { handle } = (await cmd("open", { userId: USER, chatId: "c" })).json();
+    const res = (await cmd("releaseFixture", { userId: USER, chatId: "c", handle, args: { token: "tok" } })).json();
+    expect(f.controller.releaseFixture).toHaveBeenCalledWith({ token: "tok" });
+    expect(res.result).toEqual({ ok: true });
+    const noSession = (await cmd("releaseFixture", { userId: USER, chatId: "other", args: { token: "tok" } })).json();
+    expect(noSession.handle).toBeNull();
   });
 
   it("403s a handle presented by another user or chat", async () => {
