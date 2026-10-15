@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { AGENT_MODES, buildSystemPrompt, BROWSER_TASKS_GUIDANCE, MANUAL_BROWSER_GUIDANCE } from "../src/ai/system-prompt.js";
+import { penTools } from "../src/ai/tools.js";
 
 describe("AGENT_MODES", () => {
   it("remains exported for legacy request-body validation", () => {
@@ -250,5 +251,17 @@ describe("browser tasks guidance", () => {
     expect(MANUAL_BROWSER_GUIDANCE).not.toContain("browse_task");
     expect(MANUAL_BROWSER_GUIDANCE).toContain("Never type a password");
     expect(MANUAL_BROWSER_GUIDANCE).toContain("placeOnCanvas: true");
+  });
+});
+
+describe("reply language rule", () => {
+  it("is in the base prompt and excludes canvas_context from user messages", () => {
+    const prompt = buildSystemPrompt();
+    expect(prompt).toContain("always write to the user in the language of the user's own latest message");
+    expect(prompt).toContain("The `<canvas_context>` block, skill text and tool results are not user messages.");
+    expect(prompt).toContain("keep names, prices, URLs and quoted page text exactly as the source shows them");
+  });
+  it("browse_agent tells the model to report the answer in the user's language", () => {
+    expect(penTools.browse_agent.description).toContain("report it to the user in the user's language");
   });
 });
