@@ -63,7 +63,7 @@ describe("reasoning-mandatory fallback", () => {
     // The retry must differ from the original ONLY by the reasoning option.
     expect(fallbackStream).toHaveBeenCalledWith(params);
     const [, firstSettings] = openrouterFactory.mock.calls[0];
-    expect(firstSettings).toEqual({ reasoning: { effort: "none" } });
+    expect(firstSettings).toEqual({ reasoning: { effort: "minimal" } });
     const [, retrySettings] = openrouterFactory.mock.calls.at(-1)!;
     expect(retrySettings).toBeUndefined();
   });
@@ -131,7 +131,7 @@ describe("reasoning-mandatory fallback", () => {
     await expect(model.doStream(params)).resolves.toEqual({ stream: "ok" });
 
     const provider = { order: ["together"], allow_fallbacks: true };
-    expect(openrouterFactory.mock.calls[0][1]).toEqual({ provider, reasoning: { effort: "none" } });
+    expect(openrouterFactory.mock.calls[0][1]).toEqual({ provider, reasoning: { effort: "minimal" } });
     expect(openrouterFactory.mock.calls.at(-1)![1]).toEqual({ provider });
   });
 });
@@ -149,6 +149,6 @@ describe("providerOrderFor", () => {
   it("lets an explicit providerOrder option override the config", () => {
     vi.clearAllMocks();
     createModel(makeConfig({ CHAT_MODEL }), undefined, { providerOrder: [] });
-    expect(openrouterFactory.mock.calls[0][1]).toEqual({ reasoning: { effort: "none" } });
+    expect(openrouterFactory.mock.calls[0][1]).toEqual({ reasoning: { effort: "minimal" } });
   });
 });

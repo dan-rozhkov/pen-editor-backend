@@ -801,7 +801,7 @@ export async function prepareChatTurn(
   const browserKind =
     input.clientCapabilities?.browser ?? (input.clientCapabilities?.desktopBrowser ? "desktop" : undefined);
   const hasBrowser = browserKind === "desktop" || (browserKind === "cloud" && Boolean(config.STEEL_API_KEY));
-  // BROWSE_MODE "manual" (default): the chat model drives browse_* itself and
+  // BROWSE_MODE "manual": the chat model drives browse_* itself and
   // browse_task is never offered. "task" restores the Jev/Luna step loop,
   // which additionally needs TYPESAFE_API_KEY; without it the manual rule is
   // the correct one, since browse_task is not in the tool set.

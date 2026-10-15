@@ -76,6 +76,11 @@ export const envSchema = z.object({
   // here but plausible from OpenRouter's docs) can raise this back to
   // "minimal"/"low" without a code change.
   //
+  // 2026-10-15: the default is "minimal" again (user decision): a deepseek
+  // main chat must reason. Over OpenRouter that means the budget-capped
+  // reasoning above. The browsing subagent passes an explicit "none" per
+  // call, so browsing stays without reasoning.
+  //
   // Scope: this reaches the chat agent only (src/ai/provider.ts's
   // createChatModel, i.e. the /api/chat route and the showcase runner) —
   // including a turn where the user picked a model in the composer.
@@ -85,7 +90,7 @@ export const envSchema = z.object({
   // analysis-style tasks that want the model to actually think.
   CHAT_REASONING_EFFORT: z
     .enum(["xhigh", "high", "medium", "low", "minimal", "none"])
-    .default("none"),
+    .default("minimal"),
   // A CHAT_MODEL with no entry in DEFAULT_MODELS is assumed
   // vision-capable (getModels' convention below). Set this to "false" when an
   // operator points CHAT_MODEL at a text-only model: otherwise every
@@ -411,7 +416,7 @@ export const envSchema = z.object({
   // itself add a user-facing network call to every chat turn. The mode has
   // to be turned on explicitly, deployment by deployment.
   SKILL_ROUTING_MODE: z.enum(["off", "shadow", "enforce"]).default("off"),
-  // Browser driving mode. "manual" (default): the chat model drives the
+  // Browser driving mode. "manual": the chat model drives the
   // browse_* tools itself and browse_task (the Jev/Luna step loop) is NOT
   // offered. "task": the previous behavior - browse_task is offered when
   // TYPESAFE_API_KEY is set, together with the "Browser tasks" rule. One env
@@ -419,12 +424,12 @@ export const envSchema = z.object({
   // "agent": the chat model gets ONE browser tool, browse_agent, which runs the
   // whole task in a browsing subagent (agentMode "browse") pinned to
   // BROWSE_AGENT_MODEL with reasoning off — see
-  // docs/specs/2026-10-14-browse-subagent-design.md.
-  BROWSE_MODE: z.enum(["manual", "task", "agent"]).default("manual"),
-  // The model behind the browsing subagent. An OpenRouter id: an OpenCode
-  // reference is a boot failure (no server-side OpenCode key exists). A user
-  // with a Go key and an allowed OpenCode deepseek model picked uses that
-  // instead, per request.
+  // docs/specs/2026-10-14-browse-subagent-design.md. Default since
+  // 2026-10-15 (user decision).
+  BROWSE_MODE: z.enum(["manual", "task", "agent"]).default("agent"),
+  // The model behind the browsing subagent, for every user (also an OpenCode
+  // Go user). An OpenRouter id: an OpenCode reference is a boot failure (no
+  // server-side OpenCode key exists).
   BROWSE_AGENT_MODEL: z.string().default("deepseek/deepseek-v4.1-flash"),
   // OpenRouter provider slugs tried first, per model, for EVERY OpenRouter
   // call on that model (main chat, browsing subagent, helpers); other

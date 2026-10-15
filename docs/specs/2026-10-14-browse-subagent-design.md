@@ -1,6 +1,6 @@
 # Browse subagent: browsing on deepseek without reasoning
 
-Date: 2026-10-14. Status: implemented behind `BROWSE_MODE=agent` (default stays `manual` until a bench run says otherwise).
+Date: 2026-10-14. Status: implemented, `BROWSE_MODE=agent` is the default since 2026-10-15 (`manual` = rollback).
 
 ## Why
 

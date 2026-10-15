@@ -61,10 +61,10 @@ describe("CHAT_REASONING_EFFORT default", () => {
   // Live-measured (real OpenRouter calls against deepseek/deepseek-v4.1-
   // flash, 2026-09): "minimal" and "high" produced identical, budget-capped
   // reasoning — deepseek ignores effort gradations over OpenRouter — and
-  // only "none" actually suppressed reasoning. This is the gate against
-  // silently reverting to the old, measured-ineffective "minimal" default.
-  it("is 'none'", () => {
-    expect(defaultReasoningEffort()).toBe("none");
+  // only "none" actually suppressed reasoning. 2026-10-15 user decision:
+  // the main chat reasons, so the default is "minimal" (= reasoning on).
+  it("is 'minimal'", () => {
+    expect(defaultReasoningEffort()).toBe("minimal");
   });
 });
 
@@ -83,12 +83,12 @@ describe("createModel reasoning effort", () => {
     expect(resolveReasoningEffort(config, undefined, undefined)).toBe("high");
   });
 
-  it("defaults to 'none' when the config value is left at its schema default", () => {
+  it("defaults to 'minimal' when the config value is left at its schema default", () => {
     const config = makeConfig({
       CHAT_MODEL: OPENROUTER_STYLE_DEEPSEEK_ID,
-      CHAT_REASONING_EFFORT: defaultReasoningEffort() as "none",
+      CHAT_REASONING_EFFORT: defaultReasoningEffort() as "minimal",
     });
-    expect(resolveReasoningEffort(config, undefined, undefined)).toBe("none");
+    expect(resolveReasoningEffort(config, undefined, undefined)).toBe("minimal");
   });
 
   it("omits reasoning settings for a model family outside the allowlist", () => {
