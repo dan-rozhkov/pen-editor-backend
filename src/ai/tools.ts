@@ -4,6 +4,11 @@ import { LINT_RULE_IDS } from "./lintRules.js";
 import type { Config } from "../config.js";
 import { describeImage } from "../services/vision.js";
 import { screenshotOutputToContent } from "./screenshotOutput.js";
+import {
+  browseScreenshotInputSchema,
+  createBrowseToolDefinitions,
+} from "@sideform/browser-agent/agent";
+import { PEN_EDITOR_BROWSE_SLOTS } from "./browseToolText.js";
 
 const MAX_BATCH_DESIGN_OPERATIONS = 25;
 
@@ -1472,123 +1477,9 @@ export const findEmptySpaceOnCanvasInputShape = {
     ),
 };
 
-// Shared by browse_act's top-level fields and its `actions` batch entries
-// (see the tool below) — one place for the action enum so both stay in
-// sync, and one entry schema so an `actions` element is provably "the same
-// shape as a single browse_act call minus snapshotId" rather than a second,
-// independently-maintained copy.
-const browseActionEnum = z.enum([
-  "click",
-  "type",
-  "scroll",
-  "back",
-  "forward",
-  "press",
-  "hover",
-  "select",
-  "reload",
-  "wait",
-]);
-
-const BROWSE_ACT_SINGLE_FIELDS = [
-  "action",
-  "target",
-  "index",
-  "element",
-  "text",
-  "amount",
-  "key",
-  "ms",
-] as const;
-
-const BROWSE_ACT_NO_ELEMENT_ACTIONS = new Set([
-  "back",
-  "forward",
-  "reload",
-  "wait",
-]);
-
-// OpenAI models on OpenRouter answer in strict mode: they fill EVERY key of
-// the schema, so unused fields arrive as "" / 0 / null, and a single action
-// arrives as `action` plus a one-entry `actions` copy of itself. Before this,
-// every gpt-6-luna browse_act call failed the exactly-one check below and
-// never reached the browser. Strips those placeholders so the call means
-// what a model that omits unused keys would have sent.
-function stripBrowseActPlaceholders(
-  entry: Record<string, unknown>,
-  hasSnapshotId: boolean,
-): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(entry)) {
-    if (value === null || value === "") continue;
-    if ((key === "amount" || key === "ms") && value === 0) continue;
-    out[key] = value;
-  }
-  // index 0 is a real element, but next to an explicit target/element (or
-  // with no snapshotId to resolve it against) it is the placeholder zero.
-  // Strict-mode models also send index 0 for a window scroll and for actions
-  // that take no element: kept, it scrolled INSIDE element 0 instead of the
-  // page (gpt-6-luna, OM2W 2026-10-14).
-  if (
-    out.index === 0 &&
-    (!hasSnapshotId ||
-      out.target !== undefined ||
-      out.element !== undefined ||
-      out.action === "scroll")
-  ) {
-    delete out.index;
-  }
-  if (
-    typeof out.action === "string" &&
-    BROWSE_ACT_NO_ELEMENT_ACTIONS.has(out.action)
-  ) {
-    delete out.index;
-  }
-  return out;
-}
-
-function normalizeBrowseActInput(val: unknown): unknown {
-  if (!val || typeof val !== "object" || Array.isArray(val)) return val;
-  const raw = val as Record<string, unknown>;
-  const hasSnapshotId =
-    typeof raw.snapshotId === "string" && raw.snapshotId !== "";
-  const top = stripBrowseActPlaceholders(raw, hasSnapshotId);
-  if (Array.isArray(top.actions)) {
-    top.actions = top.actions.map((e) =>
-      e && typeof e === "object" && !Array.isArray(e)
-        ? stripBrowseActPlaceholders(
-            e as Record<string, unknown>,
-            hasSnapshotId,
-          )
-        : e,
-    );
-  }
-  const actions = top.actions as unknown[] | undefined;
-  if (actions !== undefined && actions.length === 0) delete top.actions;
-  if (top.action !== undefined && Array.isArray(top.actions)) {
-    if (top.actions.length === 1) {
-      // One entry duplicating the top-level call: fold it into a single call.
-      const entry = top.actions[0];
-      delete top.actions;
-      if (entry && typeof entry === "object")
-        return { ...(entry as object), ...top };
-    } else {
-      for (const key of BROWSE_ACT_SINGLE_FIELDS) delete top[key];
-    }
-  }
-  return top;
-}
-
-const browseActEntrySchema = z.object({
-  action: browseActionEnum,
-  target: z.string().optional(),
-  index: z.number().int().min(0).optional(),
-  element: z.string().max(300).optional(),
-  text: z.string().optional(),
-  amount: z.number().optional(),
-  key: z.string().optional(),
-  ms: z.number().max(15000).optional(),
-});
+// Descriptions and schemas of the seven browse_* tools come from the package;
+// Pen Editor's host text is the slots (browseToolText.ts).
+const browseDefs = createBrowseToolDefinitions(PEN_EDITOR_BROWSE_SLOTS);
 
 export const penTools = {
   // ── Reading & Navigation ──────────────────────────────────────────
@@ -2327,18 +2218,13 @@ Returns the created/updated style ids and names (with a created|updated status) 
   // tool-name contract has a schema to check the frontend handler against.
 
   browse_open: tool({
-    description:
-      "If browse_task is in your tool set, start browser tasks with it and use this tool for finishing or follow-up; if it is not, drive the browser with this tool directly (see Browser tasks in the system prompt). Opening a page the user just wants to look at is fine. Opens the built-in browser tab (a REAL browser tab — in the desktop app it runs on the user's OWN logged-in session, cookies and all; in the web app it is a fresh cloud browser with no logins) and navigate it to `url`, waiting for the page to finish loading. Returns `{ url, title }` with the FINAL url after any redirects, plus `snapshot` (the same shape browse_snapshot returns — `{ snapshotId, elements, scroll, truncated? }`) taken once the page has settled, so you usually don't need a separate browse_snapshot call right after opening. May also carry `botCheck: true` when the loaded page looks like a CAPTCHA/anti-bot wall (\"just a moment\", \"verify you are human\", captcha, cloudflare…) — when set, hand the task back to the user instead of trying to click through it. This is how you reach outside references the canvas can't otherwise see: a Pinterest search URL " +
-      '(e.g. "https://www.pinterest.com/search/pins/?q=minimal%20fintech%20app%20ui") is the worked example — search results load as an infinite-scroll image grid you then read with browse_find_images. Once open, act on the returned `snapshot` directly with browse_act (by index or selector); take a fresh browse_snapshot/browse_screenshot only if it\'s missing or the page has since changed.',
-    inputSchema: z.object({
-      url: z.string().describe("The URL to navigate the browser tab to."),
-    }),
+    description: browseDefs.browse_open.description,
+    inputSchema: browseDefs.browse_open.inputSchema,
   }),
 
   browse_snapshot: tool({
-    description:
-      "Get an indexed table of every interactive element on the currently open browser tab's page — buttons, links, inputs, selects — without any pixels. Returns `{ snapshotId, url, title, elements: [{ index, tag, label, ops, role?, options?, value?, hasValue?, isPassword?, checked?, scrollable?, frame? }], scroll: { y, height, atBottom } }`. `ops` lists which browse_act actions apply to that element — values are `CLICK` (click/hover), `TYPE_TEXT` (fill a text input/textarea), `SELECT` (pick a `<select>` option). `checked` is the current checkbox/radio state; `scrollable: true` marks an element that is itself a scroll container (pass its `index` to browse_act's `scroll` action to scroll inside it instead of the window); `frame` names the iframe the element lives in when it's not in the top-level document (acting on it by `index` still works the same way, across frames). Pass an element's `index` together with THIS `snapshotId` to browse_act — the indices are only valid for that snapshotId and go stale the moment you call browse_snapshot, browse_screenshot with annotate, or browse_task again, so take a fresh one before acting if you're not sure yours is still current. If browse_task is in your tool set, start browser tasks with it and use this tool for finishing or follow-up; if it is not, drive the browser with this tool directly (see Browser tasks in the system prompt). Prefer this over browse_screenshot when you just need to know what's clickable and don't need to actually see the page (cheaper, no image tokens); use browse_screenshot when the layout itself matters or the snapshot's labels are ambiguous.",
-    inputSchema: z.object({}),
+    description: browseDefs.browse_snapshot.description,
+    inputSchema: browseDefs.browse_snapshot.inputSchema,
   }),
 
   // Client-executed, same reasoning as get_screenshot above: it returns an
@@ -2347,15 +2233,9 @@ Returns the created/updated style ids and names (with a created|updated status) 
   // BOTH the desktopBrowser structural gate (no bridge, no browser tab) and
   // get_screenshot's own vision gate (SCREENSHOT_TOOL_NAMES loop).
   browse_screenshot: tool({
-    description:
-      "If browse_task is in your tool set, start browser tasks with it and use this tool for finishing or follow-up; if it is not, drive the browser with this tool directly (see Browser tasks in the system prompt). Take a screenshot of the browser tab's current viewport (not the whole page) for visual verification — use this when the layout itself matters (does a modal actually cover the CTA, is a canvas-rendered widget visible, does this look broken) rather than just \"what's clickable\", which browse_snapshot answers more cheaply. Returns `{ url, title, width, height }` plus the image; on a text-only model this costs a second vision-model call that returns a description rather than the image itself, same as get_screenshot. Pass `annotate: true` to additionally get numbered labels drawn over every interactive element PLUS `snapshotId` and `elements` (the same shape as browse_snapshot) in the same call — use this set-of-marks mode when you want to both see the page and act on it by index in one round trip, instead of calling browse_snapshot separately first. When the user asks to capture, save, or put a browser page on the canvas or as a reference, call this tool with `placeOnCanvas: true`. The result then adds `placedNodeId`, the id of the new canvas layer, and the image is also returned to you as usual.",
-    inputSchema: z.object({
-      annotate: z
-        .boolean()
-        .optional()
-        .describe(
-          "If true, overlays numbered labels on interactive elements and also returns snapshotId + elements for acting by index. Default false (plain screenshot).",
-        ),
+    description: browseDefs.browse_screenshot.description,
+    // The package schema plus the three Pen Editor canvas fields.
+    inputSchema: browseScreenshotInputSchema.extend({
       placeOnCanvas: z
         .boolean()
         .optional()
@@ -2397,105 +2277,18 @@ Returns the created/updated style ids and names (with a created|updated status) 
   }),
 
   browse_act: tool({
-    description:
-      "If browse_task is in your tool set, start browser tasks with it and use this tool for finishing or follow-up; if it is not, drive the browser with this tool directly (see Browser tasks in the system prompt). Act on the currently open browser tab: click, type, scroll, go back/forward, press a key, hover, pick a `<select>` option, reload, or wait. `target` (for click/type) is matched first as visible text (case-insensitive, trimmed, first match in document order), then as a CSS selector; alternatively pass `index` (from browse_snapshot or an annotated browse_screenshot) together with that call's `snapshotId` to act on a specific element by its number — more reliable than text matching once you have a snapshot; or pass `element` instead (see below) to skip taking a snapshot yourself. Scrolling is what makes an infinite-scroll grid like Pinterest's usable: call `scroll` to load more results, then call browse_find_images (or browse_snapshot) again — `scroll` also takes `index`+`snapshotId` (or `target`) to scroll INSIDE that element (a scrollable panel/modal, or any element browse_snapshot marked `scrollable: true`) instead of the whole window. `press` sends a real key event (`key`: \"Enter\", \"Escape\", \"Tab\", \"ArrowDown\", \"Meta+a\", …), optionally focusing `target`/`index`/`element` first — this is how you submit a form with Enter or close a modal with Escape. `hover` moves the pointer over `target`/`index`/`element` without clicking, for hover-revealed menus. `select` needs `index`+`snapshotId` (or `element`) and `text` = the option's label or value. `reload` takes no fields. `wait` polls for `text` to appear (or just sleeps `ms`, default 3000, hard cap 15000) — use it after an action that triggers an async page update before your next snapshot/screenshot. " +
-      "Batching: pass `actions` (1-10 entries, each the same shape as this call minus `snapshotId` — all index-based entries refer to THIS call's top-level `snapshotId`) instead of a single `action` to run several simple steps in one round trip — e.g. fill a few fields then press Enter to submit — rather than spending one chat turn per step. When `actions` is given the top-level `action`/`target`/`index`/etc. fields are ignored; provide exactly one of `action` or `actions`. Entries run in order and stop at the first one that errors or whose target goes stale; the result is `{ results: [...one per entry actually run], completed, stoppedAt?, error? }` alongside the usual fields below. An `element` entry re-snapshots the page to resolve it, which makes the batch's top-level `snapshotId` stale for every entry after it — put `element` entries LAST in the batch, or split into separate batches, never an index-based entry after one; a batch that violates this order is rejected up front with an error naming the offending entry, before anything runs. A batch also has its own internal time budget and may stop early with `stoppedAt` and an error saying so if it runs too long — check `completed` rather than assuming every entry ran. " +
-      "Returns `{ url, title, matched }` on success or `{ error }` naming what wasn't found; resolving via `element` takes a fresh snapshot to match against, so it also returns `resolved: { index, label, confidence, snapshotId?, note }` on both success and failure — `snapshotId` is the NEW current snapshot (any snapshotId you already had is now stale) and `note` says so, UNLESS this same result also carries a `snapshot` field (see below), in which case `resolved.snapshotId` is omitted and `note` instead points you at `snapshot.snapshotId` — always use whichever snapshotId `note` actually names, never an older one you already had. If it can't resolve (no fast model configured, or nothing matched clearly) the error says to retry with `target`/`index` instead. A click/type/press result may also carry `openedTab: { tabId, url, title }` when the action opened a new browser tab — a click on your own tab that opens a popup DOES make that popup your current tab, so your next browse_* call already acts on it; use browse_tabs to switch back to the previous one — and `dialogs: [{ type, message }]` listing any JS alert/confirm/prompt the browser auto-handled since your last command. `changed` (with `changes`, when present) tells you whether the action actually altered the page — check it instead of assuming success; when the action changed the page (or at the end of an `actions` batch, or for `wait`/`scroll`), the result also carries `snapshot` — a compact current snapshot (same shape as browse_snapshot) taken after the action settles, whose `snapshotId` is current — use it for your next index-based call instead of taking a fresh browse_snapshot yourself. May also carry `consoleErrors: string[]` listing new page JS errors observed since your last command.",
-    inputSchema: z.preprocess(
-      normalizeBrowseActInput,
-      z
-      .object({
-        action: browseActionEnum
-          .optional()
-          .describe("Which action to perform. Omit when `actions` is given instead."),
-        target: z
-          .string()
-          .optional()
-          .describe("Visible text or CSS selector to act on. Used by click/type/press (to focus first)/hover."),
-        index: z
-          .number()
-          .int()
-          .min(0)
-          .optional()
-          .describe(
-            "Element index from a browse_snapshot or annotated browse_screenshot call, used instead of `target`. Requires `snapshotId` from that same call. Also used by `scroll` to scroll inside that element instead of the window.",
-          ),
-        snapshotId: z
-          .string()
-          .optional()
-          .describe("The snapshotId that `index` refers to — from the browse_snapshot/browse_screenshot call that produced it (or a previous browse_act/browse_open result's `snapshot`). Stale once a newer snapshot has been taken. Also the snapshotId every entry in `actions` resolves its own `index` against."),
-        element: z
-          .string()
-          .max(300)
-          .optional()
-          .describe(
-            "Describe the element in words instead of passing target/index, e.g. \"the Continue button in the cookie banner\" or \"the site search box\". A fast model picks it from a fresh snapshot of the page in one quick call — cheaper than a browse_snapshot round trip. That snapshot becomes the new current one, so any snapshotId you already had goes stale; use the result's `resolved.snapshotId` for further index-based calls. Works for click/type/select/hover and for press's optional focus target — press resolves `element` against any focusable candidate (button, text input, or select), not click-only, so it can match a text input too.",
-          ),
-        text: z
-          .string()
-          .optional()
-          .describe("Text to type (action: type), or the option label/value to choose (action: select)."),
-        amount: z
-          .number()
-          .optional()
-          .describe("Scroll distance in viewport heights. Used by scroll, default 1."),
-        key: z
-          .string()
-          .optional()
-          .describe('Key to press, e.g. "Enter", "Escape", "Tab", "ArrowDown", "Meta+a". Used by press.'),
-        ms: z
-          .number()
-          .max(15000)
-          .optional()
-          .describe("Milliseconds to wait. Used by wait, default 3000, hard cap 15000."),
-        actions: z
-          .array(browseActEntrySchema)
-          .min(1)
-          .max(10)
-          .optional()
-          .describe(
-            "Run up to 10 steps in one call instead of a single `action` — see the description above. Each entry has the same fields as this call except `snapshotId` (they all share the top-level one).",
-          ),
-      })
-      .superRefine((val, ctx) => {
-        const hasAction = val.action !== undefined;
-        const hasActions = val.actions !== undefined && val.actions.length > 0;
-        if (hasAction === hasActions) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            path: ["action"],
-            message: "Provide exactly one of `action` or `actions`.",
-          });
-        }
-      }),
-    ),
+    description: browseDefs.browse_act.description,
+    inputSchema: browseDefs.browse_act.inputSchema,
   }),
 
   browse_tabs: tool({
-    description:
-      "List, switch, close, or open browser tabs in the built-in browser. `action: \"list\"` returns every open browser tab; `\"switch\"` (needs `tabId`) makes that tab your current one for browse_act/browse_snapshot/browse_screenshot/browse_read; `\"close\"` (needs `tabId`) closes a browser tab (not the app itself); `\"new\"` opens a fresh browser tab, optionally navigating it to `url`, and makes it current. Returns `{ tabs: [{ tabId, url, title, current }], current }`. A browse_act click that opens a popup already makes that popup current (see browse_act's `openedTab`); call this with `action: \"switch\"` when you want to go back to the tab you were on before.",
-    inputSchema: z.object({
-      action: z.enum(["list", "switch", "close", "new"]).describe("Which tab operation to perform."),
-      tabId: z
-        .number()
-        .int()
-        .optional()
-        .describe("Target tab id. Required for switch/close; ignored for list; optional for new (rare)."),
-      url: z
-        .string()
-        .optional()
-        .describe("URL to load in the newly created tab. Used only by action: new."),
-    }),
+    description: browseDefs.browse_tabs.description,
+    inputSchema: browseDefs.browse_tabs.inputSchema,
   }),
 
   browse_find_images: tool({
-    description:
-      "Read every image currently visible on the open browser tab's page — both <img> elements and CSS background-images — sorted largest-first and capped at `limit`. Returns `{ images: [{ url, alt, width, height }], count, pageUrl }`. The returned URLs go straight onto the canvas: imageFill.url already accepts remote http(s) URLs (falling back to the image proxy when direct loading trips CORS), so no download step is needed. On a search results grid (Pinterest et al.) this typically only sees the first screenful — call browse_act with `scroll` and call this again to see more, repeating the loop until you have enough references.",
-    inputSchema: z.object({
-      minWidth: z.number().optional().describe("Minimum rendered width in px to include. Default 200."),
-      minHeight: z.number().optional().describe("Minimum rendered height in px to include. Default 200."),
-      limit: z.number().optional().describe("Maximum number of images to return. Default 30, hard cap 100."),
-    }),
+    description: browseDefs.browse_find_images.description,
+    inputSchema: browseDefs.browse_find_images.inputSchema,
   }),
 
   browse_capture: tool({
@@ -2573,20 +2366,7 @@ Returns the created/updated style ids and names (with a created|updated status) 
   }),
 
   browse_read: tool({
-    description:
-      "Read the TEXT of the page currently open in the built-in browser tab — headings, visible body text, and links — with scripts, styles, and nav chrome already stripped out. Returns `{ url, title, headings: string[], text: string, links: [{ label, href }], truncated: boolean }`. This is how you read a page you've already navigated to with browse_open/browse_task: once the browser is sitting on the page you need, call this INSTEAD OF falling back to web_search for the same information — web_search only re-finds pages you can already see, and cannot read this one's actual current content (a search result, a filtered listing, anything behind a click). Prefer browse_find_images when you want images rather than text, and browse_snapshot/browse_screenshot when you need to see or act on the page rather than read its content. `maxChars` bounds the returned text (default 6000, hard cap 20000); `selector` narrows the read to one subtree of the page (e.g. \"main\", \"article\") — an unmatched selector is an error, not a silent whole-page read.",
-    inputSchema: z.object({
-      maxChars: z
-        .number()
-        .int()
-        .positive()
-        .max(20000)
-        .optional()
-        .describe("Maximum characters of visible text to return. Default 6000, hard cap 20000."),
-      selector: z
-        .string()
-        .optional()
-        .describe("CSS selector to narrow the read to one subtree of the page. Omit to read the whole page."),
-    }),
+    description: browseDefs.browse_read.description,
+    inputSchema: browseDefs.browse_read.inputSchema,
   }),
 };

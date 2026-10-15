@@ -11,6 +11,7 @@ import { createHash } from "node:crypto";
 import type { Config } from "../config.js";
 import { bareModelId, createModel, parseModelRef, providerHandlesToolResultImages } from "./provider.js";
 import { penTools, makeBatchDesignTool, makeAnalyzeImageTool } from "./tools.js";
+import { BROWSE_AGENT_TOOL_NAMES } from "@sideform/browser-agent/agent";
 import { BROWSE_AGENT_PROMPT, buildSystemPrompt, type AgentMode } from "./system-prompt.js";
 import { resolveTaskPolicy, type TaskPolicy } from "./taskPolicy.js";
 import { applyImageBudget, planImageElision } from "./image-budget.js";
@@ -137,18 +138,6 @@ export function sanitizeMessagesForProvider(
 
   return { messages, removedReasoningParts };
 }
-
-// The only tools a browsing-subagent turn (agentMode "browse") may carry. The
-// usual browser/vision gates still apply on top of this list.
-const BROWSE_SUBAGENT_TOOL_NAMES = [
-  "browse_open",
-  "browse_snapshot",
-  "browse_screenshot",
-  "browse_act",
-  "browse_tabs",
-  "browse_find_images",
-  "browse_read",
-] as const;
 
 // Added to the subagent allowlist only when the user asked for a page copy
 // (browse_agent's `capture: true` -> body.browseCapture).
@@ -1298,7 +1287,9 @@ export async function prepareChatTurn(
     // The gates above add tools to a subagent turn too (analyze_image,
     // batch_design on a non-native policy); the allowlist wins.
     if (browseSub) {
-      const allowed = new Set<string>(BROWSE_SUBAGENT_TOOL_NAMES);
+      // BROWSE_AGENT_TOOL_NAMES (the package) is the only tool list a browsing-subagent
+      // turn (agentMode "browse") may carry; the usual browser/vision gates apply on top.
+      const allowed = new Set<string>(BROWSE_AGENT_TOOL_NAMES);
       if (input.browseCapture === true) allowed.add(BROWSE_CAPTURE_TOOL);
       for (const name of Object.keys(tools)) {
         if (!allowed.has(name)) delete tools[name];
