@@ -44,7 +44,7 @@ export function makeConfig(overrides: Partial<Config> = {}): Config {
     STRUCTURED_MODEL: envSchema.shape.STRUCTURED_MODEL.parse(undefined),
     BROWSE_CASCADE_MODEL: envSchema.shape.BROWSE_CASCADE_MODEL.parse(undefined),
     BROWSE_AGENT_MODEL: envSchema.shape.BROWSE_AGENT_MODEL.parse(undefined),
-    BROWSE_AGENT_PROVIDER_ORDER: envSchema.shape.BROWSE_AGENT_PROVIDER_ORDER.parse(undefined),
+    OPENROUTER_PROVIDER_ORDER: envSchema.shape.OPENROUTER_PROVIDER_ORDER.parse(undefined),
     BROWSE_STEP_POLICY: envSchema.shape.BROWSE_STEP_POLICY.parse(undefined),
     BROWSE_STEP_VISION: envSchema.shape.BROWSE_STEP_VISION.parse(undefined),
     TRACE_DATABASE_URL: undefined,

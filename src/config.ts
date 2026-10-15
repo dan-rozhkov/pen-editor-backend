@@ -426,12 +426,15 @@ export const envSchema = z.object({
   // with a Go key and an allowed OpenCode deepseek model picked uses that
   // instead, per request.
   BROWSE_AGENT_MODEL: z.string().default("deepseek/deepseek-v4.1-flash"),
-  // OpenRouter provider slugs the browsing subagent tries first, comma
-  // separated; other providers stay as fallbacks. Measured 2026-10-14 on
-  // replayed subagent requests: "together" p50 1.0 s per request vs 1.3-1.5 s
-  // for the default routing and for sort latency/throughput. Empty = the
-  // default OpenRouter routing.
-  BROWSE_AGENT_PROVIDER_ORDER: z.string().default("together"),
+  // OpenRouter provider slugs tried first, per model, for EVERY OpenRouter
+  // call on that model (main chat, browsing subagent, helpers); other
+  // providers stay as fallbacks. Format: `model=slug,slug;model2=slug`.
+  // Empty = the default OpenRouter routing for all models. Measured
+  // 2026-10-15 on deepseek-v4.1-flash: Together TTFT ~0.5 s and ~340 output
+  // tokens/s; the default routing gave 2-5 s TTFT and ~20 tokens/s on the
+  // main chat's browse_agent call (a 400-token goal took 15-20 s). Together
+  // serves reasoning on and off.
+  OPENROUTER_PROVIDER_ORDER: z.string().default("deepseek/deepseek-v4.1-flash=together"),
   // Injecting the wrong skill wastes context and can mislead the whole
   // turn, so only a confident pick acts; everything below this falls back
   // to today's behavior (the model calling load_skill itself). Despite the

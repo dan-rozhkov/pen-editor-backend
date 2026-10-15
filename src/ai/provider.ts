@@ -204,6 +204,19 @@ function withReasoningMandatoryFallback(
   }) as LanguageModel;
 }
 
+/**
+ * The OpenRouter provider order OPENROUTER_PROVIDER_ORDER sets for one model
+ * (`model=slug,slug;model2=slug`), or [] for default routing.
+ */
+export function providerOrderFor(spec: string, modelId: string): string[] {
+  for (const entry of spec.split(";")) {
+    const eq = entry.indexOf("=");
+    if (eq < 0 || entry.slice(0, eq).trim() !== modelId) continue;
+    return entry.slice(eq + 1).split(",").map((s) => s.trim()).filter(Boolean);
+  }
+  return [];
+}
+
 export function createModel(
   config: Config,
   modelOverride?: string,
@@ -257,8 +270,9 @@ export function createModel(
     apiKey: config.OPENROUTER_API_KEY,
   });
   const modelId = ref.modelId;
-  const routing = options.providerOrder?.length
-    ? { provider: { order: options.providerOrder, allow_fallbacks: true } }
+  const order = options.providerOrder ?? providerOrderFor(config.OPENROUTER_PROVIDER_ORDER, modelId);
+  const routing = order.length
+    ? { provider: { order, allow_fallbacks: true } }
     : undefined;
   if (!supportsReasoningControl(modelId)) {
     return openrouter(modelId, routing);

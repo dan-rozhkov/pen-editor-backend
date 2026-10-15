@@ -54,7 +54,8 @@ describe("reasoning-mandatory fallback", () => {
     doStream.mockRejectedValueOnce(reasoningMandatoryError());
     fallbackStream.mockResolvedValueOnce({ stream: "ok" });
 
-    const model = createModel(makeConfig({ CHAT_MODEL })) as unknown as {
+    // No provider order, so the settings hold the reasoning option alone.
+    const model = createModel(makeConfig({ CHAT_MODEL, OPENROUTER_PROVIDER_ORDER: "" })) as unknown as {
       doStream: (p: never) => Promise<unknown>;
     };
     await expect(model.doStream(params)).resolves.toEqual({ stream: "ok" });
@@ -118,19 +119,36 @@ describe("reasoning-mandatory fallback", () => {
     expect(settings).toBeUndefined();
   });
 
-  it("keeps the subagent's provider order on the primary model and on the retry", async () => {
+  it("keeps the configured provider order on the primary model and on the retry", async () => {
     vi.clearAllMocks();
     doStream.mockRejectedValueOnce(reasoningMandatoryError());
     fallbackStream.mockResolvedValueOnce({ stream: "ok" });
 
+    // Default OPENROUTER_PROVIDER_ORDER: deepseek flash goes to Together first.
     const model = createModel(makeConfig({ CHAT_MODEL }), undefined, {
-      reasoningEffort: "none",
-      providerOrder: ["together"],
+      chatAgent: true,
     }) as unknown as { doStream: (p: never) => Promise<unknown> };
     await expect(model.doStream(params)).resolves.toEqual({ stream: "ok" });
 
     const provider = { order: ["together"], allow_fallbacks: true };
     expect(openrouterFactory.mock.calls[0][1]).toEqual({ provider, reasoning: { effort: "none" } });
     expect(openrouterFactory.mock.calls.at(-1)![1]).toEqual({ provider });
+  });
+});
+
+describe("providerOrderFor", () => {
+  it("returns the slugs of the matching model and [] for any other model", async () => {
+    const { providerOrderFor } = await import("../src/ai/provider.js");
+    const spec = "deepseek/deepseek-v4.1-flash=together, fireworks;openai/gpt-6-luna=azure";
+    expect(providerOrderFor(spec, "deepseek/deepseek-v4.1-flash")).toEqual(["together", "fireworks"]);
+    expect(providerOrderFor(spec, "openai/gpt-6-luna")).toEqual(["azure"]);
+    expect(providerOrderFor(spec, "anthropic/claude-haiku-5.5")).toEqual([]);
+    expect(providerOrderFor("", "deepseek/deepseek-v4.1-flash")).toEqual([]);
+  });
+
+  it("lets an explicit providerOrder option override the config", () => {
+    vi.clearAllMocks();
+    createModel(makeConfig({ CHAT_MODEL }), undefined, { providerOrder: [] });
+    expect(openrouterFactory.mock.calls[0][1]).toEqual({ reasoning: { effort: "none" } });
   });
 });

@@ -301,7 +301,7 @@ export async function prepareChatTurn(
   // The subagent never sees the canvas.
   const canvasContext = browseSub ? undefined : input.canvasContext;
   // The model the turn actually runs on. A browsing subagent always runs on
-  // BROWSE_AGENT_MODEL (OpenRouter, with BROWSE_AGENT_PROVIDER_ORDER), never
+  // BROWSE_AGENT_MODEL (OpenRouter, with OPENROUTER_PROVIDER_ORDER), never
   // on the user's main chat model, also for an OpenCode Go user: OM2W 15.10,
   // Go subagent p50 93 s vs OpenRouter + Together 53 s at the same success.
   const modelOverride = browseSub ? config.BROWSE_AGENT_MODEL : input.modelOverride;
@@ -643,12 +643,7 @@ export async function prepareChatTurn(
     chatAgent: true,
     sessionId: input.sessionId,
     opencodeApiKey: input.opencodeApiKey,
-    ...(browseSub
-      ? {
-          reasoningEffort: "none" as const,
-          providerOrder: config.BROWSE_AGENT_PROVIDER_ORDER.split(",").map((s) => s.trim()).filter(Boolean),
-        }
-      : {}),
+    ...(browseSub ? { reasoningEffort: "none" as const } : {}),
   });
 
   // Self-authored skills (phase 2). Everything here is additive and
