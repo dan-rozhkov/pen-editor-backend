@@ -426,6 +426,12 @@ export const envSchema = z.object({
   // with a Go key and an allowed OpenCode deepseek model picked uses that
   // instead, per request.
   BROWSE_AGENT_MODEL: z.string().default("deepseek/deepseek-v4.1-flash"),
+  // OpenRouter provider slugs the browsing subagent tries first, comma
+  // separated; other providers stay as fallbacks. Measured 2026-10-14 on
+  // replayed subagent requests: "together" p50 1.0 s per request vs 1.3-1.5 s
+  // for the default routing and for sort latency/throughput. Empty = the
+  // default OpenRouter routing.
+  BROWSE_AGENT_PROVIDER_ORDER: z.string().default("together"),
   // Injecting the wrong skill wastes context and can mislead the whole
   // turn, so only a confident pick acts; everything below this falls back
   // to today's behavior (the model calling load_skill itself). Despite the

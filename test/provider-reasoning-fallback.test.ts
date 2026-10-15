@@ -17,7 +17,7 @@ const openrouterFactory = vi.fn();
 vi.mock("@openrouter/ai-sdk-provider", () => ({
   createOpenRouter: () => (modelId: string, settings?: unknown) => {
     openrouterFactory(modelId, settings);
-    const withReasoning = settings !== undefined;
+    const withReasoning = (settings as { reasoning?: unknown } | undefined)?.reasoning !== undefined;
     return {
       specificationVersion: "v3",
       provider: "openrouter",
@@ -116,5 +116,21 @@ describe("reasoning-mandatory fallback", () => {
     expect(openrouterFactory).toHaveBeenCalledTimes(1);
     const [, settings] = openrouterFactory.mock.calls[0];
     expect(settings).toBeUndefined();
+  });
+
+  it("keeps the subagent's provider order on the primary model and on the retry", async () => {
+    vi.clearAllMocks();
+    doStream.mockRejectedValueOnce(reasoningMandatoryError());
+    fallbackStream.mockResolvedValueOnce({ stream: "ok" });
+
+    const model = createModel(makeConfig({ CHAT_MODEL }), undefined, {
+      reasoningEffort: "none",
+      providerOrder: ["together"],
+    }) as unknown as { doStream: (p: never) => Promise<unknown> };
+    await expect(model.doStream(params)).resolves.toEqual({ stream: "ok" });
+
+    const provider = { order: ["together"], allow_fallbacks: true };
+    expect(openrouterFactory.mock.calls[0][1]).toEqual({ provider, reasoning: { effort: "none" } });
+    expect(openrouterFactory.mock.calls.at(-1)![1]).toEqual({ provider });
   });
 });

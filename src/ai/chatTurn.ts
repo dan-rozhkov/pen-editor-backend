@@ -650,7 +650,12 @@ export async function prepareChatTurn(
     chatAgent: true,
     sessionId: input.sessionId,
     opencodeApiKey: input.opencodeApiKey,
-    ...(browseSub ? { reasoningEffort: "none" as const } : {}),
+    ...(browseSub
+      ? {
+          reasoningEffort: "none" as const,
+          providerOrder: config.BROWSE_AGENT_PROVIDER_ORDER.split(",").map((s) => s.trim()).filter(Boolean),
+        }
+      : {}),
   });
 
   // Self-authored skills (phase 2). Everything here is additive and

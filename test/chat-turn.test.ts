@@ -1068,7 +1068,7 @@ describe("browse subagent", () => {
       expect(createModel).toHaveBeenCalledWith(
         expect.anything(),
         "deepseek/deepseek-v4.1-flash",
-        expect.objectContaining({ reasoningEffort: "none" }),
+        expect.objectContaining({ reasoningEffort: "none", providerOrder: ["together"] }),
       );
     });
 

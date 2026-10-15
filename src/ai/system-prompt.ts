@@ -68,9 +68,9 @@ const SUBAGENT_BROWSER_GUIDANCE = MANUAL_BROWSER_GUIDANCE.replace(
 );
 
 export const AGENT_BROWSER_GUIDANCE = `Every task that needs the built-in browser goes through \`browse_agent\`. A dedicated browsing subagent runs the task and returns an answer. You have no other browser tools.
-- The subagent does not see this chat. Write \`goal\` so that it is complete without the chat: the whole task, every constraint (names, dates, prices, filters), and what it must report back. Pass \`url\` when you know the start page.
+- The subagent does not see this chat. Write \`goal\` so that it is complete without the chat: the whole task, every constraint (names, dates, prices, filters), and what it must report back. When the task names a site or a page, always pass its start URL in \`url\` (the browser opens it before the subagent starts).
 - If the user wants a page or a screenshot placed on the canvas, say so in \`goal\`.
-- Report the answer to the user. Report only what the answer states. Do not invent page content, values or reasons that the answer does not contain.
+- Report the answer to the user in short form: the facts the user asked for and the final URL. Do not repeat how the subagent got there. Report only what the answer states. Do not invent page content, values or reasons that the answer does not contain.
 - If \`status\` is not \`done\`, tell the user what happened and what the answer says is missing. If a login, CAPTCHA or anti-bot wall stopped it, tell the user what to do in the browser tab, then call \`browse_agent\` again after they confirm.
 - Before an irreversible step (purchase, booking, payment, sending, submitting a form with personal data, deleting), ask the user. The subagent stops and reports what is pending. After the user confirms, call \`browse_agent\` again and state in \`goal\` that the user confirmed that exact step.
 - For a follow-up, call \`browse_agent\` again with a new self-contained goal. The browser tab stays open, so the subagent starts where the last call stopped.`;

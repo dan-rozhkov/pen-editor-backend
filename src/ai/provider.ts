@@ -104,6 +104,11 @@ export interface CreateModelOptions {
    * resolved provider is an OpenCode route.
    */
   opencodeApiKey?: string;
+  /**
+   * OpenRouter only: provider slugs to try first (other providers stay as
+   * fallbacks). Ignored for OpenCode routes. Empty or absent = default routing.
+   */
+  providerOrder?: string[];
 }
 
 /**
@@ -252,8 +257,11 @@ export function createModel(
     apiKey: config.OPENROUTER_API_KEY,
   });
   const modelId = ref.modelId;
+  const routing = options.providerOrder?.length
+    ? { provider: { order: options.providerOrder, allow_fallbacks: true } }
+    : undefined;
   if (!supportsReasoningControl(modelId)) {
-    return openrouter(modelId);
+    return openrouter(modelId, routing);
   }
   // See resolveReasoningEffort's own doc comment for why a modelOverride
   // without `chatAgent` deliberately stays on "minimal".
@@ -264,7 +272,7 @@ export function createModel(
     options.reasoningEffort,
   );
   return withReasoningMandatoryFallback(
-    openrouter(modelId, { reasoning: { effort } }),
-    () => openrouter(modelId),
+    openrouter(modelId, { ...routing, reasoning: { effort } }),
+    () => openrouter(modelId, routing),
   );
 }

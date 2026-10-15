@@ -239,6 +239,13 @@ describe("loadConfig", () => {
     expect(loadConfig().BROWSE_AGENT_MODEL).toBe("deepseek/deepseek-v4.1-flash");
   });
 
+  it("defaults BROWSE_AGENT_PROVIDER_ORDER to together and lets an empty value turn it off", () => {
+    process.env = { ...BASE_ENV } as NodeJS.ProcessEnv;
+    expect(loadConfig().BROWSE_AGENT_PROVIDER_ORDER).toBe("together");
+    process.env = { ...BASE_ENV, BROWSE_AGENT_PROVIDER_ORDER: "" } as NodeJS.ProcessEnv;
+    expect(loadConfig().BROWSE_AGENT_PROVIDER_ORDER).toBe("");
+  });
+
   it("defaults the scenario confirmation threshold to 3 and accepts an override", () => {
     process.env = { ...BASE_ENV } as NodeJS.ProcessEnv;
     expect(loadConfig().SCENARIO_CONFIRM_THRESHOLD).toBe(
