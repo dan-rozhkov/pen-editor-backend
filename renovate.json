@@ -1,0 +1,30 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "dependencyDashboard": false,
+  "enabledManagers": ["npm"],
+  "semanticCommits": "enabled",
+  "semanticCommitType": "chore",
+  "semanticCommitScope": "deps",
+  "packageRules": [
+    {
+      "matchPackageNames": ["*"],
+      "enabled": false
+    },
+    {
+      "matchPackageNames": ["@sideform/browser-agent"],
+      "enabled": true,
+      "labels": ["browser-agent"],
+      "schedule": ["at any time"],
+      "automerge": false,
+      "automergeType": "pr",
+      "platformAutomerge": false,
+      "ignoreTests": false
+    },
+    {
+      "matchPackageNames": ["@sideform/browser-agent"],
+      "matchUpdateTypes": ["patch"],
+      "automerge": true
+    }
+  ]
+}
