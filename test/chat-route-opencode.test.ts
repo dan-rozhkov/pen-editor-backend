@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadSkills } from "../src/ai/skills.js";
 import { makeConfig } from "./helpers.js";
-import { resetChatMocks, userMessage } from "./chatMocks.js";
+import { chatMocks, mockModel, resetChatMocks, textStreamChunks, userMessage } from "./chatMocks.js";
 import {
   postChat,
   recordingAnalyticsClient,
@@ -116,6 +116,37 @@ describe("POST /api/chat — agentMode browse gate", () => {
       expect(res.status).toBe(400);
       const body = (await res.json()) as { code: string };
       expect(body.code).toBe("browse_agent_disabled");
+    } finally {
+      await close();
+    }
+  });
+
+  it("passes browseCapture from the body to the subagent's tool set", async () => {
+    const { url, close } = await startApp(makeConfig({ BROWSE_MODE: "agent" }));
+    const toolsSent = async (extra: Record<string, unknown>) => {
+      const model = mockModel(textStreamChunks("ok"));
+      chatMocks.model = model;
+      const res = await postChat(url, {
+        messages: [userMessage("copy the page")],
+        agentMode: "browse",
+        clientCapabilities: { desktopBrowser: true },
+        ...extra,
+      });
+      expect(res.status).toBe(200);
+      await res.text();
+      return (model.doStreamCalls[0].tools ?? []).map((t: { name?: string }) => t.name);
+    };
+    try {
+      expect(await toolsSent({ browseCapture: true })).toContain("browse_capture");
+      expect(await toolsSent({})).not.toContain("browse_capture");
+      expect(await toolsSent({ browseCapture: false })).not.toContain("browse_capture");
+      const bad = await postChat(url, {
+        messages: [userMessage("copy the page")],
+        agentMode: "browse",
+        browseCapture: "yes",
+      });
+      expect(bad.status).toBe(400);
+      await bad.text();
     } finally {
       await close();
     }

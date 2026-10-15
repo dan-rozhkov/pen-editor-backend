@@ -1016,6 +1016,15 @@ describe("browse subagent", () => {
     });
   });
 
+  it("browse_capture follows the browser gate in manual mode and is absent in agent mode", async () => {
+    const manual = await prepare({ config: makeConfig({ BROWSE_MODE: "manual" }), clientCapabilities: DESKTOP });
+    expect(manual.tools.browse_capture).toBeDefined();
+    const noBrowser = await prepare({ config: makeConfig({ BROWSE_MODE: "manual" }) });
+    expect(noBrowser.tools.browse_capture).toBeUndefined();
+    const agent = await prepare({ config: makeConfig({ BROWSE_MODE: "agent" }), clientCapabilities: DESKTOP, browseCapture: true });
+    expect(agent.tools.browse_capture).toBeUndefined();
+  });
+
   it.each(["manual", "task"] as const)("BROWSE_MODE=%s never offers browse_agent", async (mode) => {
     const turn = await prepare({
       config: makeConfig({ BROWSE_MODE: mode, TYPESAFE_API_KEY: "key" }),
@@ -1040,6 +1049,22 @@ describe("browse subagent", () => {
       expect(AGENT_BROWSER_GUIDANCE).toContain("confirmed that exact step");
       expect(JSON.stringify(turn.modelMessages)).not.toContain("canvas_context");
       expect(JSON.stringify(turn.modelMessages)).not.toContain("SECRET-CANVAS");
+    });
+
+    it("adds browse_capture only when browseCapture is true", async () => {
+      const base = { config: makeConfig({ BROWSE_MODE: "agent" }), agentMode: "browse", clientCapabilities: DESKTOP };
+      const without = await prepare(base);
+      expect(without.tools.browse_capture).toBeUndefined();
+      const falsy = await prepare({ ...base, browseCapture: false });
+      expect(falsy.tools.browse_capture).toBeUndefined();
+      const withCapture = await prepare({ ...base, browseCapture: true });
+      expect(withCapture.tools.browse_capture).toBeDefined();
+      expect(Object.keys(withCapture.tools).sort()).toEqual([...BROWSE_TOOLS, "browse_capture"].sort());
+    });
+
+    it("never adds browse_capture without a browser", async () => {
+      const turn = await prepare({ agentMode: "browse", browseCapture: true });
+      expect(turn.tools.browse_capture).toBeUndefined();
     });
 
     it("does not run slash-command skill detection", async () => {

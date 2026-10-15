@@ -2498,9 +2498,42 @@ Returns the created/updated style ids and names (with a created|updated status) 
     }),
   }),
 
+  browse_capture: tool({
+    description:
+      "Copy the page that is open in the browser onto the canvas as ONE editable HTML embed layer (styles, text, links, image URLs; scripts removed). Call it ONLY when the user directly asks to copy, clone or import the page (or a part of it) onto the canvas. Never call it on your own initiative. Never call it to look at a page. Without `index` it copies the whole page at the current viewport width. With `index` and `snapshotId` from browse_snapshot it copies only that element. Returns `{ nodeId, width, height, url, title }` only. The HTML is NOT returned: use read_embed_html or edit_embed_html on `nodeId` if you need it. For a raster picture of the page use browse_screenshot with placeOnCanvas instead. Some images or web fonts can fail to load in the copy (hotlink protection, CORS). Call it at most once per request from the user. This tool runs in the user's browser (client side) and has no server-side execute.",
+    inputSchema: z.object({
+      index: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe("Element index from browse_snapshot. Requires `snapshotId`. Omit to copy the whole page."),
+      snapshotId: z
+        .string()
+        .max(200)
+        .optional()
+        .describe("The snapshotId that `index` refers to, from the browse_snapshot call that produced it."),
+      x: z
+        .number()
+        .optional()
+        .describe("Canvas x for the new layer. Pass `x` and `y` together, or neither. Omit both to place it in empty space."),
+      y: z
+        .number()
+        .optional()
+        .describe("Canvas y for the new layer. Pass `x` and `y` together, or neither."),
+    }).superRefine((v, ctx) => {
+      if ((v.index === undefined) !== (v.snapshotId === undefined)) {
+        ctx.addIssue({ code: "custom", message: "Pass `index` and `snapshotId` together, or neither.", path: [v.index === undefined ? "index" : "snapshotId"] });
+      }
+      if ((v.x === undefined) !== (v.y === undefined)) {
+        ctx.addIssue({ code: "custom", message: "Pass `x` and `y` together, or neither.", path: [v.x === undefined ? "x" : "y"] });
+      }
+    }),
+  }),
+
   browse_agent: tool({
     description:
-      "Run a whole browser task in the built-in browser through a dedicated browsing subagent, and get its final answer. The subagent does NOT see this chat: `goal` must carry the whole task with every constraint, every name and date, and what to report back (for example the prices, the names, the final URL). If the user wants a page placed on the canvas, say so in `goal`: the subagent can call browse_screenshot with placeOnCanvas. When the task names a site or a page, always pass its start URL in `url`: the browser opens it before the subagent starts, which saves a step. Returns `{ status: \"done\" | \"error\" | \"aborted\" | \"step_limit\", answer, steps }`. `answer` is the subagent's plain-text report of what it saw; report only what it contains, and do not invent page content that `answer` does not state. The browser tab stays open between calls, so a follow-up (another detail on the same page, the next step) is another browse_agent call with a self-contained goal. This tool runs in the user's browser (client side) and has no server-side execute.",
+      "Run a whole browser task in the built-in browser through a dedicated browsing subagent, and get its final answer. The subagent does NOT see this chat: `goal` must carry the whole task with every constraint, every name and date, and what to report back (for example the prices, the names, the final URL). If the user wants a picture (screenshot) of the page on the canvas, say so in `goal`: the subagent then calls browse_screenshot with placeOnCanvas. If the user wants an editable copy of the page on the canvas, set `capture: true` and say in `goal` which page or part to copy. When the task names a site or a page, always pass its start URL in `url`: the browser opens it before the subagent starts, which saves a step. Returns `{ status: \"done\" | \"error\" | \"aborted\" | \"step_limit\", answer, steps }`, plus `captured: { nodeId, width, height, url, title }` when the page was copied onto the canvas. `answer` is the subagent's plain-text report of what it saw; report only what it contains, and do not invent page content that `answer` does not state. The browser tab stays open between calls, so a follow-up (another detail on the same page, the next step) is another browse_agent call with a self-contained goal. This tool runs in the user's browser (client side) and has no server-side execute.",
     inputSchema: z.object({
       goal: z
         .string()
@@ -2512,6 +2545,10 @@ Returns the created/updated style ids and names (with a created|updated status) 
         .max(2000)
         .optional()
         .describe("Optional start URL. If omitted, the subagent continues in the current browser tab or finds the page itself."),
+      capture: z
+        .boolean()
+        .optional()
+        .describe("Set true ONLY when the user directly asks to copy or clone the page onto the canvas. The subagent then gets the browse_capture tool and copies the page once. The result then carries `captured: { nodeId, width, height, url, title }`."),
     }),
   }),
 

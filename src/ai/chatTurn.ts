@@ -150,6 +150,10 @@ const BROWSE_SUBAGENT_TOOL_NAMES = [
   "browse_read",
 ] as const;
 
+// Added to the subagent allowlist only when the user asked for a page copy
+// (browse_agent's `capture: true` -> body.browseCapture).
+const BROWSE_CAPTURE_TOOL = "browse_capture";
+
 export interface PrepareChatTurnInput {
   config: Config;
   /**
@@ -248,6 +252,11 @@ export interface PrepareChatTurnInput {
    * other caller (the showcase runner, tests) that never wires this.
    */
   clientCapabilities?: { desktopBrowser?: boolean; browser?: "desktop" | "cloud" };
+  /**
+   * agentMode "browse" only: the user directly asked to copy the page onto the
+   * canvas, so the subagent may carry browse_capture. Ignored otherwise.
+   */
+  browseCapture?: boolean;
 }
 
 export interface PreparedChatTurn {
@@ -1228,8 +1237,12 @@ export async function prepareChatTurn(
     // it before the request goes out.
     delete tools.attach_local_repo;
 
-    // Structural gate: browse_open/browse_snapshot/browse_screenshot/browse_act/
-    // browse_tabs/browse_find_images/browse_task/browse_read are client-executed
+    // Structural gate: every browse_* tool (browse_open, browse_snapshot,
+    // browse_screenshot, browse_act, browse_tabs, browse_find_images,
+    // browse_task, browse_read, browse_capture, and any added later) is
+    // dropped without a browser, except browse_agent, which the gate below
+    // deletes itself (it is also removed whenever no browser is offered).
+    // They are client-executed
     // against a browser the client can reach: the Electron shell's tab
     // (pen-editor-desktop's BrowserController over window.penDesktop.browser)
     // or, for the web build, the backend's Steel cloud browser
@@ -1246,14 +1259,9 @@ export async function prepareChatTurn(
     // combination can't carry the image) — the two gates are independent
     // and either one deleting it is sufficient.
     if (!hasBrowser) {
-      delete tools.browse_open;
-      delete tools.browse_snapshot;
-      delete tools.browse_screenshot;
-      delete tools.browse_act;
-      delete tools.browse_tabs;
-      delete tools.browse_find_images;
-      delete tools.browse_task;
-      delete tools.browse_read;
+      for (const name of Object.keys(tools)) {
+        if (name.startsWith("browse_") && name !== "browse_agent") delete tools[name];
+      }
     }
 
     // browse_agent exists only in BROWSE_MODE=agent main turns; there the other
@@ -1291,6 +1299,7 @@ export async function prepareChatTurn(
     // batch_design on a non-native policy); the allowlist wins.
     if (browseSub) {
       const allowed = new Set<string>(BROWSE_SUBAGENT_TOOL_NAMES);
+      if (input.browseCapture === true) allowed.add(BROWSE_CAPTURE_TOOL);
       for (const name of Object.keys(tools)) {
         if (!allowed.has(name)) delete tools[name];
       }

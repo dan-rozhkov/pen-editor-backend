@@ -152,6 +152,10 @@ const chatBodySchema = z.object({
   // model costs that turn nothing. Absent = config.CHAT_MODEL.
   model: z.string().optional(),
   agentMode: z.enum(AGENT_MODES).optional(),
+  // agentMode "browse" only: the user directly asked to copy the page onto the
+  // canvas (browse_agent's `capture: true`); adds browse_capture to the
+  // subagent's tools. Ignored in every other mode.
+  browseCapture: z.boolean().optional(),
   // Client-generated stable anonymous id (localStorage `pen.userId`). Absent
   // → every memory feature is silently off for this request, which is what
   // keeps the showcase runner and any older client working untouched. The
@@ -260,6 +264,7 @@ export async function chatRoutes(
       model: requestedModel,
       agentMode = "edits",
       clientCapabilities,
+      browseCapture,
     } = parsed.data;
 
     // The browse subagent turn exists only in BROWSE_MODE=agent; elsewhere a
@@ -381,6 +386,7 @@ export async function chatRoutes(
         userId,
         mobbinAccessToken,
         clientCapabilities,
+        browseCapture,
         memoryStore,
         learnedSkillStore,
         auditDb,

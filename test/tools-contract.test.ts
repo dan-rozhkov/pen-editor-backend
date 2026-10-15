@@ -76,6 +76,7 @@ describe("penTools registry", () => {
         "browse_task",
         "browse_agent",
         "browse_read",
+        "browse_capture",
       ].sort(),
     );
   });
@@ -142,6 +143,7 @@ describe("penTools registry", () => {
       "browse_task",
       "browse_agent",
       "browse_read",
+      "browse_capture",
     ] as const) {
       expect(hasExecute(name), `${name} must be client-executed`).toBe(false);
     }
@@ -1508,6 +1510,36 @@ describe("browse_agent schema", () => {
     expect(schema.safeParse({ goal: "x".repeat(4001) }).success).toBe(false);
     expect(schema.safeParse({ goal: "x".repeat(4000) }).success).toBe(true);
     expect(schema.safeParse({ goal: "x", url: "u".repeat(2001) }).success).toBe(false);
+  });
+});
+
+describe("browse_capture schema", () => {
+  const schema = schemaOf("browse_capture");
+
+  it("accepts no arguments, an element, and a position", () => {
+    expect(schema.safeParse({}).success).toBe(true);
+    expect(schema.safeParse({ index: 3, snapshotId: "s1" }).success).toBe(true);
+    expect(schema.safeParse({ x: 10, y: -20 }).success).toBe(true);
+  });
+
+  it("requires index+snapshotId together and x+y together", () => {
+    expect(schema.safeParse({ index: 3 }).success).toBe(false);
+    expect(schema.safeParse({ snapshotId: "s1" }).success).toBe(false);
+    expect(schema.safeParse({ x: 10 }).success).toBe(false);
+    expect(schema.safeParse({ y: 10 }).success).toBe(false);
+    expect(schema.safeParse({ index: 3, snapshotId: "s1", x: 1, y: 2 }).success).toBe(true);
+  });
+
+  it("rejects a negative or fractional index and an oversized snapshotId", () => {
+    expect(schema.safeParse({ index: -1, snapshotId: "s" }).success).toBe(false);
+    expect(schema.safeParse({ index: 1.5, snapshotId: "s" }).success).toBe(false);
+    expect(schema.safeParse({ index: 1, snapshotId: "s".repeat(201) }).success).toBe(false);
+  });
+
+  it("browse_agent accepts the capture flag", () => {
+    const agent = schemaOf("browse_agent");
+    expect(agent.safeParse({ goal: "copy it", capture: true }).success).toBe(true);
+    expect(agent.safeParse({ goal: "copy it", capture: "yes" }).success).toBe(false);
   });
 });
 

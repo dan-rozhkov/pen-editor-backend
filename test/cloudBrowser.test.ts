@@ -29,6 +29,7 @@ function fakes() {
     read: vi.fn(async () => ({})),
     snapshot: vi.fn(async () => ({ elements: [] })),
     screenshot: vi.fn(async () => ({})),
+    capture: vi.fn(async () => ({ html: "<p>x</p>" })),
     tabs: vi.fn(async () => ({ tabs: [] })),
     perform: vi.fn(async () => ({ error: "stale snapshotId" })),
   };
@@ -105,6 +106,15 @@ describe("cloud browser routes", () => {
     const res = (await cmd("snapshot", { userId: USER, chatId: "c" })).json();
     expect(res.result).toEqual({ error: "No cloud browser session — call browse_open first." });
     expect(res.handle).toBeNull();
+  });
+
+  it("routes capture to the controller's capture", async () => {
+    const f = fakes();
+    const { cmd } = await start({}, f);
+    const { handle } = (await cmd("open", { userId: USER, chatId: "c" })).json();
+    const res = (await cmd("capture", { userId: USER, chatId: "c", handle, args: { index: 2 } })).json();
+    expect(f.controller.capture).toHaveBeenCalledTimes(1);
+    expect(res.result).toEqual({ html: "<p>x</p>" });
   });
 
   it("403s a handle presented by another user or chat", async () => {
