@@ -97,3 +97,54 @@ prompts separate the two: "screenshot / image of the page" → screenshot;
 
 Asset upload to R2, cookie-banner removal, scroll pass for lazy content that
 is not in the DOM yet, cross-origin iframe contents, a user-facing button.
+
+## v2, steps 1–2 (2026-10-15): the controller inlines and rewrites the CSS
+
+Live check of v1 showed two losses, both because the copy only carries
+`@import url(...)` links and the editor mounts embeds in a shadow root:
+rules keyed on `<html>`/`:root` never match (Wikipedia lost its sidebar),
+and the copy pulls every sheet of the site (Linear: 65). Step 3 (fonts) is
+out of scope here.
+
+Pipeline (all in `@sideform/browser-agent`):
+
+1. CAPTURE_JS returns the body HTML plus an ordered list of style sources
+   instead of finished `<style>` strings: `{ kind: "link", href, media }`,
+   `{ kind: "inline", text, baseUrl, media }`, `{ kind: "adopted", text, baseUrl }`.
+   Shadow-root styles stay as in v1 (scoped by nesting, inline in the body).
+2. The controller fetches every `link` (and every `@import` inside any
+   source, recursively) through a new optional page-handle method
+   `fetchText(url, { timeoutMs, maxBytes })`. The page's CORS does not apply
+   there: desktop implements it with the browser partition's
+   `session.fetch`, the Playwright adapter with `context.request`. Limits:
+   8 s per file, 3 MB per file, 100 files, depth 4, 8 MB total, 6 in
+   parallel, cycle guard. A sheet that fails to fetch (or a handle without
+   `fetchText`) falls back to the v1 `@import url(...)`.
+3. Every `url(...)` and `@import` string becomes absolute against the URL
+   of the file it is written in (not the page URL). `@import` with media or
+   `layer(...)` / `supports(...)` is inlined inside the matching
+   `@media` / `@layer` / `@supports` block. A `<link media>` wraps its text
+   in `@media`.
+4. Root selectors. For every complex selector whose first compound names
+   `html` or `:root`, the page reports whether `document.documentElement`
+   matches that compound (pseudo-classes like `:hover` stripped first).
+   Matches → the compound becomes `:is(:root,:host)` (`:root` matches in an
+   iframe, `:host` in the editor's shadow mount). No match → that selector
+   is dropped, and a rule left with no selectors is dropped.
+5. Pruning. A style rule stays only if at least one of its selectors (with
+   user-action and element pseudo-classes/elements stripped for the test)
+   matches an element in the captured scope: the document, or in element
+   mode `target.matches(s) || target.querySelector(s)`. A selector the page
+   cannot parse is kept (conservative). `@media`, `@supports`, `@layer`,
+   `@container` blocks are pruned recursively and dropped when empty.
+   `@font-face`, `@keyframes`, `@property`, `@counter-style`, `@page` stay.
+6. Each source becomes one `<style>` in the original order. The 3M-char
+   cap on the whole document stays.
+
+The capture command gets its own time budget (45 s) because it now does
+network work; the editor's tool timeout (60 s desktop, 120 s cloud) is
+above it.
+
+Check: the live harness (`capture-live`, shadow mount) on Wikipedia,
+Stripe, Linear, Vercel, GitHub, Airbnb, plus a pixel diff of copy vs
+original screenshot and the copy size before/after.
