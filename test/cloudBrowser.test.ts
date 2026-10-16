@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildApp } from "../src/app.js";
 import { makeConfig } from "./helpers.js";
-import { signHandle, verifyHandle, createCloudSessions, type CommandRunner, type ConnectedBrowser } from "../src/browser/cloudSessions.js";
+import { signHandle, verifyHandle, createCloudSessions, type CommandRunner, type ConnectedBrowser, type ResolveOutcome } from "../src/browser/cloudSessions.js";
 import type { SteelClient } from "../src/services/steel.js";
+import { toCommandRunner } from "../src/browser/connect.js";
+import type { BrowserController } from "@sideform/browser-agent/controller";
 
 const USER = "11111111-1111-4111-8111-111111111111";
 const USER2 = "22222222-2222-4222-8222-222222222222";
@@ -34,6 +36,9 @@ function fakes() {
     perform: vi.fn(async () => ({ error: "stale snapshotId" })),
     applyFixture: vi.fn(async () => ({ ok: true, summary: "applied", fixtureToken: "tok" })),
     releaseFixture: vi.fn(async () => ({ ok: true })),
+    startJournal: vi.fn(async () => ({ ok: true, token: "jt" })),
+    stopJournal: vi.fn(async () => ({ ok: true })),
+    captureCheckpoint: vi.fn(async () => ({ ok: true, complete: true, summary: "s", fixture: {} })),
   };
   const connect = vi.fn(async (url: string): Promise<ConnectedBrowser> => ({
     controller,
@@ -139,6 +144,285 @@ describe("cloud browser routes", () => {
     expect(res.result).toEqual({ ok: true });
     const noSession = (await cmd("releaseFixture", { userId: USER, chatId: "other", args: { token: "tok" } })).json();
     expect(noSession.handle).toBeNull();
+  });
+
+  describe("checkpoint journal (through the real toCommandRunner)", () => {
+    function journalFakes() {
+      const f = fakes();
+      const order: string[] = [];
+      const bc = {
+        open: vi.fn(async () => { order.push("open"); return { url: "https://x" }; }),
+        startJournal: vi.fn(() => { order.push("startJournal"); return "ctl-1"; }),
+        stopJournal: vi.fn((t?: string) => t === "ctl-1"),
+        captureCheckpoint: vi.fn(async (t?: string) =>
+          t === "ctl-1" ? { ok: true, complete: true, summary: "s", fixture: {} } : { ok: false, error: "unknown checkpoint token" }),
+      };
+      const runner = toCommandRunner(bc as unknown as BrowserController);
+      f.connect.mockImplementation(async (url: string): Promise<ConnectedBrowser> => ({
+        controller: runner, close: async () => { f.closed.push(url); }, onDisconnected: (cb) => { f.disconnects.push(cb); },
+      }));
+      return { f, bc, order };
+    }
+
+    type CmdResponse = { result: { ok?: boolean; token?: string; error?: string; [k: string]: unknown }; handle: string | null; [k: string]: unknown };
+    type Cmd = (name: string, body: unknown) => Promise<{ json(): CmdResponse }>;
+    const call = (cmd: Cmd, name: string, args?: unknown, handle?: string, chatId = "c") =>
+      cmd(name, { userId: USER, chatId, handle, args }).then((r) => r.json());
+
+    it("a live session: startJournal maps a backend token to the controller token", async () => {
+      const { f, bc } = journalFakes();
+      const { cmd } = await start({}, f);
+      const { handle } = (await cmd("open", { userId: USER, chatId: "c" })).json();
+      const res = (await call(cmd, "startJournal", { origins: ["https://a.com"] }, handle, "c"));
+      expect(res.result.ok).toBe(true);
+      expect(res.result.token).toMatch(/^cj_/);
+      expect(res.handle).toBe(handle);
+      expect(bc.startJournal).toHaveBeenCalledWith({ origins: ["https://a.com"] });
+      const token = res.result.token;
+      const cp = (await call(cmd, "captureCheckpoint", { token }, handle, "c"));
+      expect(cp.result).toMatchObject({ ok: true, complete: true });
+      expect(bc.captureCheckpoint).toHaveBeenCalledWith("ctl-1");
+      expect((await call(cmd, "stopJournal", { token }, handle, "c")).result).toEqual({ ok: true });
+      expect(bc.stopJournal).toHaveBeenCalledWith("ctl-1");
+      // after stop the mapping is gone: the raw token reaches the controller and its stale shape passes through
+      expect((await call(cmd, "stopJournal", { token }, handle, "c")).result).toEqual({ ok: false });
+      expect((await call(cmd, "captureCheckpoint", { token }, handle, "c")).result).toEqual({ ok: false, error: "unknown checkpoint token" });
+    });
+
+    it("no session: startJournal creates nothing and stays pending until open", async () => {
+      const { f, bc, order } = journalFakes();
+      const { cmd } = await start({}, f);
+      const res = (await cmd("startJournal", { userId: USER, chatId: "c", args: { origins: ["https://a.com"] } })).json();
+      expect(res).toMatchObject({ handle: null, liveViewUrl: null, expiresAt: null });
+      expect(res.result.token).toMatch(/^cj_/);
+      expect(f.steel.createSession).not.toHaveBeenCalled();
+      expect(bc.startJournal).not.toHaveBeenCalled();
+      const token = res.result.token;
+
+      const opened = (await cmd("open", { userId: USER, chatId: "c" })).json();
+      expect(f.steel.createSession).toHaveBeenCalledTimes(1);
+      expect(order).toEqual(["startJournal", "open"]);
+      expect(bc.startJournal).toHaveBeenCalledWith({ origins: ["https://a.com"] });
+      const cp = (await call(cmd, "captureCheckpoint", { token }, opened.handle, "c"));
+      expect(cp.result).toMatchObject({ ok: true, complete: true });
+      expect(bc.captureCheckpoint).toHaveBeenCalledWith("ctl-1");
+    });
+
+    it("pending journal: stop drops it, capture says no page was opened, neither creates a session", async () => {
+      const { f, bc } = journalFakes();
+      const { cmd } = await start({}, f);
+      const t1 = (await cmd("startJournal", { userId: USER, chatId: "c" })).json().result.token;
+      const cap = (await cmd("captureCheckpoint", { userId: USER, chatId: "c", args: { token: t1 } })).json();
+      expect(cap).toMatchObject({ result: { ok: false, error: "no page was opened" }, handle: null });
+      const stop = (await cmd("stopJournal", { userId: USER, chatId: "c", args: { token: t1 } })).json();
+      expect(stop.result).toEqual({ ok: true });
+      // dropped: a later open starts no journal
+      await cmd("open", { userId: USER, chatId: "c" });
+      expect(bc.startJournal).not.toHaveBeenCalled();
+      expect(f.steel.createSession).toHaveBeenCalledTimes(1);
+    });
+
+    it("a new startJournal replaces the pending one; another chat cannot use the token", async () => {
+      const { f, bc } = journalFakes();
+      const { cmd } = await start({}, f);
+      const t1 = (await cmd("startJournal", { userId: USER, chatId: "c" })).json().result.token;
+      const t2 = (await cmd("startJournal", { userId: USER, chatId: "c" })).json().result.token;
+      expect(t2).not.toBe(t1);
+      const other = (await cmd("captureCheckpoint", { userId: USER, chatId: "other", args: { token: t2 } })).json();
+      expect(other.result).toHaveProperty("error");
+      expect(other.result.error).not.toBe("no page was opened");
+      // t1 is gone: not pending any more
+      expect((await cmd("captureCheckpoint", { userId: USER, chatId: "c", args: { token: t1 } })).json().result.error).not.toBe("no page was opened");
+      await cmd("open", { userId: USER, chatId: "c" });
+      expect(bc.startJournal).toHaveBeenCalledTimes(1);
+    });
+
+    it("pending journals expire after the idle time", async () => {
+      const f = fakes();
+      let t = 1_000_000;
+      const sessions = createCloudSessions({
+        steel: f.steel, connect: f.connect, secret: "k", maxSessions: 5, sessionTimeoutMs: 600_000, idleMs: 60_000, dailySessions: 10, now: () => t,
+      });
+      const base = { userId: USER, chatId: "c", ip: "1.1.1.1" };
+      const out = await sessions.resolve({ ...base, command: "startJournal", args: {} });
+      const token = (out as { result: { token: string } }).result.token;
+      t += 61_000;
+      const cap = await sessions.resolve({ ...base, command: "captureCheckpoint", args: { token } });
+      expect(cap.kind).toBe("no-session");
+      expect(f.steel.createSession).not.toHaveBeenCalled();
+    });
+
+    it("an expired handle makes startJournal pending without a session; open reports the expiry", async () => {
+      const { f, bc } = journalFakes();
+      const { cmd } = await start({}, f);
+      const { handle } = (await cmd("open", { userId: USER, chatId: "c" })).json();
+      f.live.clear(); // Steel forgot the session
+      f.disconnects.forEach((cb) => cb()); // and the registry lost it
+      const res = (await cmd("startJournal", { userId: USER, chatId: "c", handle })).json();
+      expect(res.result.ok).toBe(true);
+      expect(res.result).not.toHaveProperty("sessionExpired");
+      expect(f.steel.createSession).toHaveBeenCalledTimes(1); // only the first open
+      expect(bc.startJournal).not.toHaveBeenCalled();
+      await cmd("open", { userId: USER, chatId: "c", handle });
+      expect(f.steel.createSession).toHaveBeenCalledTimes(2);
+      expect(bc.startJournal).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(["stopJournal", "captureCheckpoint"])("%s requires a token and never reaches the controller", async (name) => {
+      const { f, bc } = journalFakes();
+      const { cmd } = await start({}, f);
+      const { handle } = (await cmd("open", { userId: USER, chatId: "c" })).json();
+      for (const args of [undefined, {}, { token: "" }]) {
+        const r = (await cmd(name, { userId: USER, chatId: "c", handle, args })).json();
+        expect(r.result).toEqual({ ok: false, error: "token is required" });
+      }
+      expect(bc.stopJournal).not.toHaveBeenCalled();
+      expect(bc.captureCheckpoint).not.toHaveBeenCalled();
+    });
+
+    it("rejects bad origins before any session or pending journal", async () => {
+      const { f } = journalFakes();
+      const { cmd } = await start({}, f);
+      for (const origins of [["ftp://a.com"], ["https://a.com/path"], ["nope"], "https://a.com"]) {
+        const r = (await cmd("startJournal", { userId: USER, chatId: "c", args: { origins } })).json();
+        expect(r.result).toMatchObject({ ok: false });
+        expect(r.result.error).toBeTruthy();
+      }
+      expect((await cmd("startJournal", { userId: USER, chatId: "c", args: { origins: [] } })).json().result.ok).toBe(true);
+      expect(f.steel.createSession).not.toHaveBeenCalled();
+    });
+
+    it("passes the controller's stale-token shape through for an unknown token", async () => {
+      const { f } = journalFakes();
+      const { cmd } = await start({}, f);
+      const { handle } = (await cmd("open", { userId: USER, chatId: "c" })).json();
+      expect((await call(cmd, "stopJournal", { token: "zzz" }, handle, "c")).result).toEqual({ ok: false });
+      expect((await call(cmd, "captureCheckpoint", { token: "zzz" }, handle, "c")).result).toEqual({ ok: false, error: "unknown checkpoint token" });
+    });
+
+    it("stopJournal and captureCheckpoint with an unknown token and no session never create one", async () => {
+      const { f } = journalFakes();
+      const { cmd } = await start({}, f);
+      for (const name of ["stopJournal", "captureCheckpoint"]) {
+        const none = (await cmd(name, { userId: USER, chatId: "c", args: { token: "jt" } })).json();
+        expect(none.handle).toBeNull();
+        expect(none.result).toHaveProperty("error");
+      }
+      expect(f.steel.createSession).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("journal registry bookkeeping", () => {
+    const base = { userId: USER, chatId: "c", ip: "1.1.1.1" };
+    const tokenOf = (o: unknown) => (o as { result: { token: string } }).result.token;
+    function okOutcome(o: ResolveOutcome): asserts o is Extract<ResolveOutcome, { kind: "ok" }> {
+      expect(o.kind).toBe("ok");
+    }
+    function setup(over: Partial<Parameters<typeof createCloudSessions>[0]> = {}) {
+      const f = fakes();
+      let n = 0;
+      (f.controller.startJournal as ReturnType<typeof vi.fn>).mockImplementation(async () => ({ ok: true, token: `ctl-${++n}` }));
+      let t = 1_000_000;
+      const clock = { advance: (ms: number) => { t += ms; } };
+      const sessions = sessionsWith(f, { idleMs: 60_000, now: () => t, ...over });
+      return { f, sessions, clock };
+    }
+
+    it("starting a live journal drops the chat's pending one, so a later open does not replace it", async () => {
+      const { f, sessions } = setup();
+      const other = sessionsWith(f, { idleMs: 60_000 }); // same Steel + secret: models a registry that lost the entry
+      const o = await open(other);
+      okOutcome(o);
+      await sessions.resolve({ ...base, command: "startJournal", args: {} }); // no byChat here -> pending
+      const live = await sessions.resolve({ ...base, handle: o.handle, command: "startJournal", args: {} }); // reconnects
+      okOutcome(live);
+      const liveToken = (await sessions.run(live.entry, "startJournal", {})).token as string;
+      await sessions.resolve({ ...base, command: "tabs", handle: o.handle, args: { action: "new" } });
+      expect(f.controller.startJournal).toHaveBeenCalledTimes(1); // the pending one never started
+      await sessions.run(live.entry, "captureCheckpoint", { token: liveToken });
+      expect(f.controller.captureCheckpoint).toHaveBeenLastCalledWith({ token: "ctl-1" });
+    });
+
+    it("an expired pending journal is not started", async () => {
+      const { f, sessions, clock } = setup();
+      await sessions.resolve({ ...base, command: "startJournal", args: {} });
+      clock.advance(61_000);
+      const o = await open(sessions);
+      expect(o.kind).toBe("ok");
+      expect(f.controller.startJournal).not.toHaveBeenCalled();
+    });
+
+    it("a stop that lands while the controller journal starts undoes it", async () => {
+      const { f, sessions } = setup();
+      let release!: () => void;
+      (f.controller.startJournal as ReturnType<typeof vi.fn>).mockImplementationOnce(
+        () => new Promise((res) => { release = () => res({ ok: true, token: "ctl-x" }); }),
+      );
+      const token = tokenOf(await sessions.resolve({ ...base, command: "startJournal", args: {} }));
+      const opening = open(sessions);
+      await vi.waitFor(() => expect(f.controller.startJournal).toHaveBeenCalled());
+      const stop = await sessions.resolve({ ...base, command: "stopJournal", args: { token } });
+      expect(stop).toEqual({ kind: "local", result: { ok: true } });
+      release();
+      const o = await opening;
+      expect(o.kind).toBe("ok");
+      expect(f.controller.stopJournal).toHaveBeenCalledWith({ token: "ctl-x" });
+      // nothing registered: capture does not map to the controller journal
+      okOutcome(o);
+      await sessions.run(o.entry, "captureCheckpoint", { token });
+      expect(f.controller.captureCheckpoint).toHaveBeenCalledWith({ token });
+    });
+
+    it("replaced live journals leave one record; a stale stop deletes its record", async () => {
+      const { f, sessions } = setup();
+      const o = await open(sessions);
+      okOutcome(o);
+      const t1 = (await sessions.run(o.entry, "startJournal", {})).token as string;
+      const t2 = (await sessions.run(o.entry, "startJournal", {})).token as string;
+      // t1 was retired when t2 started: it reaches the controller as is
+      await sessions.run(o.entry, "captureCheckpoint", { token: t1 });
+      expect(f.controller.captureCheckpoint).toHaveBeenLastCalledWith({ token: t1 });
+      await sessions.run(o.entry, "captureCheckpoint", { token: t2 });
+      expect(f.controller.captureCheckpoint).toHaveBeenLastCalledWith({ token: "ctl-2" });
+      (f.controller.stopJournal as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ ok: false });
+      await sessions.run(o.entry, "stopJournal", { token: t2 });
+      await sessions.run(o.entry, "captureCheckpoint", { token: t2 });
+      expect(f.controller.captureCheckpoint).toHaveBeenLastCalledWith({ token: t2 }); // record gone
+    });
+
+    it("caps pending journals globally, evicting the oldest, one per chat", async () => {
+      const { f, sessions } = setup();
+      const first = tokenOf(await sessions.resolve({ ...base, chatId: "c0", command: "startJournal", args: {} }));
+      for (let i = 1; i <= 1000; i++) await sessions.resolve({ ...base, chatId: `c${i}`, command: "startJournal", args: {} });
+      const evicted = await sessions.resolve({ ...base, chatId: "c0", command: "captureCheckpoint", args: { token: first } });
+      expect(evicted.kind).toBe("no-session");
+      const kept = await sessions.resolve({ ...base, chatId: "c1000", command: "captureCheckpoint", args: { token: "x" } });
+      expect(kept.kind).toBe("no-session");
+      // c1 is the oldest survivor
+      await sessions.resolve({ ...base, chatId: "c1", command: "open" });
+      expect(f.controller.startJournal).toHaveBeenCalledTimes(1);
+    });
+
+    it("startJournal without a handle uses the chat's live session and returns its handle", async () => {
+      const { f, sessions } = setup();
+      const o = await open(sessions);
+      okOutcome(o);
+      const r = await sessions.resolve({ ...base, command: "startJournal", args: {} });
+      expect(r).toMatchObject({ kind: "ok", handle: o.handle });
+      expect(f.steel.createSession).toHaveBeenCalledTimes(1);
+      // another chat has no live session: stays pending
+      const other = await sessions.resolve({ ...base, chatId: "d", command: "startJournal", args: {} });
+      expect(other.kind).toBe("local");
+    });
+
+    it("the route returns the handle for a handle-less startJournal on a live chat", async () => {
+      const f = fakes();
+      const { cmd } = await start({}, f);
+      const { handle } = (await cmd("open", { userId: USER, chatId: "c" })).json();
+      const res = (await cmd("startJournal", { userId: USER, chatId: "c" })).json();
+      expect(res.handle).toBe(handle);
+      expect(res.result.token).toMatch(/^cj_/);
+    });
   });
 
   it("403s a handle presented by another user or chat", async () => {

@@ -6,8 +6,7 @@ import { connectOverCdp as connectPackageOverCdp } from "@sideform/browser-agent
 import type { BrowserController } from "@sideform/browser-agent/controller";
 import type { PageFixture } from "@sideform/browser-agent/fixture";
 import type { BrowserConnector, CommandRunner } from "./cloudSessions.js";
-
-const MAX_TOKEN_LENGTH = 512;
+import { originsArg, requiredTokenArg, tokenArg } from "./journalArgs.js";
 
 /**
  * The page-fixture commands take the controller's `(fixture, opts)` shape, so the
@@ -34,12 +33,29 @@ export function toCommandRunner(controller: BrowserController): CommandRunner {
       return (await controller.applyFixture(fixture as PageFixture, { allowNetworkMocks: true })) as Record<string, unknown>;
     },
     releaseFixture: async (args) => {
-      const token = (args as { token?: unknown } | undefined)?.token;
-      if (token !== undefined && (typeof token !== "string" || token.length > MAX_TOKEN_LENGTH)) {
-        return { ok: false, error: "token must be a string of at most 512 characters" };
-      }
-      await controller.releaseFixture(token);
+      const t = tokenArg(args);
+      if ("error" in t) return { ok: false, error: t.error };
+      await controller.releaseFixture(t.token);
       return { ok: true };
+    },
+    // The checkpoint journal. Over HTTP the registry (cloudSessions) maps its own
+    // backend token to the controller's owner token and only calls these once a
+    // session exists; stop/capture here require the token it passes.
+    startJournal: async (args) => {
+      const o = originsArg(args);
+      if ("error" in o) return { ok: false, error: o.error };
+      const token = controller.startJournal(o.origins === undefined ? undefined : { origins: o.origins });
+      return { ok: true, token };
+    },
+    stopJournal: async (args) => {
+      const t = requiredTokenArg(args);
+      if ("error" in t) return { ok: false, error: t.error };
+      return { ok: controller.stopJournal(t.token) };
+    },
+    captureCheckpoint: async (args) => {
+      const t = requiredTokenArg(args);
+      if ("error" in t) return { ok: false, error: t.error };
+      return (await controller.captureCheckpoint(t.token)) as unknown as Record<string, unknown>;
     },
   };
 }

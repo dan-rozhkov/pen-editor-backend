@@ -2,11 +2,12 @@
 // in-memory map of live Steel sessions with a BrowserController each,
 // reconnect-after-restart, quotas and an idle sweeper. Nothing here touches the
 // network directly — Steel and the CDP connector are injected.
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { SteelClient } from "../services/steel.js";
 import { redactedError } from "@sideform/browser-agent/adapters/playwright";
+import { originsArg, requiredTokenArg } from "./journalArgs.js";
 
-export const COMMAND_NAMES = ["open", "act", "findImages", "read", "snapshot", "screenshot", "capture", "tabs", "perform", "applyFixture", "releaseFixture"] as const;
+export const COMMAND_NAMES = ["open", "act", "findImages", "read", "snapshot", "screenshot", "capture", "tabs", "perform", "applyFixture", "releaseFixture", "startJournal", "stopJournal", "captureCheckpoint"] as const;
 export type CommandName = (typeof COMMAND_NAMES)[number];
 export type CommandResult = Record<string, unknown>;
 export type CommandRunner = Record<CommandName, (args?: unknown) => Promise<CommandResult>>;
@@ -46,6 +47,8 @@ export interface SessionEntry {
 
 export type ResolveOutcome =
   | { kind: "ok"; entry: SessionEntry; handle: string }
+  /** Answered by the registry itself, no session involved (pending checkpoint journals, argument errors). */
+  | { kind: "local"; result: CommandResult }
   | { kind: "no-session"; error: string; sessionExpired?: true }
   | { kind: "forbidden" }
   | { kind: "quota"; status: 429 | 503; error: string };
@@ -89,6 +92,54 @@ export function createCloudSessions(opts: CloudSessionsOptions) {
   const creating = new Map<string, Promise<ResolveOutcome>>();
   const chatKey = (userId: string, chatId: string) => `${userId}:${chatId}`;
   const daily = new Map<string, number>();
+  // Checkpoint journals, keyed by an opaque backend token. A journal is PENDING
+  // (sessionId null) until a session-creating command opens the browser: startJournal
+  // must not bill a Steel session for a run that may never open a page. At most one
+  // pending journal per user+chat (and at most MAX_PENDING_JOURNALS overall, oldest
+  // evicted: the route is unauthenticated); pending ones expire after idleMs. Single-instance
+  // memory like the registry itself: a restart forgets every journal (the controller's
+  // own journal dies with the process too, so capture then returns its stale-token error).
+  interface JournalRecord {
+    key: string;
+    sessionId: string | null;
+    controllerToken: string | null;
+    /** Pending records only: the validated origins to start the journal with. */
+    origins?: string[];
+    at: number;
+  }
+  const journals = new Map<string, JournalRecord>();
+  const pendingByChat = new Map<string, string>();
+  const newJournalToken = () => `cj_${randomBytes(16).toString("base64url")}`;
+
+  const MAX_PENDING_JOURNALS = 1000;
+
+  /** Removes a record by token; its pendingByChat entry goes only if it still points at that token. */
+  function removeRecord(token: string) {
+    const j = journals.get(token);
+    if (!j) return;
+    journals.delete(token);
+    if (pendingByChat.get(j.key) === token) pendingByChat.delete(j.key);
+  }
+  function dropPending(key: string) {
+    const t = pendingByChat.get(key);
+    if (t) removeRecord(t);
+  }
+  /** The controller keeps one journal per session: a new one retires that session's earlier records. */
+  function addLiveRecord(entry: SessionEntry, controllerToken: string, token: string) {
+    for (const [t, j] of journals) if (j.sessionId === entry.id && t !== token) journals.delete(t);
+    journals.set(token, { key: chatKey(entry.userId, entry.chatId), sessionId: entry.id, controllerToken, at: now() });
+  }
+  const isExpiredPending = (j: JournalRecord) => j.sessionId === null && now() - j.at > opts.idleMs;
+  /** Looks a token up for this user+chat; expired pending journals are dropped on the way. */
+  function findJournal(key: string, token: string): JournalRecord | null {
+    const j = journals.get(token);
+    if (!j || j.key !== key) return null;
+    if (isExpiredPending(j)) {
+      removeRecord(token);
+      return null;
+    }
+    return j;
+  }
   let pendingCreates = 0;
   let timer: ReturnType<typeof setInterval> | null = null;
 
@@ -113,6 +164,7 @@ export function createCloudSessions(opts: CloudSessionsOptions) {
     if (registry.get(entry.id) === entry) registry.delete(entry.id);
     const k = chatKey(entry.userId, entry.chatId);
     if (byChat.get(k) === entry.id) byChat.delete(k);
+    for (const [t, j] of journals) if (j.sessionId === entry.id) journals.delete(t);
   }
 
   function register(entry: SessionEntry) {
@@ -222,8 +274,9 @@ export function createCloudSessions(opts: CloudSessionsOptions) {
     return p;
   }
 
-  return {
-    async resolve(p: { userId: string; chatId: string; ip: string; handle?: string; command: CommandName; args?: unknown }): Promise<ResolveOutcome> {
+  type ResolveParams = { userId: string; chatId: string; ip: string; handle?: string; command: CommandName; args?: unknown };
+
+  async function resolveBase(p: ResolveParams): Promise<ResolveOutcome> {
       const { userId, chatId, handle, command } = p;
       let expired = false;
       if (handle) {
@@ -253,12 +306,114 @@ export function createCloudSessions(opts: CloudSessionsOptions) {
       return expired
         ? { kind: "no-session", error: MSG_EXPIRED, sessionExpired: true }
         : { kind: "no-session", error: MSG_NO_SESSION };
+  }
+
+  /** Starts the journal that was waiting for this chat's first session, before the creating command runs. */
+  async function startPendingJournal(entry: SessionEntry) {
+    const key = chatKey(entry.userId, entry.chatId);
+    const token = pendingByChat.get(key);
+    const j = token ? journals.get(token) : undefined;
+    if (!token || !j) return;
+    pendingByChat.delete(key);
+    if (isExpiredPending(j)) {
+      removeRecord(token);
+      return;
+    }
+    try {
+      const r = await entry.controller.startJournal(j.origins === undefined ? undefined : { origins: j.origins });
+      if (r.ok === true && typeof r.token === "string") {
+        if (journals.get(token) !== j) {
+          // stopped (or swept) while the controller was starting it: undo, register nothing
+          await entry.controller.stopJournal({ token: r.token }).catch(() => {});
+          return;
+        }
+        j.sessionId = entry.id;
+        j.controllerToken = r.token;
+        for (const [t, o] of journals) if (o.sessionId === entry.id && t !== token) journals.delete(t);
+        return;
+      }
+    } catch {
+      // fall through: the journal is lost, capture reports the stale token
+    }
+    if (journals.get(token) === j) removeRecord(token);
+  }
+
+  async function runStartJournal(entry: SessionEntry, args: unknown): Promise<CommandResult> {
+    const result = await entry.controller.startJournal(args);
+    if (result.ok !== true || typeof result.token !== "string") return result;
+    const token = newJournalToken();
+    addLiveRecord(entry, result.token, token);
+    // a chat has at most one journal record that can still start
+    dropPending(chatKey(entry.userId, entry.chatId));
+    return { ...result, token };
+  }
+
+  /** Translates the backend token to the controller's. An unknown one goes through as is, so the controller answers its own stale-token shape. */
+  async function runJournalCommand(entry: SessionEntry, command: "stopJournal" | "captureCheckpoint", args: unknown): Promise<CommandResult> {
+    const given = (args as { token?: unknown } | undefined)?.token;
+    const j = typeof given === "string" ? findJournal(chatKey(entry.userId, entry.chatId), given) : null;
+    const mine = j && j.sessionId === entry.id && j.controllerToken !== null ? j : null;
+    const result = await entry.controller[command]({ ...(args as object), token: mine ? mine.controllerToken : given });
+    // ok:false for a mapped token means the controller no longer has it: the record is stale too
+    if (command === "stopJournal" && mine && typeof given === "string" && typeof result.ok === "boolean") journals.delete(given);
+    return result;
+  }
+
+  return {
+    async resolve(p: ResolveParams): Promise<ResolveOutcome> {
+      const { userId, chatId, command } = p;
+      const key = chatKey(userId, chatId);
+      if (command === "startJournal") {
+        const o = originsArg(p.args);
+        if ("error" in o) return { kind: "local", result: { ok: false, error: o.error } };
+        if (!p.handle) {
+          // A live session of this chat is used as is; startJournal never creates one.
+          const liveId = byChat.get(key);
+          const live = liveId ? registry.get(liveId) : undefined;
+          if (live && live.expiresAt > now()) {
+            live.lastUsedAt = now();
+            return { kind: "ok", entry: live, handle: signHandle(opts.secret, userId, chatId, live.id) };
+          }
+        }
+        const out = await resolveBase(p);
+        if (out.kind !== "no-session") return out;
+        // No live session (none yet, or an expired handle): wait for the command that opens one.
+        // The expired-handle signal is that command's to report, not ours.
+        dropPending(key);
+        const token = newJournalToken();
+        while (pendingByChat.size >= MAX_PENDING_JOURNALS) {
+          const oldest = pendingByChat.values().next().value;
+          if (oldest === undefined) break;
+          removeRecord(oldest);
+        }
+        journals.set(token, { key, sessionId: null, controllerToken: null, origins: o.origins, at: now() });
+        pendingByChat.set(key, token);
+        return { kind: "local", result: { ok: true, token } };
+      }
+      if (command === "stopJournal" || command === "captureCheckpoint") {
+        const t = requiredTokenArg(p.args);
+        if ("error" in t) return { kind: "local", result: { ok: false, error: t.error } };
+        const j = findJournal(key, t.token);
+        if (j && j.sessionId === null) {
+          if (command === "stopJournal") {
+            removeRecord(t.token);
+            return { kind: "local", result: { ok: true } };
+          }
+          return { kind: "local", result: { ok: false, error: "no page was opened" } };
+        }
+        return resolveBase(p);
+      }
+      const out = await resolveBase(p);
+      if (out.kind === "ok" && createsSession(command, p.args)) await startPendingJournal(out.entry);
+      return out;
     },
 
     /** Runs a command; `inFlight` keeps the idle sweeper off the entry meanwhile, and lastUsedAt is stamped after. */
     async run(entry: SessionEntry, command: CommandName, args: unknown): Promise<CommandResult> {
       entry.inFlight++;
       try {
+        if (command === "startJournal") return await runStartJournal(entry, args);
+        if (command === "stopJournal" || command === "captureCheckpoint") return await runJournalCommand(entry, command, args);
         return await entry.controller[command](args);
       } finally {
         entry.inFlight--;
@@ -285,6 +440,7 @@ export function createCloudSessions(opts: CloudSessionsOptions) {
 
     async sweep(): Promise<number> {
       const t = now();
+      for (const [tok, j] of journals) if (j.sessionId === null && t - j.at > opts.idleMs) removeRecord(tok);
       const stale = [...registry.values()].filter((e) => (e.inFlight === 0 && t - e.lastUsedAt > opts.idleMs) || t >= e.expiresAt);
       await Promise.all(stale.map(dispose));
       return stale.length;

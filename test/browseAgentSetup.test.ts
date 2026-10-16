@@ -54,6 +54,77 @@ describe("browse_agent setup schema", () => {
   });
 });
 
+describe("browse_agent resume schema", () => {
+  it("accepts a checkpoint id up to 64 characters and rejects empty or longer", () => {
+    expect(schema.safeParse({ goal, resume: "cp_1" }).success).toBe(true);
+    expect(schema.safeParse({ goal, resume: "x".repeat(64) }).success).toBe(true);
+    expect(schema.safeParse({ goal, resume: "x".repeat(65) }).success).toBe(false);
+    expect(schema.safeParse({ goal, resume: "" }).success).toBe(false);
+    expect(schema.safeParse({ goal, resume: "   " }).success).toBe(false);
+    expect(schema.parse({ goal, resume: " cp_1 " }).resume).toBe("cp_1");
+  });
+
+  it("rejects resume together with url or setup", () => {
+    expect(schema.safeParse({ goal, resume: "cp_1", url: "https://a.test" }).success).toBe(false);
+    expect(schema.safeParse({ goal, resume: "cp_1", setup: { version: 1 } }).success).toBe(false);
+    expect(schema.safeParse({ goal, url: "https://a.test" }).success).toBe(true);
+  });
+});
+
+describe("cloud command runner for the checkpoint journal", () => {
+  it("lists the journal commands", () => {
+    for (const name of ["startJournal", "stopJournal", "captureCheckpoint"]) expect(COMMAND_NAMES).toContain(name);
+  });
+
+  function runner() {
+    const controller = {
+      startJournal: vi.fn(() => "owner-tok"),
+      stopJournal: vi.fn(() => true),
+      captureCheckpoint: vi.fn(async () => ({ ok: true, complete: true, summary: "s", fixture: { version: 1 } })),
+    };
+    return { controller, run: toCommandRunner(controller as unknown as BrowserController) };
+  }
+
+  it("startJournal forwards origins and returns the token", async () => {
+    const { controller, run } = runner();
+    expect(await run.startJournal({ origins: ["https://a.test"] })).toEqual({ ok: true, token: "owner-tok" });
+    expect(controller.startJournal).toHaveBeenCalledWith({ origins: ["https://a.test"] });
+    await run.startJournal();
+    expect(controller.startJournal).toHaveBeenLastCalledWith(undefined);
+    expect(await run.startJournal({ origins: [] })).toMatchObject({ ok: true });
+    expect(controller.startJournal).toHaveBeenLastCalledWith({ origins: [] });
+  });
+
+  it.each([
+    ["a string", "https://a.test"],
+    ["21 origins", Array.from({ length: 21 }, () => "https://a.test")],
+    ["a long origin", ["x".repeat(513)]],
+    ["a non-string entry", [1]],
+    ["a non-http scheme", ["ftp://a.test"]],
+    ["an origin with a path", ["https://a.test/x"]],
+    ["a non-URL", ["not a url"]],
+  ])("startJournal rejects origins as %s", async (_n, origins) => {
+    const { controller, run } = runner();
+    expect(await run.startJournal({ origins })).toMatchObject({ ok: false });
+    expect(controller.startJournal).not.toHaveBeenCalled();
+  });
+
+  it("stopJournal and captureCheckpoint forward and validate the token", async () => {
+    const { controller, run } = runner();
+    expect(await run.stopJournal({ token: "t" })).toEqual({ ok: true });
+    expect(controller.stopJournal).toHaveBeenCalledWith("t");
+    expect(await run.captureCheckpoint({ token: "t" })).toMatchObject({ ok: true, complete: true });
+    expect(controller.captureCheckpoint).toHaveBeenCalledWith("t");
+    expect(await run.stopJournal({})).toEqual({ ok: false, error: "token is required" });
+    expect(await run.captureCheckpoint()).toEqual({ ok: false, error: "token is required" });
+    const long = { token: "x".repeat(513) };
+    expect(await run.stopJournal(long)).toMatchObject({ ok: false });
+    expect(await run.captureCheckpoint(long)).toMatchObject({ ok: false });
+    expect(controller.stopJournal).toHaveBeenCalledTimes(1);
+    expect(controller.captureCheckpoint).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("cloud command runner for fixtures", () => {
   it("lists the new commands", () => {
     expect(COMMAND_NAMES).toContain("applyFixture");

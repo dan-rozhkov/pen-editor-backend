@@ -88,6 +88,7 @@ export async function cloudBrowserRoutes(
     }
     if (outcome.kind === "forbidden") return reply.status(403).send({ error: "Invalid browser handle" });
     if (outcome.kind === "quota") return reply.status(outcome.status).send({ error: outcome.error });
+    if (outcome.kind === "local") return { result: outcome.result, handle: null, liveViewUrl: null, expiresAt: null };
     if (outcome.kind === "no-session") {
       const result = outcome.sessionExpired
         ? { error: outcome.error, sessionExpired: true }

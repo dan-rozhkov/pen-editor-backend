@@ -105,6 +105,23 @@ describe("POST /api/chat — OpenCode BYOK model selection", () => {
   });
 });
 
+// Posts a browse turn with the given extra body fields and returns the tool names the model saw.
+const browseToolsSent =
+  (url: string, prompt: string) =>
+  async (extra: Record<string, unknown>) => {
+    const model = mockModel(textStreamChunks("ok"));
+    chatMocks.model = model;
+    const res = await postChat(url, {
+      messages: [userMessage(prompt)],
+      agentMode: "browse",
+      clientCapabilities: { desktopBrowser: true },
+      ...extra,
+    });
+    expect(res.status).toBe(200);
+    await res.text();
+    return (model.doStreamCalls[0].tools ?? []).map((t: { name?: string }) => t.name);
+  };
+
 describe("POST /api/chat — agentMode browse gate", () => {
   it("400s browse_agent_disabled when BROWSE_MODE is not agent", async () => {
     const { url, close } = await startApp(makeConfig({ BROWSE_MODE: "manual" }));
@@ -123,19 +140,7 @@ describe("POST /api/chat — agentMode browse gate", () => {
 
   it("passes browseCapture from the body to the subagent's tool set", async () => {
     const { url, close } = await startApp(makeConfig({ BROWSE_MODE: "agent" }));
-    const toolsSent = async (extra: Record<string, unknown>) => {
-      const model = mockModel(textStreamChunks("ok"));
-      chatMocks.model = model;
-      const res = await postChat(url, {
-        messages: [userMessage("copy the page")],
-        agentMode: "browse",
-        clientCapabilities: { desktopBrowser: true },
-        ...extra,
-      });
-      expect(res.status).toBe(200);
-      await res.text();
-      return (model.doStreamCalls[0].tools ?? []).map((t: { name?: string }) => t.name);
-    };
+    const toolsSent = browseToolsSent(url, "copy the page");
     try {
       expect(await toolsSent({ browseCapture: true })).toContain("browse_capture");
       expect(await toolsSent({})).not.toContain("browse_capture");
@@ -154,19 +159,7 @@ describe("POST /api/chat — agentMode browse gate", () => {
 
   it("passes browseLogin from the body to the subagent's tool set", async () => {
     const { url, close } = await startApp(makeConfig({ BROWSE_MODE: "agent" }));
-    const toolsSent = async (extra: Record<string, unknown>) => {
-      const model = mockModel(textStreamChunks("ok"));
-      chatMocks.model = model;
-      const res = await postChat(url, {
-        messages: [userMessage("sign in")],
-        agentMode: "browse",
-        clientCapabilities: { desktopBrowser: true },
-        ...extra,
-      });
-      expect(res.status).toBe(200);
-      await res.text();
-      return (model.doStreamCalls[0].tools ?? []).map((t: { name?: string }) => t.name);
-    };
+    const toolsSent = browseToolsSent(url, "sign in");
     try {
       expect(await toolsSent({ browseLogin: true })).toContain("browse_fill_login");
       expect(await toolsSent({})).not.toContain("browse_fill_login");
