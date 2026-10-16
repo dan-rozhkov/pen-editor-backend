@@ -77,6 +77,7 @@ describe("penTools registry", () => {
         "browse_agent",
         "browse_read",
         "browse_capture",
+        "browse_fill_login",
       ].sort(),
     );
   });
@@ -144,6 +145,7 @@ describe("penTools registry", () => {
       "browse_agent",
       "browse_read",
       "browse_capture",
+      "browse_fill_login",
     ] as const) {
       expect(hasExecute(name), `${name} must be client-executed`).toBe(false);
     }
@@ -1510,6 +1512,26 @@ describe("browse_agent schema", () => {
     expect(schema.safeParse({ goal: "x".repeat(4001) }).success).toBe(false);
     expect(schema.safeParse({ goal: "x".repeat(4000) }).success).toBe(true);
     expect(schema.safeParse({ goal: "x", url: "u".repeat(2001) }).success).toBe(false);
+  });
+});
+
+describe("browse_fill_login schema", () => {
+  const schema = schemaOf("browse_fill_login");
+
+  it("accepts no arguments, a label and a submit flag", () => {
+    expect(schema.safeParse({}).success).toBe(true);
+    expect(schema.safeParse({ label: "work" }).success).toBe(true);
+    expect(schema.safeParse({ label: "work", submit: true }).success).toBe(true);
+  });
+
+  it("rejects a wrong type and an oversized label", () => {
+    expect(schema.safeParse({ label: 1 }).success).toBe(false);
+    expect(schema.safeParse({ submit: "yes" }).success).toBe(false);
+    expect(schema.safeParse({ label: "l".repeat(201) }).success).toBe(false);
+  });
+
+  it("has no server-side execute", () => {
+    expect((penTools as Record<string, { execute?: unknown }>).browse_fill_login.execute).toBeUndefined();
   });
 });
 

@@ -12,7 +12,7 @@ import type { Config } from "../config.js";
 import { bareModelId, createModel, parseModelRef, providerHandlesToolResultImages } from "./provider.js";
 import { penTools, makeBatchDesignTool, makeAnalyzeImageTool } from "./tools.js";
 import { BROWSE_AGENT_TOOL_NAMES } from "@sideform/browser-agent/agent";
-import { BROWSE_AGENT_PROMPT, buildSystemPrompt, type AgentMode } from "./system-prompt.js";
+import { BROWSE_AGENT_LOGIN_PROMPT, BROWSE_AGENT_PROMPT, buildSystemPrompt, type AgentMode } from "./system-prompt.js";
 import { resolveTaskPolicy, type TaskPolicy } from "./taskPolicy.js";
 import { applyImageBudget, planImageElision } from "./image-budget.js";
 import { freezeElidedSlots, resolveImageRescues } from "./imageRelevance.js";
@@ -142,6 +142,9 @@ export function sanitizeMessagesForProvider(
 // Added to the subagent allowlist only when the user asked for a page copy
 // (browse_agent's `capture: true` -> body.browseCapture).
 const BROWSE_CAPTURE_TOOL = "browse_capture";
+// Same shape: browse_agent's nested chat sends body.browseLogin when the
+// desktop browser can fill a saved login. Never in any other turn.
+const BROWSE_FILL_LOGIN_TOOL = "browse_fill_login";
 
 export interface PrepareChatTurnInput {
   config: Config;
@@ -246,6 +249,12 @@ export interface PrepareChatTurnInput {
    * canvas, so the subagent may carry browse_capture. Ignored otherwise.
    */
   browseCapture?: boolean;
+  /**
+   * agentMode "browse" only: the desktop browser has saved logins, so the
+   * subagent may carry browse_fill_login (and gets the matching prompt).
+   * Ignored otherwise.
+   */
+  browseLogin?: boolean;
 }
 
 export interface PreparedChatTurn {
@@ -816,8 +825,15 @@ export async function prepareChatTurn(
         ? "manual"
         : undefined;
 
+  // Saved logins exist only in the desktop shell: honour browseLogin only when
+  // the client says it runs the desktop browser. One boolean drives both the
+  // tool allowlist and the prompt choice.
+  const browseLoginAllowed = input.browseLogin === true && browserKind === "desktop";
+
   const system = browseSub
-    ? BROWSE_AGENT_PROMPT
+    ? browseLoginAllowed
+      ? BROWSE_AGENT_LOGIN_PROMPT
+      : BROWSE_AGENT_PROMPT
     : buildSystemPrompt(skillCatalog, {
         browserGuidance,
         memoryGuidance: memoryInjected,
@@ -1253,6 +1269,11 @@ export async function prepareChatTurn(
       }
     }
 
+    // browse_fill_login belongs to the browsing subagent alone (the allowlist
+    // below adds it back for a browse turn with browseLogin). Every other
+    // turn drops it, including manual/task main turns that keep browse_*.
+    if (!browseSub) delete tools[BROWSE_FILL_LOGIN_TOOL];
+
     // browse_agent exists only in BROWSE_MODE=agent main turns; there the other
     // browser tools move into the subagent. In every other turn (including
     // the subagent's own) it is gone.
@@ -1291,6 +1312,7 @@ export async function prepareChatTurn(
       // turn (agentMode "browse") may carry; the usual browser/vision gates apply on top.
       const allowed = new Set<string>(BROWSE_AGENT_TOOL_NAMES);
       if (input.browseCapture === true) allowed.add(BROWSE_CAPTURE_TOOL);
+      if (browseLoginAllowed) allowed.add(BROWSE_FILL_LOGIN_TOOL);
       for (const name of Object.keys(tools)) {
         if (!allowed.has(name)) delete tools[name];
       }

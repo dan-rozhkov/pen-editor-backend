@@ -152,6 +152,30 @@ describe("POST /api/chat — agentMode browse gate", () => {
     }
   });
 
+  it("passes browseLogin from the body to the subagent's tool set", async () => {
+    const { url, close } = await startApp(makeConfig({ BROWSE_MODE: "agent" }));
+    const toolsSent = async (extra: Record<string, unknown>) => {
+      const model = mockModel(textStreamChunks("ok"));
+      chatMocks.model = model;
+      const res = await postChat(url, {
+        messages: [userMessage("sign in")],
+        agentMode: "browse",
+        clientCapabilities: { desktopBrowser: true },
+        ...extra,
+      });
+      expect(res.status).toBe(200);
+      await res.text();
+      return (model.doStreamCalls[0].tools ?? []).map((t: { name?: string }) => t.name);
+    };
+    try {
+      expect(await toolsSent({ browseLogin: true })).toContain("browse_fill_login");
+      expect(await toolsSent({})).not.toContain("browse_fill_login");
+      expect(await toolsSent({ browseLogin: false })).not.toContain("browse_fill_login");
+    } finally {
+      await close();
+    }
+  });
+
   it("does not 400 browse_agent_disabled when BROWSE_MODE is agent", async () => {
     const { url, close } = await startApp(makeConfig({ BROWSE_MODE: "agent" }));
     try {

@@ -68,7 +68,8 @@ export const AGENT_BROWSER_GUIDANCE = `Every task that needs the built-in browse
 - Report the answer to the user in short form: the facts the user asked for and the final URL. Do not repeat how the subagent got there. Report only what the answer states. Do not invent page content, values or reasons that the answer does not contain.
 - If \`status\` is not \`done\`, tell the user what happened and what the answer says is missing. If a login, CAPTCHA or anti-bot wall stopped it, tell the user what to do in the browser tab, then call \`browse_agent\` again after they confirm.
 - Before an irreversible step (purchase, booking, payment, sending, submitting a form with personal data, deleting), ask the user. The subagent stops and reports what is pending. After the user confirms, call \`browse_agent\` again and state in \`goal\` that the user confirmed that exact step.
-- For a follow-up, call \`browse_agent\` again with a new self-contained goal. The browser tab stays open, so the subagent starts where the last call stopped.`;
+- For a follow-up, call \`browse_agent\` again with a new self-contained goal. The browser tab stays open, so the subagent starts where the last call stopped.
+- In the desktop app, the subagent signs in by itself when the user saved a login for the site in the Passwords window of the browser. Never ask the user to type a password in the chat. If the user names a saved account, put its label in \`goal\`.`;
 
 // The subagent has no chat to ask the user in, so its irreversible-step rule
 // is stop-and-report, and it has no browse_capture bullet: it only gets the
@@ -81,6 +82,15 @@ export const SUBAGENT_BROWSER_GUIDANCE = buildSubagentBrowserGuidance({
 export const BROWSE_AGENT_PROMPT = buildBrowseAgentPrompt({
   principal: PEN_EDITOR_BROWSE_PRINCIPAL,
   guidanceBullets: [PEN_EDITOR_SCREENSHOT_BULLET],
+  sections: [PEN_EDITOR_CAPTURE_SECTION],
+});
+
+const PEN_EDITOR_LOGIN_BULLET =
+  "- Exception to the password rule: `browse_fill_login` is available. When the page shows a sign-in form, call it instead of stopping. It types a login that the user saved. Never type a password yourself. After it, take a snapshot and continue. If it returns an error, stop, as for a login wall.";
+
+export const BROWSE_AGENT_LOGIN_PROMPT = buildBrowseAgentPrompt({
+  principal: PEN_EDITOR_BROWSE_PRINCIPAL,
+  guidanceBullets: [PEN_EDITOR_SCREENSHOT_BULLET, PEN_EDITOR_LOGIN_BULLET],
   sections: [PEN_EDITOR_CAPTURE_SECTION],
 });
 

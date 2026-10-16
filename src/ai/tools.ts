@@ -2399,6 +2399,22 @@ Returns the created/updated style ids and names (with a created|updated status) 
     }),
   }),
 
+  browse_fill_login: tool({
+    description:
+      "Type a login that the user saved in the desktop browser into the sign-in form of the current tab. You never see the password. Call it when the page shows a sign-in form. Without `label` it uses the saved login for this site. With `label` it uses that saved account. Set `submit: true` to also press Enter after the fields are filled. After it, take a snapshot. Returns `{ ok, host, label, filled, submitted }`. An error means there is no saved login for this site: stop, as for a login wall. This tool runs in the user's browser (client side) and has no server-side execute.",
+    inputSchema: z.object({
+      label: z
+        .string()
+        .max(200)
+        .optional()
+        .describe("Label of the saved account to use. Omit it to use the saved login for this site."),
+      submit: z
+        .boolean()
+        .optional()
+        .describe("Set true to also press Enter after the fields are filled."),
+    }),
+  }),
+
   browse_agent: tool({
     description:
       "Run a whole browser task in the built-in browser through a dedicated browsing subagent, and get its final answer. The subagent does NOT see this chat: `goal` must carry the whole task with every constraint, every name and date, and what to report back (for example the prices, the names, the final URL). If the user wants a picture (screenshot) of the page on the canvas, say so in `goal`: the subagent then calls browse_screenshot with placeOnCanvas. If the user wants an editable copy of the page on the canvas, set `capture: true` and say in `goal` which page or part to copy. When the task names a site or a page, always pass its start URL in `url`: the browser opens it before the subagent starts, which saves a step. To prepare the page first (a known state, API mocks, a check that it is the right page), pass `setup`. Returns `{ status: \"done\" | \"error\" | \"aborted\" | \"step_limit\" | \"setup_failed\", answer, steps }`, plus `captured: { nodeId, width, height, url, title }` when the page was copied onto the canvas. `answer` is the subagent's plain-text report of what it saw; report only what it contains, and do not invent page content that `answer` does not state. `answer` may be in a different language than the chat: report it to the user in the user's language. The browser tab stays open between calls, so a follow-up (another detail on the same page, the next step) is another browse_agent call with a self-contained goal. This tool runs in the user's browser (client side) and has no server-side execute.",

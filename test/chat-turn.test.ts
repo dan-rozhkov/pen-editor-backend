@@ -1,7 +1,7 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadSkills, getSkill } from "../src/ai/skills.js";
 import { createModel } from "../src/ai/provider.js";
-import { AGENT_BROWSER_GUIDANCE, BROWSE_AGENT_PROMPT, MANUAL_BROWSER_GUIDANCE } from "../src/ai/system-prompt.js";
+import { AGENT_BROWSER_GUIDANCE, BROWSE_AGENT_LOGIN_PROMPT, BROWSE_AGENT_PROMPT, MANUAL_BROWSER_GUIDANCE } from "../src/ai/system-prompt.js";
 import { makeConfig } from "./helpers.js";
 
 vi.mock("../src/ai/mcp.js", () => ({
@@ -1025,6 +1025,15 @@ describe("browse subagent", () => {
     expect(agent.tools.browse_capture).toBeUndefined();
   });
 
+  it.each(["manual", "task", "agent"] as const)("BROWSE_MODE=%s main turn never offers browse_fill_login", async (mode) => {
+    const turn = await prepare({
+      config: makeConfig({ BROWSE_MODE: mode, TYPESAFE_API_KEY: "key" }),
+      clientCapabilities: DESKTOP,
+      browseLogin: true,
+    });
+    expect(turn.tools.browse_fill_login).toBeUndefined();
+  });
+
   it.each(["manual", "task"] as const)("BROWSE_MODE=%s never offers browse_agent", async (mode) => {
     const turn = await prepare({
       config: makeConfig({ BROWSE_MODE: mode, TYPESAFE_API_KEY: "key" }),
@@ -1060,6 +1069,38 @@ describe("browse subagent", () => {
       const withCapture = await prepare({ ...base, browseCapture: true });
       expect(withCapture.tools.browse_capture).toBeDefined();
       expect(Object.keys(withCapture.tools).sort()).toEqual([...BROWSE_TOOLS, "browse_capture"].sort());
+    });
+
+    it("adds browse_fill_login and its prompt only when browseLogin is true", async () => {
+      const base = { config: makeConfig({ BROWSE_MODE: "agent" }), agentMode: "browse", clientCapabilities: DESKTOP };
+      const without = await prepare(base);
+      expect(without.tools.browse_fill_login).toBeUndefined();
+      expect(without.system).toBe(BROWSE_AGENT_PROMPT);
+      const falsy = await prepare({ ...base, browseLogin: false });
+      expect(falsy.tools.browse_fill_login).toBeUndefined();
+      expect(falsy.system).toBe(BROWSE_AGENT_PROMPT);
+      const withLogin = await prepare({ ...base, browseLogin: true });
+      expect(withLogin.tools.browse_fill_login).toBeDefined();
+      expect(withLogin.system).toBe(BROWSE_AGENT_LOGIN_PROMPT);
+      expect(BROWSE_AGENT_LOGIN_PROMPT).toContain("browse_fill_login");
+      expect(BROWSE_AGENT_PROMPT).not.toContain("browse_fill_login");
+      expect(Object.keys(withLogin.tools).sort()).toEqual([...BROWSE_TOOLS, "browse_fill_login"].sort());
+    });
+
+    it("never adds browse_fill_login without a browser", async () => {
+      const turn = await prepare({ agentMode: "browse", browseLogin: true });
+      expect(turn.tools.browse_fill_login).toBeUndefined();
+    });
+
+    it("ignores browseLogin when the client is not the desktop browser", async () => {
+      const turn = await prepare({
+        config: makeConfig({ BROWSE_MODE: "agent" }),
+        agentMode: "browse",
+        browseLogin: true,
+        clientCapabilities: { browser: "cloud" },
+      });
+      expect(turn.tools.browse_fill_login).toBeUndefined();
+      expect(turn.system).toBe(BROWSE_AGENT_PROMPT);
     });
 
     it("never adds browse_capture without a browser", async () => {
