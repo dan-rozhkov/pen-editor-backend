@@ -2401,7 +2401,7 @@ Returns the created/updated style ids and names (with a created|updated status) 
 
   browse_fill_login: tool({
     description:
-      "Type a login that the user saved in the desktop browser into the sign-in form of the current tab. You never see the password. Call it when the page shows a sign-in form. Without `label` it uses the saved login for this site. With `label` it uses that saved account. Set `submit: true` to also press Enter after the fields are filled. After it, take a snapshot. Returns `{ ok, host, label, filled, submitted }`. An error means there is no saved login for this site: stop, as for a login wall. This tool runs in the user's browser (client side) and has no server-side execute.",
+      "Type a login that the user saved in the desktop browser into the sign-in form of the current tab. You never see the password. Call it when the page shows a sign-in form. Without `label` it uses the saved login for this site. With `label` it uses that saved account. Set `submit: true` to also press Enter after the fields are filled. After it, take a snapshot. Returns `{ ok, origin, label, filled, submitted }`. An error means there is no saved login for this site: stop, as for a login wall. This tool runs in the user's browser (client side) and has no server-side execute.",
     inputSchema: z.object({
       label: z
         .string()
