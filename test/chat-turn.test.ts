@@ -1,7 +1,7 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadSkills, getSkill } from "../src/ai/skills.js";
 import { createModel } from "../src/ai/provider.js";
-import { AGENT_BROWSER_GUIDANCE, BROWSE_AGENT_LOGIN_PROMPT, BROWSE_AGENT_PROMPT, MANUAL_BROWSER_GUIDANCE } from "../src/ai/system-prompt.js";
+import { AGENT_BROWSER_GUIDANCE, BROWSE_AGENT_LOGIN_PROMPT, BROWSE_AGENT_PROMPT, browseAgentPrompt, MANUAL_BROWSER_GUIDANCE } from "../src/ai/system-prompt.js";
 import { makeConfig } from "./helpers.js";
 
 vi.mock("../src/ai/mcp.js", () => ({
@@ -1101,6 +1101,68 @@ describe("browse subagent", () => {
       });
       expect(turn.tools.browse_fill_login).toBeUndefined();
       expect(turn.system).toBe(BROWSE_AGENT_PROMPT);
+    });
+
+    it("adds qa_verdict and the QA prompt only when browseQa is true", async () => {
+      const base = { config: makeConfig({ BROWSE_MODE: "agent" }), agentMode: "browse", clientCapabilities: DESKTOP };
+      const without = await prepare(base);
+      expect(without.tools.qa_verdict).toBeUndefined();
+      expect(without.system).toBe(BROWSE_AGENT_PROMPT);
+      const falsy = await prepare({ ...base, browseQa: false });
+      expect(falsy.tools.qa_verdict).toBeUndefined();
+      const qa = await prepare({ ...base, browseQa: true });
+      expect(qa.tools.qa_verdict).toBeDefined();
+      expect((qa.tools.qa_verdict as { execute?: unknown }).execute).toBeUndefined();
+      expect(qa.system).toBe(browseAgentPrompt({ qa: true }));
+      expect(browseAgentPrompt({ qa: true })).toContain("qa_verdict");
+      expect(browseAgentPrompt({ qa: true })).toContain("QA engineer");
+      expect(BROWSE_AGENT_PROMPT).not.toContain("qa_verdict");
+      expect(qa.system).toContain("call `qa_verdict` exactly once");
+      expect(qa.system).not.toContain("Before an irreversible step (purchase, booking, payment, sending, submitting a form with personal data, deleting), stop. Do not do the step.");
+      expect(BROWSE_AGENT_PROMPT).toContain("Before an irreversible step (purchase, booking, payment, sending, submitting a form with personal data, deleting), stop. Do not do the step.");
+      expect(browseAgentPrompt({ qa: true })).toBe(browseAgentPrompt({ qa: true }));
+      expect(browseAgentPrompt()).toBe(BROWSE_AGENT_PROMPT);
+      expect(Object.keys(qa.tools).sort()).toEqual([...BROWSE_TOOLS, "qa_verdict"].sort());
+      const qaLogin = await prepare({ ...base, browseQa: true, browseLogin: true });
+      expect(qaLogin.system).toBe(browseAgentPrompt({ qa: true, login: true }));
+      expect(browseAgentPrompt({ qa: true, login: true })).toContain("browse_fill_login");
+      expect(Object.keys(qaLogin.tools).sort()).toEqual([...BROWSE_TOOLS, "browse_fill_login", "qa_verdict"].sort());
+    });
+
+    it("browseQa without a browser gives the normal prompt and no tool", async () => {
+      const turn = await prepare({ config: makeConfig({ BROWSE_MODE: "agent" }), agentMode: "browse", browseQa: true });
+      expect(turn.tools.qa_verdict).toBeUndefined();
+      expect(turn.system).toBe(BROWSE_AGENT_PROMPT);
+    });
+
+    it("shows the qa flag of browse_agent and the QA bullet only to a client with the browseQa capability", async () => {
+      const cfg = makeConfig({ BROWSE_MODE: "agent" });
+      const old = await prepare({ config: cfg, clientCapabilities: DESKTOP });
+      const modern = await prepare({ config: cfg, clientCapabilities: { ...DESKTOP, browseQa: true } });
+      const schemaKeys = (t: { tools: Record<string, unknown> }) => {
+        const s = (t.tools.browse_agent as { inputSchema: { safeParse: (v: unknown) => { success: boolean; data?: Record<string, unknown> } } }).inputSchema;
+        return s.safeParse({ goal: "g", qa: true }).data ?? {};
+      };
+      expect(schemaKeys(old)).not.toHaveProperty("qa");
+      expect(schemaKeys(modern)).toHaveProperty("qa", true);
+      expect((old.tools.browse_agent as { description: string }).description).not.toContain("qa: true");
+      expect((modern.tools.browse_agent as { description: string }).description).toContain("qa: true");
+      expect(old.system).not.toContain("`qa` param");
+      expect(modern.system).toContain("`qa` param");
+      expect(AGENT_BROWSER_GUIDANCE).not.toContain("qa: true");
+    });
+
+    it("never offers qa_verdict outside a browse subagent turn", async () => {
+      const cfg = makeConfig({ BROWSE_MODE: "agent" });
+      for (const agentMode of ["edits", "prototype", "research"]) {
+        const turn = await prepare({ config: cfg, agentMode, browseQa: true, clientCapabilities: DESKTOP });
+        expect(turn.tools.qa_verdict, agentMode).toBeUndefined();
+      }
+      const main = await prepare({ config: cfg, clientCapabilities: DESKTOP, browseQa: true });
+      expect(main.tools.qa_verdict).toBeUndefined();
+      expect(main.tools.browse_agent).toBeDefined();
+      const noBrowser = await prepare({ agentMode: "browse", browseQa: true });
+      expect(noBrowser.tools.qa_verdict).toBeUndefined();
     });
 
     it("never adds browse_capture without a browser", async () => {

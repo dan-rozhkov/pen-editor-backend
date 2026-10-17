@@ -55,7 +55,7 @@ export interface SystemPromptMemory {
    * Omitted: no browser. Per-capability, not per-request: it is derived from
    * the client's browser capability plus server config, so it stays
    * byte-identical across a session's requests (prompt caching). */
-  browserGuidance?: "task" | "manual" | "agent";
+  browserGuidance?: "task" | "manual" | "agent" | "agent-qa";
 }
 
 export const MANUAL_BROWSER_GUIDANCE = buildManualBrowserGuidance({
@@ -71,6 +71,13 @@ export const AGENT_BROWSER_GUIDANCE = `Every task that needs the built-in browse
 - For a follow-up, call \`browse_agent\` again with a new self-contained goal. The browser tab stays open, so the subagent starts where the last call stopped.
 - In the desktop app, the subagent signs in by itself when the user saved a login for the site in the Passwords window of the browser. Never ask the user to type a password in the chat. If the user names a saved account, put its label in \`goal\`.`;
 
+// Same text plus one QA line, for clients that advertise
+// clientCapabilities.browseQa (the others never see the `qa` flag). The full
+// rule is in the `qa` param description.
+const AGENT_QA_BULLET =
+  "- To test a web app or a flow, use the `qa` param of `browse_agent`. Report each scenario's `qa.outcome` and `qa.reason`.";
+export const AGENT_BROWSER_QA_GUIDANCE = `${AGENT_BROWSER_GUIDANCE}\n${AGENT_QA_BULLET}`;
+
 // The subagent has no chat to ask the user in, so its irreversible-step rule
 // is stop-and-report, and it has no browse_capture bullet: it only gets the
 // tool when the main model passed `capture: true`, which the capture section
@@ -79,20 +86,33 @@ export const SUBAGENT_BROWSER_GUIDANCE = buildSubagentBrowserGuidance({
   extraBullets: [PEN_EDITOR_SCREENSHOT_BULLET],
 });
 
-export const BROWSE_AGENT_PROMPT = buildBrowseAgentPrompt({
-  principal: PEN_EDITOR_BROWSE_PRINCIPAL,
-  guidanceBullets: [PEN_EDITOR_SCREENSHOT_BULLET],
-  sections: [PEN_EDITOR_CAPTURE_SECTION],
-});
-
 const PEN_EDITOR_LOGIN_BULLET =
   "- Exception to the password rule: `browse_fill_login` is available. When the page shows a sign-in form, call it instead of stopping. It types a login that the user saved. Never type a password yourself. After it, take a snapshot and continue. If it returns an error, stop, as for a login wall.";
 
-export const BROWSE_AGENT_LOGIN_PROMPT = buildBrowseAgentPrompt({
-  principal: PEN_EDITOR_BROWSE_PRINCIPAL,
-  guidanceBullets: [PEN_EDITOR_SCREENSHOT_BULLET, PEN_EDITOR_LOGIN_BULLET],
-  sections: [PEN_EDITOR_CAPTURE_SECTION],
-});
+function buildSubagentPrompt(qa: boolean, login: boolean): string {
+  return buildBrowseAgentPrompt({
+    // QA: no principal, so the package default (QA_PRINCIPAL) and its QA
+    // sections apply.
+    ...(qa ? { qa: true } : { principal: PEN_EDITOR_BROWSE_PRINCIPAL }),
+    guidanceBullets: login
+      ? [PEN_EDITOR_SCREENSHOT_BULLET, PEN_EDITOR_LOGIN_BULLET]
+      : [PEN_EDITOR_SCREENSHOT_BULLET],
+    sections: [PEN_EDITOR_CAPTURE_SECTION],
+  });
+}
+
+// The four combinations are built once, so every request gets the same bytes
+// (prompt caching).
+export const BROWSE_AGENT_PROMPT = buildSubagentPrompt(false, false);
+export const BROWSE_AGENT_LOGIN_PROMPT = buildSubagentPrompt(false, true);
+const BROWSE_AGENT_QA_PROMPT = buildSubagentPrompt(true, false);
+const BROWSE_AGENT_QA_LOGIN_PROMPT = buildSubagentPrompt(true, true);
+
+/** The browsing subagent's system prompt for one (qa, login) combination. */
+export function browseAgentPrompt({ qa = false, login = false }: { qa?: boolean; login?: boolean } = {}): string {
+  if (qa) return login ? BROWSE_AGENT_QA_LOGIN_PROMPT : BROWSE_AGENT_QA_PROMPT;
+  return login ? BROWSE_AGENT_LOGIN_PROMPT : BROWSE_AGENT_PROMPT;
+}
 
 export const BROWSER_TASKS_GUIDANCE = `Any task that needs the built-in browser starts with \`browse_task\`: navigating, searching, clicking through, filling forms, adding to a cart. Hand the WHOLE user goal to ONE \`browse_task\` call. Put the user's full goal with all its constraints in \`goal\` (do not shorten it to the first step, do not break it into sub-goals or per-item calls), pass \`url\` when you know it (instead of calling \`browse_open\` first), and set \`maxSteps: 25\`. The loop drives every step itself.
 - If a sub-goal of \`browse_task\` ends \`budget\`, \`stalled\` or \`blocked\` (not done), call \`browse_task\` again ONCE for ALL unfinished sub-goals together, never one call per item: the REMAINING goal plus a short note of what is already done (from the transcript) so done items are not redone, again with \`maxSteps: 25\`. Keep \`goal\` under 2000 characters. At most 2 such repeat calls in total per user request; a sub-goal that already failed twice is not tried again. After that, use the manual tools (\`browse_snapshot\`, \`browse_act\`, \`browse_tabs\`) for a small remaining step, else report.
@@ -131,7 +151,9 @@ export function buildSystemPrompt(
     const guidance =
       memory.browserGuidance === "task"
         ? BROWSER_TASKS_GUIDANCE
-        : memory.browserGuidance === "agent"
+        : memory.browserGuidance === "agent-qa"
+          ? AGENT_BROWSER_QA_GUIDANCE
+          : memory.browserGuidance === "agent"
           ? AGENT_BROWSER_GUIDANCE
           : MANUAL_BROWSER_GUIDANCE;
     parts.push(`\n## Browser tasks\n\n${guidance}`);

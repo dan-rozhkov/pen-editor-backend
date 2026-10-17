@@ -7,6 +7,7 @@ import { screenshotOutputToContent } from "./screenshotOutput.js";
 import {
   browseScreenshotInputSchema,
   createBrowseToolDefinitions,
+  qaVerdictDefinition,
 } from "@sideform/browser-agent/agent";
 import { PEN_EDITOR_BROWSE_SLOTS } from "./browseToolText.js";
 
@@ -1556,6 +1557,78 @@ export const browseAgentSetup = z
   })
   .strict();
 
+// browse_agent exists in two variants. The QA variant (the `qa` param, its
+// description text) is offered only to clients that advertise
+// clientCapabilities.browseQa; an older client gets the variant without it, so
+// the model is never told about a flag its client cannot honour. Both variants
+// are built once, so their bytes are stable across requests (prompt caching).
+const BROWSE_AGENT_DESCRIPTION_HEAD =
+  "Run a whole browser task in the built-in browser through a dedicated browsing subagent, and get its final answer. The subagent does NOT see this chat: `goal` must carry the whole task with every constraint, every name and date, and what to report back (for example the prices, the names, the final URL). If the user wants a picture (screenshot) of the page on the canvas, say so in `goal`: the subagent then calls browse_screenshot with placeOnCanvas. If the user wants an editable copy of the page on the canvas, set `capture: true` and say in `goal` which page or part to copy. When the task names a site or a page, pass its start URL in `url`: the browser opens it before the subagent starts, which saves a step. (To continue from a checkpoint, pass only `resume`: no `url`, no `setup`.) To prepare the page first (a known state, API mocks, a check that it is the right page), pass `setup`. Returns `{ status: \"done\" | \"error\" | \"aborted\" | \"step_limit\" | \"timeout\" | \"setup_failed\", answer, steps }`, plus `captured: { nodeId, width, height, url, title }` when the page was copied onto the canvas.";
+const BROWSE_AGENT_DESCRIPTION_QA =
+  " When `qa: true` was set, the result also carries `qa: { outcome: \"passed\" | \"failed\" | \"inconclusive\" | \"error\" | \"setup_failed\" | \"aborted\", verdict?, reason?, steps: [{ tool, args, ok, error? }], stepsDropped? }`: `qa.outcome` and `qa.reason` are the verdict of the test.";
+const BROWSE_AGENT_DESCRIPTION_TAIL =
+  " It may also carry `checkpoint: { id, complete, summary, gap? }`: pass `checkpoint.id` as `resume` in a later browse_agent call to continue from where this run stopped. `complete: false` means the replay may not reproduce the page exactly; `gap` says why. `answer` is the subagent's plain-text report of what it saw; report only what it contains, and do not invent page content that `answer` does not state. `answer` may be in a different language than the chat: report it to the user in the user's language. The browser tab stays open between calls, so a follow-up (another detail on the same page, the next step) is another browse_agent call with a self-contained goal. This tool runs in the user's browser (client side) and has no server-side execute.";
+const BROWSE_AGENT_DESCRIPTION = BROWSE_AGENT_DESCRIPTION_HEAD + BROWSE_AGENT_DESCRIPTION_TAIL;
+/** The QA variant: the same text plus the `qa` result shape. */
+const BROWSE_AGENT_DESCRIPTION_WITH_QA =
+  BROWSE_AGENT_DESCRIPTION_HEAD + BROWSE_AGENT_DESCRIPTION_QA + BROWSE_AGENT_DESCRIPTION_TAIL;
+
+const BROWSE_AGENT_QA_FIELD = z
+  .boolean()
+  .optional()
+  .describe("Set true when the user asks to test, check or QA a web app or a flow. The subagent then runs ONE test scenario (put the steps and the expected result in `goal`) and gives a verdict. The result then carries `qa: { outcome, verdict?, reason?, steps }`. One scenario per call: for several scenarios, call browse_agent several times. Combine with `setup` to prepare the state.");
+
+const browseAgentToolQa = browseAgentTool(true);
+/** browse_agent without the `qa` param, for clients without the browseQa capability. */
+export const browseAgentToolNoQa = browseAgentTool(false);
+
+// QA variant only: a QA run is a fresh scenario, so it cannot resume a checkpoint.
+function withQaResumeCheck<T extends z.ZodTypeAny>(schema: T): T {
+  return schema.refine((a: { resume?: string; qa?: boolean }) => a.resume === undefined || a.qa !== true, {
+    message: "`resume` cannot be combined with `qa: true`: a QA run is a fresh scenario.",
+    path: ["qa"],
+  }) as unknown as T;
+}
+
+function browseAgentTool(qa: boolean) {
+  const schema = z.object({
+      goal: z
+        .string()
+        .min(1)
+        .max(4000)
+        .describe("The whole task for the browsing subagent, self-contained (it sees nothing of this chat): all constraints, names, dates, and what to report back (max 4000 characters)."),
+      url: z
+        .string()
+        .max(2000)
+        .optional()
+        .describe("Optional start URL. If omitted, the subagent continues in the current browser tab or finds the page itself."),
+      setup: browseAgentSetup
+        .optional()
+        .describe("Optional page setup that runs BEFORE the subagent, with the start `url` as the main page. Use it for QA checks, to reach a known state first (steps, cookies, storage), or to simulate API errors (network). If setup fails, the subagent does not run and the result says which stage failed. Secrets the user gave (cookies, tokens) may go here."),
+      resume: z
+        .string()
+        .trim()
+        .min(1)
+        .max(64)
+        .optional()
+        .describe("The id of a checkpoint that an earlier browse_agent call returned in its result (`checkpoint.id`). The browser rebuilds the page (start page, cookies, storage, the recorded steps) before the subagent starts, so it continues where that run stopped. Do not use it together with `url` or `setup`. Checkpoints live in the editor's memory and are lost when the editor reloads."),
+      capture: z
+        .boolean()
+        .optional()
+        .describe("Set true ONLY when the user directly asks to copy or clone the page onto the canvas. The subagent then gets the browse_capture tool and copies the page once. The result then carries `captured: { nodeId, width, height, url, title }`."),
+      ...(qa ? { qa: BROWSE_AGENT_QA_FIELD } : {}),
+    }).refine((a) => a.resume === undefined || (a.url === undefined && a.setup === undefined), {
+      message: "`resume` cannot be combined with `url` or `setup`: the checkpoint already carries the start page and setup.",
+      path: ["resume"],
+    });
+  return tool({
+    description:
+      qa ? BROWSE_AGENT_DESCRIPTION_WITH_QA : BROWSE_AGENT_DESCRIPTION,
+    inputSchema: qa ? withQaResumeCheck(schema) : schema,
+  });
+
+}
+
 export const penTools = {
   // ── Reading & Navigation ──────────────────────────────────────────
 
@@ -2415,39 +2488,14 @@ Returns the created/updated style ids and names (with a created|updated status) 
     }),
   }),
 
-  browse_agent: tool({
+  qa_verdict: tool({
     description:
-      "Run a whole browser task in the built-in browser through a dedicated browsing subagent, and get its final answer. The subagent does NOT see this chat: `goal` must carry the whole task with every constraint, every name and date, and what to report back (for example the prices, the names, the final URL). If the user wants a picture (screenshot) of the page on the canvas, say so in `goal`: the subagent then calls browse_screenshot with placeOnCanvas. If the user wants an editable copy of the page on the canvas, set `capture: true` and say in `goal` which page or part to copy. When the task names a site or a page, pass its start URL in `url`: the browser opens it before the subagent starts, which saves a step. (To continue from a checkpoint, pass only `resume`: no `url`, no `setup`.) To prepare the page first (a known state, API mocks, a check that it is the right page), pass `setup`. Returns `{ status: \"done\" | \"error\" | \"aborted\" | \"step_limit\" | \"setup_failed\", answer, steps }`, plus `captured: { nodeId, width, height, url, title }` when the page was copied onto the canvas. It may also carry `checkpoint: { id, complete, summary, gap? }`: pass `checkpoint.id` as `resume` in a later browse_agent call to continue from where this run stopped. `complete: false` means the replay may not reproduce the page exactly; `gap` says why. `answer` is the subagent's plain-text report of what it saw; report only what it contains, and do not invent page content that `answer` does not state. `answer` may be in a different language than the chat: report it to the user in the user's language. The browser tab stays open between calls, so a follow-up (another detail on the same page, the next step) is another browse_agent call with a self-contained goal. This tool runs in the user's browser (client side) and has no server-side execute.",
-    inputSchema: z.object({
-      goal: z
-        .string()
-        .min(1)
-        .max(4000)
-        .describe("The whole task for the browsing subagent, self-contained (it sees nothing of this chat): all constraints, names, dates, and what to report back (max 4000 characters)."),
-      url: z
-        .string()
-        .max(2000)
-        .optional()
-        .describe("Optional start URL. If omitted, the subagent continues in the current browser tab or finds the page itself."),
-      setup: browseAgentSetup
-        .optional()
-        .describe("Optional page setup that runs BEFORE the subagent, with the start `url` as the main page. Use it for QA checks, to reach a known state first (steps, cookies, storage), or to simulate API errors (network). If setup fails, the subagent does not run and the result says which stage failed. Secrets the user gave (cookies, tokens) may go here."),
-      resume: z
-        .string()
-        .trim()
-        .min(1)
-        .max(64)
-        .optional()
-        .describe("The id of a checkpoint that an earlier browse_agent call returned in its result (`checkpoint.id`). The browser rebuilds the page (start page, cookies, storage, the recorded steps) before the subagent starts, so it continues where that run stopped. Do not use it together with `url` or `setup`. Checkpoints live in the editor's memory and are lost when the editor reloads."),
-      capture: z
-        .boolean()
-        .optional()
-        .describe("Set true ONLY when the user directly asks to copy or clone the page onto the canvas. The subagent then gets the browse_capture tool and copies the page once. The result then carries `captured: { nodeId, width, height, url, title }`."),
-    }).refine((a) => a.resume === undefined || (a.url === undefined && a.setup === undefined), {
-      message: "`resume` cannot be combined with `url` or `setup`: the checkpoint already carries the start page and setup.",
-      path: ["resume"],
-    }),
+      qaVerdictDefinition.description +
+      " This tool runs in the user's browser (client side) and has no server-side execute.",
+    inputSchema: qaVerdictDefinition.inputSchema,
   }),
+
+  browse_agent: browseAgentToolQa,
 
   browse_task: tool({
     description:

@@ -78,6 +78,7 @@ describe("penTools registry", () => {
         "browse_read",
         "browse_capture",
         "browse_fill_login",
+        "qa_verdict",
       ].sort(),
     );
   });
@@ -146,6 +147,7 @@ describe("penTools registry", () => {
       "browse_read",
       "browse_capture",
       "browse_fill_login",
+      "qa_verdict",
     ] as const) {
       expect(hasExecute(name), `${name} must be client-executed`).toBe(false);
     }
@@ -1562,6 +1564,35 @@ describe("browse_capture schema", () => {
     const agent = schemaOf("browse_agent");
     expect(agent.safeParse({ goal: "copy it", capture: true }).success).toBe(true);
     expect(agent.safeParse({ goal: "copy it", capture: "yes" }).success).toBe(false);
+  });
+});
+
+describe("browse_agent qa flag and qa_verdict schema", () => {
+  it("browse_agent accepts the qa flag", () => {
+    const agent = schemaOf("browse_agent");
+    expect(agent.safeParse({ goal: "test login", qa: true }).success).toBe(true);
+    expect(agent.safeParse({ goal: "test login", qa: "yes" }).success).toBe(false);
+  });
+
+  it("browse_agent rejects qa together with resume", () => {
+    const agent = schemaOf("browse_agent");
+    expect(agent.safeParse({ goal: "g", resume: "abc", qa: true }).success).toBe(false);
+    expect(agent.safeParse({ goal: "g", resume: "abc" }).success).toBe(true);
+  });
+
+  it("browse_agent description lists the timeout status and the qa result", () => {
+    const description = (penTools.browse_agent as { description?: string }).description ?? "";
+    expect(description).toContain('"timeout"');
+    expect(description).toContain("qa: { outcome:");
+    expect(description).toContain("report it to the user in the user's language");
+  });
+
+  it("qa_verdict takes a pass or fail verdict with a reason", () => {
+    const verdict = schemaOf("qa_verdict");
+    expect(verdict.safeParse({ verdict: "pass", reason: "the cart shows 2 items" }).success).toBe(true);
+    expect(verdict.safeParse({ verdict: "fail", reason: "no error shown" }).success).toBe(true);
+    expect(verdict.safeParse({ verdict: "maybe", reason: "x" }).success).toBe(false);
+    expect(verdict.safeParse({ verdict: "pass" }).success).toBe(false);
   });
 });
 

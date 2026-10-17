@@ -138,6 +138,18 @@ describe("POST /api/chat — agentMode browse gate", () => {
     }
   });
 
+  it("passes browseQa from the body to the subagent's tool set", async () => {
+    const { url, close } = await startApp(makeConfig({ BROWSE_MODE: "agent" }));
+    const toolsSent = browseToolsSent(url, "test the login");
+    try {
+      expect(await toolsSent({ browseQa: true })).toContain("qa_verdict");
+      expect(await toolsSent({})).not.toContain("qa_verdict");
+      expect(await toolsSent({ browseQa: false })).not.toContain("qa_verdict");
+    } finally {
+      await close();
+    }
+  });
+
   it("passes browseCapture from the body to the subagent's tool set", async () => {
     const { url, close } = await startApp(makeConfig({ BROWSE_MODE: "agent" }));
     const toolsSent = browseToolsSent(url, "copy the page");

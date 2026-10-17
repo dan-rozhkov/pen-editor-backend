@@ -156,6 +156,9 @@ const chatBodySchema = z.object({
   // canvas (browse_agent's `capture: true`); adds browse_capture to the
   // subagent's tools. Ignored in every other mode.
   browseCapture: z.boolean().optional(),
+  // browse_agent's `qa: true`: the nested subagent turn is a QA run; adds
+  // qa_verdict to the subagent allowlist and swaps in the QA prompt.
+  browseQa: z.boolean().optional(),
   // agentMode "browse" only: the desktop browser has saved logins, so the
   // subagent may carry browse_fill_login. Ignored in every other mode.
   browseLogin: z.boolean().optional(),
@@ -180,6 +183,9 @@ const chatBodySchema = z.object({
       // "desktop" = Electron bridge; "cloud" = backend-hosted Steel browser
       // (honoured only when STEEL_API_KEY is set — see chatTurn.ts's gate).
       browser: z.enum(["desktop", "cloud"]).optional(),
+      // The client forwards browse_agent's `qa: true` as body.browseQa. Without
+      // it the main model is shown browse_agent without the `qa` param.
+      browseQa: z.boolean().optional(),
     })
     .optional(),
 });
@@ -268,6 +274,7 @@ export async function chatRoutes(
       agentMode = "edits",
       clientCapabilities,
       browseCapture,
+      browseQa,
       browseLogin,
     } = parsed.data;
 
@@ -391,6 +398,7 @@ export async function chatRoutes(
         mobbinAccessToken,
         clientCapabilities,
         browseCapture,
+        browseQa,
         browseLogin,
         memoryStore,
         learnedSkillStore,

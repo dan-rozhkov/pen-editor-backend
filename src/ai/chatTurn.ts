@@ -10,9 +10,9 @@ import { markCacheBreakpoint, usesAnthropicPromptCache } from "./anthropicCache.
 import { createHash } from "node:crypto";
 import type { Config } from "../config.js";
 import { bareModelId, createModel, parseModelRef, providerHandlesToolResultImages } from "./provider.js";
-import { penTools, makeBatchDesignTool, makeAnalyzeImageTool } from "./tools.js";
-import { BROWSE_AGENT_TOOL_NAMES } from "@sideform/browser-agent/agent";
-import { BROWSE_AGENT_LOGIN_PROMPT, BROWSE_AGENT_PROMPT, buildSystemPrompt, type AgentMode } from "./system-prompt.js";
+import { penTools, browseAgentToolNoQa, makeBatchDesignTool, makeAnalyzeImageTool } from "./tools.js";
+import { BROWSE_AGENT_TOOL_NAMES, QA_VERDICT_TOOL } from "@sideform/browser-agent/agent";
+import { browseAgentPrompt, buildSystemPrompt, type AgentMode } from "./system-prompt.js";
 import { resolveTaskPolicy, type TaskPolicy } from "./taskPolicy.js";
 import { applyImageBudget, planImageElision } from "./image-budget.js";
 import { freezeElidedSlots, resolveImageRescues } from "./imageRelevance.js";
@@ -243,12 +243,15 @@ export interface PrepareChatTurnInput {
    * Undefined/false → the browse_* tools are dropped below, same as any
    * other caller (the showcase runner, tests) that never wires this.
    */
-  clientCapabilities?: { desktopBrowser?: boolean; browser?: "desktop" | "cloud" };
+  clientCapabilities?: { desktopBrowser?: boolean; browser?: "desktop" | "cloud"; browseQa?: boolean };
   /**
    * agentMode "browse" only: the user directly asked to copy the page onto the
    * canvas, so the subagent may carry browse_capture. Ignored otherwise.
    */
   browseCapture?: boolean;
+  /** The nested browse_agent chat is a QA run (browse_agent's `qa: true`): the
+   * subagent gets qa_verdict and the QA prompt. Ignored outside a browse turn. */
+  browseQa?: boolean;
   /**
    * agentMode "browse" only: the desktop browser has saved logins, so the
    * subagent may carry browse_fill_login (and gets the matching prompt).
@@ -817,8 +820,13 @@ export async function prepareChatTurn(
   // BROWSE_MODE=agent: the main model gets browse_agent only. The subagent
   // turn itself drives the manual tools, so it is excluded.
   const browseAgentOffered = config.BROWSE_MODE === "agent" && hasBrowser && !browseSub;
-  const browserGuidance: "task" | "manual" | "agent" | undefined = browseAgentOffered
-    ? "agent"
+  // Only a client that advertises browseQa is shown the `qa` flag of
+  // browse_agent and the QA bullet; an older one gets neither.
+  const clientHasQa = input.clientCapabilities?.browseQa === true;
+  const browserGuidance: "task" | "manual" | "agent" | "agent-qa" | undefined = browseAgentOffered
+    ? clientHasQa
+      ? "agent-qa"
+      : "agent"
     : browseTaskOffered
       ? "task"
       : hasBrowser
@@ -830,10 +838,11 @@ export async function prepareChatTurn(
   // tool allowlist and the prompt choice.
   const browseLoginAllowed = input.browseLogin === true && browserKind === "desktop";
 
+  // One flag for both the QA prompt and the qa_verdict allowlist entry.
+  const browseQaAllowed = input.browseQa === true && hasBrowser;
+
   const system = browseSub
-    ? browseLoginAllowed
-      ? BROWSE_AGENT_LOGIN_PROMPT
-      : BROWSE_AGENT_PROMPT
+    ? browseAgentPrompt({ qa: browseQaAllowed, login: browseLoginAllowed })
     : buildSystemPrompt(skillCatalog, {
         browserGuidance,
         memoryGuidance: memoryInjected,
@@ -1273,6 +1282,8 @@ export async function prepareChatTurn(
     // below adds it back for a browse turn with browseLogin). Every other
     // turn drops it, including manual/task main turns that keep browse_*.
     if (!browseSub) delete tools[BROWSE_FILL_LOGIN_TOOL];
+    // qa_verdict likewise: subagent-only, and only for a QA run.
+    if (!browseSub) delete tools[QA_VERDICT_TOOL];
 
     // browse_agent exists only in BROWSE_MODE=agent main turns; there the other
     // browser tools move into the subagent. In every other turn (including
@@ -1281,6 +1292,7 @@ export async function prepareChatTurn(
       for (const name of Object.keys(tools)) {
         if (name.startsWith("browse_") && name !== "browse_agent") delete tools[name];
       }
+      if (!clientHasQa) tools.browse_agent = browseAgentToolNoQa;
     } else {
       delete tools.browse_agent;
     }
@@ -1313,6 +1325,7 @@ export async function prepareChatTurn(
       const allowed = new Set<string>(BROWSE_AGENT_TOOL_NAMES);
       if (input.browseCapture === true) allowed.add(BROWSE_CAPTURE_TOOL);
       if (browseLoginAllowed) allowed.add(BROWSE_FILL_LOGIN_TOOL);
+      if (browseQaAllowed) allowed.add(QA_VERDICT_TOOL);
       for (const name of Object.keys(tools)) {
         if (!allowed.has(name)) delete tools[name];
       }
