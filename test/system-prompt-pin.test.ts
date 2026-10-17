@@ -13,10 +13,10 @@ const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 
 describe("buildSystemPrompt byte pin", () => {
   it("core only", () => {
-    expect(sha(buildSystemPrompt())).toBe("1ecd281424c4808cb9650e1c2463c42bb0a93c656cbb6e5f24bbd177192ca8d8");
+    expect(sha(buildSystemPrompt())).toBe("1aec6edfa8397ec852ab9c53a94b4fd8e8339a5e07a721985ff9e06b57b62c9d");
   });
   it("with skill catalog (curated)", () => {
-    expect(sha(buildSystemPrompt([SKILLS[0]]))).toBe("e441cae43f743cbe7eebf8c6e5abc61dd6284fa50fc00f7658498b1cc1261138");
+    expect(sha(buildSystemPrompt([SKILLS[0]]))).toBe("0c17bc84c002ef8c3118b4db29c43d2de1e74c8928fb99e63dd3a6e80e393b28");
   });
   it("with learned + custom skills and all optional blocks", () => {
     expect(
@@ -28,6 +28,6 @@ describe("buildSystemPrompt byte pin", () => {
           canvasContextDelivered: true,
         }),
       ),
-    ).toBe("51766cda21cfc0bb50086c1b6589eb85d1b90af8550248b618ceb3a391988457");
+    ).toBe("b8796337e93fd39692353aac90e8c6495a4afd491b090611fe4fde0bd0429ba9");
   });
 });

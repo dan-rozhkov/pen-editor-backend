@@ -22,8 +22,6 @@ import {
   readEmbedHtmlInputSchema,
   editEmbedHtmlInputShape,
   findEmptySpaceOnCanvasInputShape,
-  getDesignSystemInputShape,
-  lintDesignInputShape,
   setStylesInputShape,
   setTextStylesInputShape,
   applyFillStyleInputShape,
@@ -43,7 +41,6 @@ import {
   POLICY_DEPENDENT_SKILL_NAMES,
 } from "./skillSurface.js";
 import { buildMcpInstructions } from "./instructions.js";
-import { registerDesignSystemResources } from "./designSystemResources.js";
 import { registerCanvasWidget, type CanvasWidgetSettings } from "./canvasWidget.js";
 import { toolMeta } from "./toolAnnotations.js";
 import { BRIDGED_TOOL_NAMES, SKILL_TOOL_NAMES, STATIC_TOOL_NAMES } from "./toolNames.js";
@@ -343,17 +340,6 @@ export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer 
   );
 
   server.registerTool(
-    "get_design_system",
-    {
-      ...toolMeta("get_design_system"),
-      description:
-        sharedDescription("get_design_system"),
-      inputSchema: getDesignSystemInputShape,
-    },
-    (args) => callBridged("get_design_system", args),
-  );
-
-  server.registerTool(
     "get_styles",
     {
       ...toolMeta("get_styles"),
@@ -475,17 +461,6 @@ export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer 
   );
 
   server.registerTool(
-    "lint_design",
-    {
-      ...toolMeta("lint_design"),
-      description:
-        sharedDescription("lint_design"),
-      inputSchema: lintDesignInputShape,
-    },
-    (args) => callBridged("lint_design", args),
-  );
-
-  server.registerTool(
     "list_skills",
     {
       ...toolMeta("list_skills"),
@@ -571,8 +546,6 @@ export function buildMcpServer(ctx: McpContext = LEGACY_MCP_CONTEXT): McpServer 
     },
     async (args) => textResult(JSON.stringify(await getStyleGuideImpl(args))),
   );
-
-  registerDesignSystemResources(server, callBridged);
 
   if (ctx.owner !== null && ctx.widget && ctx.credential) {
     registerCanvasWidget(server, ctx.owner, ctx.credential, ctx.widget);

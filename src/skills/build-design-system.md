@@ -1,6 +1,6 @@
 ---
 name: build-design-system
-description: Build a design system in the document - tokens, themed aliases, and component masters - then verify and lint it.
+description: Build a design system in the document - color and type tokens with light and dark values, and component masters - then verify it.
 args:
   - name: brand
     description: Brand name, mood, or reference to base the system on (optional)
@@ -12,11 +12,11 @@ Build a design system inside the open document. Work in this order. Do not skip 
 
 ## 1. Check what exists
 
-Call `get_design_system`. Note the tokens and components that are already there. Reuse them. Do not create a duplicate.
+Call `get_variables`. Note the tokens that are already there. Reuse them. Do not create a duplicate. Call `get_editor_state`. Its `components` list holds every component that is already defined. Reuse those keys.
 
 ## 2. Define the primitive tokens
 
-Call `set_variables`. Put raw values in one collection named `Primitives`. Use one mode.
+Call `set_variables`. Put the raw values here.
 
 - Colors: a neutral ramp and one brand ramp. Name them by step, for example `--neutral-900` and `--brand-500`.
 - Type: font families, and a size scale.
@@ -24,9 +24,9 @@ Call `set_variables`. Put raw values in one collection named `Primitives`. Use o
 
 Do not use primitives directly in components.
 
-## 3. Define the semantic aliases
+## 3. Define the semantic tokens
 
-Call `set_variables` again. Create a collection named `Theme` with the modes `light` and `dark`. Add semantic variables, for example `--bg`, `--surface`, `--fg`, `--muted`, `--primary`, `--primary-fg`, `--border`. Make each one an alias to a primitive: `"$--neutral-900"`. Give each mode its own target. Components use only these names.
+Call `set_variables` again. Add role tokens, for example `--bg`, `--surface`, `--fg`, `--muted`, `--primary`, `--primary-fg`, `--border`. Give each one a light value, and a dark value in `themeValues`: `{"--bg": {"type": "color", "value": "#ffffff", "themeValues": {"dark": "#0b0b0b"}}}`. Components use only these role names.
 
 ## 4. Define the component masters
 
@@ -42,19 +42,19 @@ Call `define_component` once for each reusable element. Start with the elements 
 
 ## 5. Verify
 
-Call `get_design_system`. Check these points:
+Call `get_variables`. Check these points:
 
-- Each component is listed with its slots and variants.
-- `tokenUses` shows semantic tokens only.
-- The values are correct in both Theme modes.
+- Every role token has a light value and a dark value.
+- The values are correct in both themes.
+
+Read each master back with `read_embed_html`. Check these points:
+
+- Each component has its slots and variants.
+- No component contains a raw color, radius, or font name.
 
 Fix any gap with `define_component` or `set_variables`.
 
-## 6. Lint and fix
-
-Call `lint_design`. Fix each finding. Then call `lint_design` again. Stop when it reports no findings, or only findings you can explain.
-
-## 7. Document (optional)
+## 6. Document (optional)
 
 If the user wants a written summary, call `load_skill` with name `document` and follow it.
 

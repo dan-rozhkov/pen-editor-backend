@@ -97,8 +97,8 @@ describe("POST /api/chat rate limiting: browse turns", () => {
         expect(mainCap.status).toBe(429);
         expect(mainCap.headerNames).toEqual(totalCap.headerNames);
         expect(Object.keys(mainCap.body)).toEqual(Object.keys(totalCap.body));
-        expect(mainCap.body).toMatchObject({ statusCode: 429, error: "Too Many Requests" });
-        expect(mainCap.body.message).toMatch(/^Rate limit exceeded, retry in /);
+        // The app's own setErrorHandler shape, `{ error: message }`.
+        expect(mainCap.body.error).toMatch(/^Rate limit exceeded, retry in /);
       } finally {
         await own2.close();
       }

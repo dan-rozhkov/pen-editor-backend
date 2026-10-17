@@ -23,7 +23,6 @@ const EXPECTED_BRIDGED = [
   "edit_embed_html",
   "rename_layers",
   "find_empty_space_on_canvas",
-  "get_design_system",
   "get_styles",
   "get_text_styles",
   "set_styles",
@@ -35,7 +34,6 @@ const EXPECTED_BRIDGED = [
   "extract_component",
   "detach_instance",
   "delete_component",
-  "lint_design",
 ];
 
 const EXPECTED_STATIC = ["get_guidelines", "get_style_guide_tags", "get_style_guide"];

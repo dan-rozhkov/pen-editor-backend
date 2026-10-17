@@ -25,7 +25,6 @@ export const BRIDGED_TOOL_NAMES = [
   "edit_embed_html",
   "rename_layers",
   "find_empty_space_on_canvas",
-  "get_design_system",
   "get_styles",
   "get_text_styles",
   "set_styles",
@@ -37,7 +36,6 @@ export const BRIDGED_TOOL_NAMES = [
   "extract_component",
   "detach_instance",
   "delete_component",
-  "lint_design",
 ] as const;
 
 export const STATIC_TOOL_NAMES = ["get_guidelines", "get_style_guide_tags", "get_style_guide"] as const;

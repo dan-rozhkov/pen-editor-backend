@@ -15,8 +15,6 @@ import {
   verifyEmailMessage,
   type EmailSender,
 } from "./email.js";
-import { createOrganizationPlugin } from "./organization.js";
-import { noopOrgAuditWriter, type OrgAuditWriter } from "./orgAudit.js";
 import { resolveAuthSettings } from "./settings.js";
 
 // Scope every MCP access token must carry (spec section 3).
@@ -71,16 +69,12 @@ export type AuthDatabase = Parameters<typeof betterAuth>[0]["database"];
 export interface CreateAuthOptions {
   /** Test seam: replaces Resend / the stdout logger. */
   sendEmail?: EmailSender;
-  /** Receives organization member changes (buildApp passes the audit_log writer unless a test overrides it). */
-  orgAudit?: OrgAuditWriter;
-  /** Refuses organization deletion while it owns design-system libraries. */
-  orgHasLibraries?: (organizationId: string) => Promise<boolean>;
   /** Test seam: replaces the pinned-DNS metadata fetch used by CIMD. */
   fetchClientMetadataResource?: typeof fetchClientMetadataResource;
 }
 
 // The schema this config needs is committed as SQL (src/analysis/migrations/
-// 016_auth.sql + 018_auth_organization.sql) — Better Auth never migrates at runtime here. Adding or
+// 016_auth.sql) — Better Auth never migrates at runtime here. Adding or
 // removing a plugin below changes the expected tables: regenerate the
 // migration (see CLAUDE.md "Accounts / Better Auth") or test/auth-migration
 // fails.
@@ -157,12 +151,6 @@ export function createAuth(config: Config, database: AuthDatabase, options: Crea
         metadataProfile: "mcp-2026-07-28",
       }),
       apiKey({ defaultPrefix: API_KEY_PREFIX, rateLimit: API_KEY_RATE_LIMIT }),
-      createOrganizationPlugin({
-        sendEmail,
-        appOrigin: settings.appOrigin,
-        audit: options.orgAudit ?? noopOrgAuditWriter,
-        hasLibraries: options.orgHasLibraries,
-      }),
     ],
   });
   // betterAuth()'s inferred type embeds zod v4 internals that cannot be named
