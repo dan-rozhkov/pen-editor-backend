@@ -8,6 +8,11 @@ import {
 } from "ai";
 import { cachedSystemPrompt, usesAnthropicPromptCache } from "../ai/anthropicCache.js";
 import type { FastifyInstance } from "fastify";
+import {
+  CHAT_MAIN_MAX_PER_MINUTE,
+  CHAT_TOTAL_MAX_PER_MINUTE,
+  createMainTurnLimiter,
+} from "./chatRateLimit.js";
 import { z } from "zod";
 import {
   getAllowedModels,
@@ -186,6 +191,9 @@ const chatBodySchema = z.object({
       // The client forwards browse_agent's `qa: true` as body.browseQa. Without
       // it the main model is shown browse_agent without the `qa` param.
       browseQa: z.boolean().optional(),
+      // The client runs browse_agent calls of one step in parallel, each in an
+      // isolated browser. Only meaningful together with browseQa.
+      browseIsolation: z.boolean().optional(),
     })
     .optional(),
 });
@@ -217,7 +225,15 @@ export async function chatRoutes(
   // app.ts's BuildAppOptions.chatRetryPolicy). Undefined fields fall back
   // to DEFAULT_AGENT_RETRY.
   retryPolicyOverride: Partial<AgentRetryPolicy> = {},
+  // Test seam: lowers the per-IP caps (defaults 300 total / 60 main per minute).
+  rateLimits: { total?: number; main?: number } = {},
 ) {
+  const totalMax = rateLimits.total ?? CHAT_TOTAL_MAX_PER_MINUTE;
+  const checkMainTurnLimit = createMainTurnLimiter(
+    app,
+    config.BROWSE_MODE,
+    rateLimits.main ?? CHAT_MAIN_MAX_PER_MINUTE,
+  );
   const retryPolicy: AgentRetryPolicy = {
     ...DEFAULT_AGENT_RETRY,
     ...retryPolicyOverride,
@@ -231,15 +247,14 @@ export async function chatRoutes(
       config: {
         // Looser than generate-image/prototype-link: a real user chats far
         // more often than they trigger a paid image generation or a
-        // one-shot prototype-link pass — a single active editing session can
-        // easily fire several tool-round-trip requests per minute. 60/min/IP
-        // still bounds a runaway client loop or scripted abuse without
-        // getting in the way of normal chat usage. This route hijacks the
-        // reply (see below), but @fastify/rate-limit's check runs on the
-        // onRequest hook — before preHandler, and well before this handler
-        // ever calls reply.hijack() — so the 429 response fires normally;
-        // confirmed by test/chat-route-rate-limit.test.ts.
-        rateLimit: { max: 60, timeWindow: "1 minute" },
+        // one-shot prototype-link pass. This is the TOTAL cap (default
+        // onRequest hook, IP only, before the body is parsed, so big bodies
+        // are still cut off cheaply): it covers main AND nested browse
+        // turns. The stricter 60/min cap for main turns is checked in the
+        // handler once the body is parsed (see chatRateLimit.ts). The plugin
+        // check runs before the handler calls reply.hijack(), so the 429
+        // fires normally; see test/chat-route-rate-limit.test.ts.
+        rateLimit: { max: totalMax, timeWindow: "1 minute" },
       },
     },
     async (request, reply) => {
@@ -265,6 +280,10 @@ export async function chatRoutes(
         details: parsed.error.format(),
       });
     }
+
+    // Layer 2 of the rate limit (main turns; browse turns are allow-listed):
+    // before any LLM work and before hijack(). Throws the plugin-shaped 429.
+    await checkMainTurnLimit(request, reply);
 
     const {
       id: chatSessionId,

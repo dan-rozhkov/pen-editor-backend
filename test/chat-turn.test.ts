@@ -1,7 +1,7 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadSkills, getSkill } from "../src/ai/skills.js";
 import { createModel } from "../src/ai/provider.js";
-import { AGENT_BROWSER_GUIDANCE, BROWSE_AGENT_LOGIN_PROMPT, BROWSE_AGENT_PROMPT, browseAgentPrompt, MANUAL_BROWSER_GUIDANCE } from "../src/ai/system-prompt.js";
+import { AGENT_BROWSER_GUIDANCE, AGENT_BROWSER_QA_GUIDANCE, AGENT_BROWSER_QA_ISOLATED_GUIDANCE, BROWSE_AGENT_LOGIN_PROMPT, BROWSE_AGENT_PROMPT, browseAgentPrompt, MANUAL_BROWSER_GUIDANCE } from "../src/ai/system-prompt.js";
 import { makeConfig } from "./helpers.js";
 
 vi.mock("../src/ai/mcp.js", () => ({
@@ -1150,6 +1150,50 @@ describe("browse subagent", () => {
       expect(old.system).not.toContain("`qa` param");
       expect(modern.system).toContain("`qa` param");
       expect(AGENT_BROWSER_GUIDANCE).not.toContain("qa: true");
+    });
+
+    it("shows the parallel/isolated sentence only with browseQa + browseIsolation", async () => {
+      const cfg = makeConfig({ BROWSE_MODE: "agent" });
+      const desc = (t: { tools: Record<string, unknown> }) => (t.tools.browse_agent as { description: string }).description;
+      // zod 3: the refined schema is a ZodEffects wrapping the ZodObject.
+      const qaFieldDesc = (t: { tools: Record<string, unknown> }) => {
+        const schema = (t.tools.browse_agent as { inputSchema: Record<string, any> }).inputSchema; // eslint-disable-line @typescript-eslint/no-explicit-any
+        const shape = schema.shape ?? schema._def?.schema?._def?.schema?.shape ?? schema._def?.schema?.shape;
+        return (shape?.qa?.description as string | undefined) ?? "";
+      };
+      const noQa = await prepare({ config: cfg, clientCapabilities: { ...DESKTOP, browseIsolation: true } });
+      const qaOnly = await prepare({ config: cfg, clientCapabilities: { ...DESKTOP, browseQa: true } });
+      const both = await prepare({ config: cfg, clientCapabilities: { ...DESKTOP, browseQa: true, browseIsolation: true } });
+      const marker = "isolated browser";
+      // 1. no browseQa: no QA text, isolation alone changes nothing.
+      expect(noQa.system).not.toContain("`qa` param");
+      expect(noQa.system).not.toContain(marker);
+      expect(desc(noQa)).not.toContain("qa: true");
+      // 2. browseQa only: previous QA text, no parallel sentence.
+      expect(qaOnly.system).toContain("`qa` param");
+      expect(qaOnly.system).not.toContain(marker);
+      expect(qaOnly.system).not.toContain("SAME step");
+      // 3. both: QA text plus the parallel/isolated sentence, in guidance and in the qa field.
+      expect(both.system).toContain("`qa` param");
+      expect(both.system).toContain("SAME step");
+      expect(both.system).toContain(marker);
+      // Cache stability: the two prompts differ ONLY in the browser guidance block.
+      const strip = (sys: string, g: string) => sys.replace(`\n## Browser tasks\n\n${g}`, "");
+      expect(strip(both.system, AGENT_BROWSER_QA_ISOLATED_GUIDANCE)).toBe(strip(qaOnly.system, AGENT_BROWSER_QA_GUIDANCE));
+      expect(both.system).not.toBe(qaOnly.system);
+      // Cloud browser is never isolated, even if the client claims it.
+      const cloud = await prepare({
+        config: makeConfig({ BROWSE_MODE: "agent", STEEL_API_KEY: "k" }),
+        clientCapabilities: { browser: "cloud", browseQa: true, browseIsolation: true },
+      });
+      expect(cloud.system).toContain("`qa` param");
+      expect(cloud.system).not.toContain("SAME step");
+      expect(qaFieldDesc(noQa)).toBe("");
+      expect(qaFieldDesc(qaOnly)).toContain("call browse_agent several times.");
+      expect(qaFieldDesc(qaOnly)).not.toContain("SAME step");
+      expect(qaFieldDesc(both)).toContain("SAME step");
+      expect(qaFieldDesc(both)).toContain(marker);
+      expect(qaOnly.tools.browse_agent).not.toBe(both.tools.browse_agent);
     });
 
     it("never offers qa_verdict outside a browse subagent turn", async () => {

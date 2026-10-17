@@ -104,6 +104,8 @@ export interface BuildAppOptions {
   // integration tests exercise the retry path without waiting out real
   // backoff delays.
   chatRetryPolicy?: Partial<AgentRetryPolicy>;
+  // Test seam: lowers /api/chat's per-IP caps (total / main-turn per minute).
+  chatRateLimits?: { total?: number; main?: number };
   // Test seams for accounts. `auth: undefined` = build from config (only when
   // isAuthEnabled), `null` = explicitly off, an instance = use it as-is.
   auth?: Auth | null;
@@ -412,6 +414,7 @@ export async function buildApp(
     userSkillStore,
     analytics,
     options.chatRetryPolicy,
+    options.chatRateLimits,
   );
   await memoryActivityRoutes(app, config, memoryStore);
   await userSkillRoutes(app, config, userSkillStore);

@@ -17,7 +17,8 @@ import type { FastifyInstance } from "fastify";
 // instances, each holds its own counter, so a client round-robining across
 // instances sees an effective ceiling of N × the configured limit. Fine at
 // today's single-instance scale; revisit with a shared store (e.g. Redis)
-// before scaling out.
+// before scaling out. /api/chat's main-turn cap (routes/chatRateLimit.ts) uses
+// this same store, so it shares the caveat.
 export async function registerRateLimit(app: FastifyInstance) {
   await app.register(rateLimit, {
     global: false,

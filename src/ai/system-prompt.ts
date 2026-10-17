@@ -55,8 +55,10 @@ export interface SystemPromptMemory {
    * Omitted: no browser. Per-capability, not per-request: it is derived from
    * the client's browser capability plus server config, so it stays
    * byte-identical across a session's requests (prompt caching). */
-  browserGuidance?: "task" | "manual" | "agent" | "agent-qa";
+  browserGuidance?: BrowserGuidance;
 }
+
+export type BrowserGuidance = "task" | "manual" | "agent" | "agent-qa" | "agent-qa-isolated";
 
 export const MANUAL_BROWSER_GUIDANCE = buildManualBrowserGuidance({
   extraBullets: [PEN_EDITOR_SCREENSHOT_BULLET, PEN_EDITOR_CAPTURE_BULLET],
@@ -77,6 +79,10 @@ export const AGENT_BROWSER_GUIDANCE = `Every task that needs the built-in browse
 const AGENT_QA_BULLET =
   "- To test a web app or a flow, use the `qa` param of `browse_agent`. Report each scenario's `qa.outcome` and `qa.reason`.";
 export const AGENT_BROWSER_QA_GUIDANCE = `${AGENT_BROWSER_GUIDANCE}\n${AGENT_QA_BULLET}`;
+// Only for clients that also advertise clientCapabilities.browseIsolation.
+const AGENT_QA_ISOLATION_BULLET =
+  "- For several scenarios, call `browse_agent` several times in the SAME step: the QA runs then go in parallel, each in its own isolated browser (fresh state: no saved logins, so use `setup` to prepare state).";
+export const AGENT_BROWSER_QA_ISOLATED_GUIDANCE = `${AGENT_BROWSER_QA_GUIDANCE}\n${AGENT_QA_ISOLATION_BULLET}`;
 
 // The subagent has no chat to ask the user in, so its irreversible-step rule
 // is stop-and-report, and it has no browse_capture bullet: it only gets the
@@ -123,6 +129,14 @@ export const BROWSER_TASKS_GUIDANCE = `Any task that needs the built-in browser 
 - When \`browse_task\` returns \`blocked\` with a reason starting "needs user confirmation" (it stopped before an irreversible step: reserve, buy/pay, submit), never call \`browse_task\` again and never use \`browse_act\` for that step until the user confirms in chat. Report what it found and ask the user to confirm. After the user confirms, call \`browse_task\` again with a goal that names that step explicitly. Never do that step yourself with \`browse_act\` without the user's confirmation.
 - \`browse_capture\` makes an editable copy of the page on the canvas. Call it once, and only when the user directly asks to copy or clone the page. \`browse_screenshot\` with \`placeOnCanvas: true\` puts a picture of the page on the canvas. Do not use one in place of the other.`;
 
+const BROWSER_GUIDANCE_TEXT: Record<BrowserGuidance, string> = {
+  task: BROWSER_TASKS_GUIDANCE,
+  manual: MANUAL_BROWSER_GUIDANCE,
+  agent: AGENT_BROWSER_GUIDANCE,
+  "agent-qa": AGENT_BROWSER_QA_GUIDANCE,
+  "agent-qa-isolated": AGENT_BROWSER_QA_ISOLATED_GUIDANCE,
+};
+
 export function buildSystemPrompt(
   skills: SkillCatalogEntry[] = [],
   memory: SystemPromptMemory = {},
@@ -148,14 +162,7 @@ export function buildSystemPrompt(
   }
 
   if (memory.browserGuidance) {
-    const guidance =
-      memory.browserGuidance === "task"
-        ? BROWSER_TASKS_GUIDANCE
-        : memory.browserGuidance === "agent-qa"
-          ? AGENT_BROWSER_QA_GUIDANCE
-          : memory.browserGuidance === "agent"
-          ? AGENT_BROWSER_GUIDANCE
-          : MANUAL_BROWSER_GUIDANCE;
+    const guidance = BROWSER_GUIDANCE_TEXT[memory.browserGuidance];
     parts.push(`\n## Browser tasks\n\n${guidance}`);
   }
 

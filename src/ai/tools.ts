@@ -1573,12 +1573,26 @@ const BROWSE_AGENT_DESCRIPTION = BROWSE_AGENT_DESCRIPTION_HEAD + BROWSE_AGENT_DE
 const BROWSE_AGENT_DESCRIPTION_WITH_QA =
   BROWSE_AGENT_DESCRIPTION_HEAD + BROWSE_AGENT_DESCRIPTION_QA + BROWSE_AGENT_DESCRIPTION_TAIL;
 
+const BROWSE_AGENT_QA_FIELD_HEAD =
+  "Set true when the user asks to test, check or QA a web app or a flow. The subagent then runs ONE test scenario (put the steps and the expected result in `goal`) and gives a verdict. The result then carries `qa: { outcome, verdict?, reason?, steps }`. One scenario per call: for several scenarios, call browse_agent several times";
+const BROWSE_AGENT_QA_FIELD_TAIL = " Combine with `setup` to prepare the state.";
 const BROWSE_AGENT_QA_FIELD = z
   .boolean()
   .optional()
-  .describe("Set true when the user asks to test, check or QA a web app or a flow. The subagent then runs ONE test scenario (put the steps and the expected result in `goal`) and gives a verdict. The result then carries `qa: { outcome, verdict?, reason?, steps }`. One scenario per call: for several scenarios, call browse_agent several times. Combine with `setup` to prepare the state.");
+  .describe(`${BROWSE_AGENT_QA_FIELD_HEAD}.${BROWSE_AGENT_QA_FIELD_TAIL}`);
+
+// browseIsolation variant: the client can run browse_agent calls of one step in
+// parallel, each in its own isolated browser (built once, stable bytes).
+const BROWSE_AGENT_QA_FIELD_ISOLATED = z
+  .boolean()
+  .optional()
+  .describe(
+    `${BROWSE_AGENT_QA_FIELD_HEAD} in the SAME step. The runs then go in parallel, each in its own isolated browser with fresh state (no saved logins).${BROWSE_AGENT_QA_FIELD_TAIL}`,
+  );
 
 const browseAgentToolQa = browseAgentTool(true);
+/** QA variant for clients that also advertise browseIsolation. */
+export const browseAgentToolQaIsolated = browseAgentTool(true, true);
 /** browse_agent without the `qa` param, for clients without the browseQa capability. */
 export const browseAgentToolNoQa = browseAgentTool(false);
 
@@ -1590,7 +1604,7 @@ function withQaResumeCheck<T extends z.ZodTypeAny>(schema: T): T {
   }) as unknown as T;
 }
 
-function browseAgentTool(qa: boolean) {
+function browseAgentTool(qa: boolean, isolated = false) {
   const schema = z.object({
       goal: z
         .string()
@@ -1616,7 +1630,7 @@ function browseAgentTool(qa: boolean) {
         .boolean()
         .optional()
         .describe("Set true ONLY when the user directly asks to copy or clone the page onto the canvas. The subagent then gets the browse_capture tool and copies the page once. The result then carries `captured: { nodeId, width, height, url, title }`."),
-      ...(qa ? { qa: BROWSE_AGENT_QA_FIELD } : {}),
+      ...(qa ? { qa: isolated ? BROWSE_AGENT_QA_FIELD_ISOLATED : BROWSE_AGENT_QA_FIELD } : {}),
     }).refine((a) => a.resume === undefined || (a.url === undefined && a.setup === undefined), {
       message: "`resume` cannot be combined with `url` or `setup`: the checkpoint already carries the start page and setup.",
       path: ["resume"],

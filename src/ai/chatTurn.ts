@@ -10,9 +10,9 @@ import { markCacheBreakpoint, usesAnthropicPromptCache } from "./anthropicCache.
 import { createHash } from "node:crypto";
 import type { Config } from "../config.js";
 import { bareModelId, createModel, parseModelRef, providerHandlesToolResultImages } from "./provider.js";
-import { penTools, browseAgentToolNoQa, makeBatchDesignTool, makeAnalyzeImageTool } from "./tools.js";
+import { penTools, browseAgentToolNoQa, browseAgentToolQaIsolated, makeBatchDesignTool, makeAnalyzeImageTool } from "./tools.js";
 import { BROWSE_AGENT_TOOL_NAMES, QA_VERDICT_TOOL } from "@sideform/browser-agent/agent";
-import { browseAgentPrompt, buildSystemPrompt, type AgentMode } from "./system-prompt.js";
+import { browseAgentPrompt, buildSystemPrompt, type AgentMode, type BrowserGuidance } from "./system-prompt.js";
 import { resolveTaskPolicy, type TaskPolicy } from "./taskPolicy.js";
 import { applyImageBudget, planImageElision } from "./image-budget.js";
 import { freezeElidedSlots, resolveImageRescues } from "./imageRelevance.js";
@@ -243,7 +243,7 @@ export interface PrepareChatTurnInput {
    * Undefined/false → the browse_* tools are dropped below, same as any
    * other caller (the showcase runner, tests) that never wires this.
    */
-  clientCapabilities?: { desktopBrowser?: boolean; browser?: "desktop" | "cloud"; browseQa?: boolean };
+  clientCapabilities?: { desktopBrowser?: boolean; browser?: "desktop" | "cloud"; browseQa?: boolean; browseIsolation?: boolean };
   /**
    * agentMode "browse" only: the user directly asked to copy the page onto the
    * canvas, so the subagent may carry browse_capture. Ignored otherwise.
@@ -823,9 +823,15 @@ export async function prepareChatTurn(
   // Only a client that advertises browseQa is shown the `qa` flag of
   // browse_agent and the QA bullet; an older one gets neither.
   const clientHasQa = input.clientCapabilities?.browseQa === true;
-  const browserGuidance: "task" | "manual" | "agent" | "agent-qa" | undefined = browseAgentOffered
+  // browseIsolation only means something together with browseQa (the parallel
+  // sentence is about QA runs) and the desktop browser (cloud is never isolated).
+  const clientHasIsolation =
+    clientHasQa && browserKind === "desktop" && input.clientCapabilities?.browseIsolation === true;
+  const browserGuidance: BrowserGuidance | undefined = browseAgentOffered
     ? clientHasQa
-      ? "agent-qa"
+      ? clientHasIsolation
+        ? "agent-qa-isolated"
+        : "agent-qa"
       : "agent"
     : browseTaskOffered
       ? "task"
@@ -1293,6 +1299,7 @@ export async function prepareChatTurn(
         if (name.startsWith("browse_") && name !== "browse_agent") delete tools[name];
       }
       if (!clientHasQa) tools.browse_agent = browseAgentToolNoQa;
+      else if (clientHasIsolation) tools.browse_agent = browseAgentToolQaIsolated;
     } else {
       delete tools.browse_agent;
     }
