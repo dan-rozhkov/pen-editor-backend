@@ -81,7 +81,7 @@ const AGENT_QA_BULLET =
 export const AGENT_BROWSER_QA_GUIDANCE = `${AGENT_BROWSER_GUIDANCE}\n${AGENT_QA_BULLET}`;
 // Only for clients that also advertise clientCapabilities.browseIsolation.
 const AGENT_QA_ISOLATION_BULLET =
-  "- For several scenarios, call `browse_agent` several times in the SAME step: the QA runs then go in parallel, each in its own isolated browser (fresh state: no saved logins, so use `setup` to prepare state).";
+  "- For several scenarios, call `browse_agent` several times in the SAME step: the QA runs then go in parallel, each in its own isolated browser (fresh state: use `setup` to prepare state, or `resume` with `qa: true` to continue a scenario from a checkpoint). Saved logins work: when runs need different accounts, name the account (its label or username) in `goal`.";
 export const AGENT_BROWSER_QA_ISOLATED_GUIDANCE = `${AGENT_BROWSER_QA_GUIDANCE}\n${AGENT_QA_ISOLATION_BULLET}`;
 
 // The subagent has no chat to ask the user in, so its irreversible-step rule
@@ -93,7 +93,7 @@ export const SUBAGENT_BROWSER_GUIDANCE = buildSubagentBrowserGuidance({
 });
 
 const PEN_EDITOR_LOGIN_BULLET =
-  "- Exception to the password rule: `browse_fill_login` is available. When the page shows a sign-in form, call it instead of stopping. It types a login that the user saved. Never type a password yourself. After it, take a snapshot and continue. If it returns an error, stop, as for a login wall.";
+  "- Exception to the password rule: `browse_fill_login` is available. When the page shows a sign-in form, call it instead of stopping. It types a login that the user saved. If the goal names an account, pass it as `label`. Never type a password yourself. After it, take a snapshot and continue. If it returns an error, stop, as for a login wall.";
 
 function buildSubagentPrompt(qa: boolean, login: boolean): string {
   return buildBrowseAgentPrompt({

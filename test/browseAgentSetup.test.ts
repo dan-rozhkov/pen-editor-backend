@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { penTools } from "../src/ai/tools.js";
+import { penTools, browseAgentToolQaIsolated } from "../src/ai/tools.js";
 import { toCommandRunner } from "../src/browser/connect.js";
 import { COMMAND_NAMES } from "../src/browser/cloudSessions.js";
 import type { BrowserController } from "@sideform/browser-agent/controller";
@@ -68,6 +68,23 @@ describe("browse_agent resume schema", () => {
     expect(schema.safeParse({ goal, resume: "cp_1", url: "https://a.test" }).success).toBe(false);
     expect(schema.safeParse({ goal, resume: "cp_1", setup: { version: 1 } }).success).toBe(false);
     expect(schema.safeParse({ goal, url: "https://a.test" }).success).toBe(true);
+  });
+});
+
+describe("browse_agent QA resume schema", () => {
+  const isolated = browseAgentToolQaIsolated.inputSchema as import("zod").ZodType;
+
+  it("isolated QA variant accepts resume with qa: true", () => {
+    expect(isolated.safeParse({ goal, qa: true, resume: "cp_1" }).success).toBe(true);
+  });
+
+  it("isolated QA variant still rejects resume with url or setup", () => {
+    expect(isolated.safeParse({ goal, qa: true, resume: "cp_1", url: "https://a.test" }).success).toBe(false);
+    expect(isolated.safeParse({ goal, qa: true, resume: "cp_1", setup: { version: 1 } }).success).toBe(false);
+  });
+
+  it("non-isolated QA variant rejects resume with qa: true", () => {
+    expect(schema.safeParse({ goal, qa: true, resume: "cp_1" }).success).toBe(false);
   });
 });
 

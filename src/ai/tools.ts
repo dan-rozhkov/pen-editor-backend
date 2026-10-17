@@ -1446,7 +1446,7 @@ const BROWSE_AGENT_QA_FIELD_ISOLATED = z
   .boolean()
   .optional()
   .describe(
-    `${BROWSE_AGENT_QA_FIELD_HEAD} in the SAME step. The runs then go in parallel, each in its own isolated browser with fresh state (no saved logins).${BROWSE_AGENT_QA_FIELD_TAIL}`,
+    `${BROWSE_AGENT_QA_FIELD_HEAD} in the SAME step. The runs then go in parallel, each in its own isolated browser with fresh state. Saved logins still work: the subagent signs in with \`browse_fill_login\`. When the scenarios need different accounts, say in \`goal\` which saved account to use (its label or username). To continue a scenario, pass the earlier run's \`checkpoint.id\` as \`resume\` together with \`qa: true\`.${BROWSE_AGENT_QA_FIELD_TAIL}`,
   );
 
 const browseAgentToolQa = browseAgentTool(true);
@@ -1455,7 +1455,8 @@ export const browseAgentToolQaIsolated = browseAgentTool(true, true);
 /** browse_agent without the `qa` param, for clients without the browseQa capability. */
 export const browseAgentToolNoQa = browseAgentTool(false);
 
-// QA variant only: a QA run is a fresh scenario, so it cannot resume a checkpoint.
+// Non-isolated QA variant only: a QA run is a fresh scenario, so it cannot resume a checkpoint.
+// The isolated variant may resume (with qa: true).
 function withQaResumeCheck<T extends z.ZodTypeAny>(schema: T): T {
   return schema.refine((a: { resume?: string; qa?: boolean }) => a.resume === undefined || a.qa !== true, {
     message: "`resume` cannot be combined with `qa: true`: a QA run is a fresh scenario.",
@@ -1497,7 +1498,7 @@ function browseAgentTool(qa: boolean, isolated = false) {
   return tool({
     description:
       qa ? BROWSE_AGENT_DESCRIPTION_WITH_QA : BROWSE_AGENT_DESCRIPTION,
-    inputSchema: qa ? withQaResumeCheck(schema) : schema,
+    inputSchema: qa && !isolated ? withQaResumeCheck(schema) : schema,
   });
 
 }
@@ -2308,13 +2309,13 @@ Returns the created/updated style ids and names (with a created|updated status) 
 
   browse_fill_login: tool({
     description:
-      "Type a login that the user saved in the desktop browser into the sign-in form of the current tab. You never see the password. Call it when the page shows a sign-in form. Without `label` it uses the saved login for this site. With `label` it uses that saved account. Set `submit: true` to also press Enter after the fields are filled. After it, take a snapshot. Returns `{ ok, origin, label, filled, submitted }`. An error means there is no saved login for this site: stop, as for a login wall. This tool runs in the user's browser (client side) and has no server-side execute.",
+      "Type a login that the user saved in the desktop browser into the sign-in form of the current tab. You never see the password. Call it when the page shows a sign-in form. Without `label` it uses the saved login for this site. With `label` it uses the saved account whose label or username matches. Set `submit: true` to also press Enter after the fields are filled. After it, take a snapshot. Returns `{ ok, origin, label, filled, submitted }`. An error means there is no saved login for this site: stop, as for a login wall. This tool runs in the user's browser (client side) and has no server-side execute.",
     inputSchema: z.object({
       label: z
         .string()
         .max(200)
         .optional()
-        .describe("Label of the saved account to use. Omit it to use the saved login for this site."),
+        .describe("Label or username of the saved account to use. Omit it to use the saved login for this site."),
       submit: z
         .boolean()
         .optional()
