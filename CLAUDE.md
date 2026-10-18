@@ -322,6 +322,17 @@ Three tables (migration `009_agent_memory.sql`, index in `010_...idx.sql`):
 (`src/routes/memoryActivity.ts`) is a read-only UI-visibility signal for a
 "memory updated" toast — never a 5xx for a disabled/missing backend, always
 `{events: [], latestId: null}` in that case.
+Each event may also carry optional string `chatId` / `messageId` (the chat
+route body `id` and the id of the last user message of the turn), read from
+the audit row's `payload` (written by the background review into every
+skill/memory/`review` row; no column) via `payload->>'chatId'`/`'messageId'`
+only when the JSON value is a string (`jsonb_typeof`) — other payload contents
+never reach the client. The one rule (`isAttributionId`,
+`src/ai/selfimprove/attribution.ts`): a string of 1..200 chars (200 = the chat
+body `id` max); the review, the route and the feed all use it. Attribution is
+written first in each payload, so a real payload field always wins. Absent for
+foreground writes and for ids failing the rule; `review` rows stay filtered
+out of the feed.
 
 **`npm run memory:curate`** is the repair path (no route/UI touches memory
 otherwise): `--list-users` discovers ids, `--user <id>` shows both targets,

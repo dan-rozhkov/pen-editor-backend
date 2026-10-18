@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { Config } from "../config.js";
 import type { MemoryStore } from "../ai/memory/store.js";
 import { requireUserId } from "../auth/actor.js";
+import { isAttributionId } from "../ai/selfimprove/attribution.js";
 
 // Same 1..64 bound as the chat route's `userId` field (locked interface,
 // self-improvement-loop spec) — a client-generated crypto.randomUUID(), not
@@ -65,6 +66,8 @@ export async function memoryActivityRoutes(
           action: event.action,
           origin: event.origin,
           created_at: event.createdAt,
+          ...(isAttributionId(event.chatId) ? { chatId: event.chatId } : {}),
+          ...(isAttributionId(event.messageId) ? { messageId: event.messageId } : {}),
         })),
         latestId: result.latestId,
       });

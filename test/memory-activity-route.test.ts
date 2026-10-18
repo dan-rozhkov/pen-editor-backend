@@ -129,6 +129,31 @@ describe("GET /api/memory/activity", () => {
     expect(JSON.stringify(body)).not.toContain("payload");
   });
 
+  it("includes chatId/messageId only when they are non-empty strings", async () => {
+    const base = { subsystem: "memory", action: "add", origin: "background_review", createdAt: "t" };
+    const store = fakeMemoryStore({
+      listAuditActivity: vi.fn(async () => ({
+        events: [
+          { ...base, id: 1, chatId: "chat-1", messageId: "msg-1" },
+          { ...base, id: 2 },
+          { ...base, id: 3, chatId: 5, messageId: null },
+          { ...base, id: 4, chatId: "", messageId: "msg-4" },
+        ],
+        latestId: 4,
+      })) as never,
+    });
+    await build(store);
+    const { body } = await get("?userId=11111111-1111-4111-8111-111111111111&sinceId=0");
+    const events = (body as { events: Array<Record<string, unknown>> }).events;
+    expect(events[0]).toMatchObject({ chatId: "chat-1", messageId: "msg-1" });
+    expect(events[1]).not.toHaveProperty("chatId");
+    expect(events[1]).not.toHaveProperty("messageId");
+    expect(events[2]).not.toHaveProperty("chatId");
+    expect(events[2]).not.toHaveProperty("messageId");
+    expect(events[3]).not.toHaveProperty("chatId");
+    expect(events[3].messageId).toBe("msg-4");
+  });
+
   it("400s on a negative or non-integer sinceId", async () => {
     await build(fakeMemoryStore());
     expect((await get("?userId=11111111-1111-4111-8111-111111111111&sinceId=-1")).status).toBe(400);

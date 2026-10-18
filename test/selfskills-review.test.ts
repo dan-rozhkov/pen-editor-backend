@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { makeConfig } from "./helpers.js";
-import { capturingGenerateModel, textResult, type CapturedGenerateCall } from "./reviewFakes.js";
+import { capturingGenerateModel, textResult, toolCallResult, type CapturedGenerateCall } from "./reviewFakes.js";
 import { createMemoryStore, type MemoryStore } from "../src/ai/memory/store.js";
 import { createLearnedSkillStore, type LearnedSkillStore } from "../src/ai/skills/learnedStore.js";
 import { MEMORY_REVIEW_PROMPT } from "../src/ai/memory/prompts.js";
@@ -138,6 +138,36 @@ describe("maybeRunReview — skill branch", () => {
       ["u1"],
     );
     expect((finalState.rows[0] as { steps_since_skill: number }).steps_since_skill).toBe(0);
+  });
+
+  it("stamps chatId/messageId into the skill audit payload and the review observation row", async () => {
+    const { maybeRunReview } = await import("../src/ai/selfimprove/review.js");
+    holders.model = capturingGenerateModel(
+      capturedCalls,
+      toolCallResult("skill_manage", {
+        action: "create",
+        name: "tight-headers",
+        description: "How to tighten headers",
+        body: "# Tight headers\n\nUse 8px gaps.",
+      }),
+      textResult("Saved."),
+    );
+    const outcome = await maybeRunReview(
+      input({ stepCount: 15, chatId: "chat-9", messageId: "msg-9" }),
+    );
+    expect(outcome).toBe("ran");
+    const rows = await harness.pool.query(
+      "SELECT subsystem, payload FROM agent_selfimprove_audit WHERE user_id = $1",
+      ["u1"],
+    );
+    const bySub = Object.fromEntries(
+      (rows.rows as Array<{ subsystem: string; payload: Record<string, unknown> }>).map((r) => [
+        r.subsystem,
+        r.payload,
+      ]),
+    );
+    expect(bySub.skill).toMatchObject({ chatId: "chat-9", messageId: "msg-9" });
+    expect(bySub.review).toMatchObject({ chatId: "chat-9", messageId: "msg-9" });
   });
 
   it("whitelists exactly the memory and skill tools when both subsystems are enabled", async () => {

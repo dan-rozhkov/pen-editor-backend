@@ -3,11 +3,16 @@ import { loadSkills } from "../src/ai/skills.js";
 import { makeConfig } from "./helpers.js";
 import type { MemoryStore } from "../src/ai/memory/store.js";
 import { chatMocks, mockModel, textStreamChunks, toolCallStreamChunks, userMessage } from "./chatMocks.js";
+import { runReviewSafe } from "../src/ai/selfimprove/review.js";
 import { chatTurn, startApp, type RunningApp } from "./chatHarness.js";
 
 vi.mock("../src/ai/provider.js", async (importOriginal) =>
   (await import("./chatMocks.js")).mockProviderModule(await importOriginal()),
 );
+vi.mock("../src/ai/selfimprove/review.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/ai/selfimprove/review.js")>();
+  return { ...actual, runReviewSafe: vi.fn(actual.runReviewSafe) };
+});
 vi.mock("../src/ai/mcp.js", async () => (await import("./chatMocks.js")).mockMcpModule());
 
 function fakeMemoryStore(): MemoryStore & { loadSnapshot: ReturnType<typeof vi.fn> } {
@@ -131,6 +136,42 @@ describe("POST /api/chat — review only bumps the counter on a completed turn",
     expect(store.bumpCounters).toHaveBeenCalledWith(
       expect.objectContaining({ userId: "11111111-1111-4111-8111-111111111111", turns: 0 }),
     );
+    await server.close();
+  });
+});
+
+describe("POST /api/chat — review attribution", () => {
+  const userId = "11111111-1111-4111-8111-111111111111";
+  const reviewArgs = () => vi.mocked(runReviewSafe).mock.calls.at(-1)![0];
+
+  it("passes the body id and the LAST user message id to the review", async () => {
+    vi.mocked(runReviewSafe).mockClear();
+    await start(true);
+    await postChat({
+      id: "chat-1",
+      userId,
+      messages: [
+        { id: "u-old", role: "user", parts: [{ type: "text", text: "first" }] },
+        { id: "a-1", role: "assistant", parts: [{ type: "text", text: "ok" }] },
+        { id: "u-last", role: "user", parts: [{ type: "text", text: "second" }] },
+      ],
+    });
+    await vi.waitFor(() => expect(runReviewSafe).toHaveBeenCalledTimes(1));
+    expect(reviewArgs()).toMatchObject({ chatId: "chat-1", messageId: "u-last" });
+    await server.close();
+  });
+
+  it("accepts a 129-char chat id but omits a message id longer than 200 chars", async () => {
+    vi.mocked(runReviewSafe).mockClear();
+    await start(true);
+    await postChat({
+      id: "c".repeat(129),
+      userId,
+      messages: [{ id: "m".repeat(201), role: "user", parts: [{ type: "text", text: "hi" }] }],
+    });
+    await vi.waitFor(() => expect(runReviewSafe).toHaveBeenCalledTimes(1));
+    expect(reviewArgs()).toMatchObject({ chatId: "c".repeat(129) });
+    expect(reviewArgs()).not.toHaveProperty("messageId");
     await server.close();
   });
 });

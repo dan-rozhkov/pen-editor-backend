@@ -519,7 +519,15 @@ describe("self-improvement loop — end to end", () => {
       );
       expect(reviewEvent).toBeDefined();
       expect(reviewEvent).not.toHaveProperty("payload");
-      expect(Object.keys(reviewEvent!).sort()).toEqual(["action", "created_at", "id", "origin", "subsystem"]);
+      expect(Object.keys(reviewEvent!).sort()).toEqual([
+        "action",
+        "created_at",
+        "id",
+        "messageId", // userMessage() carries id "m1"; the body sends no chat `id`
+        "origin",
+        "subsystem",
+      ]);
+      expect(reviewEvent!.messageId).toBe("m1");
 
       // ...and the observation row does NOT appear in it. This feed drives
       // the user-facing "memory updated" toast; a review that merely RAN is

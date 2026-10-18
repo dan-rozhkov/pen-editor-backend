@@ -46,6 +46,7 @@ import type { LearnedSkillStore } from "../ai/skills/learnedStore.js";
 import type { TraceQueryable } from "../tracing/traceStore.js";
 import type { UserSkillStore } from "../ai/skills/userStore.js";
 import type { AnalyticsClient } from "../analytics/posthog.js";
+import { ATTRIBUTION_ID_MAX, isAttributionId, type ReviewAttribution } from "../ai/selfimprove/attribution.js";
 
 // Re-exported for backwards compatibility: existing tests import this
 // symbol from routes/chat.js. The implementation now lives in
@@ -145,8 +146,27 @@ function mapSteps(steps: readonly StepResult<ToolSet>[]): LogStep[] {
   }));
 }
 
+/** Chat id + id of the user message that started the turn, for stamping the
+ * background review's audit rows (see `isAttributionId` for the id rule). */
+function reviewAttribution(
+  chatId: unknown,
+  messages: ReadonlyArray<Record<string, unknown>>,
+): ReviewAttribution {
+  let lastUserId: unknown;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "user") {
+      lastUserId = messages[i].id;
+      break;
+    }
+  }
+  return {
+    ...(isAttributionId(chatId) ? { chatId } : {}),
+    ...(isAttributionId(lastUserId) ? { messageId: lastUserId } : {}),
+  };
+}
+
 const chatBodySchema = z.object({
-  id: z.string().max(200).optional(),
+  id: z.string().max(ATTRIBUTION_ID_MAX).optional(),
   messages: z.array(z.record(z.unknown())).min(1, "messages must not be empty"),
   canvasContext: z.string().optional(),
   // The model the user picked in the composer. Must be one of
@@ -692,6 +712,7 @@ export async function chatRoutes(
             turnComplete,
             learnedSkillStore,
             auditDb,
+            ...reviewAttribution(chatSessionId, messages),
           });
         }
       },

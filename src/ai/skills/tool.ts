@@ -11,6 +11,7 @@ import { tool } from "ai";
 import { z } from "zod";
 import type { TraceQueryable } from "../../tracing/traceStore.js";
 import { insertAuditRow, type AuditEntry, type AuditOrigin } from "../memory/store.js";
+import type { ReviewAttribution } from "../selfimprove/attribution.js";
 import { penTools } from "../tools.js";
 import { getAllSkills, getSkill } from "../skills.js";
 import { invalidateLearnedCatalog, type LearnedSkillStore } from "./learnedStore.js";
@@ -29,6 +30,8 @@ export interface SelfSkillToolDeps {
   db: TraceQueryable;
   userId: string;
   origin: AuditOrigin;
+  /** Stamped into every audit payload; real payload fields win. */
+  attribution?: ReviewAttribution;
   /** skill_view exists for the background review run; a normal design turn
    *  reads skills through load_skill, which already satisfies the guard. */
   includeView: boolean;
@@ -100,7 +103,13 @@ export function getSelfSkillTools(
   // never turn a landed skill change into a reported error, or the model
   // retries a write that already succeeded (see "failure isolation" tests).
   const audit = async (action: string, payload: Record<string, unknown>) => {
-    const entry: AuditEntry = { userId, origin, subsystem: "skill", action, payload };
+    const entry: AuditEntry = {
+      userId,
+      origin,
+      subsystem: "skill",
+      action,
+      payload: { ...deps.attribution, ...payload },
+    };
     try {
       await insertAuditRow(db, entry);
     } catch (err) {

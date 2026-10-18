@@ -6,6 +6,7 @@ import {
   MEMORY_WRITE_SAVED,
 } from "./prompts.js";
 import type { AuditOrigin, MemoryStore } from "./store.js";
+import type { ReviewAttribution } from "../selfimprove/attribution.js";
 import type { MemoryOperation, MemoryTarget } from "./types.js";
 
 /** After this many failed memory calls in ONE request the tool stops the
@@ -19,14 +20,17 @@ export interface MemoryToolContext {
   // Per-request, mutable: a fresh context is built for every turn (and for
   // every review run), so the counter can never leak across requests.
   failures: { count: number };
+  /** Stamped into each audit payload (background review). */
+  attribution?: ReviewAttribution;
 }
 
 export function createMemoryToolContext(
   store: MemoryStore,
   userId: string,
   origin: AuditOrigin,
+  attribution?: ReviewAttribution,
 ): MemoryToolContext {
-  return { store, userId, origin, failures: { count: 0 } };
+  return { store, userId, origin, failures: { count: 0 }, ...(attribution ? { attribution } : {}) };
 }
 
 // Exported so the background review can build a schema-accurate `memory`
@@ -77,6 +81,7 @@ export function getMemoryTools(ctx: MemoryToolContext): Record<string, unknown> 
           target,
           operations,
           origin: ctx.origin,
+          ...(ctx.attribution ? { attribution: ctx.attribution } : {}),
         });
       } catch (err) {
         ctx.failures.count += 1;

@@ -3,6 +3,7 @@ import type { Config } from "../../config.js";
 import { logSession } from "../../logging.js";
 import { bareModelId, createModel, isOpenCodeProvider, parseModelRef } from "../provider.js";
 import type { MemoryStore } from "../memory/store.js";
+import { isAttributionId, type ReviewAttribution } from "./attribution.js";
 import { createMemoryToolContext, getMemoryTools, memoryInputSchema } from "../memory/tool.js";
 import { renderMemorySnapshot } from "../memory/render.js";
 import { selectReviewPrompt } from "../skills/prompts.js";
@@ -207,6 +208,11 @@ export interface MaybeRunReviewInput {
    * MemoryStore.writeAudit — see src/ai/selfimprove/auditDb.ts).
    */
   auditDb?: TraceQueryable | null;
+  /** Chat (route body `id`) and turn (last user message id) this review came
+   * from; stamped into every audit payload the run writes so the UI can show
+   * the "memory updated" row under the right reply. */
+  chatId?: string;
+  messageId?: string;
 }
 
 export type ReviewOutcome = "disabled" | "mid-turn" | "not-due" | "ran" | "timed-out";
@@ -240,6 +246,10 @@ export async function maybeRunReview(
   // comment at that write site), and `scenarios` itself is scoped inside the
   // try below.
   let scenariosForAudit: DueScenario[] = [];
+  const attribution: ReviewAttribution = {
+    ...(isAttributionId(input.chatId) ? { chatId: input.chatId } : {}),
+    ...(isAttributionId(input.messageId) ? { messageId: input.messageId } : {}),
+  };
 
   try {
     // Bump on EVERY request, mid-turn or not — a single user message can
@@ -394,7 +404,7 @@ export async function maybeRunReview(
     // and vice versa.
     const reviewTools: ToolSet = { ...buildReviewToolStubs(input.turnTools) };
     if (config.MEMORY_ENABLED) {
-      const ctx = createMemoryToolContext(store, userId, "background_review");
+      const ctx = createMemoryToolContext(store, userId, "background_review", attribution);
       Object.assign(reviewTools, getMemoryTools(ctx));
     } else if (config.SELF_SKILLS_ENABLED) {
       // Memory is off: `turnTools` (built from the REAL turn's tool set)
@@ -423,6 +433,7 @@ export async function maybeRunReview(
           db: input.auditDb,
           userId,
           origin: "background_review",
+          attribution,
           // skill_view exists only for the review run — a normal design
           // turn reads a skill via load_skill, which already satisfies
           // skill_manage's read-before-write guard.
@@ -494,6 +505,7 @@ export async function maybeRunReview(
     }
 
     await writeReviewAudit(store, userId, wrote ? "saved" : "nothing-saved", {
+      ...attribution,
       memoryDue: due.memoryDue,
       skillDue: due.skillDue,
       // The metric the whole scenario layer is judged by: saved-rate on runs
@@ -567,6 +579,7 @@ export async function maybeRunReview(
     // been reset by then, so a silent failure here costs a whole interval.
     if (started && store && userId) {
       await writeReviewAudit(store, userId, timedOut ? "timed-out" : "failed", {
+        ...attribution,
         ...dueForAudit,
         // Same field, same shape as the success path (`scenario_ids`, always
         // an array) — omitting it here was the bug: run.ts classifies a run

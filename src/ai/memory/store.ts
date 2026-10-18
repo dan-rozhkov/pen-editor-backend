@@ -1,5 +1,6 @@
 import type { Config } from "../../config.js";
 import { createPgPool } from "../../tracing/traceStore.js";
+import type { ReviewAttribution } from "../selfimprove/attribution.js";
 import { applyMemoryOperations, type MemoryApplyOutcome } from "./apply.js";
 import {
   type MemoryOperation,
@@ -80,6 +81,10 @@ export interface AuditActivityEvent {
   action: string;
   origin: AuditOrigin;
   createdAt: string;
+  /** Chat/turn attribution of a background-review write; only the two
+   * `payload` keys `chatId`/`messageId`, never other payload contents. */
+  chatId?: string;
+  messageId?: string;
 }
 
 export interface AuditActivityResult {
@@ -94,6 +99,8 @@ export interface MemoryStore {
     target: MemoryTarget;
     operations: MemoryOperation[];
     origin: AuditOrigin;
+    /** Stamped into the audit row's payload; real payload fields win. */
+    attribution?: ReviewAttribution;
   }): Promise<MemoryApplyOutcome>;
   bumpCounters(input: {
     userId: string;
@@ -204,7 +211,7 @@ export function createMemoryStore(
       return snapshot;
     },
 
-    async applyOperations({ userId, target, operations, origin }) {
+    async applyOperations({ userId, target, operations, origin, attribution }) {
       const client = await db.connect();
       try {
         await client.query("BEGIN");
@@ -238,6 +245,7 @@ export function createMemoryStore(
           subsystem: "memory",
           action: operations.map((op) => op.action).join("+"),
           payload: {
+            ...attribution,
             target,
             operations,
             entryCount: outcome.entries.length,
@@ -347,7 +355,9 @@ export function createMemoryStore(
       }
 
       const rows = (await db.query(
-        `SELECT id, subsystem, action, origin, created_at
+        `SELECT id, subsystem, action, origin, created_at,
+                CASE WHEN jsonb_typeof(payload->'chatId') = 'string' THEN payload->>'chatId' END AS chat_id,
+                CASE WHEN jsonb_typeof(payload->'messageId') = 'string' THEN payload->>'messageId' END AS message_id
            FROM agent_selfimprove_audit
           WHERE user_id = $1 AND id > $2 AND subsystem <> 'review'
           ORDER BY id ASC
@@ -360,6 +370,8 @@ export function createMemoryStore(
           action: string;
           origin: AuditOrigin;
           created_at: string | Date;
+          chat_id?: string | null;
+          message_id?: string | null;
         }>;
       };
 
@@ -369,6 +381,8 @@ export function createMemoryStore(
         action: row.action,
         origin: row.origin,
         createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
+        ...(typeof row.chat_id === "string" && row.chat_id ? { chatId: row.chat_id } : {}),
+        ...(typeof row.message_id === "string" && row.message_id ? { messageId: row.message_id } : {}),
       }));
 
       return { events, latestId };

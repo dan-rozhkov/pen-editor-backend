@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createMemoryStore, type MemoryStore } from "../src/ai/memory/store.js";
 import { createPgliteHarness, type PgliteHarness } from "./pgliteShowcaseHelpers.js";
 import { makeConfig } from "./helpers.js";
+import type { ReviewAttribution } from "../src/ai/selfimprove/attribution.js";
 
 let harness: PgliteHarness;
 let store: MemoryStore;
@@ -142,6 +143,60 @@ describe("listAuditActivity", () => {
     expect(result.events).toEqual([]);
     expect(typeof result.latestId).toBe("number");
     expect(result.latestId).not.toBeNull();
+  });
+
+  it("returns chatId/messageId from the payload, and nothing else from it", async () => {
+    await store.applyOperations({
+      userId: "u1",
+      target: "memory",
+      operations: [{ action: "add", content: "seed" }],
+      origin: "foreground",
+    });
+    const sinceId = (await store.listAuditActivity({ userId: "u1" })).latestId!;
+    await store.applyOperations({
+      userId: "u1",
+      target: "memory",
+      operations: [{ action: "add", content: "secret entry" }],
+      origin: "background_review",
+      attribution: { chatId: "chat-1", messageId: "msg-1" },
+    });
+    await store.applyOperations({
+      userId: "u1",
+      target: "memory",
+      operations: [{ action: "add", content: "plain" }],
+      origin: "foreground",
+    });
+    const { events } = await store.listAuditActivity({ userId: "u1", sinceId });
+    expect(events[0]).toMatchObject({ chatId: "chat-1", messageId: "msg-1" });
+    expect(events[1]).not.toHaveProperty("chatId");
+    expect(events[1]).not.toHaveProperty("messageId");
+    expect(JSON.stringify(events)).not.toContain("secret entry");
+  });
+
+  it("never returns a non-string payload chatId/messageId, and attribution cannot overwrite real payload keys", async () => {
+    await store.writeAudit({
+      userId: "u1",
+      origin: "background_review",
+      subsystem: "memory",
+      action: "add",
+      payload: { chatId: 5, messageId: { a: 1 } },
+    });
+    await store.applyOperations({
+      userId: "u1",
+      target: "memory",
+      operations: [{ action: "add", content: "x" }],
+      origin: "background_review",
+      attribution: { chatId: "c", target: "evil" } as ReviewAttribution,
+    });
+    const { events } = await store.listAuditActivity({ userId: "u1", sinceId: 0 });
+    expect(events[0]).not.toHaveProperty("chatId");
+    expect(events[0]).not.toHaveProperty("messageId");
+    expect(events[1].chatId).toBe("c");
+    const row = await harness.pool.query(
+      "SELECT payload->>'target' AS target FROM agent_selfimprove_audit WHERE payload->>'chatId' = $1",
+      ["c"],
+    );
+    expect((row.rows[0] as { target: string }).target).toBe("memory");
   });
 
   it("with sinceId, returns only rows with id > sinceId in ascending id order", async () => {
