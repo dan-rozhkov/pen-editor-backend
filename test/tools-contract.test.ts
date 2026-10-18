@@ -1618,6 +1618,14 @@ describe("browse_agent checks, setup.emulate and qa_assert schema", () => {
     expect(ok({ device: "ipad", geolocation: {} })).toBe(false);
   });
 
+  it("browse_act accepts the viewport action", () => {
+    const act = schemaOf("browse_act");
+    expect(act.safeParse({ action: "viewport", device: "iphone-15" }).success).toBe(true);
+    expect(act.safeParse({ action: "viewport", device: "reset" }).success).toBe(true);
+    expect(act.safeParse({ action: "viewport", device: "custom", width: 800, height: 600, mobile: true }).success).toBe(true);
+    expect(act.safeParse({ actions: [{ action: "viewport", device: "desktop-1440" }, { action: "viewport", device: "pixel-8" }] }).success).toBe(true);
+  });
+
   it("browse_act accepts the upload action", () => {
     const act = schemaOf("browse_act");
     expect(act.safeParse({ action: "upload", index: 3, files: [{ name: "a.txt", text: "hi" }] }).success).toBe(true);

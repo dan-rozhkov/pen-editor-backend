@@ -40,6 +40,7 @@ function fakes() {
     startJournal: vi.fn(async () => ({ ok: true, token: "jt" })),
     stopJournal: vi.fn(async () => ({ ok: true })),
     captureCheckpoint: vi.fn(async () => ({ ok: true, complete: true, summary: "s", fixture: {} })),
+    clearActEmulation: vi.fn(async () => ({ ok: true })),
   };
   const connect = vi.fn(async (url: string): Promise<ConnectedBrowser> => ({
     controller,
@@ -145,6 +146,22 @@ describe("cloud browser routes", () => {
     expect(res.result).toEqual({ ok: true });
     const noSession = (await cmd("releaseFixture", { userId: USER, chatId: "other", args: { token: "tok" } })).json();
     expect(noSession.handle).toBeNull();
+  });
+
+  it("forwards clearActEmulation to the session's controller", async () => {
+    const f = fakes();
+    const { cmd } = await start({}, f);
+    const { handle } = (await cmd("open", { userId: USER, chatId: "c" })).json();
+    const res = (await cmd("clearActEmulation", { userId: USER, chatId: "c", handle })).json();
+    expect(f.controller.clearActEmulation).toHaveBeenCalled();
+    expect(res.result).toEqual({ ok: true });
+  });
+
+  it("toCommandRunner maps clearActEmulation to controller.clearActEmulation()", async () => {
+    const bc = { clearActEmulation: vi.fn(async () => undefined) };
+    const runner = toCommandRunner(bc as unknown as BrowserController);
+    expect(await runner.clearActEmulation(undefined)).toEqual({ ok: true });
+    expect(bc.clearActEmulation).toHaveBeenCalledTimes(1);
   });
 
   describe("checkpoint journal (through the real toCommandRunner)", () => {

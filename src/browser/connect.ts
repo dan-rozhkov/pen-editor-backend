@@ -53,6 +53,10 @@ export function toCommandRunner(controller: BrowserController): CommandRunner {
       if ("error" in t) return { ok: false, error: t.error };
       return { ok: controller.stopJournal(t.token) };
     },
+    clearActEmulation: async () => {
+      await controller.clearActEmulation();
+      return { ok: true };
+    },
     captureCheckpoint: async (args) => {
       const t = requiredTokenArg(args);
       if ("error" in t) return { ok: false, error: t.error };
