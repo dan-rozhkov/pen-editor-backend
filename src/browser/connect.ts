@@ -25,6 +25,7 @@ export function toCommandRunner(controller: BrowserController): CommandRunner {
     capture: (args) => controller.capture(args),
     tabs: (args) => controller.tabs(args),
     perform: (args) => controller.perform(args),
+    assert: (args) => controller.assert(args),
     applyFixture: async (args) => {
       const fixture = (args as { fixture?: unknown } | undefined)?.fixture;
       if (typeof fixture !== "object" || fixture === null || Array.isArray(fixture)) {

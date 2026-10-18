@@ -6,8 +6,13 @@ import { screenshotOutputToContent } from "./screenshotOutput.js";
 import {
   browseScreenshotInputSchema,
   createBrowseToolDefinitions,
+  qaAssertDefinition,
+  qaCheckSchema,
   qaVerdictDefinition,
+  QA_CHECKS_MAX,
+  normalizeQaChecks,
 } from "@sideform/browser-agent/agent";
+import { DEVICE_PRESETS, parsePageFixture } from "@sideform/browser-agent/fixture";
 import { PEN_EDITOR_BROWSE_SLOTS } from "./browseToolText.js";
 
 const MAX_BATCH_DESIGN_OPERATIONS = 25;
@@ -1394,6 +1399,33 @@ const fixtureExpect = z
   })
   .strict()
   .refine((e) => e.selector !== undefined || e.text !== undefined || e.url !== undefined, { message: "`expect` needs `selector`, `text` or `url`." });
+const FIXTURE_DEVICES = Object.keys(DEVICE_PRESETS) as [keyof typeof DEVICE_PRESETS, ...(keyof typeof DEVICE_PRESETS)[]];
+// The bounds mirror the package parser (fixture/parse.js). The superRefine runs
+// the parser itself, so a limit that the package changes cannot drift from here.
+const fixtureEmulate = z
+  .object({
+    device: z.enum(FIXTURE_DEVICES).optional(),
+    viewport: z
+      .object({
+        width: z.number().int().min(200).max(4000),
+        height: z.number().int().min(200).max(4000),
+        deviceScaleFactor: z.number().min(0.5).max(4).optional(),
+        mobile: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
+    touch: z.boolean().optional(),
+    userAgent: z.string().max(512).optional(),
+    locale: z.string().optional(),
+    timezone: z.string().optional(),
+    colorScheme: z.enum(["light", "dark"]).optional(),
+    reducedMotion: z.boolean().optional(),
+  })
+  .strict()
+  .superRefine((emulate, ctx) => {
+    const parsed = parsePageFixture({ version: 1, emulate });
+    if (!parsed.ok) ctx.addIssue({ code: z.ZodIssueCode.custom, message: parsed.error });
+  });
 export const browseAgentSetup = z
   .object({
     tabs: z.array(fixtureHttpUrl).max(10).optional().describe("Extra tabs to open after the main tab (http/https URLs, at most 10). The main tab stays current."),
@@ -1412,6 +1444,9 @@ export const browseAgentSetup = z
       .max(20)
       .optional()
       .describe("API mocks, desktop and cloud browser (at most 20): `url` with `*` wildcards, optional method, status (200-599), headers, body (string or JSON object), delayMs, abort, times."),
+    emulate: fixtureEmulate
+      .optional()
+      .describe("Browser environment for the whole run (all tabs of the setup): `device` preset (iphone-15, pixel-8, ipad, desktop-1440, desktop-1920), or `viewport` {width, height, deviceScaleFactor?, mobile?}, `touch`, `userAgent`, `locale` (for example de-DE), `timezone` (for example Europe/Berlin), `colorScheme` (light or dark), `reducedMotion`. Explicit fields override the preset. Tabs that the page opens later are not emulated."),
     fresh: z.boolean().optional().describe("Reset the session before anything else: close ALL browser tabs, open one blank tab, and clear cookies and storage. In the cloud browser it clears every site; in the desktop browser only the sites this setup names (url, tabs, storage origins, goto steps), so the user's other logins survive."),
   })
   .strict();
@@ -1424,34 +1459,58 @@ export const browseAgentSetup = z
 const BROWSE_AGENT_DESCRIPTION_HEAD =
   "Run a whole browser task in the built-in browser through a dedicated browsing subagent, and get its final answer. The subagent does NOT see this chat: `goal` must carry the whole task with every constraint, every name and date, and what to report back (for example the prices, the names, the final URL). If the user wants a picture (screenshot) of the page on the canvas, say so in `goal`: the subagent then calls browse_screenshot with placeOnCanvas. If the user wants an editable copy of the page on the canvas, set `capture: true` and say in `goal` which page or part to copy. When the task names a site or a page, pass its start URL in `url`: the browser opens it before the subagent starts, which saves a step. (To continue from a checkpoint, pass only `resume`: no `url`, no `setup`.) To prepare the page first (a known state, API mocks, a check that it is the right page), pass `setup`. Returns `{ status: \"done\" | \"error\" | \"aborted\" | \"step_limit\" | \"timeout\" | \"setup_failed\", answer, steps }`, plus `captured: { nodeId, width, height, url, title }` when the page was copied onto the canvas.";
 const BROWSE_AGENT_DESCRIPTION_QA =
-  " When `qa: true` was set, the result also carries `qa: { outcome: \"passed\" | \"failed\" | \"inconclusive\" | \"error\" | \"setup_failed\" | \"aborted\", verdict?, reason?, steps: [{ tool, args, ok, error? }], stepsDropped? }`: `qa.outcome` and `qa.reason` are the verdict of the test.";
+  " When `qa: true` was set, the result also carries `qa: { outcome: \"passed\" | \"failed\" | \"inconclusive\" | \"error\" | \"setup_failed\" | \"aborted\", verdict?, reason?, steps: [{ tool, args, ok, error? }], stepsDropped? }`: `qa.outcome` and `qa.reason` are the verdict of the test. The `qa` object may also carry `consoleErrors` and `failedRequests` (lists of what the page reported during the run, with `consoleErrorsDropped` and `failedRequestsDropped` counts).";
+// Only for clients with the browseAssert capability.
+const BROWSE_AGENT_DESCRIPTION_ASSERT =
+  " The `qa` object may also carry `checks` (the results of the `qa_assert` calls and of the final `checks` input). If a final check fails, a `passed` verdict becomes `failed`.";
 const BROWSE_AGENT_DESCRIPTION_TAIL =
   " It may also carry `checkpoint: { id, complete, summary, gap? }`: pass `checkpoint.id` as `resume` in a later browse_agent call to continue from where this run stopped. `complete: false` means the replay may not reproduce the page exactly; `gap` says why. `answer` is the subagent's plain-text report of what it saw; report only what it contains, and do not invent page content that `answer` does not state. `answer` may be in a different language than the chat: report it to the user in the user's language. The browser tab stays open between calls, so a follow-up (another detail on the same page, the next step) is another browse_agent call with a self-contained goal. This tool runs in the user's browser (client side) and has no server-side execute.";
 const BROWSE_AGENT_DESCRIPTION = BROWSE_AGENT_DESCRIPTION_HEAD + BROWSE_AGENT_DESCRIPTION_TAIL;
 /** The QA variant: the same text plus the `qa` result shape. */
 const BROWSE_AGENT_DESCRIPTION_WITH_QA =
   BROWSE_AGENT_DESCRIPTION_HEAD + BROWSE_AGENT_DESCRIPTION_QA + BROWSE_AGENT_DESCRIPTION_TAIL;
+/** The QA variant for clients with the browseAssert capability. */
+const BROWSE_AGENT_DESCRIPTION_WITH_QA_ASSERT =
+  BROWSE_AGENT_DESCRIPTION_HEAD + BROWSE_AGENT_DESCRIPTION_QA + BROWSE_AGENT_DESCRIPTION_ASSERT + BROWSE_AGENT_DESCRIPTION_TAIL;
 
 const BROWSE_AGENT_QA_FIELD_HEAD =
-  "Set true when the user asks to test, check or QA a web app or a flow. The subagent then runs ONE test scenario (put the steps and the expected result in `goal`) and gives a verdict. The result then carries `qa: { outcome, verdict?, reason?, steps }`. One scenario per call: for several scenarios, call browse_agent several times";
+  "Set true when the user asks to test, check or QA a web app or a flow. The subagent then runs ONE test scenario (put the steps and the expected result in `goal`) and gives a verdict. The result then carries `qa: { outcome, verdict?, reason?, steps, consoleErrors?, failedRequests? }`. One scenario per call: for several scenarios, call browse_agent several times";
+// Same, for clients with the browseAssert capability (adds `checks` and `qa_assert`).
+const BROWSE_AGENT_QA_FIELD_HEAD_ASSERT =
+  "Set true when the user asks to test, check or QA a web app or a flow. The subagent then runs ONE test scenario (put the steps and the expected result in `goal`) and gives a verdict. The result then carries `qa: { outcome, verdict?, reason?, steps, consoleErrors?, failedRequests?, checks? }`. One scenario per call: for several scenarios, call browse_agent several times. The subagent can confirm expected results with its `qa_assert` tool; pass `checks` to add checks that the host runs after the run";
 const BROWSE_AGENT_QA_FIELD_TAIL = " Combine with `setup` to prepare the state.";
 const BROWSE_AGENT_QA_FIELD = z
   .boolean()
   .optional()
   .describe(`${BROWSE_AGENT_QA_FIELD_HEAD}.${BROWSE_AGENT_QA_FIELD_TAIL}`);
+const BROWSE_AGENT_QA_FIELD_ASSERT = z
+  .boolean()
+  .optional()
+  .describe(`${BROWSE_AGENT_QA_FIELD_HEAD_ASSERT}.${BROWSE_AGENT_QA_FIELD_TAIL}`);
 
 // browseIsolation variant: the client can run browse_agent calls of one step in
 // parallel, each in its own isolated browser (built once, stable bytes).
-const BROWSE_AGENT_QA_FIELD_ISOLATED = z
-  .boolean()
-  .optional()
-  .describe(
-    `${BROWSE_AGENT_QA_FIELD_HEAD} in the SAME step. The runs then go in parallel, each in its own isolated browser with fresh state. Saved logins still work: the subagent signs in with \`browse_fill_login\`. When the scenarios need different accounts, say in \`goal\` which saved account to use (its label or username). To continue a scenario, pass the earlier run's \`checkpoint.id\` as \`resume\` together with \`qa: true\`.${BROWSE_AGENT_QA_FIELD_TAIL}`,
-  );
+const isolatedQaField = (head: string) =>
+  z
+    .boolean()
+    .optional()
+    .describe(
+      `${head} in the SAME step. The runs then go in parallel, each in its own isolated browser with fresh state. Saved logins still work: the subagent signs in with \`browse_fill_login\`. When the scenarios need different accounts, say in \`goal\` which saved account to use (its label or username). To continue a scenario, pass the earlier run's \`checkpoint.id\` as \`resume\` together with \`qa: true\`.${BROWSE_AGENT_QA_FIELD_TAIL}`,
+    );
+const BROWSE_AGENT_QA_FIELD_ISOLATED = isolatedQaField(BROWSE_AGENT_QA_FIELD_HEAD);
+const BROWSE_AGENT_QA_FIELD_ISOLATED_ASSERT = isolatedQaField(BROWSE_AGENT_QA_FIELD_HEAD_ASSERT);
 
-const browseAgentToolQa = browseAgentTool(true);
-/** QA variant for clients that also advertise browseIsolation. */
-export const browseAgentToolQaIsolated = browseAgentTool(true, true);
+const BROWSE_AGENT_CHECKS_DESCRIPTION =
+  "Only with `qa: true`. Up to " + QA_CHECKS_MAX + " deterministic checks that the host runs once after the subagent finishes. If the subagent says `passed` and any check fails, the outcome becomes `failed`. Each check has a `type`: `text` {text, absent?} (visible text on the page), `element` {selector or index, state}, `value` {selector or index, equals or contains}, `count` {selector, equals or min or max}, `url` {equals, contains or matches}, `no_console_errors` {ignore?}, `no_failed_requests` {ignore?}. Omit fields you do not need.";
+
+/** Full QA variant (qa + checks), for clients with browseQa + browseAssert. This one is the penTools default. */
+const browseAgentToolQa = browseAgentTool(true, false, true);
+/** Full QA variant for clients that also advertise browseIsolation. */
+export const browseAgentToolQaIsolated = browseAgentTool(true, true, true);
+/** QA variant without `checks`, for clients with browseQa but without browseAssert. */
+export const browseAgentToolQaNoAssert = browseAgentTool(true, false, false);
+/** Isolated QA variant without `checks`. */
+export const browseAgentToolQaIsolatedNoAssert = browseAgentTool(true, true, false);
 /** browse_agent without the `qa` param, for clients without the browseQa capability. */
 export const browseAgentToolNoQa = browseAgentTool(false);
 
@@ -1464,7 +1523,7 @@ function withQaResumeCheck<T extends z.ZodTypeAny>(schema: T): T {
   }) as unknown as T;
 }
 
-function browseAgentTool(qa: boolean, isolated = false) {
+function browseAgentTool(qa: boolean, isolated = false, assert = false) {
   const schema = z.object({
       goal: z
         .string()
@@ -1490,14 +1549,36 @@ function browseAgentTool(qa: boolean, isolated = false) {
         .boolean()
         .optional()
         .describe("Set true ONLY when the user directly asks to copy or clone the page onto the canvas. The subagent then gets the browse_capture tool and copies the page once. The result then carries `captured: { nodeId, width, height, url, title }`."),
-      ...(qa ? { qa: isolated ? BROWSE_AGENT_QA_FIELD_ISOLATED : BROWSE_AGENT_QA_FIELD } : {}),
-    }).refine((a) => a.resume === undefined || (a.url === undefined && a.setup === undefined), {
+      ...(qa
+        ? {
+            qa: isolated
+              ? assert
+                ? BROWSE_AGENT_QA_FIELD_ISOLATED_ASSERT
+                : BROWSE_AGENT_QA_FIELD_ISOLATED
+              : assert
+                ? BROWSE_AGENT_QA_FIELD_ASSERT
+                : BROWSE_AGENT_QA_FIELD,
+            ...(assert
+              ? {
+                  checks: z
+                    .preprocess(normalizeQaChecks, z.array(qaCheckSchema).max(QA_CHECKS_MAX).optional())
+                    .describe(BROWSE_AGENT_CHECKS_DESCRIPTION),
+                }
+              : {}),
+          }
+        : {}),
+    })
+    .refine((a) => a.resume === undefined || (a.url === undefined && a.setup === undefined), {
       message: "`resume` cannot be combined with `url` or `setup`: the checkpoint already carries the start page and setup.",
       path: ["resume"],
+    })
+    .refine((a) => (a as { checks?: unknown }).checks === undefined || a.qa === true, {
+      message: "`checks` needs `qa: true`: the final checks belong to a QA run.",
+      path: ["checks"],
     });
   return tool({
     description:
-      qa ? BROWSE_AGENT_DESCRIPTION_WITH_QA : BROWSE_AGENT_DESCRIPTION,
+      qa ? (assert ? BROWSE_AGENT_DESCRIPTION_WITH_QA_ASSERT : BROWSE_AGENT_DESCRIPTION_WITH_QA) : BROWSE_AGENT_DESCRIPTION,
     inputSchema: qa && !isolated ? withQaResumeCheck(schema) : schema,
   });
 
@@ -2328,6 +2409,13 @@ Returns the created/updated style ids and names (with a created|updated status) 
       qaVerdictDefinition.description +
       " This tool runs in the user's browser (client side) and has no server-side execute.",
     inputSchema: qaVerdictDefinition.inputSchema,
+  }),
+
+  qa_assert: tool({
+    description:
+      qaAssertDefinition.description +
+      " This tool runs in the user's browser (client side) and has no server-side execute.",
+    inputSchema: qaAssertDefinition.inputSchema,
   }),
 
   browse_agent: browseAgentToolQa,

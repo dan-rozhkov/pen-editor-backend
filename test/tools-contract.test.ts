@@ -1,6 +1,9 @@
+import { asSchema } from "ai";
 import { describe, expect, it } from "vitest";
 import type { z } from "zod";
-import { penTools } from "../src/ai/tools.js";
+import { QA_CHECKS_MAX } from "@sideform/browser-agent/agent";
+import { DEVICE_PRESETS } from "@sideform/browser-agent/fixture";
+import { browseAgentToolNoQa, browseAgentToolQaIsolatedNoAssert, browseAgentToolQaNoAssert, penTools } from "../src/ai/tools.js";
 import { assert } from "./helpers.js";
 
 // Contract tests: pin down the argument shape the backend declares for the
@@ -77,6 +80,7 @@ describe("penTools registry", () => {
         "browse_capture",
         "browse_fill_login",
         "qa_verdict",
+        "qa_assert",
       ].sort(),
     );
   });
@@ -144,6 +148,7 @@ describe("penTools registry", () => {
       "browse_capture",
       "browse_fill_login",
       "qa_verdict",
+      "qa_assert",
     ] as const) {
       expect(hasExecute(name), `${name} must be client-executed`).toBe(false);
     }
@@ -1527,6 +1532,95 @@ describe("browse_capture schema", () => {
     const agent = schemaOf("browse_agent");
     expect(agent.safeParse({ goal: "copy it", capture: true }).success).toBe(true);
     expect(agent.safeParse({ goal: "copy it", capture: "yes" }).success).toBe(false);
+  });
+});
+
+describe("browse_agent checks, setup.emulate and qa_assert schema", () => {
+  const check = { type: "text", text: "Welcome" };
+
+  it("qa_assert takes up to 10 checks and is client-executed", () => {
+    const assertSchema = schemaOf("qa_assert");
+    expect(assertSchema.safeParse({ checks: [check] }).success).toBe(true);
+    expect(assertSchema.safeParse({ checks: [{ type: "bogus" }] }).success).toBe(false);
+    expect((penTools.qa_assert as { execute?: unknown }).execute).toBeUndefined();
+  });
+
+  it("browse_agent takes `checks` only in the QA variant", () => {
+    const qa = schemaOf("browse_agent");
+    expect(qa.safeParse({ goal: "g", qa: true, checks: [check] }).success).toBe(true);
+    expect(qa.safeParse({ goal: "g", qa: true, checks: [{ type: "url", contains: "/home" }] }).success).toBe(true);
+    expect(qa.safeParse({ goal: "g", qa: true, checks: [{ type: "nope" }] }).success).toBe(false);
+    expect(qa.safeParse({ goal: "g", qa: true, checks: Array.from({ length: 11 }, () => check) }).success).toBe(false);
+    const noQaShape = (asSchema(browseAgentToolNoQa.inputSchema).jsonSchema as { properties: Record<string, unknown> }).properties;
+    expect(noQaShape).not.toHaveProperty("checks");
+    expect(noQaShape).not.toHaveProperty("qa");
+    const qaShape = (asSchema(penTools.browse_agent.inputSchema).jsonSchema as { properties: Record<string, unknown> }).properties;
+    expect(qaShape).toHaveProperty("checks");
+  });
+
+  it("browse_agent `checks` needs qa: true and is normalized like qa_assert", () => {
+    const qa = schemaOf("browse_agent");
+    expect(qa.safeParse({ goal: "g", checks: [check] }).success).toBe(false);
+    expect(qa.safeParse({ goal: "g", qa: false, checks: [check] }).success).toBe(false);
+    const r = qa.safeParse({ goal: "g", checks: [check] });
+    expect(JSON.stringify(r)).toContain("`checks` needs `qa: true`");
+    // Placeholders of strict-mode models are dropped before validation.
+    expect(qa.safeParse({ goal: "g", qa: true, checks: [] }).success).toBe(true);
+    expect(qa.safeParse({ goal: "g", qa: true, checks: [{ type: "text", text: "Hi", absent: null }] }).success).toBe(true);
+    expect(qa.safeParse({ goal: "g", qa: true, checks: [{ type: "url", contains: "/a", equals: "" }] }).success).toBe(true);
+    expect(qa.safeParse({ goal: "g", qa: true, checks: Array.from({ length: QA_CHECKS_MAX }, () => check) }).success).toBe(true);
+    expect(qa.safeParse({ goal: "g", qa: true, checks: Array.from({ length: QA_CHECKS_MAX + 1 }, () => check) }).success).toBe(false);
+    // Also in the variants without assert there is no `checks` field.
+    for (const variant of [browseAgentToolQaNoAssert, browseAgentToolQaIsolatedNoAssert]) {
+      const props = (asSchema(variant.inputSchema).jsonSchema as { properties: Record<string, unknown> }).properties;
+      expect(props).toHaveProperty("qa");
+      expect(props).not.toHaveProperty("checks");
+    }
+  });
+
+  it("setup.emulate follows the package parser at its boundaries", () => {
+    const agent = schemaOf("browse_agent");
+    const ok = (emulate: unknown) => agent.safeParse({ goal: "g", setup: { emulate } }).success;
+    const vp = (v: Record<string, unknown>) => ({ viewport: { width: 390, height: 844, ...v } });
+    expect(ok(vp({ width: 200, height: 4000 }))).toBe(true);
+    expect(ok(vp({ width: 199 }))).toBe(false);
+    expect(ok(vp({ height: 4001 }))).toBe(false);
+    expect(ok(vp({ deviceScaleFactor: 0.5 }))).toBe(true);
+    expect(ok(vp({ deviceScaleFactor: 4 }))).toBe(true);
+    expect(ok(vp({ deviceScaleFactor: 0.49 }))).toBe(false);
+    expect(ok(vp({ deviceScaleFactor: 4.01 }))).toBe(false);
+    expect(ok({ userAgent: "u".repeat(512) })).toBe(true);
+    expect(ok({ userAgent: "u".repeat(513) })).toBe(false);
+    expect(ok({ locale: "de-DE" })).toBe(true);
+    expect(ok({ locale: "zh-Hant-TW" })).toBe(true);
+    expect(ok({ locale: "x" })).toBe(false);
+    expect(ok({ locale: "de_DE" })).toBe(false);
+    expect(ok({ timezone: "Europe/Berlin" })).toBe(true);
+    expect(ok({ timezone: "America/Argentina/Buenos_Aires" })).toBe(true);
+    expect(ok({ timezone: "Mars Colony" })).toBe(false);
+    expect(ok({ timezone: "1/2" })).toBe(false);
+    for (const device of Object.keys(DEVICE_PRESETS)) expect(ok({ device })).toBe(true);
+    expect(ok({ device: "nokia" })).toBe(false);
+    // The error text comes from the package parser.
+    const bad = agent.safeParse({ goal: "g", setup: { emulate: { locale: "de_DE" } } });
+    expect(JSON.stringify(bad)).toContain("BCP 47");
+  });
+
+  it("setup.emulate is accepted and strict", () => {
+    const agent = schemaOf("browse_agent");
+    const ok = (emulate: unknown) => agent.safeParse({ goal: "g", setup: { emulate } }).success;
+    expect(ok({ device: "iphone-15", colorScheme: "dark", locale: "de-DE", timezone: "Europe/Berlin" })).toBe(true);
+    expect(ok({ viewport: { width: 390, height: 844, deviceScaleFactor: 3, mobile: true }, touch: true, reducedMotion: true })).toBe(true);
+    expect(ok({ device: "nokia" })).toBe(false);
+    expect(ok({ colorScheme: "sepia" })).toBe(false);
+    expect(ok({ viewport: { width: 390.5, height: 844 } })).toBe(false);
+    expect(ok({ viewport: { width: 390, height: 844, extra: 1 } })).toBe(false);
+    expect(ok({ device: "ipad", geolocation: {} })).toBe(false);
+  });
+
+  it("browse_act accepts the upload action", () => {
+    const act = schemaOf("browse_act");
+    expect(act.safeParse({ action: "upload", index: 3, files: [{ name: "a.txt", text: "hi" }] }).success).toBe(true);
   });
 });
 

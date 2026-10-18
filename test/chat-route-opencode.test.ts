@@ -143,6 +143,13 @@ describe("POST /api/chat — agentMode browse gate", () => {
     const toolsSent = browseToolsSent(url, "test the login");
     try {
       expect(await toolsSent({ browseQa: true })).toContain("qa_verdict");
+      // qa_assert needs the browseAssert client capability on top of browseQa.
+      expect(await toolsSent({ browseQa: true })).not.toContain("qa_assert");
+      expect(
+        await toolsSent({ browseQa: true, clientCapabilities: { desktopBrowser: true, browseQa: true, browseAssert: true } }),
+      ).toContain("qa_assert");
+      expect(await toolsSent({ clientCapabilities: { desktopBrowser: true, browseAssert: true } })).not.toContain("qa_assert");
+      expect(await toolsSent({})).not.toContain("qa_assert");
       expect(await toolsSent({})).not.toContain("qa_verdict");
       expect(await toolsSent({ browseQa: false })).not.toContain("qa_verdict");
     } finally {

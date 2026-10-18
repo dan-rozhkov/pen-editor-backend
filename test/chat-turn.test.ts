@@ -2,6 +2,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadSkills, getSkill } from "../src/ai/skills.js";
 import { createModel } from "../src/ai/provider.js";
 import { AGENT_BROWSER_GUIDANCE, AGENT_BROWSER_QA_GUIDANCE, AGENT_BROWSER_QA_ISOLATED_GUIDANCE, BROWSE_AGENT_LOGIN_PROMPT, BROWSE_AGENT_PROMPT, browseAgentPrompt, MANUAL_BROWSER_GUIDANCE } from "../src/ai/system-prompt.js";
+import { asSchema } from "ai";
 import { makeConfig } from "./helpers.js";
 
 vi.mock("../src/ai/mcp.js", () => ({
@@ -1113,6 +1114,15 @@ describe("browse subagent", () => {
       const qa = await prepare({ ...base, browseQa: true });
       expect(qa.tools.qa_verdict).toBeDefined();
       expect((qa.tools.qa_verdict as { execute?: unknown }).execute).toBeUndefined();
+      // qa_assert only with the browseAssert capability.
+      expect(qa.tools.qa_assert).toBeUndefined();
+      const qaAssert = await prepare({ ...base, browseQa: true, clientCapabilities: { ...DESKTOP, browseAssert: true } });
+      expect(qaAssert.tools.qa_assert).toBeDefined();
+      expect((qaAssert.tools.qa_assert as { execute?: unknown }).execute).toBeUndefined();
+      const assertWithoutQa = await prepare({ ...base, clientCapabilities: { ...DESKTOP, browseAssert: true } });
+      expect(assertWithoutQa.tools.qa_assert).toBeUndefined();
+      expect(without.tools.qa_assert).toBeUndefined();
+      expect(falsy.tools.qa_assert).toBeUndefined();
       expect(qa.system).toBe(browseAgentPrompt({ qa: true }));
       expect(browseAgentPrompt({ qa: true })).toContain("qa_verdict");
       expect(browseAgentPrompt({ qa: true })).toContain("QA engineer");
@@ -1123,10 +1133,37 @@ describe("browse subagent", () => {
       expect(browseAgentPrompt({ qa: true })).toBe(browseAgentPrompt({ qa: true }));
       expect(browseAgentPrompt()).toBe(BROWSE_AGENT_PROMPT);
       expect(Object.keys(qa.tools).sort()).toEqual([...BROWSE_TOOLS, "qa_verdict"].sort());
+      expect(Object.keys(qaAssert.tools).sort()).toEqual([...BROWSE_TOOLS, "qa_verdict", "qa_assert"].sort());
       const qaLogin = await prepare({ ...base, browseQa: true, browseLogin: true });
       expect(qaLogin.system).toBe(browseAgentPrompt({ qa: true, login: true }));
       expect(browseAgentPrompt({ qa: true, login: true })).toContain("browse_fill_login");
       expect(Object.keys(qaLogin.tools).sort()).toEqual([...BROWSE_TOOLS, "browse_fill_login", "qa_verdict"].sort());
+    });
+
+    it("offers `checks` in browse_agent only with browseQa + browseAssert", async () => {
+      const cfg = makeConfig({ BROWSE_MODE: "agent" });
+      const props = async (caps: Record<string, unknown>) => {
+        const turn = await prepare({ config: cfg, clientCapabilities: { ...DESKTOP, ...caps } });
+        const tool = turn.tools.browse_agent as { description: string; inputSchema: unknown };
+        const json = (asSchema(tool.inputSchema as Parameters<typeof asSchema>[0]).jsonSchema as { properties: Record<string, unknown> }).properties;
+        return { keys: Object.keys(json), description: tool.description };
+      };
+      for (const caps of [{}, { browseAssert: true }]) {
+        const r = await props(caps);
+        expect(r.keys).not.toContain("checks");
+        expect(r.description).not.toContain("qa_assert");
+      }
+      for (const caps of [{ browseQa: true }, { browseQa: true, browseIsolation: true }]) {
+        const r = await props(caps);
+        expect(r.keys).toContain("qa");
+        expect(r.keys).not.toContain("checks");
+        expect(r.description).not.toContain("checks");
+      }
+      for (const caps of [{ browseQa: true, browseAssert: true }, { browseQa: true, browseIsolation: true, browseAssert: true }]) {
+        const r = await props(caps);
+        expect(r.keys).toContain("checks");
+        expect(r.description).toContain("qa_assert");
+      }
     });
 
     it("browseQa without a browser gives the normal prompt and no tool", async () => {
@@ -1158,7 +1195,9 @@ describe("browse subagent", () => {
       // zod 3: the refined schema is a ZodEffects wrapping the ZodObject.
       const qaFieldDesc = (t: { tools: Record<string, unknown> }) => {
         const schema = (t.tools.browse_agent as { inputSchema: Record<string, any> }).inputSchema; // eslint-disable-line @typescript-eslint/no-explicit-any
-        const shape = schema.shape ?? schema._def?.schema?._def?.schema?.shape ?? schema._def?.schema?.shape;
+        let inner = schema;
+        while (inner && !inner.shape && inner._def?.schema) inner = inner._def.schema;
+        const shape = inner?.shape;
         return (shape?.qa?.description as string | undefined) ?? "";
       };
       const noQa = await prepare({ config: cfg, clientCapabilities: { ...DESKTOP, browseIsolation: true } });
@@ -1201,12 +1240,15 @@ describe("browse subagent", () => {
       for (const agentMode of ["edits", "prototype", "research"]) {
         const turn = await prepare({ config: cfg, agentMode, browseQa: true, clientCapabilities: DESKTOP });
         expect(turn.tools.qa_verdict, agentMode).toBeUndefined();
+        expect(turn.tools.qa_assert, agentMode).toBeUndefined();
       }
       const main = await prepare({ config: cfg, clientCapabilities: DESKTOP, browseQa: true });
       expect(main.tools.qa_verdict).toBeUndefined();
+      expect(main.tools.qa_assert).toBeUndefined();
       expect(main.tools.browse_agent).toBeDefined();
       const noBrowser = await prepare({ agentMode: "browse", browseQa: true });
       expect(noBrowser.tools.qa_verdict).toBeUndefined();
+      expect(noBrowser.tools.qa_assert).toBeUndefined();
     });
 
     it("never adds browse_capture without a browser", async () => {

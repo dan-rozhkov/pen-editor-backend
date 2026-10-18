@@ -1,4 +1,4 @@
 {
   "minTokens": 70,
-  "suites": [{ "name": "backend", "path": "test" }]
+  "suites": [{ "name": "backend", "path": "test", "ignore": ["**/fixtures/*.golden.json"] }]
 }

@@ -194,6 +194,10 @@ const chatBodySchema = z.object({
       // The client runs browse_agent calls of one step in parallel, each in an
       // isolated browser. Only meaningful together with browseQa.
       browseIsolation: z.boolean().optional(),
+      // The client runs `qa_assert` and the final `checks`. Only meaningful
+      // together with browseQa; without it browse_agent has no `checks` field
+      // and the QA subagent has no qa_assert tool.
+      browseAssert: z.boolean().optional(),
     })
     .optional(),
 });

@@ -34,6 +34,7 @@ function fakes() {
     capture: vi.fn(async () => ({ html: "<p>x</p>" })),
     tabs: vi.fn(async () => ({ tabs: [] })),
     perform: vi.fn(async () => ({ error: "stale snapshotId" })),
+    assert: vi.fn(async () => ({ ok: true, passed: true, results: [] })),
     applyFixture: vi.fn(async () => ({ ok: true, summary: "applied", fixtureToken: "tok" })),
     releaseFixture: vi.fn(async () => ({ ok: true })),
     startJournal: vi.fn(async () => ({ ok: true, token: "jt" })),
@@ -430,6 +431,16 @@ describe("cloud browser routes", () => {
     const { handle } = (await cmd("open", { userId: USER, chatId: "c" })).json();
     expect((await cmd("snapshot", { userId: USER2, chatId: "c", handle })).statusCode).toBe(403);
     expect((await cmd("snapshot", { userId: USER, chatId: "d", handle })).statusCode).toBe(403);
+  });
+
+  it("runs the assert command on the controller", async () => {
+    const f = fakes();
+    const { cmd } = await start({}, f);
+    const { handle } = (await cmd("open", { userId: USER, chatId: "c" })).json();
+    const checks = [{ type: "text", text: "Welcome" }];
+    const res = (await cmd("assert", { userId: USER, chatId: "c", handle, args: { checks } })).json();
+    expect(f.controller.assert).toHaveBeenCalledWith({ checks });
+    expect(res.result).toEqual({ ok: true, passed: true, results: [] });
   });
 
   it("reconnects a live Steel session after the registry is lost", async () => {

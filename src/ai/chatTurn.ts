@@ -10,8 +10,8 @@ import { markCacheBreakpoint, usesAnthropicPromptCache } from "./anthropicCache.
 import { createHash } from "node:crypto";
 import type { Config } from "../config.js";
 import { bareModelId, createModel, parseModelRef, providerHandlesToolResultImages } from "./provider.js";
-import { penTools, browseAgentToolNoQa, browseAgentToolQaIsolated, makeBatchDesignTool, makeAnalyzeImageTool } from "./tools.js";
-import { BROWSE_AGENT_TOOL_NAMES, QA_VERDICT_TOOL } from "@sideform/browser-agent/agent";
+import { penTools, browseAgentToolNoQa, browseAgentToolQaIsolated, browseAgentToolQaNoAssert, browseAgentToolQaIsolatedNoAssert, makeBatchDesignTool, makeAnalyzeImageTool } from "./tools.js";
+import { BROWSE_AGENT_TOOL_NAMES, QA_ASSERT_TOOL, QA_VERDICT_TOOL } from "@sideform/browser-agent/agent";
 import { browseAgentPrompt, buildSystemPrompt, type AgentMode, type BrowserGuidance } from "./system-prompt.js";
 import { resolveTaskPolicy, type TaskPolicy } from "./taskPolicy.js";
 import { applyImageBudget, planImageElision } from "./image-budget.js";
@@ -243,7 +243,7 @@ export interface PrepareChatTurnInput {
    * Undefined/false → the browse_* tools are dropped below, same as any
    * other caller (the showcase runner, tests) that never wires this.
    */
-  clientCapabilities?: { desktopBrowser?: boolean; browser?: "desktop" | "cloud"; browseQa?: boolean; browseIsolation?: boolean };
+  clientCapabilities?: { desktopBrowser?: boolean; browser?: "desktop" | "cloud"; browseQa?: boolean; browseIsolation?: boolean; browseAssert?: boolean };
   /**
    * agentMode "browse" only: the user directly asked to copy the page onto the
    * canvas, so the subagent may carry browse_capture. Ignored otherwise.
@@ -827,6 +827,9 @@ export async function prepareChatTurn(
   // sentence is about QA runs) and the desktop browser (cloud is never isolated).
   const clientHasIsolation =
     clientHasQa && browserKind === "desktop" && input.clientCapabilities?.browseIsolation === true;
+  // browseAssert: the client can run the `qa_assert` tool and the final
+  // `checks`. It only means something together with browseQa.
+  const clientHasAssert = clientHasQa && input.clientCapabilities?.browseAssert === true;
   const browserGuidance: BrowserGuidance | undefined = browseAgentOffered
     ? clientHasQa
       ? clientHasIsolation
@@ -846,6 +849,9 @@ export async function prepareChatTurn(
 
   // One flag for both the QA prompt and the qa_verdict allowlist entry.
   const browseQaAllowed = input.browseQa === true && hasBrowser;
+  // qa_assert in the nested QA turn: the nested chat repeats the client
+  // capability in its own body, so the same gate applies there.
+  const browseAssertAllowed = browseQaAllowed && input.clientCapabilities?.browseAssert === true;
 
   const system = browseSub
     ? browseAgentPrompt({ qa: browseQaAllowed, login: browseLoginAllowed })
@@ -1290,6 +1296,7 @@ export async function prepareChatTurn(
     if (!browseSub) delete tools[BROWSE_FILL_LOGIN_TOOL];
     // qa_verdict likewise: subagent-only, and only for a QA run.
     if (!browseSub) delete tools[QA_VERDICT_TOOL];
+    if (!browseSub) delete tools[QA_ASSERT_TOOL];
 
     // browse_agent exists only in BROWSE_MODE=agent main turns; there the other
     // browser tools move into the subagent. In every other turn (including
@@ -1299,7 +1306,9 @@ export async function prepareChatTurn(
         if (name.startsWith("browse_") && name !== "browse_agent") delete tools[name];
       }
       if (!clientHasQa) tools.browse_agent = browseAgentToolNoQa;
-      else if (clientHasIsolation) tools.browse_agent = browseAgentToolQaIsolated;
+      else if (clientHasIsolation) {
+        tools.browse_agent = clientHasAssert ? browseAgentToolQaIsolated : browseAgentToolQaIsolatedNoAssert;
+      } else if (!clientHasAssert) tools.browse_agent = browseAgentToolQaNoAssert;
     } else {
       delete tools.browse_agent;
     }
@@ -1332,7 +1341,10 @@ export async function prepareChatTurn(
       const allowed = new Set<string>(BROWSE_AGENT_TOOL_NAMES);
       if (input.browseCapture === true) allowed.add(BROWSE_CAPTURE_TOOL);
       if (browseLoginAllowed) allowed.add(BROWSE_FILL_LOGIN_TOOL);
-      if (browseQaAllowed) allowed.add(QA_VERDICT_TOOL);
+      if (browseQaAllowed) {
+        allowed.add(QA_VERDICT_TOOL);
+        if (browseAssertAllowed) allowed.add(QA_ASSERT_TOOL);
+      }
       for (const name of Object.keys(tools)) {
         if (!allowed.has(name)) delete tools[name];
       }
