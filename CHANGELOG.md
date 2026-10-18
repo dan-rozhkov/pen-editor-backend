@@ -8,6 +8,41 @@ While on `0.x`, minor bumps may include breaking changes.
 
 ## [Unreleased]
 
+## [0.41.0] - 2026-10-18
+
+Two themes: the browse subagent (`browse_agent`) grows into a QA tool, and the
+enterprise design-system libraries are removed.
+
+### Added
+- **QA mode for `browse_agent`:** a `qa` flag and the `qa_verdict` tool, QA
+  assertions (`qa_assert`), final checks and diagnostics in the result, device
+  and viewport emulation (`browse_act` viewport, cloud `clearActEmulation`).
+  Parallel isolated QA runs on desktop, with a split rate limit.
+- **`browse_agent` setup and resume:** page fixtures before a browse task, a
+  cloud checkpoint journal, and resume from a checkpoint.
+- **`browse_fill_login`:** the subagent signs in with a saved desktop login
+  (also in isolated QA runs); the result names the origin.
+- **`browse_capture`:** copies the browser page onto the canvas as an embed;
+  the cloud capture inlines the page CSS. `browse_screenshot` can place the
+  capture on the canvas.
+
+### Changed
+- The browse subagent is on by default (`BROWSE_MODE=agent`), always runs on
+  OpenRouter, and runs deepseek without reasoning; its prompt and the
+  `browse_*` tools come from `@sideform/browser-agent` (now v0.2.23).
+- deepseek flash goes through Together for every OpenRouter call.
+- `read_design_repo` is described as a general repository viewer, not only a
+  design entry point.
+
+### Removed
+- Enterprise design-system libraries, design-system lint and tokens v2.
+
+### Fixed
+- Anthropic prompt caching via OpenRouter: explicit cache breakpoints before
+  `canvas_context`.
+- The agent keeps the user's reply language after English tool results.
+- `browse_act` accepts strict-mode calls from OpenAI models.
+
 ## [0.40.0] - 2026-10-13
 
 The first release since 0.39.0 (2026-08-20), so it is large. Four themes: the
