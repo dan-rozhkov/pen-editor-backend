@@ -1,4 +1,5 @@
 import type { Config } from "../../config.js";
+import { buildActivityDetail, type ActivityDetail } from "./activityDetail.js";
 import { createPgPool } from "../../tracing/traceStore.js";
 import type { ReviewAttribution } from "../selfimprove/attribution.js";
 import { applyMemoryOperations, type MemoryApplyOutcome } from "./apply.js";
@@ -72,9 +73,8 @@ export interface ReviewCounters {
   skillReviewDue?: boolean;
 }
 
-/** A single audited write, summarized for UI display — never carries entry
- * contents (see agent_selfimprove_audit.payload, which this deliberately
- * omits). `id` is the bigserial audit row id. */
+/** A single audited write, summarized for UI display — carries only the
+ * whitelisted `detail`, never the raw payload. `id` is the bigserial audit row id. */
 export interface AuditActivityEvent {
   id: number;
   subsystem: "memory" | "skill";
@@ -85,6 +85,8 @@ export interface AuditActivityEvent {
    * `payload` keys `chatId`/`messageId`, never other payload contents. */
   chatId?: string;
   messageId?: string;
+  /** What changed, from whitelisted payload keys only (see activityDetail.ts). */
+  detail?: ActivityDetail;
 }
 
 export interface AuditActivityResult {
@@ -357,7 +359,15 @@ export function createMemoryStore(
       const rows = (await db.query(
         `SELECT id, subsystem, action, origin, created_at,
                 CASE WHEN jsonb_typeof(payload->'chatId') = 'string' THEN payload->>'chatId' END AS chat_id,
-                CASE WHEN jsonb_typeof(payload->'messageId') = 'string' THEN payload->>'messageId' END AS message_id
+                CASE WHEN jsonb_typeof(payload->'messageId') = 'string' THEN payload->>'messageId' END AS message_id,
+                jsonb_build_object(
+                  'target', payload->'target', 'operations', payload->'operations',
+                  'name', left(payload->>'name', 2000),
+                  'description', left(payload->>'description', 2000),
+                  'oldString', left(payload->>'oldString', 2000),
+                  'newString', left(payload->>'newString', 2000),
+                  'absorbedInto', left(payload->>'absorbedInto', 2000)
+                ) AS detail_src
            FROM agent_selfimprove_audit
           WHERE user_id = $1 AND id > $2 AND subsystem <> 'review'
           ORDER BY id ASC
@@ -372,18 +382,23 @@ export function createMemoryStore(
           created_at: string | Date;
           chat_id?: string | null;
           message_id?: string | null;
+          detail_src?: unknown;
         }>;
       };
 
-      const events: AuditActivityEvent[] = rows.rows.map((row) => ({
-        id: Number(row.id),
-        subsystem: row.subsystem,
-        action: row.action,
-        origin: row.origin,
-        createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
-        ...(typeof row.chat_id === "string" && row.chat_id ? { chatId: row.chat_id } : {}),
-        ...(typeof row.message_id === "string" && row.message_id ? { messageId: row.message_id } : {}),
-      }));
+      const events: AuditActivityEvent[] = rows.rows.map((row) => {
+        const detail = buildActivityDetail(row.subsystem, row.action, row.detail_src);
+        return {
+          id: Number(row.id),
+          subsystem: row.subsystem,
+          action: row.action,
+          origin: row.origin,
+          createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
+          ...(typeof row.chat_id === "string" && row.chat_id ? { chatId: row.chat_id } : {}),
+          ...(typeof row.message_id === "string" && row.message_id ? { messageId: row.message_id } : {}),
+          ...(detail ? { detail } : {}),
+        };
+      });
 
       return { events, latestId };
     },

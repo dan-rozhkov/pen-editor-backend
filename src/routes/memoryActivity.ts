@@ -68,6 +68,7 @@ export async function memoryActivityRoutes(
           created_at: event.createdAt,
           ...(isAttributionId(event.chatId) ? { chatId: event.chatId } : {}),
           ...(isAttributionId(event.messageId) ? { messageId: event.messageId } : {}),
+          ...(event.detail ? { detail: event.detail } : {}),
         })),
         latestId: result.latestId,
       });

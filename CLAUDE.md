@@ -332,7 +332,19 @@ never reach the client. The one rule (`isAttributionId`,
 body `id` max); the review, the route and the feed all use it. Attribution is
 written first in each payload, so a real payload field always wins. Absent for
 foreground writes and for ids failing the rule; `review` rows stay filtered
-out of the feed.
+out of the feed. Each `memory`/`skill` event may also carry `detail`
+(`src/ai/memory/activityDetail.ts`): `{kind:"memory", target, operations:[{action, content?, oldText?}], moreOperations?}`
+or `{kind:"skill", action, name, description?, oldString?, newString?, absorbedInto?}`,
+built server-side from whitelisted payload keys only (strings capped at 500
+chars + "…" cut by code points, max 10 operations with `moreOperations` = the
+number of further valid ones dropped, omitted when malformed). The feed is keyed
+by the actor id (session or anonymous client id); for anonymous users that id is
+not authenticated, the same as the chat route that already lets that id read its
+memory back, so the feed adds no new exposure. Skill rows can quote text written
+from another user's session, since learned skills are global and already
+readable via `load_skill`. A duplicate `add` (a no-op in
+`applyMemoryOperations`) is still listed, as the audit row records the
+requested operations.
 
 **`npm run memory:curate`** is the repair path (no route/UI touches memory
 otherwise): `--list-users` discovers ids, `--user <id>` shows both targets,

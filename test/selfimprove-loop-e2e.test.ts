@@ -522,6 +522,7 @@ describe("self-improvement loop — end to end", () => {
       expect(Object.keys(reviewEvent!).sort()).toEqual([
         "action",
         "created_at",
+        "detail",
         "id",
         "messageId", // userMessage() carries id "m1"; the body sends no chat `id`
         "origin",

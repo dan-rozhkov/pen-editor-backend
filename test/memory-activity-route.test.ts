@@ -129,6 +129,19 @@ describe("GET /api/memory/activity", () => {
     expect(JSON.stringify(body)).not.toContain("payload");
   });
 
+  it("passes the store's detail through to the client", async () => {
+    const detail = { kind: "skill", action: "delete", name: "s", absorbedInto: "t" };
+    const store = fakeMemoryStore({
+      listAuditActivity: vi.fn(async () => ({
+        events: [{ id: 1, subsystem: "skill", action: "delete", origin: "background_review", createdAt: "t", detail }],
+        latestId: 1,
+      })),
+    });
+    await build(store);
+    const { body } = await get("?userId=11111111-1111-4111-8111-111111111111&sinceId=0");
+    expect((body as { events: Array<{ detail: unknown }> }).events[0].detail).toEqual(detail);
+  });
+
   it("includes chatId/messageId only when they are non-empty strings", async () => {
     const base = { subsystem: "memory", action: "add", origin: "background_review", createdAt: "t" };
     const store = fakeMemoryStore({

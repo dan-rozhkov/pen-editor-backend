@@ -170,7 +170,9 @@ describe("listAuditActivity", () => {
     expect(events[0]).toMatchObject({ chatId: "chat-1", messageId: "msg-1" });
     expect(events[1]).not.toHaveProperty("chatId");
     expect(events[1]).not.toHaveProperty("messageId");
-    expect(JSON.stringify(events)).not.toContain("secret entry");
+    // Content now reaches the owner only via the whitelisted `detail`.
+    expect(events[0].detail).toMatchObject({ kind: "memory" });
+    expect(JSON.stringify(events)).not.toMatch(/payload|usage|entryCount/);
   });
 
   it("never returns a non-string payload chatId/messageId, and attribution cannot overwrite real payload keys", async () => {
@@ -253,6 +255,38 @@ describe("listAuditActivity", () => {
     const u2 = await store.listAuditActivity({ userId: "u2", sinceId: 0 });
     expect(u2.events).toHaveLength(1);
     expect(u1.latestId).not.toBe(u2.latestId);
+  });
+
+  it("returns whitelisted detail for memory and skill rows, and none for malformed payloads", async () => {
+    await store.applyOperations({
+      userId: "u1",
+      target: "user",
+      operations: [{ action: "add", content: "prefers metric" }],
+      origin: "foreground",
+    });
+    await store.writeAudit({
+      userId: "u1",
+      origin: "background_review",
+      subsystem: "skill",
+      action: "patch",
+      payload: { name: "s", oldString: "a", newString: "b", bodyLines: 4 },
+    });
+    await store.writeAudit({
+      userId: "u1",
+      origin: "background_review",
+      subsystem: "skill",
+      action: "create",
+      payload: { bodyLines: 4 },
+    });
+    const { events } = await store.listAuditActivity({ userId: "u1", sinceId: 0 });
+    expect(events[0].detail).toEqual({
+      kind: "memory",
+      target: "user",
+      operations: [{ action: "add", content: "prefers metric" }],
+    });
+    expect(events[1].detail).toEqual({ kind: "skill", action: "patch", name: "s", oldString: "a", newString: "b" });
+    expect(events[2]).not.toHaveProperty("detail");
+    expect(JSON.stringify(events)).not.toMatch(/usage|entryCount|bodyLines/);
   });
 
   it("caps results at the limit while latestId still reflects the true max", async () => {
