@@ -1,11 +1,12 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadSkills } from "../src/ai/skills.js";
 import { makeConfig } from "./helpers.js";
-import { chatMocks, mockModel, resetChatMocks, textStreamChunks, userMessage } from "./chatMocks.js";
+import { resetChatMocks, userMessage } from "./chatMocks.js";
 import {
   postChat,
   recordingAnalyticsClient,
   startApp,
+  toolsSentFor,
   waitForEvent,
   type RunningApp,
 } from "./chatHarness.js";
@@ -105,22 +106,8 @@ describe("POST /api/chat — OpenCode BYOK model selection", () => {
   });
 });
 
-// Posts a browse turn with the given extra body fields and returns the tool names the model saw.
-const browseToolsSent =
-  (url: string, prompt: string) =>
-  async (extra: Record<string, unknown>) => {
-    const model = mockModel(textStreamChunks("ok"));
-    chatMocks.model = model;
-    const res = await postChat(url, {
-      messages: [userMessage(prompt)],
-      agentMode: "browse",
-      clientCapabilities: { desktopBrowser: true },
-      ...extra,
-    });
-    expect(res.status).toBe(200);
-    await res.text();
-    return (model.doStreamCalls[0].tools ?? []).map((t: { name?: string }) => t.name);
-  };
+const browseToolsSent = (url: string, prompt: string) => (extra: Record<string, unknown>) =>
+  toolsSentFor(url, prompt, { agentMode: "browse", clientCapabilities: { desktopBrowser: true }, ...extra });
 
 describe("POST /api/chat — agentMode browse gate", () => {
   it("400s browse_agent_disabled when BROWSE_MODE is not agent", async () => {
@@ -202,5 +189,15 @@ describe("POST /api/chat — agentMode browse gate", () => {
     } finally {
       await close();
     }
+  });
+});
+
+describe("POST /api/chat — open_canvas_tab gate", () => {
+  const toolsSent = (extra: Record<string, unknown>) => toolsSentFor(server.url, "new canvas please", extra);
+
+  it("advertises open_canvas_tab only with clientCapabilities.canvasTabs", async () => {
+    expect(await toolsSent({ clientCapabilities: { canvasTabs: true } })).toContain("open_canvas_tab");
+    expect(await toolsSent({ clientCapabilities: { canvasTabs: false } })).not.toContain("open_canvas_tab");
+    expect(await toolsSent({})).not.toContain("open_canvas_tab");
   });
 });

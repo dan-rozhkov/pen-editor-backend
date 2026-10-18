@@ -63,6 +63,7 @@ describe("penTools registry", () => {
         "update_plugin",
         "list_plugins",
         "ask_user",
+        "open_canvas_tab",
         "analyze_image",
         "publish_to_showcase",
         "read_design_repo",
@@ -131,6 +132,7 @@ describe("penTools registry", () => {
       "update_plugin",
       "list_plugins",
       "ask_user",
+      "open_canvas_tab",
       "get_screenshot",
       "publish_to_showcase",
       "read_design_repo",
@@ -1779,5 +1781,25 @@ describe("browse_screenshot schema", () => {
 
   it("rejects a non-boolean placeOnCanvas", () => {
     expect(schema().safeParse({ placeOnCanvas: "yes" }).success).toBe(false);
+  });
+});
+
+describe("open_canvas_tab schema", () => {
+  const schema = schemaOf("open_canvas_tab");
+
+  it("accepts target new and current", () => {
+    expect(schema.safeParse({ target: "new" }).success).toBe(true);
+    expect(schema.safeParse({ target: "current" }).success).toBe(true);
+  });
+
+  it("rejects a missing or unknown target", () => {
+    expect(schema.safeParse({}).success).toBe(false);
+    expect(schema.safeParse({ target: "other" }).success).toBe(false);
+  });
+
+  it("describes the result shape", () => {
+    const description = (penTools.open_canvas_tab as { description?: string }).description ?? "";
+    expect(description).toContain("tabId");
+    expect(description).toContain("opened");
   });
 });

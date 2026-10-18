@@ -15,6 +15,7 @@ import type { Config } from "../src/config.js";
 import type { RawTraceRow, TraceStore } from "../src/tracing/traceStore.js";
 import type { AnalyticsClient, AnalyticsEvent } from "../src/analytics/posthog.js";
 import { makeConfig } from "./helpers.js";
+import { chatMocks, mockModel, textStreamChunks, userMessage } from "./chatMocks.js";
 
 export interface RunningApp {
   app: FastifyInstance;
@@ -115,4 +116,19 @@ export function waitForEvent(
     if (!event) throw new Error(`no ${name} event captured yet`);
     return event;
   });
+}
+
+// Posts one turn with `body` (messages added from `prompt`) against a fresh mock model and
+// returns the tool names the model was offered.
+export async function toolsSentFor(
+  url: string,
+  prompt: string,
+  body: Record<string, unknown> = {},
+): Promise<Array<string | undefined>> {
+  const model = mockModel(textStreamChunks("ok"));
+  chatMocks.model = model;
+  const res = await postChat(url, { messages: [userMessage(prompt)], ...body });
+  if (res.status !== 200) throw new Error(`chat returned ${res.status}`);
+  await res.text();
+  return (model.doStreamCalls[0].tools ?? []).map((t: { name?: string }) => t.name);
 }

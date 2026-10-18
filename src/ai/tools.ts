@@ -2048,6 +2048,22 @@ Returns the created/updated style ids and names (with a created|updated status) 
     inputSchema: z.object({}),
   }),
 
+  open_canvas_tab: tool({
+    description:
+      "Choose which canvas tab this chat works on. Canvas tools bind to a tab automatically, so do NOT call this at the start of every turn. " +
+      "Use target 'new' BEFORE starting a new, unrelated design when the user asks for a separate/new canvas or document. " +
+      "Use target 'current' when the user refers to the canvas they are looking at, or wants this chat to work on the tab they just switched to. 'current' means the most recently active canvas tab that is still open. " +
+      "Returns JSON: {tabId, title, opened} (opened=true when a tab was created) or {error}. Check `title`: it names the tab now bound. " +
+      "After a switch, the NEXT request's canvas context describes the new tab; node ids from the old tab are not valid there.",
+    inputSchema: z.object({
+      target: z
+        .enum(["new", "current"])
+        .describe(
+          "'current' = bind to the most recently active open canvas tab (opens one if none is open); 'new' = always open a fresh blank canvas tab and bind this chat to it.",
+        ),
+    }),
+  }),
+
   ask_user: tool({
     description:
       "Ask the user structured clarifying questions and get answers back as an interactive form in the chat, instead of guessing. " +

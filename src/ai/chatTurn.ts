@@ -243,7 +243,7 @@ export interface PrepareChatTurnInput {
    * Undefined/false → the browse_* tools are dropped below, same as any
    * other caller (the showcase runner, tests) that never wires this.
    */
-  clientCapabilities?: { desktopBrowser?: boolean; browser?: "desktop" | "cloud"; browseQa?: boolean; browseIsolation?: boolean; browseAssert?: boolean };
+  clientCapabilities?: { desktopBrowser?: boolean; browser?: "desktop" | "cloud"; browseQa?: boolean; browseIsolation?: boolean; browseAssert?: boolean; canvasTabs?: boolean };
   /**
    * agentMode "browse" only: the user directly asked to copy the page onto the
    * canvas, so the subagent may carry browse_capture. Ignored otherwise.
@@ -1322,6 +1322,13 @@ export async function prepareChatTurn(
     // as the FAL_KEY gate on remove_background/vectorize_image just below.
     if (!browseTaskOffered) {
       delete tools.browse_task;
+    }
+
+    // open_canvas_tab only runs in a client that shows canvases as tabs
+    // (clientCapabilities.canvasTabs). The flag is constant per client, so the
+    // tool set stays stable within a session (prompt cache).
+    if (input.clientCapabilities?.canvasTabs !== true) {
+      delete tools.open_canvas_tab;
     }
 
     // Structural gate: remove_background/vectorize_image are client-executed

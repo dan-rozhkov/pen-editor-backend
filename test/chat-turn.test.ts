@@ -387,6 +387,23 @@ describe("prepareChatTurn", () => {
     });
   });
 
+  describe("open_canvas_tab gate", () => {
+    it.each([
+      ["no clientCapabilities", undefined, false],
+      ["canvasTabs false", { canvasTabs: false }, false],
+      ["canvasTabs absent", { desktopBrowser: true }, false],
+      ["canvasTabs true", { canvasTabs: true }, true],
+    ])("%s", async (_label, caps, expected) => {
+      const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+      const turn = await prepareChatTurn({
+        config: makeConfig(),
+        messages: [userMessage("open a new canvas")],
+        clientCapabilities: caps,
+      });
+      expect(turn.tools.open_canvas_tab !== undefined).toBe(expected);
+    });
+  });
+
   describe("browse_* gate", () => {
     // browse_open/browse_act/browse_find_images/browse_read only execute
     // inside the Electron shell's built-in browser bridge — a browser-hosted
