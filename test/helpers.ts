@@ -50,6 +50,7 @@ export function makeConfig(overrides: Partial<Config> = {}): Config {
     TRACE_DATABASE_URL: undefined,
     TRACE_RAW_TTL_DAYS: 14,
     ANALYSIS_MODEL: "openrouter:google/gemini-2.5-flash",
+    QA_JUDGE_MODEL: "openrouter:google/gemini-2.5-flash",
     EMBEDDINGS_API_KEY: undefined,
     EMBEDDINGS_MODEL: "text-embedding-004",
     MCP_AUTH_TOKEN: undefined,

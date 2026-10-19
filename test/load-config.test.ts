@@ -3,6 +3,7 @@ import {
   DEFAULT_MEMORY_REVIEW_INTERVAL,
   DEFAULT_SCENARIO_CONFIRM_THRESHOLD,
   DEFAULT_SKILL_REVIEW_INTERVAL,
+  envSchema,
   loadConfig,
 } from "../src/config.js";
 
@@ -142,6 +143,7 @@ describe("loadConfig", () => {
     expect(config.TRACE_DATABASE_URL).toBeUndefined();
     expect(config.TRACE_RAW_TTL_DAYS).toBe(14);
     expect(config.ANALYSIS_MODEL).toBe("openrouter:google/gemini-2.5-flash");
+    expect(config.QA_JUDGE_MODEL).toBe("openrouter:google/gemini-2.5-flash");
     expect(config.EMBEDDINGS_MODEL).toBe("text-embedding-004");
 
     process.env = {
@@ -428,5 +430,18 @@ describe("loadConfig opencode: / opencode-go: model rejection", () => {
       VISION_MODEL: "openrouter:google/gemini-2.5-flash",
     } as NodeJS.ProcessEnv;
     expect(() => loadConfig()).not.toThrow();
+  });
+});
+
+describe("QA_JUDGE_MODEL normalization", () => {
+  const model = envSchema.shape.QA_JUDGE_MODEL;
+  it.each([
+    ["OFF", "off"],
+    [" Off ", "off"],
+    ["", "openrouter:google/gemini-2.5-flash"],
+    ["  ", "openrouter:google/gemini-2.5-flash"],
+    [" openrouter:x/y ", "openrouter:x/y"],
+  ])("%j -> %j", (input, expected) => {
+    expect(model.parse(input)).toBe(expected);
   });
 });

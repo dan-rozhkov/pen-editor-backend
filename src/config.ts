@@ -236,6 +236,16 @@ export const envSchema = z.object({
   TRACE_DATABASE_URL: z.string().optional(),
   TRACE_RAW_TTL_DAYS: z.coerce.number().default(14),
   ANALYSIS_MODEL: z.string().default("openrouter:google/gemini-2.5-flash"),
+  // QA judge (POST /api/browse/judge): decides pass/fail/inconclusive for a
+  // finished QA browse run. A helper role resolved through createModel. The
+  // value "off" disables the judge (the route answers { disabled: true }).
+  // Trimmed; empty means the default; "off" is matched case-insensitively.
+  QA_JUDGE_MODEL: z.preprocess((v) => {
+    if (typeof v !== "string") return v;
+    const t = v.trim();
+    if (t === "") return undefined;
+    return t.toLowerCase() === "off" ? "off" : t;
+  }, z.string().default("openrouter:google/gemini-2.5-flash")),
   // Prompt suggestions (src/ai/prompt-suggestion.ts): a cheap/fast helper
   // role that predicts the user's next chat message for the input's ghost
   // text. Deliberately NOT the chat model — it runs after every agent turn,
@@ -607,7 +617,7 @@ const LEGACY_ENV_ALIASES: Array<[newName: string, oldName: string]> = [
 // which OpenRouter answers with a 404 on every single turn — a runtime
 // failure for a config mistake, which belongs at boot instead.
 function rejectDeepSeekModelRef(env: Record<string, string | undefined>): void {
-  for (const name of ["CHAT_MODEL", "STRUCTURED_MODEL", "ANALYSIS_MODEL", "VISION_MODEL", "BROWSE_CASCADE_MODEL", "BROWSE_AGENT_MODEL", "PROMPT_SUGGESTION_MODEL"]) {
+  for (const name of ["CHAT_MODEL", "STRUCTURED_MODEL", "ANALYSIS_MODEL", "VISION_MODEL", "BROWSE_CASCADE_MODEL", "BROWSE_AGENT_MODEL", "PROMPT_SUGGESTION_MODEL", "QA_JUDGE_MODEL"]) {
     const value = env[name];
     if (value?.startsWith("deepseek:")) {
       console.error(
@@ -644,7 +654,7 @@ function rejectDeepSeekModelRef(env: Record<string, string | undefined>): void {
 //    key for it either.
 function rejectOpenCodeModelRef(env: Record<string, string | undefined>): void {
   const OPENCODE_COLON_PREFIXES = ["opencode-go:", "opencode:"];
-  for (const name of ["CHAT_MODEL", "STRUCTURED_MODEL", "ANALYSIS_MODEL", "VISION_MODEL", "BROWSE_CASCADE_MODEL", "BROWSE_AGENT_MODEL", "PROMPT_SUGGESTION_MODEL"]) {
+  for (const name of ["CHAT_MODEL", "STRUCTURED_MODEL", "ANALYSIS_MODEL", "VISION_MODEL", "BROWSE_CASCADE_MODEL", "BROWSE_AGENT_MODEL", "PROMPT_SUGGESTION_MODEL", "QA_JUDGE_MODEL"]) {
     const value = env[name];
     if (!value) continue;
     const colonPrefix = OPENCODE_COLON_PREFIXES.find((prefix) => value.startsWith(prefix));
