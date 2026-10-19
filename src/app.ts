@@ -23,6 +23,7 @@ import {
 import { modelsRoutes } from "./routes/models.js";
 import { opencodeRoutes } from "./routes/opencode.js";
 import { prototypeLinkRoutes } from "./routes/prototype-link.js";
+import { promptSuggestionRoutes } from "./routes/promptSuggestion.js";
 import { browseStepRoutes } from "./routes/browseStep.js";
 import { browseLocateRoutes } from "./routes/browseLocate.js";
 import { browsePlanRoutes } from "./routes/browsePlan.js";
@@ -409,6 +410,7 @@ export async function buildApp(
   await cloudBrowserRoutes(app, config, options.cloudBrowser);
   await vectorRoutes(app, config, analytics);
   await prototypeLinkRoutes(app, config);
+  await promptSuggestionRoutes(app, config);
   await browseStepRoutes(app, config);
   await browseLocateRoutes(app, config);
   await browsePlanRoutes(app, config);

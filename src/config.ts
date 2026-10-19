@@ -236,6 +236,11 @@ export const envSchema = z.object({
   TRACE_DATABASE_URL: z.string().optional(),
   TRACE_RAW_TTL_DAYS: z.coerce.number().default(14),
   ANALYSIS_MODEL: z.string().default("openrouter:google/gemini-2.5-flash"),
+  // Prompt suggestions (src/ai/prompt-suggestion.ts): a cheap/fast helper
+  // role that predicts the user's next chat message for the input's ghost
+  // text. Deliberately NOT the chat model — it runs after every agent turn,
+  // so it must stay cheap, and it must not follow the composer's model pick.
+  PROMPT_SUGGESTION_MODEL: z.string().default("openrouter:google/gemini-2.5-flash"),
   EMBEDDINGS_API_KEY: z.string().optional(),
   EMBEDDINGS_MODEL: z.string().default("text-embedding-004"),
   // --- MCP server (optional) ---
@@ -602,7 +607,7 @@ const LEGACY_ENV_ALIASES: Array<[newName: string, oldName: string]> = [
 // which OpenRouter answers with a 404 on every single turn — a runtime
 // failure for a config mistake, which belongs at boot instead.
 function rejectDeepSeekModelRef(env: Record<string, string | undefined>): void {
-  for (const name of ["CHAT_MODEL", "STRUCTURED_MODEL", "ANALYSIS_MODEL", "VISION_MODEL", "BROWSE_CASCADE_MODEL", "BROWSE_AGENT_MODEL"]) {
+  for (const name of ["CHAT_MODEL", "STRUCTURED_MODEL", "ANALYSIS_MODEL", "VISION_MODEL", "BROWSE_CASCADE_MODEL", "BROWSE_AGENT_MODEL", "PROMPT_SUGGESTION_MODEL"]) {
     const value = env[name];
     if (value?.startsWith("deepseek:")) {
       console.error(
@@ -639,7 +644,7 @@ function rejectDeepSeekModelRef(env: Record<string, string | undefined>): void {
 //    key for it either.
 function rejectOpenCodeModelRef(env: Record<string, string | undefined>): void {
   const OPENCODE_COLON_PREFIXES = ["opencode-go:", "opencode:"];
-  for (const name of ["CHAT_MODEL", "STRUCTURED_MODEL", "ANALYSIS_MODEL", "VISION_MODEL", "BROWSE_CASCADE_MODEL", "BROWSE_AGENT_MODEL"]) {
+  for (const name of ["CHAT_MODEL", "STRUCTURED_MODEL", "ANALYSIS_MODEL", "VISION_MODEL", "BROWSE_CASCADE_MODEL", "BROWSE_AGENT_MODEL", "PROMPT_SUGGESTION_MODEL"]) {
     const value = env[name];
     if (!value) continue;
     const colonPrefix = OPENCODE_COLON_PREFIXES.find((prefix) => value.startsWith(prefix));
