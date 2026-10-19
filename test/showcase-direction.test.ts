@@ -103,6 +103,9 @@ describe("renderDirectionClause", () => {
       expect(clause).toContain(hex);
     }
     expect(clause).toMatch(/hard requirement/);
+    // Two runs of the 8-theme check painted alternate screens in the palette's
+    // extra fields, so the flow changed ground from screen to screen.
+    expect(clause).toMatch(/One ground for every screen/);
   });
 
   it("loads the text face at the weights a UI needs", () => {
