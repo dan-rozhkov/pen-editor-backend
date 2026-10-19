@@ -699,6 +699,23 @@ describe("buildShowcasePrompt", () => {
     ({ buildShowcasePrompt } = await import("../src/showcase/runner.js"));
   });
 
+  it("hands over a dealt direction in place of the palette clause", async () => {
+    const { PALETTES, TYPE_SYSTEMS } = await import("../src/showcase/directionLibrary.js");
+    const direction = { type: TYPE_SYSTEMS[0], palette: PALETTES[0] };
+    const prompt = buildShowcasePrompt("sleep tracker", {
+      avoidHueFamilies: ["terracotta/amber"],
+      direction,
+    });
+    expect(prompt).toContain("Art direction:");
+    expect(prompt).toContain(direction.type.display.family);
+    expect(prompt).toContain(direction.palette.accent);
+    // Both at once would hand the model a palette and, beside it, an
+    // invitation to pick its own.
+    expect(prompt).not.toContain("Palette: the last apps");
+    expect(prompt).toContain("/prototype mobile app — sleep tracker");
+    expect(prompt).toContain("generate_image");
+  });
+
   it("omits the palette clause when there is nothing to avoid", () => {
     const prompt = buildShowcasePrompt("sleep tracker");
     expect(prompt).not.toContain("Palette:");

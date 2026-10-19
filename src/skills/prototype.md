@@ -96,10 +96,11 @@ Apply these global dials to every design decision:
 
 
 ### Typography rules
-- **ONE font family per design (default):** Pick a SINGLE Google Font family, build hierarchy with **weight, size, and color** — not extra families, and do NOT mix multiple typefaces by default. A second family is the exception: add one ONLY when the user explicitly asks, when the content is literally code/terminal output (then `'JetBrains Mono', ui-monospace, monospace` for that code only), or when the two faces are **split by role and you say so in OWN-WORLD** — a display voice (titles, large numerals, wordmark) against a reading face (running text, meta, captions). Split by ROLE, never by size: a second family that exists only to make a heading bigger is noise. Under a display voice with real character, a neutral reading face such as `Inter` is a legitimate choice — Inter as the ONLY face is the tell, not Inter itself. An alternative to a second family is the **width axis**: a variable face carrying `wdth` (e.g. `Archivo`, `wdth 62..125, wght 100..900`) gives contrast on two axes inside one family — narrow-heavy against wide-ultralight. The Phosphor icon font (see Icon rules) does NOT count toward this one-family limit.
+- **ONE font family per design (default):** Pick a SINGLE Google Font family, build hierarchy with **weight, size, and color** — not extra families, and do NOT mix multiple typefaces by default. A second family is the exception: add one ONLY when the user explicitly asks, when the content is literally code/terminal output (then `'JetBrains Mono', ui-monospace, monospace` for that code only), or when the two faces are **split by role and you say so in OWN-WORLD** — a display voice (titles, large numerals, wordmark) against a reading face (running text, meta, captions). Split by ROLE, never by size: a second family that exists only to make a heading bigger is noise. Under a display voice with real character, a neutral reading face such as `Inter` is a legitimate choice — Inter as the ONLY face is the tell, not Inter itself. An alternative to a second family is the **width axis**: a variable face carrying `wdth` (e.g. `Instrument Sans`, `wdth 75..100, wght 400..700`) gives contrast on two axes inside one family — narrow-heavy against wide-ultralight. The Phosphor icon font (see Icon rules) does NOT count toward this one-family limit.
 - **Load fonts via `@import`, NOT `<link>`:** `<link>` tags are stripped on the canvas and never load. Every external font/stylesheet (main family, icon font, optional mono) MUST be loaded via `@import` at the TOP of your first `<style>` block. Do NOT reference fonts that are not available on Google Fonts.
   - Example (syntax only — the family comes from your committed world): `<style>@import url('https://fonts.googleapis.com/css2?family=<Family>:wght@400;600;700&display=swap');  /* ...rest of your CSS... */ </style>`
-- **Single-family candidates (all on Google Fonts — pick ONE):** `Sora`, `Manrope`, `Rubik`, `Urbanist`, `Nunito Sans`, `Work Sans`, `Archivo`; for editorial/creative designs a serif such as `Bodoni Moda` or `Petrona`. This list is a starting point, not the sanctioned answer. A face from the autopilot set below, or from `new-work`'s training-data-default list (`Outfit`, `Plus Jakarta Sans`, `Space Grotesk`, `Lora`, `Newsreader` among them), can still be the right call, but only with the one-clause reason that bullet asks for.
+- **A dealt art direction wins.** When the request carries an "Art direction" dealt by code, its type system replaces your choice of family — this whole section, the serif rule below included. Load exactly the faces it names.
+- **Single-family candidates (all on Google Fonts — pick ONE):** `Sora`, `Manrope`, `Rubik`, `Urbanist`, `Nunito Sans`, `Work Sans`; for editorial/creative designs a serif such as `Bodoni Moda` or `Petrona`. This list is a starting point, not the sanctioned answer. A face from the autopilot set below, or from `new-work`'s training-data-default list (`Outfit`, `Plus Jakarta Sans`, `Space Grotesk`, `Lora`, `Newsreader` among them), can still be the right call, but only with the one-clause reason that bullet asks for.
   - A CSS fallback chain *within one family* is fine (e.g. `font-family: '<Family>', system-ui, sans-serif;`) — that is one typeface plus system fallbacks, not a second design font.
 - **A face from the autopilot set needs a reason.** `Inter`, `Geist`, `Roboto` and system defaults on the sans side, and `Playfair Display`, `Fraunces`, `Instrument Serif`, `Cormorant`, `DM Serif`, `DM Sans` on the "tasteful" side, are the two things a model reaches for when nobody chose — the second list only *looks* like taste, which is why it now reads as generated faster than the first. Any of them is fine when you can say in one clause what it does for THIS world; reaching for one because it is what "good" autocompletes to is the tell.
 - **Size scale (use inline CSS, not Tailwind):**
@@ -126,13 +127,14 @@ Apply these global dials to every design decision:
 
 
 ### Color rules
+- **A dealt art direction wins.** When the request carries an "Art direction" dealt by code, its palette replaces the defaults in this section (the zinc/slate base included). Use its ground, surface, ink, muted and accent as given.
 - Max 1 accent color per design. Saturation must stay below 80%.
 - **BANNED:** "AI Purple" / neon purple / neon gradients. No purple button glows.
 - Use neutral bases: Zinc or Slate grays. Pair with a single high-contrast accent (e.g. emerald, electric blue, deep rose).
 - **Never use pure black (`#000000`).** Use off-black: `#18181b` (zinc-900), `#0f172a` (slate-900), or similar.
 - Stick to ONE warm-or-cool gray palette for the entire output — never mix warm and cool grays.
 - **A warm-neutral ground is earned, never the default.** Cream / sand / beige / warm-taupe grounds, and warm-dark brown grounds (a ground whose hue sits in the 10–60° band with any perceptible saturation), are legitimate ONLY when the brief asks for warmth in its own words or the committed world genuinely requires that material. Where the brief leaves the temperature free, the ground is neutral-cool (zinc/slate) and the accent is anything but the orange–amber–terracotta or sage–olive–forest band. "The subject is cosy / human / caring / calming" does not earn it — see Calibration below.
-- Shadows must be tinted toward the background hue, not pure black. Example: `box-shadow: 0 4px 24px -4px rgba(15,23,42,0.08);`
+- Shadows exist only on elements that float (see House rules) and are tinted toward the background hue, not pure black. Example: `box-shadow: 0 8px 24px -8px rgba(15,23,42,0.16);`
 - Ensure WCAG AA contrast: body text ≥ 4.5:1, large text / headings ≥ 3:1 against their backgrounds.
 - **Variable priority:** If design variables exist in canvas context, ALWAYS reference them via `var(--name)` at the point of use instead of hardcoding hex values — the editor injects and live-updates the value, so the literal is never correct once a matching variable exists.
 
@@ -149,17 +151,14 @@ Apply these global dials to every design decision:
 
 ### Materiality, shadows & surfaces
 - Use cards ONLY when elevation communicates hierarchy. When VISUAL_DENSITY > 7, prefer grouping with `border-top: 1px solid`, dividers, or negative space instead of card containers.
-- **Shadow scale (inline CSS):**
-  - Subtle: `box-shadow: 0 1px 3px rgba(15,23,42,0.06);`
-  - Medium: `box-shadow: 0 4px 24px -4px rgba(15,23,42,0.08);`
-  - Diffuse/elevated: `box-shadow: 0 20px 40px -15px rgba(0,0,0,0.05);`
+- **Surfaces are separated by a tone step, not a shadow.** A card is one step lighter or darker than the ground, or carries one 1px border at about 1.1–1.3:1 against it. Never both, and never a shadow on something at rest.
 - **Border-radius scale:** Small elements 6–8px, cards/containers 12–16px, large panels 20–24px. Stay consistent.
-- **Glassmorphism (if needed):** Use a semi-transparent background (`rgba(255,255,255,0.7)`) with a 1px inner border (`border: 1px solid rgba(255,255,255,0.15);`) and subtle inner shadow (`box-shadow: inset 0 1px 0 rgba(255,255,255,0.1);`). Do NOT use `backdrop-filter`.
+- **No glass.** Translucent or frosted panels are banned (see House rules); use an opaque surface one tone step from the ground.
 
 
 ### UI states
 LLMs default to generating only the "happy path" static state. You MUST consider these:
-- **Loading:** Show skeleton placeholders that match final layout dimensions — not generic spinners. Use a light gray rectangle (`background: #e4e4e7; border-radius: 4px;`) matching the content size.
+- **Loading:** only when the screen itself IS the loading state, show skeleton placeholders that match the final layout — not generic spinners. Never put grey placeholder bars beside real content to fill space (see House rules).
 - **Empty states:** Compose a clear empty state with an icon, a heading, and a CTA explaining how to populate data.
 - **Error states:** Inline error text below inputs in a distinct color (`color: #dc2626;`).
 - **Hover states (CSS only):** Use `<style>` blocks with `:hover` selectors. Changes must be instant (no `transition`). Example: `button:hover { background: #18181b; color: #fff; }`
@@ -211,6 +210,31 @@ You MUST avoid these generic AI design signatures:
 - NO broken image links. Meaningful photos come from `generate_image`; `https://picsum.photos/seed/{unique_string}/{width}/{height}` covers micro imagery and failed generations.
 
 
+### House rules (hard)
+
+These hold on every screen, whatever the direction. They are not preferences: unlike the Refuse list
+below, the brief does not unlock them by implication — only the user's own words asking for one of these
+devices does. Check every screen against this table before you emit it.
+
+| Banned | Instead |
+| --- | --- |
+| **Eyebrows.** A small label above a heading or a big figure ("YOU ARE SENDING", "STEP 2 OF 3", "SEATS OPEN AT 19:30"), a pill badge above a title, a "New ·" chip. | Put the information in the heading, in the line under it, or drop it. Progress is shown by a progress bar or by the words in the title. |
+| **Tracked uppercase labels.** Any `text-transform: uppercase` or positive `letter-spacing` on labels, meta, tabs, section titles, column headers. | Sentence case at 13px or more, in muted ink. Hierarchy from size and weight, never from capitals. One wordmark may be set in capitals if the brand needs it. |
+| **Shadows on things at rest.** Any `box-shadow` on a card, tile, button, list, input or bar that does not float. No glows, no inset shadows. | A tone step between ground and surface, or one 1px border at about 1.1–1.3:1 against the ground. A shadow only on what truly floats over content: a sheet, a menu, a toast. |
+| **Gradients.** On grounds, cards, buttons, text, image overlays as decoration. | Flat colour. A neutral scrim under text on a photo is the one exception. |
+| **Glass.** Translucent panels, frosted bars, floating pill navigation. | Opaque surfaces one tone step from the ground. A plain bottom tab bar. |
+| **Index numbering as decoration.** 01 / 02 / 03, "Step 2", "SETUP 01 / 03". | Order shown by position or by the words. A rank or a real count is data and is allowed. |
+| **Monospace outside real IDs.** Mono for labels, meta, numbers as decoration. | The text face with `font-variant-numeric: tabular-nums` for figures. Mono only for reference codes and card numbers if at all. |
+| **Styled accent word in a headline.** One word italic, coloured, serif or underlined for emphasis. | One face, one colour. The words carry the emphasis. |
+| **Skeleton and placeholder bars.** Grey bars standing in for content, fake loading rows. | Real content, or an honest empty state in words. |
+| **Icons in tinted squares or circles** repeated down a list or on every card. | One plain 16–20px outline icon where it helps, or none. |
+| **Rows of identical icon-topped cards.** | A divided list, mixed spans, or one dominant item with the rest smaller. |
+| **Emoji, decorative blobs, decorative shapes.** | A real picture, a real interface element, or nothing. |
+
+Removing ornament leaves space. Never fill it with another ornament. Fill it with scale (make the main
+thing larger), with the full content, with a real picture made for this subject, or with a field of flat
+colour.
+
 ### Quality floor — Verify, Refuse, Calibration
 Load-bearing on every prototype; a pinned brief or the committed visual world above overrides anything here, but your own habit does not.
 
@@ -227,7 +251,6 @@ Load-bearing on every prototype; a pinned brief or the committed visual world ab
 **Refuse** — these are the category's defaults, not hard bans: the brief's own words can earn any of them, but reaching for one when the axis is free means you weren't deciding.
 - Same-size cards of icon + heading + text as the page structure; nested cards are always wrong.
 - The hero-metric template: big number, small label, supporting stats, accent.
-- A tracked uppercase eyebrow over every section (one named kicker is a system; an eyebrow everywhere is grammar you didn't choose).
 - Section numbers (01 / 02 / 03) unless the sequence itself carries information the reader needs.
 - A modal for a task that needs neither interruption nor protected focus.
 - Gradient text — emphasis comes from weight or size.
@@ -257,7 +280,7 @@ Do not default to generic UI. Pull from these patterns for visually striking lay
 
 **Hero sections:**
 - Asymmetric split: text left-aligned (60% width), image/asset right (40%), with generous top padding.
-- Text overlapping a background image section with a gradient fade.
+- Text overlapping a background image section over a neutral scrim (the one allowed gradient).
 - Full-bleed image with a content overlay panel offset to one side.
 
 **Grids & layout:**
@@ -268,13 +291,11 @@ Do not default to generic UI. Pull from these patterns for visually striking lay
 - **Zig-zag features:** Alternating image-left/text-right and text-left/image-right rows.
 
 **Cards & containers (when justified):**
-- Glassmorphism panels (semi-transparent bg + inner border, no backdrop-filter).
-- Spotlight effect: a radial gradient background simulating a light source on hover.
-- Inset shadow cards: `box-shadow: inset 0 2px 4px rgba(0,0,0,0.06);` for recessed feel.
+- Tone-stepped panels: a surface one step off the ground, with no border and no shadow.
+- A whole field of flat colour behind one section, as the screen's one deliberate change of ground.
 
 **Typography:**
 - Large display text used as a background element with very low opacity.
-- Mixed weight headings: first word bold, rest thin — e.g. `<span style="font-weight:700">Build</span> <span style="font-weight:300">something great</span>`.
 
 
 ### Content & data realism
@@ -294,7 +315,7 @@ Before generating the final htmlContent, verify every point:
 1e. **FITS-THE-WIDTH CHECK (BLOCKER):** Add up the widths of every fixed-size row you emit — seat maps, calendar/keypad grids, chip rows, stat rows, tables — including gaps, padding and borders, and compare against the screen width. `10 seats x 30px + 9 gaps x 8px + a 24px row label + 16px padding each side` is 428px, which does NOT fit a 390px screen: the edge column and the row label get clipped, because the screen is `overflow: hidden` and there is no scrollbar in a static mockup. Fix it in the design — fewer columns, smaller cells, tighter gaps — never by letting it spill. The ONLY content allowed to exceed the screen width is a deliberate horizontal carousel whose cut-off card at the edge signals "scroll me"; everything else must fit within the screen's own width.
 1d. **PINNED-BAR CHECK:** For every bar pinned to an edge (bottom tab bar, sticky header, floating CTA) — does the content container carry `padding-bottom`/`padding-top` of at least that bar's full height? If it's 0, the last row of content is sitting under an opaque bar. Fix it before emitting.
 2. Is the layout asymmetric / non-centered (DESIGN_VARIANCE = 8)?
-3. Is the design built on **ONE** Google Font family (no Serif in dashboards), loaded via `@import` at the top of the first `<style>` block? The Phosphor icon font is exempt; a second text family appears ONLY on explicit user request, for literal code, or as a display/reading role split declared in OWN-WORLD.
+3. Is the design built on **ONE** Google Font family (no Serif in dashboards) — or on exactly the faces a dealt art direction names — loaded via `@import` at the top of the first `<style>` block? The Phosphor icon font is exempt; a second text family appears ONLY on explicit user request, for literal code, or as a display/reading role split declared in OWN-WORLD.
 4. Is there exactly 0–1 accent colors, saturation < 80%, no purple?
 4a. **NATURALS-CLUSTER CHECK (BLOCKER):** State the accent's hue in degrees and the ground's hue in degrees, read off your own hex values — do not eyeball it. If the ground is warm (hue 10–60° with any perceptible saturation — this includes `#faf9f6`, `#fef9f0`, `#2d2a26` and `#1a1410`) **and** the accent's hue is either 8–55° (terracotta / rust / amber / burnt orange) **or** 75–160° (sage / olive / moss / forest green), you have landed on the reassuring-naturals axis in Calibration. Unless the user's brief asked for warmth in its own words, STOP and re-pick the ground and accent before emitting. Being dark rather than cream, or sans rather than serif, does not exempt the design.
 4b. **DIRECTION-CONTRACT CHECK:** Does the HTML open with the `<!-- THESIS / OWN-WORLD / STORY / FIRST VIEWPORT -->` comment from step 1a, before the `<style>` block? Is the THESIS refusal structural rather than a temperature ("refuses cold/clinical/data-grid" fails)? Does OWN-WORLD name a material or an attitude rather than a vague adjective ('modern / clean / premium / sleek' fails the same way a temperature-only THESIS does)? If any of this is missing, write it first — it is what the checks above are calibrated against.
@@ -310,6 +331,7 @@ Before generating the final htmlContent, verify every point:
 14. If reference images were provided, is their style influence visible in the output (palette, typography, layout feel)?
 15. If variables were provided in canvas context, are they referenced via `var(--name)` at every point of use (never a hardcoded literal), with a matching `:root {}` block declared as the standalone/export fallback only?
 16. **FIT-TO-CANVAS CHECK (BLOCKER):** Does the content fit exactly within the embed's declared `width`×`height` — no horizontal scroll, no bottom cutoff? Is `box-sizing: border-box` set at the top of the `<style>` block, and is `overflow: hidden` set on the root/body? Does ANY element — not just root/body — set `overflow-y: auto`, `overflow: scroll`, or `overflow-x: auto`? If so, STOP: that is a scrollbar and a right-side offset, not a fit. Cut the content instead.
+16a. **HOUSE-RULES CHECK (BLOCKER):** Search your CSS for `text-transform: uppercase`, positive `letter-spacing` on anything but one wordmark, `box-shadow` on anything that does not float, `gradient(` outside one neutral photo scrim, `backdrop-filter`/translucent panels, and 01/02/03-style numbering. Look at every heading: is there a small label sitting above it, or one word styled differently inside it? Any hit is a House rules violation — fix it before emitting.
 17. **FORM-CONTROL CHECK:** Does every `<button>`, `<input>`, `<select>` and `<textarea>` in the HTML get its font, color, background and border from YOUR CSS? A control left on the browser's defaults ships with a system bevel and an Arial label. If the reset line from "CSS mechanics" is missing, add it.
 
 ## Editing screens you already made

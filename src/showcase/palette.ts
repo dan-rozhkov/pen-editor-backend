@@ -63,7 +63,7 @@ function parseHex(hex: string): { r: number; g: number; b: number } | null {
   return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
 }
 
-function hsv(hex: string): { h: number; s: number; v: number } | null {
+export function hsv(hex: string): { h: number; s: number; v: number } | null {
   const rgb = parseHex(hex);
   if (!rgb) return null;
   const r = rgb.r / 255;
@@ -117,21 +117,11 @@ export function extractAccentHex(html: string): string | null {
   return best?.hex ?? null;
 }
 
-/** Distinct hue families used by the given screens, freshest first. Never
- * rejects: a run must still happen when S3 is unreachable — it just loses the
- * rotation hint. */
-export async function recentAccentFamilies(
-  htmlUrls: string[],
-  fetchHtml: (url: string) => Promise<string>,
-): Promise<string[]> {
+/** Distinct hue families used by the given screens' HTML, in the order given
+ * (freshest first when the caller passes them that way). */
+export function accentFamiliesFromHtml(htmls: string[]): string[] {
   const families: string[] = [];
-  for (const url of htmlUrls) {
-    let html: string;
-    try {
-      html = await fetchHtml(url);
-    } catch {
-      continue;
-    }
+  for (const html of htmls) {
     const accent = extractAccentHex(html);
     if (!accent) continue;
     const family = hueFamily(accent);
@@ -140,4 +130,31 @@ export async function recentAccentFamilies(
     }
   }
   return families;
+}
+
+/** Fetches each url, skipping the ones that fail. Never rejects: a run must
+ * still happen when S3 is unreachable — it just loses the rotation hints. */
+export async function fetchRecentHtml(
+  htmlUrls: string[],
+  fetchHtml: (url: string) => Promise<string>,
+): Promise<string[]> {
+  const htmls: string[] = [];
+  for (const url of htmlUrls) {
+    try {
+      htmls.push(await fetchHtml(url));
+    } catch {
+      continue;
+    }
+  }
+  return htmls;
+}
+
+/** Distinct hue families used by the given screens, freshest first. Never
+ * rejects: a run must still happen when S3 is unreachable — it just loses the
+ * rotation hint. */
+export async function recentAccentFamilies(
+  htmlUrls: string[],
+  fetchHtml: (url: string) => Promise<string>,
+): Promise<string[]> {
+  return accentFamiliesFromHtml(await fetchRecentHtml(htmlUrls, fetchHtml));
 }

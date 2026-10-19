@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { SHOWCASE_THEMES, DESKTOP_THEMES, pickTheme } from "./themes.js";
-import { recentAccentFamilies } from "./palette.js";
+import { accentFamiliesFromHtml, fetchRecentHtml } from "./palette.js";
+import { dealDirection, fontFamiliesFromHtml } from "./direction.js";
 import { runShowcaseGeneration } from "./runner.js";
 import { openShowcaseBrowser } from "./screenshot.js";
 import { hasFlag, readFlag, parsePlatformFlag, parseDryRunDir } from "./cliFlags.js";
@@ -33,6 +34,7 @@ async function main(): Promise<void> {
   const coverFlagPresent = hasFlag(argv, "cover");
   const platform = parsePlatformFlag(argv, "showcase");
   const dryRunDir = parseDryRunDir(argv, "showcase");
+  const noDirection = argv.includes("--no-direction");
   // Screen count isn't known until the agent has run, so this first pass
   // only validates presence/format; the upper-bound check happens below
   // once `result.screens.length` exists.
@@ -54,11 +56,12 @@ async function main(): Promise<void> {
       const recent = await ctx.store.recentThemes(RECENT_THEMES_WINDOW, platform);
       theme = pickTheme(themePool, recent, Math.random);
     }
-    // Palette rotation: read the accents of the last few published runs back
-    // out of their HTML so this run can steer away from them. Best-effort by
-    // construction (`recentAccentFamilies` swallows fetch failures) — a run
-    // must still happen when S3 is unreachable, it just loses the hint.
-    const avoidHueFamilies = await recentAccentFamilies(
+    // Palette and type rotation: read the accents and fonts of the last few
+    // published runs back out of their HTML so this run can steer away from
+    // them. Best-effort by construction (`fetchRecentHtml` swallows fetch
+    // failures) — a run must still happen when S3 is unreachable, it just
+    // loses the hint.
+    const recentHtml = await fetchRecentHtml(
       await ctx.store.recentRunHtmlUrls(RECENT_PALETTES_WINDOW),
       async (url) => {
         const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
@@ -66,16 +69,25 @@ async function main(): Promise<void> {
         return res.text();
       },
     );
+    const avoidHueFamilies = accentFamiliesFromHtml(recentHtml);
+    // The run's typeface and palette are dealt by code (direction.ts) unless
+    // `--no-direction` asks for the model's own choice — the baseline arm when
+    // comparing the two.
+    const direction = noDirection
+      ? undefined
+      : dealDirection({ avoidHueFamilies, avoidFontFamilies: fontFamiliesFromHtml(recentHtml) });
 
     console.log(
       `[showcase] generating ${platform} screens for theme "${theme}"` +
         (modelOverride ? ` with model "${modelOverride}"` : "") +
-        (avoidHueFamilies.length ? `, avoiding accents: ${avoidHueFamilies.join(", ")}` : ""),
+        (avoidHueFamilies.length ? `, avoiding accents: ${avoidHueFamilies.join(", ")}` : "") +
+        (direction ? `, dealt direction: ${direction.type.name} / ${direction.palette.name}` : ""),
     );
 
     const result = await runShowcaseGeneration(ctx.config, theme, modelOverride, {
       avoidHueFamilies,
       platform,
+      direction,
     });
     if (result.screens.length === 0) {
       console.error(`[showcase] no embed screens were produced for theme "${theme}"`);
