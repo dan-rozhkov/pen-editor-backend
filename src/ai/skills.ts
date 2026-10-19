@@ -142,6 +142,14 @@ export function ensureSkillsLoaded(): Promise<void> {
   return loadOnce;
 }
 
+/**
+ * Skills that need `browse_agent` with its `qa` parameter. That parameter
+ * exists only on a turn with the desktop/cloud browser, BROWSE_MODE=agent and
+ * a client that advertises browseQa. Elsewhere the catalog and auto-pick hide
+ * them. An explicit slash command still loads them.
+ */
+export const QA_ONLY_SKILL_NAMES: ReadonlySet<string> = new Set(["bug-hunt"]);
+
 export function getSkill(name: string): Skill | undefined {
   return skillsMap.get(name);
 }

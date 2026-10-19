@@ -28,6 +28,7 @@ import {
   getAllSkills,
   getSkill,
   getSkillTools,
+  QA_ONLY_SKILL_NAMES,
 } from "./skills.js";
 import { renderMemorySnapshot } from "./memory/render.js";
 import { createMemoryToolContext, getMemoryTools } from "./memory/tool.js";
@@ -523,6 +524,23 @@ export async function prepareChatTurn(
     return lines.join("\n");
   }
 
+  // Computed ONCE and shared by the system-prompt rule and the browse_*
+  // structural/key gates below, so the rule can never drift from the tool set.
+  const browserKind =
+    input.clientCapabilities?.browser ?? (input.clientCapabilities?.desktopBrowser ? "desktop" : undefined);
+  const hasBrowser = browserKind === "desktop" || (browserKind === "cloud" && Boolean(config.STEEL_API_KEY));
+  // BROWSE_MODE=agent: the main model gets browse_agent only. The subagent
+  // turn itself drives the manual tools, so it is excluded.
+  const browseAgentOffered = config.BROWSE_MODE === "agent" && hasBrowser && !browseSub;
+  // Only a client that advertises browseQa is shown the `qa` flag of
+  // browse_agent and the QA bullet; an older one gets neither.
+  const clientHasQa = input.clientCapabilities?.browseQa === true;
+  // Skills that drive browse_agent with `qa` are useless on a turn where that
+  // parameter is not offered, so they are hidden from the catalog and from
+  // auto-pick there. An explicit /slash invocation stays allowed.
+  const qaOffered = browseAgentOffered && clientHasQa;
+  const isSkillOffered = (name: string): boolean => qaOffered || !QA_ONLY_SKILL_NAMES.has(name);
+
   // Jev auto-pick: when no slash command already resolved a skill, ask Jev
   // whether the message matches one of the curated skills up front, instead
   // of spending a whole extra round trip on the model reading the catalog,
@@ -542,7 +560,7 @@ export async function prepareChatTurn(
     if (systemOne) {
       const routeArgs = {
         messageText: lastUserText,
-        candidates: getAllSkills().map((s) => ({ name: s.name, description: s.description, content: s.content })),
+        candidates: getAllSkills().filter((s) => isSkillOffered(s.name)).map((s) => ({ name: s.name, description: s.description, content: s.content })),
         threshold: config.SKILL_ROUTING_MIN_CONFIDENCE,
         gateThreshold: config.SKILL_ROUTING_GATE_THRESHOLD,
         fitsThreshold: config.SKILL_ROUTING_FITS_THRESHOLD,
@@ -758,7 +776,9 @@ export async function prepareChatTurn(
   }
 
   const skillCatalog = browseSub ? [] : [
-    ...getAllSkills().map((s) => ({ name: s.name, description: s.description })),
+    ...getAllSkills()
+      .filter((s) => isSkillOffered(s.name))
+      .map((s) => ({ name: s.name, description: s.description })),
     ...boundedUserSkills.map((s) => ({
       name: s.name,
       description: s.description,
@@ -808,23 +828,12 @@ export async function prepareChatTurn(
   // pointer block only appears when there is somewhere for it to point.
   const canvasContextDelivered = Boolean(canvasContext);
 
-  // Computed ONCE and shared by the system-prompt rule and the browse_*
-  // structural/key gates below, so the rule can never drift from the tool set.
-  const browserKind =
-    input.clientCapabilities?.browser ?? (input.clientCapabilities?.desktopBrowser ? "desktop" : undefined);
-  const hasBrowser = browserKind === "desktop" || (browserKind === "cloud" && Boolean(config.STEEL_API_KEY));
   // BROWSE_MODE "manual": the chat model drives browse_* itself and
   // browse_task is never offered. "task" restores the Jev/Luna step loop,
   // which additionally needs TYPESAFE_API_KEY; without it the manual rule is
   // the correct one, since browse_task is not in the tool set.
   const browseTaskOffered =
     config.BROWSE_MODE === "task" && hasBrowser && Boolean(config.TYPESAFE_API_KEY);
-  // BROWSE_MODE=agent: the main model gets browse_agent only. The subagent
-  // turn itself drives the manual tools, so it is excluded.
-  const browseAgentOffered = config.BROWSE_MODE === "agent" && hasBrowser && !browseSub;
-  // Only a client that advertises browseQa is shown the `qa` flag of
-  // browse_agent and the QA bullet; an older one gets neither.
-  const clientHasQa = input.clientCapabilities?.browseQa === true;
   // browseIsolation only means something together with browseQa (the parallel
   // sentence is about QA runs) and the desktop browser (cloud is never isolated).
   const clientHasIsolation =

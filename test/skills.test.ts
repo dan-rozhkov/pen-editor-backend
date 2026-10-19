@@ -6,7 +6,9 @@ import {
   getSkillTools,
   loadSkills,
 } from "../src/ai/skills.js";
+import { AGENT_BROWSER_QA_GUIDANCE } from "../src/ai/system-prompt.js";
 import { SHOWCASE_VIEWPORTS } from "../src/showcase/platform.js";
+import { penTools } from "../src/ai/tools.js";
 
 describe("detectSkillCommand", () => {
   it("detects a valid skill command and extracts the user text", () => {
@@ -287,6 +289,36 @@ describe("loadSkills / getSkill", () => {
     expect(critique.content).toContain(
       "A tell is an unspecified default, not a forbidden value.",
     );
+  });
+
+  it("gives bug-hunt a 12-family attack catalog and the QA rules", () => {
+    const hunt = getSkill("bug-hunt")!;
+    expect(hunt).toBeDefined();
+    expect(hunt.args.map((a) => a.name)).toEqual(["target"]);
+    const heading = "## Attack catalog";
+    expect(hunt.content).toContain(heading);
+    const start = hunt.content.indexOf(heading) + heading.length;
+    const next = hunt.content.indexOf("\n## ", start);
+    const section = hunt.content.slice(start, next === -1 ? undefined : next);
+    expect(section.match(/^\d{1,2}\. \*\*/gm) ?? []).toHaveLength(12);
+    expect(section.match(/Try:/g) ?? []).toHaveLength(12);
+    expect(section.match(/Expect:/g) ?? []).toHaveLength(12);
+    expect(hunt.content).toContain("qa: true");
+    expect(hunt.content).toContain("setup.network");
+    expect(hunt.content).toContain("setup.emulate");
+    expect(hunt.content).toContain("Rerun every failed scenario once");
+    expect(AGENT_BROWSER_QA_GUIDANCE).toContain("bug-hunt");
+  });
+
+  it("keeps the bug-hunt scenario example valid against the browse_agent schema", () => {
+    // The example is what the model copies. A field name that the schema
+    // rejects (it is strict) turns every copied call into a validation error.
+    const hunt = getSkill("bug-hunt")!;
+    const block = /```json\n([\s\S]*?)\n```/.exec(hunt.content);
+    expect(block).not.toBeNull();
+    const example: unknown = JSON.parse(block![1]);
+    const schema = penTools.browse_agent.inputSchema as import("zod").ZodType;
+    expect(schema.safeParse(example).success).toBe(true);
   });
 
   it("searches for slide references before generating deck imagery", () => {

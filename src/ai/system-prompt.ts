@@ -77,7 +77,7 @@ export const AGENT_BROWSER_GUIDANCE = `Every task that needs the built-in browse
 // clientCapabilities.browseQa (the others never see the `qa` flag). The full
 // rule is in the `qa` param description.
 const AGENT_QA_BULLET =
-  "- To test a web app or a flow, use the `qa` param of `browse_agent`. Report each scenario's `qa.outcome` and `qa.reason`.";
+  "- To test a web app or a flow, use the `qa` param of `browse_agent`. Report each scenario's `qa.outcome` and `qa.reason`. When the user asks to test, QA or break an app, load the `bug-hunt` skill first.";
 export const AGENT_BROWSER_QA_GUIDANCE = `${AGENT_BROWSER_GUIDANCE}\n${AGENT_QA_BULLET}`;
 // Only for clients that also advertise clientCapabilities.browseIsolation.
 const AGENT_QA_ISOLATION_BULLET =

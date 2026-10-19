@@ -1207,6 +1207,16 @@ describe("browse subagent", () => {
       expect(turn.system).toBe(BROWSE_AGENT_PROMPT);
     });
 
+    it("lists the bug-hunt skill only when browse_agent with qa is offered", async () => {
+      const cfg = makeConfig({ BROWSE_MODE: "agent" });
+      const withQa = await prepare({ config: cfg, clientCapabilities: { ...DESKTOP, browseQa: true } });
+      const withoutQa = await prepare({ config: cfg, clientCapabilities: DESKTOP });
+      const noBrowser = await prepare({ config: cfg });
+      expect(withQa.system).toContain("bug-hunt");
+      expect(withoutQa.system).not.toContain("bug-hunt");
+      expect(noBrowser.system).not.toContain("bug-hunt");
+    });
+
     it("shows the qa flag of browse_agent and the QA bullet only to a client with the browseQa capability", async () => {
       const cfg = makeConfig({ BROWSE_MODE: "agent" });
       const old = await prepare({ config: cfg, clientCapabilities: DESKTOP });
