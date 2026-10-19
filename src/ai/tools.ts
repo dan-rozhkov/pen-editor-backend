@@ -2082,7 +2082,12 @@ Returns the created/updated style ids and names (with a created|updated status) 
       "Write the full document in the `markdown` argument. " +
       "Use only this markdown: headings, paragraphs, bold, italic, strikethrough, inline code, links, " +
       "bullet, numbered and task lists, tables, quotes, code blocks, horizontal rules, images. " +
-      "Do not use raw HTML or footnotes. The editor deletes them when the user edits the document. " +
+      "Three HTML forms are allowed, and no other HTML. " +
+      "A toggle: `<details>` on its own line, then `<summary>Title</summary>`, a blank line, the body in markdown, a blank line, `</details>`. " +
+      "Coloured text: `<span data-color=\"red\">text</span>`. A highlight: `<span data-bg=\"yellow\">text</span>`. " +
+      "Colour names: gray, brown, orange, yellow, green, blue, purple, pink, red. " +
+      "A diagram: a fenced code block with the language `mermaid`. The document shows it as a picture. " +
+      "Do not use footnotes or other HTML. The editor deletes them when the user edits the document. " +
       "This tool already opens the tab. Do not call doc_open after it. " +
       "Returns JSON: {docId, title}.",
     inputSchema: z.object({
@@ -2108,7 +2113,7 @@ Returns the created/updated style ids and names (with a created|updated status) 
       "Each `oldString` must match exactly once in the document, unless `replaceAll` is true. " +
       "Use `markdown` only to replace the whole document. " +
       "Give `edits` or `markdown`, not both. " +
-      "Use the same markdown subset as doc_create. Do not use raw HTML or footnotes. " +
+      "Use the same markdown subset as doc_create, including toggles, colours and mermaid diagrams. " +
       "Give `title` to rename the document. You may give `title` alone. " +
       "Returns JSON with the result, or {error}.",
     inputSchema: z.object({
