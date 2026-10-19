@@ -156,11 +156,6 @@ export function renderDirectionClause(direction: Direction): string {
     `- Ground ${palette.bg}, surface ${palette.surface}, ink ${palette.ink}, muted ${palette.muted}, ` +
     `accent ${palette.accent} (text on accent ${palette.accentInk}).${fields}\n` +
     `- How to use it: ${palette.note}\n` +
-    `- One ground for every screen of the flow: the same :root tokens on all of them.` +
-    (palette.fields.length
-      ? ` An extra field fills one section or one moment (a confirmation, a hero band), never the whole of alternate screens.`
-      : "") +
-    `\n` +
     `- Map these onto your :root tokens as given (one extra tone step between ground and surface is fine). ` +
     `The accent goes on the primary action and at most one other thing. It already avoids the accent ` +
     `families the last apps in this gallery used.`

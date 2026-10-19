@@ -853,17 +853,6 @@ make one design self-aware; it cannot see the gallery. Both halves are needed. T
 is best-effort: `recentAccentFamilies` swallows fetch failures, and an empty list drops
 the clause rather than sending "avoid: nothing".
 
-**Dealt art direction** (`src/showcase/direction.ts`, data in `directionLibrary.ts` from
-tasteskill v2, MIT): the run's type system and palette are picked by code, not by the
-model, and handed over as an "Art direction" clause that replaces the palette clause.
-The deal skips accent (and saturated-ground) families the last runs used, fonts read
-back out of the same recent HTML (`fontFamiliesFromHtml`), violet, and the naturals
-cluster. Asked to choose, deepseek-v4.1-flash put Archivo on 8 of 8 baseline runs
-(2026-10-19); rules in the skill could ban habits but not pick something else.
-`--no-direction` restores the model's own choice for A/B runs. The prototype skill's
-House rules table (no eyebrows, tracked caps, resting shadows, gradients, glass) is
-the other half: dealing alone kept the tics, the rules alone kept Archivo.
-
 The feed paginates by **app**, not by screen: `limit` counts apps (default
 12, max 24), the response is `{apps: [{runId, theme, model, createdAt,
 screens}], nextCursor}`, and cursors are app-addressing (`a1|run_sort|run_id`
