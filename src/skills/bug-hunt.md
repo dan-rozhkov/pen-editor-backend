@@ -35,7 +35,11 @@ Set `setup.fresh: true` in every `qa: true` scenario and in every rerun. It rese
 
 1. **Recon.** Make one `browse_agent` call WITHOUT `qa`. Ask it to map the pages, forms, modals, lists, navigation and login. Use the map to pick the core flows. Do not reuse the recon tab state. Step 2 and the later steps start fresh.
 2. **Round 1: happy path.** Run one `qa: true` scenario for each core flow. If a core happy path fails, rerun it once (see step 4) before you report it. If it fails again, report it and stop attacking that flow. Deep attacks on a broken flow waste runs. If it does not fail again, it is flaky. Continue to attack the flow.
-3. **Round 2: attacks.** Read the Round 1 results again. Ask: what did the developer not think about? Pick 2 or 3 attack families from the catalog for each feature. Write each scenario as a narrow `goal`: exact steps and one explicit expected result. Put deterministic expectations in `checks`, only if the tool offers `checks`. When `checks` exist, add `no_console_errors` to every attack run.
+3. **Round 2: attacks.** Read the Round 1 results again. Ask: what did the developer not think about? Pick 2 or 3 attack families from the catalog for each feature. Write each scenario as a narrow `goal`: exact steps and one explicit expected result.
+   - Look at the `browse_agent` schema. If it has a `checks` parameter, every attack run MUST pass `checks`. Never send an attack run with no `checks`.
+   - Always include `{ "type": "no_console_errors" }`.
+   - Also add one check for the expected result: `text`, `count`, `value`, `element` or `url`.
+   - If the schema has no `checks` parameter, put the expected result in `goal` only.
 4. **Reproduce.** Rerun every failed scenario once with the same `goal` and `setup`. If it does not fail again, report it as flaky. Do not report it as a bug. The outcomes `inconclusive`, `error` and `setup_failed` are not bugs. Fix the scenario and run it again, or list it as untested.
 5. **Escalate.** Bugs cluster. After a confirmed bug, run 1 or 2 more scenarios near it.
 6. **Budget.** Run about 8 to 12 scenarios in total. Stop earlier when you have 5 or more confirmed bugs. Run more if the user asks.
@@ -46,8 +50,8 @@ Set `setup.fresh: true` in every `qa: true` scenario and in every rerun. It rese
    Try: empty value, only spaces, 0, -1, the maximum, the maximum plus 1, 10000 characters.
    Expect: a clear validation message, no crash, no silent cut of the input.
 2. **Hostile text** — text that breaks parsers and layouts.
-   Try: mock the write endpoint in `setup.network` when the form saves data. Then enter unicode, emoji, right-to-left text, zero-width characters, `<script>alert(1)</script>`, `' OR 1=1 --`, one very long word with no spaces.
-   Expect: the text shows as plain text, the layout stays intact, nothing runs.
+   Try: mock the write endpoint in `setup.network` when the form saves data. Then enter unicode, emoji, right-to-left text, zero-width characters, `<script>alert(1)</script>`, `' OR 1=1 --`, one very long word with no spaces. In search and filter fields, also type regex and wildcard characters: `(`, `[`, `*`, `+`, `?`, `\`, `%`, `.*`.
+   Expect: the text shows as plain text, the layout stays intact, nothing runs. Search does not crash, does not empty the list by error, and logs no console error.
 3. **Double actions** — the same action twice, fast.
    Try: mock the write endpoint in `setup.network`. Then double-click on submit, rapid repeated clicks, Enter and click together.
    Expect: exactly one result. No duplicate record. No duplicate charge.
@@ -92,11 +96,14 @@ A good scenario has exact steps and one expected result. Example of a server fai
     "fresh": true,
     "network": [{ "url": "*/api/signup", "status": 500, "delayMs": 1500 }]
   },
-  "checks": [{ "type": "value", "selector": "input[name=email]", "equals": "test@example.com" }]
+  "checks": [
+    { "type": "no_console_errors" },
+    { "type": "value", "selector": "input[name=email]", "equals": "test@example.com" }
+  ]
 }
 ```
 
-Use the real field names of the `browse_agent` schema in your call. Use `checks` only if the tool offers it.
+Use the real field names of the `browse_agent` schema in your call. Send `checks` whenever the schema has it.
 
 A bad goal: "Test the form."
 Why it is bad: it has no steps, no input and no expected result. The subagent cannot decide pass or fail. The result tells you nothing.

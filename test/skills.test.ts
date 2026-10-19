@@ -307,6 +307,10 @@ describe("loadSkills / getSkill", () => {
     expect(hunt.content).toContain("setup.network");
     expect(hunt.content).toContain("setup.emulate");
     expect(hunt.content).toContain("Rerun every failed scenario once");
+    // Live smoke 19.10: the agent never sent `checks` while the rule was
+    // conditional, and never typed regex characters into a search field.
+    expect(hunt.content).toContain("every attack run MUST pass `checks`");
+    expect(hunt.content).toContain("In search and filter fields, also type regex and wildcard characters");
     expect(AGENT_BROWSER_QA_GUIDANCE).toContain("bug-hunt");
   });
 
