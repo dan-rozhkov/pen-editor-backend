@@ -110,6 +110,14 @@ describe("cloud browser routes", () => {
     expect(f.steel.createSession).toHaveBeenCalledTimes(1);
   });
 
+  it("refuses to open a desktop app and starts no cloud session", async () => {
+    const { cmd, f } = await start();
+    const res = (await cmd("open", { userId: USER, chatId: "c", args: { app: "/Applications/Orca.app" } })).json();
+    expect(res).toEqual({ result: { error: "Desktop apps need Sideform Desktop." }, handle: null, liveViewUrl: null, expiresAt: null });
+    expect(f.steel.createSession).not.toHaveBeenCalled();
+    expect(f.connect).not.toHaveBeenCalled();
+  });
+
   it("errors on a non-open command with no handle", async () => {
     const { cmd } = await start();
     const res = (await cmd("snapshot", { userId: USER, chatId: "c" })).json();

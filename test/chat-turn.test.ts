@@ -1234,6 +1234,69 @@ describe("browse subagent", () => {
       expect(AGENT_BROWSER_GUIDANCE).not.toContain("qa: true");
     });
 
+    describe("browseApps capability (desktop apps)", () => {
+      const cfgAgent = makeConfig({ BROWSE_MODE: "agent" });
+      const json = (t: unknown) => asSchema((t as { inputSchema: Parameters<typeof asSchema>[0] }).inputSchema).jsonSchema;
+      const keys = (t: unknown) => Object.keys((json(t) as { properties: Record<string, unknown> }).properties);
+      const parses = (t: unknown, v: unknown) =>
+        (t as { inputSchema: { safeParse: (x: unknown) => { success: boolean } } }).inputSchema.safeParse(v).success;
+      const desc = (t: unknown) => (t as { description: string }).description;
+
+      it("manual mode: the browse_open app variant needs the capability AND the desktop browser", async () => {
+        const off = await prepare({ clientCapabilities: DESKTOP });
+        expect(keys(off.tools.browse_open)).toEqual(["url"]);
+        expect(desc(off.tools.browse_open)).not.toContain("/Applications/Orca.app");
+        const on = await prepare({ clientCapabilities: { ...DESKTOP, browseApps: true } });
+        expect(keys(on.tools.browse_open)).toEqual(["url", "app"]);
+        expect(parses(on.tools.browse_open, { app: "/Applications/Orca.app" })).toBe(true);
+        expect(parses(on.tools.browse_open, { url: "https://a.com" })).toBe(true);
+        expect(parses(on.tools.browse_open, {})).toBe(false);
+        expect(parses(on.tools.browse_open, { url: "https://a.com", app: "/Applications/Orca.app" })).toBe(false);
+        expect(desc(on.tools.browse_open)).toContain("The user must confirm the launch.");
+        const cloud = await prepare({ clientCapabilities: { browser: "cloud", browseApps: true } });
+        expect(cloud.tools.browse_open).toBeUndefined();
+        const cloudKey = await prepare({
+          config: makeConfig({ STEEL_API_KEY: "k" }),
+          clientCapabilities: { browser: "cloud", browseApps: true },
+        });
+        expect(keys(cloudKey.tools.browse_open)).toEqual(["url"]);
+        expect(desc(cloudKey.tools.browse_open)).toBe(desc(off.tools.browse_open));
+      });
+
+      it("subagent turn gets the same browse_open variant", async () => {
+        const base = { config: cfgAgent, agentMode: "browse" };
+        const off = await prepare({ ...base, clientCapabilities: DESKTOP });
+        const on = await prepare({ ...base, clientCapabilities: { ...DESKTOP, browseApps: true } });
+        expect(keys(off.tools.browse_open)).toEqual(["url"]);
+        expect(keys(on.tools.browse_open)).toEqual(["url", "app"]);
+      });
+
+      it("browse_agent gets `app` only with the capability on a desktop client", async () => {
+        const off = await prepare({ config: cfgAgent, clientCapabilities: { ...DESKTOP, browseQa: true } });
+        expect(keys(off.tools.browse_agent)).not.toContain("app");
+        expect(desc(off.tools.browse_agent)).not.toContain("macOS .app");
+        for (const caps of [{}, { browseQa: true }, { browseQa: true, browseIsolation: true, browseAssert: true }]) {
+          const on = await prepare({ config: cfgAgent, clientCapabilities: { ...DESKTOP, ...caps, browseApps: true } });
+          expect(keys(on.tools.browse_agent)).toContain("app");
+          expect(parses(on.tools.browse_agent, { goal: "g", app: "/Applications/Orca.app" })).toBe(true);
+          expect(parses(on.tools.browse_agent, { goal: "g", app: "/Applications/Orca.app", url: "https://a.com" })).toBe(false);
+          expect(parses(on.tools.browse_agent, { goal: "g", app: "/Applications/Orca.app", resume: "x" })).toBe(false);
+          expect(parses(on.tools.browse_agent, { goal: "g", app: "/Applications/Orca.app", capture: true })).toBe(false);
+          expect(parses(on.tools.browse_agent, { goal: "g", url: "https://a.com", app: "" })).toBe(true);
+          expect(parses(on.tools.browse_agent, { goal: "g", app: "/Applications/Orca.app", url: "" })).toBe(true);
+          expect(parses(on.tools.browse_agent, { goal: "g", app: "/Applications/Orca.app", url: null, setup: null, resume: "  " })).toBe(true);
+          expect(parses(on.tools.browse_agent, { goal: "g", app: "/Applications/Orca.app", url: "https://a.com" })).toBe(false);
+          expect(desc(on.tools.browse_agent)).toContain("not call browse_agent with `app` in parallel");
+          expect(desc(on.tools.browse_agent)).toContain("macOS .app");
+        }
+        const cloud = await prepare({
+          config: makeConfig({ BROWSE_MODE: "agent", STEEL_API_KEY: "k" }),
+          clientCapabilities: { browser: "cloud", browseApps: true },
+        });
+        expect(keys(cloud.tools.browse_agent)).not.toContain("app");
+      });
+    });
+
     it("shows the parallel/isolated sentence only with browseQa + browseIsolation", async () => {
       const cfg = makeConfig({ BROWSE_MODE: "agent" });
       const desc = (t: { tools: Record<string, unknown> }) => (t.tools.browse_agent as { description: string }).description;

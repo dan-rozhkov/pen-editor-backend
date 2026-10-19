@@ -46,3 +46,18 @@ export const PEN_EDITOR_CAPTURE_BULLET =
 /** Paragraph of the subagent prompt for the gated browse_capture tool. */
 export const PEN_EDITOR_CAPTURE_SECTION =
   "If browse_capture is in your tools, the user asked for a copy of a page on the canvas: get to the right page (and element), call browse_capture once, and report its nodeId.";
+
+/**
+ * Slots for the desktop-app variant of browse_open. Used only when the client
+ * advertises `browseApps` AND the browser is the desktop one.
+ */
+export const PEN_EDITOR_BROWSE_APP_SLOTS: BrowseDescriptionSlots = {
+  ...PEN_EDITOR_BROWSE_SLOTS,
+  appLaunch: true,
+  openApp:
+    "Desktop apps: to start an Electron desktop app, pass `app` instead of `url`. `app` is the path of a macOS .app of an Electron app, for example /Applications/Orca.app. Pass `url` or `app`, not both. The user must confirm the launch. The app starts with a new profile that has no logins. Each window of the app is a tab. Until the run ends, you cannot open URLs or new tabs. You cannot see native menus or file dialogs.",
+};
+
+/** Text of the `app` field of browse_agent (same facts as `openApp`). */
+export const PEN_EDITOR_BROWSE_AGENT_APP_FIELD =
+  "Optional. The path of a macOS .app of an Electron desktop app, for example /Applications/Orca.app. The browser starts this app instead of opening a URL, and the subagent works inside it. Do not use it together with `url`, `setup`, `resume` or `capture`. Run one app run at a time: do not call browse_agent with `app` in parallel. The user must confirm the launch. The app starts with a new profile that has no logins. Each window of the app is a tab. Until the run ends, the subagent cannot open URLs or new tabs and cannot see native menus or file dialogs.";

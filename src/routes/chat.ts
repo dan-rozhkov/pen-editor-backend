@@ -218,6 +218,9 @@ const chatBodySchema = z.object({
       // together with browseQa; without it browse_agent has no `checks` field
       // and the QA subagent has no qa_assert tool.
       browseAssert: z.boolean().optional(),
+      // The client can start a desktop Electron app (browse_open / browse_agent
+      // `app`). Honoured only with browser "desktop" (chatTurn.ts).
+      browseApps: z.boolean().optional(),
       // The client shows canvases as tabs and can run open_canvas_tab. Constant
       // per client, so the tool set stays stable within a session. Without it
       // open_canvas_tab is removed from the turn (chatTurn.ts).

@@ -13,7 +13,11 @@ import {
   normalizeQaChecks,
 } from "@sideform/browser-agent/agent";
 import { DEVICE_PRESETS, parsePageFixture } from "@sideform/browser-agent/fixture";
-import { PEN_EDITOR_BROWSE_SLOTS } from "./browseToolText.js";
+import {
+  PEN_EDITOR_BROWSE_AGENT_APP_FIELD,
+  PEN_EDITOR_BROWSE_APP_SLOTS,
+  PEN_EDITOR_BROWSE_SLOTS,
+} from "./browseToolText.js";
 
 const MAX_BATCH_DESIGN_OPERATIONS = 25;
 
@@ -1346,6 +1350,17 @@ export const findEmptySpaceOnCanvasInputShape = {
 // Pen Editor's host text is the slots (browseToolText.ts).
 const browseDefs = createBrowseToolDefinitions(PEN_EDITOR_BROWSE_SLOTS);
 
+/**
+ * browse_open with the `app` option (start a desktop Electron app). Offered
+ * only to a desktop client that advertises clientCapabilities.browseApps
+ * (chatTurn.ts); the default definition above stays byte-identical.
+ */
+const browseAppDefs = createBrowseToolDefinitions(PEN_EDITOR_BROWSE_APP_SLOTS);
+export const browseOpenToolApp = tool({
+  description: browseAppDefs.browse_open.description,
+  inputSchema: browseAppDefs.browse_open.inputSchema,
+});
+
 // browse_agent `setup`: a PageFixture (@sideform/browser-agent/fixture) without
 // `version` and `url` (the tool's `url` is the start URL). The package parser is
 // the authority; these bounds only keep the model's input small and well-formed.
@@ -1514,6 +1529,29 @@ export const browseAgentToolQaIsolatedNoAssert = browseAgentTool(true, true, fal
 /** browse_agent without the `qa` param, for clients without the browseQa capability. */
 export const browseAgentToolNoQa = browseAgentTool(false);
 
+const BROWSE_AGENT_RESUME_GUIDANCE = "(To continue from a checkpoint, pass only `resume`: no `url`, no `setup`.)";
+// App variant only: sits in the HEAD next to the url/resume guidance.
+const BROWSE_AGENT_APP_GUIDANCE =
+  " To work in a desktop app instead of a web page, pass `app` (the path of a macOS .app of an Electron app) and no `url`, `setup`, `resume` or `capture`. Run one app run at a time: do not call browse_agent with `app` in parallel.";
+const browseAgentAppCache = new Map<string, ReturnType<typeof browseAgentTool>>();
+/**
+ * browse_agent with the extra `app` field, for a desktop client that advertises
+ * clientCapabilities.browseApps. Same QA/isolation/assert axes as the
+ * variants above; built once per combination so the bytes are stable.
+ */
+export function browseAgentToolWithApp(opts: { qa: boolean; isolated: boolean; assert: boolean }) {
+  const qa = opts.qa;
+  const isolated = qa && opts.isolated;
+  const assert = qa && opts.assert;
+  const key = `${qa}:${isolated}:${assert}`;
+  let t = browseAgentAppCache.get(key);
+  if (!t) {
+    t = browseAgentTool(qa, isolated, assert, true);
+    browseAgentAppCache.set(key, t);
+  }
+  return t;
+}
+
 // Non-isolated QA variant only: a QA run is a fresh scenario, so it cannot resume a checkpoint.
 // The isolated variant may resume (with qa: true).
 function withQaResumeCheck<T extends z.ZodTypeAny>(schema: T): T {
@@ -1523,8 +1561,19 @@ function withQaResumeCheck<T extends z.ZodTypeAny>(schema: T): T {
   }) as unknown as T;
 }
 
-function browseAgentTool(qa: boolean, isolated = false, assert = false) {
-  const schema = z.object({
+const BROWSE_AGENT_PLACEHOLDER_KEYS = ["app", "url", "setup", "resume"] as const;
+function stripBrowseAgentPlaceholders(input: unknown): unknown {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return input;
+  const out: Record<string, unknown> = { ...(input as Record<string, unknown>) };
+  for (const key of BROWSE_AGENT_PLACEHOLDER_KEYS) {
+    const v = out[key];
+    if (v === null || (typeof v === "string" && v.trim() === "")) delete out[key];
+  }
+  return out;
+}
+
+function browseAgentTool(qa: boolean, isolated = false, assert = false, app = false) {
+  const base = z.object({
       goal: z
         .string()
         .min(1)
@@ -1549,6 +1598,11 @@ function browseAgentTool(qa: boolean, isolated = false, assert = false) {
         .boolean()
         .optional()
         .describe("Set true ONLY when the user directly asks to copy or clone the page onto the canvas. The subagent then gets the browse_capture tool and copies the page once. The result then carries `captured: { nodeId, width, height, url, title }`."),
+      ...(app
+        ? {
+            app: z.string().trim().min(1).max(1024).optional().describe(PEN_EDITOR_BROWSE_AGENT_APP_FIELD),
+          }
+        : {}),
       ...(qa
         ? {
             qa: isolated
@@ -1572,13 +1626,27 @@ function browseAgentTool(qa: boolean, isolated = false, assert = false) {
       message: "`resume` cannot be combined with `url` or `setup`: the checkpoint already carries the start page and setup.",
       path: ["resume"],
     })
+    .refine(
+      (a) => (a as { app?: string }).app === undefined ||
+        (a.url === undefined && a.setup === undefined && a.resume === undefined && a.capture !== true),
+      { message: "`app` cannot be combined with `url`, `setup`, `resume` or `capture: true`.", path: ["app"] },
+    )
     .refine((a) => (a as { checks?: unknown }).checks === undefined || a.qa === true, {
       message: "`checks` needs `qa: true`: the final checks belong to a QA run.",
       path: ["checks"],
     });
+  // App variant only: strict-mode models send "" / null for unused optional
+  // fields (same as the package's browse_open stripper), so drop them first.
+  const schema = (app ? z.preprocess(stripBrowseAgentPlaceholders, base) : base) as unknown as typeof base;
   return tool({
-    description:
-      qa ? (assert ? BROWSE_AGENT_DESCRIPTION_WITH_QA_ASSERT : BROWSE_AGENT_DESCRIPTION_WITH_QA) : BROWSE_AGENT_DESCRIPTION,
+    description: (() => {
+      const base = qa
+        ? assert
+          ? BROWSE_AGENT_DESCRIPTION_WITH_QA_ASSERT
+          : BROWSE_AGENT_DESCRIPTION_WITH_QA
+        : BROWSE_AGENT_DESCRIPTION;
+      return app ? base.replace(BROWSE_AGENT_RESUME_GUIDANCE, BROWSE_AGENT_RESUME_GUIDANCE + BROWSE_AGENT_APP_GUIDANCE) : base;
+    })(),
     inputSchema: qa && !isolated ? withQaResumeCheck(schema) : schema,
   });
 

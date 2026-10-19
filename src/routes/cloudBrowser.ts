@@ -79,6 +79,12 @@ export async function cloudBrowserRoutes(
     if (!userId) return reply;
     const command = name as CommandName;
 
+    // Desktop apps run only in Sideform Desktop: never start a Steel session for them.
+    if (command === "open" && typeof (args as { app?: unknown } | null | undefined)?.app === "string" &&
+      ((args as { app: string }).app).trim() !== "") {
+      return { result: { error: "Desktop apps need Sideform Desktop." }, handle: null, liveViewUrl: null, expiresAt: null };
+    }
+
     let outcome;
     try {
       outcome = await sessions.resolve({ userId, chatId, ip: request.ip, handle, command, args });
