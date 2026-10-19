@@ -12,7 +12,6 @@ import {
 } from "../ai/tasteCheck.js";
 import { DEFAULT_SCREEN_NAME, extractEmbedScreens } from "./extractEmbeds.js";
 import { repairGeneratedImageUrls } from "./repairImageUrls.js";
-import { renderDirectionClause, type Direction } from "./direction.js";
 import { DEFAULT_SHOWCASE_PLATFORM, type ShowcasePlatform } from "./platform.js";
 
 // Taste-check screens are still corrected "by re-emitting the corrected
@@ -76,14 +75,6 @@ export interface ShowcaseRunResult {
 // it has to design around.
 export const MAX_GENERATED_IMAGES = 8;
 
-export interface ShowcasePromptOptions {
-  avoidHueFamilies?: string[];
-  platform?: ShowcasePlatform;
-  /** The dealt type system and palette (direction.ts). Absent = the model
-   * chooses, steered only by the palette clause. */
-  direction?: Direction;
-}
-
 // The message the agent receives. Starts with the `/prototype` slash command
 // so prepareChatTurn/resolveTaskPolicy route it through the embed-only policy
 // and the prototype skill (src/skills/prototype.md) — the same machinery
@@ -98,7 +89,7 @@ export interface ShowcasePromptOptions {
 // requirement rather than a contradiction of them.
 export function buildShowcasePrompt(
   theme: string,
-  options: ShowcasePromptOptions = {},
+  options: { avoidHueFamilies?: string[]; platform?: ShowcasePlatform } = {},
 ): string {
   // "desktop web app" rather than "mobile app" is what steers
   // src/skills/prototype.md into its "Otherwise (default desktop)" device
@@ -114,14 +105,8 @@ export function buildShowcasePrompt(
   // keeps a run off the last 10 themes. Phrased as the requester's constraint,
   // and only when there is something to avoid — an empty gallery (or an
   // unreachable S3) simply drops it rather than sending "avoid: nothing".
-  //
-  // A dealt direction (direction.ts) replaces the palette clause: it already
-  // honours the same avoid list, and naming both would hand the model a
-  // palette and, beside it, an invitation to pick its own.
   const avoid = options.avoidHueFamilies ?? [];
-  const paletteClause = options.direction
-    ? `\n\n${renderDirectionClause(options.direction)}`
-    : avoid.length
+  const paletteClause = avoid.length
     ? `\n\nPalette: the last apps published in this gallery used these accent hue families — ` +
       `${avoid.join(", ")}. Pick an accent from a DIFFERENT family, and let the ground follow ` +
       `from it rather than defaulting to a warm neutral. Rotating the accent is not on its own ` +
@@ -481,7 +466,7 @@ export async function runShowcaseGeneration(
   config: Config,
   theme: string,
   modelId: string = SHOWCASE_MODEL_ID,
-  options: ShowcasePromptOptions = {},
+  options: { avoidHueFamilies?: string[]; platform?: ShowcasePlatform } = {},
 ): Promise<ShowcaseRunResult> {
   const prompt = buildShowcasePrompt(theme, options);
   const messages: Array<Record<string, unknown>> = [
