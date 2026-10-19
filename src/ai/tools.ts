@@ -2064,6 +2064,85 @@ Returns the created/updated style ids and names (with a created|updated status) 
     }),
   }),
 
+  doc_list: tool({
+    description:
+      "List the markdown documents saved in the browser. " +
+      "Use doc_* tools when the user wants a text document: spec, brief, notes, article, plan, README. " +
+      "Do not use batch_design for text documents. " +
+      "Returns a JSON list: [{docId, title, updatedAt}]. " +
+      "Call this before doc_read or doc_edit if you do not know the docId.",
+    inputSchema: z.object({}),
+  }),
+
+  doc_create: tool({
+    description:
+      "Create a markdown document and open it in a document tab. " +
+      "Use this when the user wants a text document (spec, brief, notes, article, plan, README) and not a visual design. " +
+      "Do not use batch_design for text documents. " +
+      "Write the full document in the `markdown` argument. " +
+      "Use only this markdown: headings, paragraphs, bold, italic, strikethrough, inline code, links, " +
+      "bullet, numbered and task lists, tables, quotes, code blocks, horizontal rules, images. " +
+      "Do not use raw HTML or footnotes. The editor deletes them when the user edits the document. " +
+      "This tool already opens the tab. Do not call doc_open after it. " +
+      "Returns JSON: {docId, title}.",
+    inputSchema: z.object({
+      title: z.string().min(1).max(200).describe("Document title. 1 to 200 characters."),
+      markdown: z.string().describe("Full document body in markdown."),
+    }),
+  }),
+
+  doc_read: tool({
+    description:
+      "Read a markdown document. " +
+      "Always read a document before you edit it. " +
+      "Returns JSON: {docId, title, markdown}.",
+    inputSchema: z.object({
+      docId: z.string().min(1).describe("Document id from doc_list or doc_create."),
+    }),
+  }),
+
+  doc_edit: tool({
+    description:
+      "Edit a markdown document. Read it with doc_read first. " +
+      "Prefer `edits` for small changes. Each edit replaces text. " +
+      "Each `oldString` must match exactly once in the document, unless `replaceAll` is true. " +
+      "Use `markdown` only to replace the whole document. " +
+      "Give `edits` or `markdown`, not both. " +
+      "Use the same markdown subset as doc_create. Do not use raw HTML or footnotes. " +
+      "Give `title` to rename the document. You may give `title` alone. " +
+      "Returns JSON with the result, or {error}.",
+    inputSchema: z.object({
+      docId: z.string().min(1).describe("Document id."),
+      edits: z
+        .array(
+          z.object({
+            oldString: z.string().min(1).describe("Exact text to find."),
+            newString: z.string().describe("Replacement text."),
+            replaceAll: z
+              .boolean()
+              .optional()
+              .describe("Replace every match. Default false: oldString must match exactly once."),
+          }),
+        )
+        .optional()
+        .describe("Targeted find-and-replace edits. Do not combine with `markdown`."),
+      markdown: z
+        .string()
+        .optional()
+        .describe("Full replacement markdown. Do not combine with `edits`."),
+      title: z.string().min(1).max(200).optional().describe("New title."),
+    }),
+  }),
+
+  doc_open: tool({
+    description:
+      "Open a document in its tab, or switch to the tab if it is open. " +
+      "Do not call this after doc_create. doc_create already opens the tab.",
+    inputSchema: z.object({
+      docId: z.string().min(1).describe("Document id."),
+    }),
+  }),
+
   ask_user: tool({
     description:
       "Ask the user structured clarifying questions and get answers back as an interactive form in the chat, instead of guessing. " +

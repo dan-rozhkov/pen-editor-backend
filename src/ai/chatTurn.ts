@@ -243,7 +243,7 @@ export interface PrepareChatTurnInput {
    * Undefined/false → the browse_* tools are dropped below, same as any
    * other caller (the showcase runner, tests) that never wires this.
    */
-  clientCapabilities?: { desktopBrowser?: boolean; browser?: "desktop" | "cloud"; browseQa?: boolean; browseIsolation?: boolean; browseAssert?: boolean; canvasTabs?: boolean };
+  clientCapabilities?: { desktopBrowser?: boolean; browser?: "desktop" | "cloud"; browseQa?: boolean; browseIsolation?: boolean; browseAssert?: boolean; canvasTabs?: boolean; docTabs?: boolean };
   /**
    * agentMode "browse" only: the user directly asked to copy the page onto the
    * canvas, so the subagent may carry browse_capture. Ignored otherwise.
@@ -289,6 +289,8 @@ export interface PreparedChatTurn {
    * catalog (empty when SELF_SKILLS_ENABLED is off or no store was wired). */
   learnedSkillNames: string[];
 }
+
+const DOC_TOOL_NAMES = ["doc_list", "doc_create", "doc_read", "doc_edit", "doc_open"] as const;
 
 // Assembles everything streamText needs for a turn: slash-command skill
 // detection/injection, the system prompt, sanitized/converted model
@@ -1329,6 +1331,12 @@ export async function prepareChatTurn(
     // tool set stays stable within a session (prompt cache).
     if (input.clientCapabilities?.canvasTabs !== true) {
       delete tools.open_canvas_tab;
+    }
+
+    // doc_* run only in a client that shows markdown documents as tabs
+    // (clientCapabilities.docTabs). Constant per client: prompt cache stays valid.
+    if (input.clientCapabilities?.docTabs !== true) {
+      for (const name of DOC_TOOL_NAMES) delete tools[name];
     }
 
     // Structural gate: remove_background/vectorize_image are client-executed

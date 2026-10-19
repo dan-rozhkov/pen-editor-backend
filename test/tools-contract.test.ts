@@ -64,6 +64,11 @@ describe("penTools registry", () => {
         "list_plugins",
         "ask_user",
         "open_canvas_tab",
+        "doc_list",
+        "doc_create",
+        "doc_read",
+        "doc_edit",
+        "doc_open",
         "analyze_image",
         "publish_to_showcase",
         "read_design_repo",
@@ -133,6 +138,11 @@ describe("penTools registry", () => {
       "list_plugins",
       "ask_user",
       "open_canvas_tab",
+      "doc_list",
+      "doc_create",
+      "doc_read",
+      "doc_edit",
+      "doc_open",
       "get_screenshot",
       "publish_to_showcase",
       "read_design_repo",
@@ -1801,5 +1811,35 @@ describe("open_canvas_tab schema", () => {
     const description = (penTools.open_canvas_tab as { description?: string }).description ?? "";
     expect(description).toContain("tabId");
     expect(description).toContain("opened");
+  });
+});
+
+describe("doc_* schemas", () => {
+  const edit = schemaOf("doc_edit");
+
+  it("doc_edit accepts edits", () => {
+    expect(edit.safeParse({ docId: "d1", edits: [{ oldString: "a", newString: "b" }] }).success).toBe(true);
+    expect(edit.safeParse({ docId: "d1", edits: [{ oldString: "a", newString: "", replaceAll: true }] }).success).toBe(true);
+  });
+  it("doc_edit accepts markdown", () => {
+    expect(edit.safeParse({ docId: "d1", markdown: "# Hi" }).success).toBe(true);
+  });
+  it("doc_edit accepts title alone", () => {
+    expect(edit.safeParse({ docId: "d1", title: "New" }).success).toBe(true);
+  });
+  it("doc_edit rejects empty oldString and missing docId", () => {
+    expect(edit.safeParse({ docId: "d1", edits: [{ oldString: "", newString: "b" }] }).success).toBe(false);
+    expect(edit.safeParse({ title: "x" }).success).toBe(false);
+  });
+  it("doc_create needs a title of 1..200 chars", () => {
+    const create = schemaOf("doc_create");
+    expect(create.safeParse({ title: "T", markdown: "" }).success).toBe(true);
+    expect(create.safeParse({ title: "", markdown: "x" }).success).toBe(false);
+    expect(create.safeParse({ title: "x".repeat(201), markdown: "x" }).success).toBe(false);
+  });
+  it("doc_read, doc_open take docId; doc_list takes nothing", () => {
+    expect(schemaOf("doc_read").safeParse({ docId: "d1" }).success).toBe(true);
+    expect(schemaOf("doc_open").safeParse({ docId: "d1" }).success).toBe(true);
+    expect(schemaOf("doc_list").safeParse({}).success).toBe(true);
   });
 });

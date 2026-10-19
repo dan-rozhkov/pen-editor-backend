@@ -222,6 +222,9 @@ const chatBodySchema = z.object({
       // per client, so the tool set stays stable within a session. Without it
       // open_canvas_tab is removed from the turn (chatTurn.ts).
       canvasTabs: z.boolean().optional(),
+      // The client shows markdown documents as tabs and runs doc_* tools.
+      // Without it the five doc_* tools are removed from the turn (chatTurn.ts).
+      docTabs: z.boolean().optional(),
     })
     .optional(),
 });
