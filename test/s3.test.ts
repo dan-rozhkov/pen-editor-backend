@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import {
   createS3Client,
+  getObjectText,
+  deleteObjects,
   resolveS3Acl,
   resolveS3PublicBase,
   resolveS3Target,
@@ -145,5 +147,53 @@ describe("uploadImage", () => {
     const url1 = await uploadImage(t, Buffer.from([1]), "image/png");
     const url2 = await uploadImage(t, Buffer.from([1]), "image/png");
     expect(url1).not.toBe(url2);
+  });
+});
+
+describe("getObjectText", () => {
+  function target(send: (cmd: unknown) => Promise<unknown>): S3Target {
+    return { client: { send } as unknown as S3Client, publicBase: "https://x.test/b", bucket: "b", acl: undefined };
+  }
+  const body = (text: string) => ({ transformToByteArray: async () => new TextEncoder().encode(text) });
+
+  it("reads the object as UTF-8 text", async () => {
+    const send = vi.fn(async () => ({ Body: body("héllo"), ContentLength: 6 }));
+    expect(await getObjectText(target(send), "k/trace.json")).toBe("héllo");
+    const cmd = send.mock.calls[0]![0] as { input: { Bucket: string; Key: string } };
+    expect(cmd.input).toEqual({ Bucket: "b", Key: "k/trace.json" });
+  });
+
+  it("returns null for NoSuchKey and for a 404", async () => {
+    const noKey = Object.assign(new Error("x"), { name: "NoSuchKey" });
+    const notFound = Object.assign(new Error("x"), { $metadata: { httpStatusCode: 404 } });
+    expect(await getObjectText(target(async () => Promise.reject(noKey)), "k")).toBeNull();
+    expect(await getObjectText(target(async () => Promise.reject(notFound)), "k")).toBeNull();
+  });
+
+  it("rethrows other errors", async () => {
+    const boom = Object.assign(new Error("denied"), { name: "AccessDenied", $metadata: { httpStatusCode: 403 } });
+    await expect(getObjectText(target(async () => Promise.reject(boom)), "k")).rejects.toThrow("denied");
+  });
+
+  it("rejects an object over the size cap, by header and by actual bytes", async () => {
+    const destroy = vi.fn();
+    const big = vi.fn(async () => ({ Body: { ...body("x"), destroy }, ContentLength: 100 }));
+    await expect(getObjectText(target(big), "k", { maxBytes: 10 })).rejects.toThrow("larger than");
+    expect(destroy).toHaveBeenCalledTimes(1);
+    const lying = vi.fn(async () => ({ Body: body("x".repeat(50)) }));
+    await expect(getObjectText(target(lying), "k", { maxBytes: 10 })).rejects.toThrow("larger than");
+  });
+});
+
+describe("deleteObjects", () => {
+  it("deletes keys in batches of 1000", async () => {
+    const send = vi.fn(async () => ({}));
+    const t: S3Target = { client: { send } as unknown as S3Client, publicBase: "https://x.test/b", bucket: "b", acl: undefined };
+    const keys = Array.from({ length: 1001 }, (_, i) => `k${i}`);
+    await deleteObjects(t, keys);
+    expect(send).toHaveBeenCalledTimes(2);
+    const first = send.mock.calls[0]![0] as unknown as { input: { Bucket: string; Delete: { Objects: unknown[] } } };
+    expect(first.input.Bucket).toBe("b");
+    expect(first.input.Delete.Objects).toHaveLength(1000);
   });
 });

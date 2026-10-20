@@ -16,18 +16,10 @@ vi.mock("../src/services/s3.js", async (importOriginal) => {
   // still derived from the config it is handed, so the route's 503 guard is
   // driven by configuration rather than by a hardcoded stub answer.
   const actual = await importOriginal<typeof import("../src/services/s3.js")>();
+  const { fakeS3Target } = await import("./s3Mocks.js");
   return {
     ...actual,
-    resolveS3Target: vi.fn((config: Config) =>
-      config.S3_BUCKET && config.S3_ENDPOINT
-        ? {
-            client: { sentinel: true },
-            publicBase: `${config.S3_ENDPOINT}/${config.S3_BUCKET}`,
-            bucket: config.S3_BUCKET,
-            acl: "public-read",
-          }
-        : null,
-    ),
+    resolveS3Target: vi.fn((config: Config) => fakeS3Target(config)),
     uploadImage: (...args: unknown[]) => uploadImageMock(...(args as [])),
   };
 });

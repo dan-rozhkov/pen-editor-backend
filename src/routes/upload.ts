@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import type { Config } from "../config.js";
 import { resolveS3Target, uploadImage } from "../services/s3.js";
 import {
+  decodeImageDataUri,
   sniffImageType,
   SUPPORTED_IMAGE_TYPES_LABEL,
 } from "../services/imageTypes.js";
@@ -9,13 +10,13 @@ import {
 const MAX_SIZE = 5 * 1024 * 1024; // 5 MB
 
 function parseDataUri(dataUri: string): Buffer {
-  const match = dataUri.match(/^data:image\/[^;]+;base64,(.+)$/s);
-  if (!match) {
+  const buffer = decodeImageDataUri(dataUri);
+  if (!buffer) {
     throw Object.assign(new Error("Invalid data URI format"), {
       statusCode: 400,
     });
   }
-  return Buffer.from(match[1], "base64");
+  return buffer;
 }
 
 export async function uploadRoutes(app: FastifyInstance, config: Config) {

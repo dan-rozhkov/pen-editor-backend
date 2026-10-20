@@ -55,3 +55,11 @@ export function sniffImageType(buffer: Buffer): string | null {
 export function extensionForMime(mimeType: string): string {
   return IMAGE_TYPES.find((t) => t.mime === mimeType)?.ext ?? ".bin";
 }
+
+// Decodes an `data:image/<type>;base64,<payload>` URI into bytes, or null when
+// the string is not shaped like one. The declared type is not trusted: callers
+// still run sniffImageType on the result.
+export function decodeImageDataUri(dataUri: string): Buffer | null {
+  const match = dataUri.match(/^data:image\/[^;]+;base64,(.+)$/s);
+  return match ? Buffer.from(match[1], "base64") : null;
+}

@@ -10,7 +10,7 @@
 //     hand): 32 lowercase hex chars, no dashes
 // A strict RFC4122 UUID regex alone would wrongly reject genuine ids from the
 // fallback path (e.g. LAN http dev, older browsers).
-const DASHED_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const DASHED_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const RAW_HEX_RE = /^[0-9a-f]{32}$/i;
 
 export function isPlausibleUserId(id: string): boolean {

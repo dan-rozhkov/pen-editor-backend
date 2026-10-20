@@ -1,6 +1,8 @@
 import {
   S3Client,
   PutObjectCommand,
+  GetObjectCommand,
+  DeleteObjectsCommand,
   type ObjectCannedACL,
 } from "@aws-sdk/client-s3";
 import { randomUUID } from "node:crypto";
@@ -152,4 +154,63 @@ export async function uploadImage(
   const ext = extensionForMime(mimeType);
   const key = `pen-editor/${randomUUID()}${ext}`;
   return uploadObject(target, key, buffer, mimeType, extra);
+}
+
+/** Largest object `getObjectText` reads. */
+export const GET_OBJECT_TEXT_MAX_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Reads an object as UTF-8 text through the SDK (the bucket has no CORS, so a
+ * browser cannot fetch it itself). Returns null when the key does not exist;
+ * throws when the object is larger than `maxBytes` or on any other failure.
+ */
+export async function getObjectText(
+  { client, bucket }: S3Target,
+  key: string,
+  opts?: { maxBytes?: number; abortSignal?: AbortSignal },
+): Promise<string | null> {
+  const maxBytes = opts?.maxBytes ?? GET_OBJECT_TEXT_MAX_BYTES;
+  try {
+    const res = await client.send(
+      new GetObjectCommand({ Bucket: bucket, Key: key }),
+      opts?.abortSignal ? { abortSignal: opts.abortSignal } : undefined,
+    );
+    if (!res.Body) return null;
+    if ((res.ContentLength ?? 0) > maxBytes) {
+      // Release the socket: an unread body keeps its pooled connection busy.
+      await discardBody(res.Body);
+      throw new Error(`Object ${key} is larger than ${maxBytes} bytes`);
+    }
+    const bytes = await res.Body.transformToByteArray();
+    if (bytes.length > maxBytes) {
+      throw new Error(`Object ${key} is larger than ${maxBytes} bytes`);
+    }
+    return Buffer.from(bytes).toString("utf8");
+  } catch (err) {
+    const e = err as { name?: string; $metadata?: { httpStatusCode?: number } };
+    if (e.name === "NoSuchKey" || e.$metadata?.httpStatusCode === 404) return null;
+    throw err;
+  }
+}
+
+async function discardBody(body: unknown): Promise<void> {
+  const b = body as { destroy?: () => void; transformToByteArray?: () => Promise<unknown> };
+  try {
+    if (typeof b.destroy === "function") b.destroy();
+    else await b.transformToByteArray?.();
+  } catch {
+    // Best effort: the caller is already failing.
+  }
+}
+
+/** Deletes objects by key (S3 allows 1000 per request). Throws on a failed request. */
+export async function deleteObjects({ client, bucket }: S3Target, keys: string[]): Promise<void> {
+  for (let i = 0; i < keys.length; i += 1000) {
+    await client.send(
+      new DeleteObjectsCommand({
+        Bucket: bucket,
+        Delete: { Objects: keys.slice(i, i + 1000).map((Key) => ({ Key })), Quiet: true },
+      }),
+    );
+  }
 }
