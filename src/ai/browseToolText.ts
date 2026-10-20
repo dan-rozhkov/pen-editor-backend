@@ -47,6 +47,21 @@ export const PEN_EDITOR_CAPTURE_BULLET =
 export const PEN_EDITOR_CAPTURE_SECTION =
   "If browse_capture is in your tools, the user asked for a copy of a page on the canvas: get to the right page (and element), call browse_capture once, and report its nodeId.";
 
+/** Profile facts of an app run. Shared by `openApp` and the browse_agent `app` field. */
+const APP_PROFILE_FACTS =
+  "If the app is already open, the user is asked to restart it. Then the run uses the user's own profile with their logins and data. Otherwise the app starts with a new profile that has no logins. The launch result has `profile: \"user\"` when it uses the user's profile. Do not tell the user which profile is in use unless the result says it.";
+
+/** Do not guess where a local app lives. */
+const APP_NO_GUESS = "Do not guess the address of a local app or dev server. Do not try ports. Ask the user for the .app path or the URL.";
+
+/** Behavior rules for the main agent in an app run (browse_open `app`). */
+const APP_RULES_OPEN =
+  "Before you test, check that the window title or page text names the app the user asked for. If it names another product, stop and tell the user. If a read is empty or fails, do not say the app has no data. Call `browse_tabs` with `action: \"list\"` and use the window of the app, not an `about:blank` or `data:` window. If you cannot confirm the right window, tell the user that you could not read the screen. If the user says what they see on the screen, do not contradict it. Find the cause of the difference. Do not state how profiles, sessions or data storage work unless a tool result says it. Mark a guess as a guess. Do not reload the app, quit it, or ask the user to quit it unless the user agrees first.";
+
+/** Same rules for browse_agent: the subagent holds the browser tools. */
+const APP_RULES_AGENT =
+  "Before you test, tell the subagent to check that the window title or page text names the app the user asked for. If the report names another product, stop and tell the user. If the report says the screen is empty or unread, do not say the app has no data. Tell the user that you could not read the screen, or run again and tell the subagent to list the windows and use the window of the app, not an `about:blank` or `data:` window. If the user says what they see on the screen, do not contradict it. Find the cause of the difference. Do not state how profiles, sessions or data storage work unless a tool result says it. Mark a guess as a guess. Do not tell the subagent to reload or quit the app, and do not ask the user to quit it, unless the user agrees first.";
+
 /**
  * Slots for the desktop-app variant of browse_open. Used only when the client
  * advertises `browseApps` AND the browser is the desktop one.
@@ -54,10 +69,11 @@ export const PEN_EDITOR_CAPTURE_SECTION =
 export const PEN_EDITOR_BROWSE_APP_SLOTS: BrowseDescriptionSlots = {
   ...PEN_EDITOR_BROWSE_SLOTS,
   appLaunch: true,
-  openApp:
-    "Desktop apps: to start an Electron desktop app, pass `app` instead of `url`. `app` is the path of a macOS .app of an Electron app, for example /Applications/Orca.app. Pass `url` or `app`, not both. The user must confirm the launch. The app starts with a new profile that has no logins. Each window of the app is a tab. Until the run ends, you cannot open URLs or new tabs. You cannot see native menus or file dialogs.",
+  openApp: `Desktop apps: to start an Electron desktop app, pass \`app\` instead of \`url\`. \`app\` is the path of a macOS .app of an Electron app, for example /Applications/Orca.app. Pass \`url\` or \`app\`, not both. ${APP_NO_GUESS} The user must confirm the launch. ${APP_PROFILE_FACTS} Each window of the app is a tab. Until the run ends, you cannot open URLs or new tabs. You cannot see native menus or file dialogs. ${APP_RULES_OPEN}`,
 };
 
 /** Text of the `app` field of browse_agent (same facts as `openApp`). */
-export const PEN_EDITOR_BROWSE_AGENT_APP_FIELD =
-  "Optional. The path of a macOS .app of an Electron desktop app, for example /Applications/Orca.app. The browser starts this app instead of opening a URL, and the subagent works inside it. Do not use it together with `url`, `setup`, `resume` or `capture`. Run one app run at a time: do not call browse_agent with `app` in parallel. The user must confirm the launch. The app starts with a new profile that has no logins. Each window of the app is a tab. Until the run ends, the subagent cannot open URLs or new tabs and cannot see native menus or file dialogs.";
+export const PEN_EDITOR_BROWSE_AGENT_APP_FIELD = `Optional. The path of a macOS .app of an Electron desktop app, for example /Applications/Orca.app. The browser starts this app instead of opening a URL, and the subagent works inside it. Do not use it together with \`url\`, \`setup\`, \`resume\` or \`capture\`. ${APP_NO_GUESS} Run one app run at a time: do not call browse_agent with \`app\` in parallel. The user must confirm the launch. ${APP_PROFILE_FACTS} Each window of the app is a tab. Until the run ends, the subagent cannot open URLs or new tabs and cannot see native menus or file dialogs.`;
+
+/** Behavior rules for browse_agent with `app` (appended to the head by tools.ts). */
+export const PEN_EDITOR_BROWSE_AGENT_APP_RULES = APP_RULES_AGENT;

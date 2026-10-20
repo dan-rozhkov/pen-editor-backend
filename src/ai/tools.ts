@@ -15,6 +15,7 @@ import {
 import { DEVICE_PRESETS, parsePageFixture } from "@sideform/browser-agent/fixture";
 import {
   PEN_EDITOR_BROWSE_AGENT_APP_FIELD,
+  PEN_EDITOR_BROWSE_AGENT_APP_RULES,
   PEN_EDITOR_BROWSE_APP_SLOTS,
   PEN_EDITOR_BROWSE_SLOTS,
 } from "./browseToolText.js";
@@ -1532,7 +1533,8 @@ export const browseAgentToolNoQa = browseAgentTool(false);
 const BROWSE_AGENT_RESUME_GUIDANCE = "(To continue from a checkpoint, pass only `resume`: no `url`, no `setup`.)";
 // App variant only: sits in the HEAD next to the url/resume guidance.
 const BROWSE_AGENT_APP_GUIDANCE =
-  " To work in a desktop app instead of a web page, pass `app` (the path of a macOS .app of an Electron app) and no `url`, `setup`, `resume` or `capture`. Run one app run at a time: do not call browse_agent with `app` in parallel.";
+  " To work in a desktop app instead of a web page, pass `app` (the path of a macOS .app of an Electron app) and no `url`, `setup`, `resume` or `capture`. Run one app run at a time: do not call browse_agent with `app` in parallel. " +
+  PEN_EDITOR_BROWSE_AGENT_APP_RULES;
 const browseAgentAppCache = new Map<string, ReturnType<typeof browseAgentTool>>();
 /**
  * browse_agent with the extra `app` field, for a desktop client that advertises
