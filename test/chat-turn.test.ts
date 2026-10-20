@@ -422,6 +422,24 @@ describe("prepareChatTurn", () => {
     });
   });
 
+  describe("trace_* gate", () => {
+    const names = ["trace_list", "trace_read"];
+    it.each([
+      ["no clientCapabilities", undefined, false],
+      ["traceTabs false", { traceTabs: false }, false],
+      ["traceTabs absent", { docTabs: true }, false],
+      ["traceTabs true", { traceTabs: true }, true],
+    ])("%s", async (_label, caps, expected) => {
+      const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+      const turn = await prepareChatTurn({
+        config: makeConfig(),
+        messages: [userMessage("what happened in this run")],
+        clientCapabilities: caps,
+      });
+      for (const n of names) expect(turn.tools[n] !== undefined).toBe(expected);
+    });
+  });
+
   describe("browse_* gate", () => {
     // browse_open/browse_act/browse_find_images/browse_read only execute
     // inside the Electron shell's built-in browser bridge — a browser-hosted

@@ -244,7 +244,7 @@ export interface PrepareChatTurnInput {
    * Undefined/false → the browse_* tools are dropped below, same as any
    * other caller (the showcase runner, tests) that never wires this.
    */
-  clientCapabilities?: { desktopBrowser?: boolean; browser?: "desktop" | "cloud"; browseQa?: boolean; browseIsolation?: boolean; browseAssert?: boolean; browseApps?: boolean; canvasTabs?: boolean; docTabs?: boolean };
+  clientCapabilities?: { desktopBrowser?: boolean; browser?: "desktop" | "cloud"; browseQa?: boolean; browseIsolation?: boolean; browseAssert?: boolean; browseApps?: boolean; canvasTabs?: boolean; docTabs?: boolean; traceTabs?: boolean };
   /**
    * agentMode "browse" only: the user directly asked to copy the page onto the
    * canvas, so the subagent may carry browse_capture. Ignored otherwise.
@@ -291,6 +291,7 @@ export interface PreparedChatTurn {
   learnedSkillNames: string[];
 }
 
+const TRACE_TOOL_NAMES = ["trace_list", "trace_read"] as const;
 const DOC_TOOL_NAMES = ["doc_list", "doc_create", "doc_read", "doc_edit", "doc_open"] as const;
 
 // Assembles everything streamText needs for a turn: slash-command skill
@@ -1354,6 +1355,12 @@ export async function prepareChatTurn(
     // (clientCapabilities.docTabs). Constant per client: prompt cache stays valid.
     if (input.clientCapabilities?.docTabs !== true) {
       for (const name of DOC_TOOL_NAMES) delete tools[name];
+    }
+
+    // trace_* run only in a client that shows browse-run traces as tabs
+    // (clientCapabilities.traceTabs). Constant per client: prompt cache stays valid.
+    if (input.clientCapabilities?.traceTabs !== true) {
+      for (const name of TRACE_TOOL_NAMES) delete tools[name];
     }
 
     // Structural gate: remove_background/vectorize_image are client-executed

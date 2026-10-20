@@ -2218,6 +2218,26 @@ Returns the created/updated style ids and names (with a created|updated status) 
     }),
   }),
 
+  trace_list: tool({
+    description:
+      "List the trace tabs open in the desktop app. " +
+      "A trace is the recorded run of a browse_agent QA run: steps, screenshots, console errors, failed requests, QA check results. " +
+      "Use it when the user talks about a trace, a test run or \"this run\". Use it also when you need the traceId. " +
+      "Returns JSON: {tabs: [{traceId, title, active}]}. " +
+      "active: true is the tab the user looks at now.",
+    inputSchema: z.object({}),
+  }),
+
+  trace_read: tool({
+    description:
+      "Read one trace as text: goal, status, each step (action, target, result, error), QA checks, console errors and failed requests. " +
+      "Screenshots are not included. " +
+      "Returns JSON, or {error}.",
+    inputSchema: z.object({
+      traceId: z.string().min(1).describe("Trace id from trace_list."),
+    }),
+  }),
+
   ask_user: tool({
     description:
       "Ask the user structured clarifying questions and get answers back as an interactive form in the chat, instead of guessing. " +

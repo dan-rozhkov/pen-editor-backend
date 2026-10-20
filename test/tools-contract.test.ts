@@ -69,6 +69,8 @@ describe("penTools registry", () => {
         "doc_read",
         "doc_edit",
         "doc_open",
+        "trace_list",
+        "trace_read",
         "analyze_image",
         "publish_to_showcase",
         "read_design_repo",
@@ -143,6 +145,8 @@ describe("penTools registry", () => {
       "doc_read",
       "doc_edit",
       "doc_open",
+      "trace_list",
+      "trace_read",
       "get_screenshot",
       "publish_to_showcase",
       "read_design_repo",
@@ -1841,5 +1845,11 @@ describe("doc_* schemas", () => {
     expect(schemaOf("doc_read").safeParse({ docId: "d1" }).success).toBe(true);
     expect(schemaOf("doc_open").safeParse({ docId: "d1" }).success).toBe(true);
     expect(schemaOf("doc_list").safeParse({}).success).toBe(true);
+  });
+  it("trace_read needs a non-empty traceId; trace_list takes nothing", () => {
+    expect(schemaOf("trace_read").safeParse({ traceId: "t1" }).success).toBe(true);
+    expect(schemaOf("trace_read").safeParse({ traceId: "" }).success).toBe(false);
+    expect(schemaOf("trace_read").safeParse({}).success).toBe(false);
+    expect(schemaOf("trace_list").safeParse({}).success).toBe(true);
   });
 });
