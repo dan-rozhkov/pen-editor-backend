@@ -1,5 +1,5 @@
 import { betterAuth } from "better-auth";
-import { jwt, magicLink } from "better-auth/plugins";
+import { jwt, magicLink, oneTimeToken } from "better-auth/plugins";
 import { apiKey } from "@better-auth/api-key";
 import { cimd } from "@better-auth/cimd";
 import { fetchClientMetadataResource } from "@better-auth/cimd/node";
@@ -44,6 +44,20 @@ export interface VerifyApiKeyResult {
   key: { id: string; referenceId: string; name?: string | null } | null;
 }
 
+/** The slice of Better Auth's internal adapter the desktop sign-in routes use. */
+export interface DesktopAuthAdapter extends DpopReplayReservations {
+  createSession(
+    userId: string,
+    dontRememberMe?: boolean,
+    override?: Record<string, unknown>,
+  ): Promise<{ id: string; token: string; userId: string; expiresAt: Date }>;
+  deleteSession(token: string): Promise<unknown>;
+  createVerificationValue(data: { identifier: string; value: string; expiresAt: Date }): Promise<unknown>;
+  findUserById(userId: string): Promise<{ id: string } | null>;
+  /** Race-safe find + delete: resolves the row at most once, null when absent or expired. */
+  consumeVerificationValue(identifier: string): Promise<{ value: string } | null>;
+}
+
 /** The slice of the Better Auth instance this codebase uses. */
 export interface Auth {
   /** Web-standard handler behind the `/api/auth/*` catch-all. */
@@ -56,11 +70,17 @@ export interface Auth {
     }): Promise<AuthSession | null>;
     /** Server-side API key check: `auth.api.verifyApiKey({ body: { key } })`. */
     verifyApiKey(context: { body: { key: string } }): Promise<VerifyApiKeyResult>;
+    /** One-time-token verify: consumes the token and returns the session cookies as headers. */
+    verifyOneTimeToken(context: {
+      body: { token: string };
+      headers: Headers;
+      returnHeaders: true;
+    }): Promise<{ headers: Headers; response: { user: { id: string; email: string } } }>;
     getOAuthServerConfig(...args: never[]): unknown;
     getOpenIdConfig(...args: never[]): unknown;
   };
   options: BetterAuthOptions;
-  $context: Promise<{ baseURL: string; internalAdapter: DpopReplayReservations }>;
+  $context: Promise<{ baseURL: string; internalAdapter: DesktopAuthAdapter }>;
 }
 
 /** What createAuth() needs from Postgres: a pg.Pool (or a Pool-shaped fake). */
@@ -89,6 +109,9 @@ export function createAuth(config: Config, database: AuthDatabase, options: Crea
     basePath: "/api/auth",
     secret: config.BETTER_AUTH_SECRET,
     database,
+    // The plugin's HTTP endpoints must stay unreachable (a public verify would
+    // skip PKCE). Server-side auth.api calls do not pass this router check.
+    disabledPaths: ["/one-time-token/generate", "/one-time-token/verify"],
     trustedOrigins: [settings.appOrigin],
     emailAndPassword: {
       enabled: true,
@@ -151,6 +174,11 @@ export function createAuth(config: Config, database: AuthDatabase, options: Crea
         metadataProfile: "mcp-2026-07-28",
       }),
       apiKey({ defaultPrefix: API_KEY_PREFIX, rateLimit: API_KEY_RATE_LIMIT }),
+      // Desktop sign-in only (routes/desktopAuth.ts). The plugin's HTTP
+      // endpoints stay unreachable: disabledPaths plus a normalized-pathname
+      // 404 in the /api/auth/* catch-all; generate is also off via
+      // disableClientRequest.
+      oneTimeToken({ disableClientRequest: true }),
     ],
   });
   // betterAuth()'s inferred type embeds zod v4 internals that cannot be named

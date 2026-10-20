@@ -2,7 +2,8 @@
 
 Date: 2026-10-04. Status: sections 1–2 approved by the user in chat; sections 3–4
 decided under `/auto`. Scope = steps 1+2 of the plan. Desktop deep-link sign-in
-(step 3) and the Codex plugin packaging / MCP Apps widget (step 4) get their own specs.
+(step 3) is specified in `2026-10-20-desktop-sign-in-design.md`; the Codex plugin
+packaging / MCP Apps widget (step 4) gets its own spec.
 
 ## Goal
 
