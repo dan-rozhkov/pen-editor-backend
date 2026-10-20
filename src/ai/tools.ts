@@ -2152,6 +2152,8 @@ Returns the created/updated style ids and names (with a created|updated status) 
       "Write the full document in the `markdown` argument. " +
       "Use only this markdown: headings, paragraphs, bold, italic, strikethrough, inline code, links, " +
       "bullet, numbered and task lists, tables, quotes, code blocks, horizontal rules, images. " +
+      "A table starts with a header row. A table cell holds one line of inline text. " +
+      "To align a column, write `:---` (left), `:---:` (center) or `---:` (right) in the separator row. " +
       "Three HTML forms are allowed, and no other HTML. " +
       "A toggle: `<details>` on its own line, then `<summary>Title</summary>`, a blank line, the body in markdown, a blank line, `</details>`. " +
       "Coloured text: `<span data-color=\"red\">text</span>`. A highlight: `<span data-bg=\"yellow\">text</span>`. " +
