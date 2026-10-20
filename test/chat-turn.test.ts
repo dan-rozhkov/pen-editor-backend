@@ -1,5 +1,5 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { loadSkills, getSkill } from "../src/ai/skills.js";
+import { DOC_ONLY_SKILL_NAMES, loadSkills, getSkill } from "../src/ai/skills.js";
 import { createModel } from "../src/ai/provider.js";
 import { AGENT_BROWSER_GUIDANCE, AGENT_BROWSER_QA_GUIDANCE, AGENT_BROWSER_QA_ISOLATED_GUIDANCE, BROWSE_AGENT_LOGIN_PROMPT, BROWSE_AGENT_PROMPT, browseAgentPrompt, MANUAL_BROWSER_GUIDANCE } from "../src/ai/system-prompt.js";
 import { asSchema } from "ai";
@@ -1233,6 +1233,16 @@ describe("browse subagent", () => {
       expect(withQa.system).toContain("bug-hunt");
       expect(withoutQa.system).not.toContain("bug-hunt");
       expect(noBrowser.system).not.toContain("bug-hunt");
+    });
+
+    it("lists the document template skills only to a client with docTabs", async () => {
+      const withDocs = await prepare({ clientCapabilities: { docTabs: true } });
+      const withoutDocs = await prepare({});
+      const catalog = (system: string) => system.slice(system.indexOf("## Available Skills")).split("\n").filter((l) => l.startsWith("- `"));
+      for (const name of DOC_ONLY_SKILL_NAMES) {
+        expect(catalog(withDocs.system).some((l) => l.startsWith(`- \`${name}\``))).toBe(true);
+        expect(catalog(withoutDocs.system).some((l) => l.startsWith(`- \`${name}\``))).toBe(false);
+      }
     });
 
     it("shows the qa flag of browse_agent and the QA bullet only to a client with the browseQa capability", async () => {

@@ -150,6 +150,21 @@ export function ensureSkillsLoaded(): Promise<void> {
  */
 export const QA_ONLY_SKILL_NAMES: ReadonlySet<string> = new Set(["bug-hunt"]);
 
+/**
+ * Skills that write a document with the doc_* tools. Those tools exist only
+ * for a client that advertises docTabs, so elsewhere the catalog and auto-pick
+ * hide these skills. An explicit slash command still loads them (the skill
+ * then answers in chat).
+ */
+export const DOC_ONLY_SKILL_NAMES: ReadonlySet<string> = new Set([
+  "test-plan",
+  "test-report",
+  "bug-report",
+  "design-brief",
+  "design-spec",
+  "usability-test",
+]);
+
 export function getSkill(name: string): Skill | undefined {
   return skillsMap.get(name);
 }

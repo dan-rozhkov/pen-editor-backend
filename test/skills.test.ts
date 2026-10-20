@@ -5,6 +5,7 @@ import {
   getSkill,
   getSkillTools,
   loadSkills,
+  DOC_ONLY_SKILL_NAMES,
 } from "../src/ai/skills.js";
 import { AGENT_BROWSER_QA_GUIDANCE } from "../src/ai/system-prompt.js";
 import { SHOWCASE_VIEWPORTS } from "../src/showcase/platform.js";
@@ -500,5 +501,77 @@ describe("design-from-repo skill content", () => {
     const skill = getSkill("design-from-repo")!;
     expect(skill.content).toMatch(/localRepo/);
     expect(skill.content).toMatch(/no\s+brief is ever placed/i);
+  });
+});
+
+// Document templates: each skill hands doc_create a skeleton. doc_create's
+// description routes to these names, so a rename here must update it too.
+const DOC_TEMPLATE_SKILLS = [...DOC_ONLY_SKILL_NAMES];
+
+// GFM cells split on every unescaped pipe outside inline code.
+const countCells = (row: string) =>
+  row.trim().replace(/^\|/, "").replace(/(?<!\\)\|$/, "").replace(/`[^`]*`/g, "x").split(/(?<!\\)\|/).length;
+
+// Every table row of a skill, paired with its table's header row.
+function tableRowsWithHeader(content: string): Array<{ header: string; row: string }> {
+  const out: Array<{ header: string; row: string }> = [];
+  let header: string | null = null;
+  for (const line of content.split("\n")) {
+    const isRow = line.trim().startsWith("|");
+    header = isRow ? (header ?? line) : null;
+    if (isRow && header !== line) out.push({ header, row: line });
+  }
+  return out;
+}
+
+describe("document template skills", () => {
+  beforeAll(async () => {
+    await loadSkills();
+  });
+
+  it("covers the six template types", () => {
+    expect([...DOC_TEMPLATE_SKILLS].sort()).toEqual(
+      ["bug-report", "design-brief", "design-spec", "test-plan", "test-report", "usability-test"],
+    );
+  });
+
+  it.each(DOC_TEMPLATE_SKILLS)("%s loads with a template, writes through doc_create and cites sources", (name) => {
+    const skill = getSkill(name)!;
+    expect(skill).toBeDefined();
+    expect(skill.description.length).toBeGreaterThan(0);
+    expect(skill.content).toContain("doc_create");
+    expect(skill.content).toMatch(/^## Template/m);
+    expect(skill.content).toMatch(/^## Sources/m);
+    expect(skill.content).toContain("```markdown");
+    expect(skill.content).toContain("[TBD");
+  });
+
+  it.each(DOC_TEMPLATE_SKILLS)("%s uses only markup the document editor keeps", (name) => {
+    const skill = getSkill(name)!;
+    // Footnotes are dropped by the editor on the next user edit.
+    expect(skill.content).not.toMatch(/\[\^[^\]]+\]/);
+    // Only toggles and data-color/data-bg spans survive; any other tag is lost.
+    const tags = skill.content.match(/<\/?[a-z][a-z0-9-]*\b[^>]*>/gi) ?? [];
+    const allowed = /^(<\/?(details|summary)>|<span data-(color|bg)="[a-z]+">|<\/span>)$/;
+    expect(tags.filter((t) => !allowed.test(t))).toEqual([]);
+  });
+
+  it.each(DOC_TEMPLATE_SKILLS)("%s tables have as many cells in each row as in the header", (name) => {
+    const rows = tableRowsWithHeader(getSkill(name)!.content);
+    const broken = rows.filter(({ header, row }) => countCells(row) !== countCells(header)).map((r) => r.row);
+    expect(broken).toEqual([]);
+  });
+
+  it("gates every curated skill that writes with doc_create", () => {
+    const writers = getAllSkills()
+      .filter((s) => s.content.includes("Write the document with `doc_create`"))
+      .map((s) => s.name)
+      .sort();
+    expect(writers).toEqual([...DOC_TEMPLATE_SKILLS].sort());
+  });
+
+  it("doc_create routes every template skill by name", () => {
+    const description = penTools.doc_create.description ?? "";
+    for (const name of DOC_TEMPLATE_SKILLS) expect(description).toContain(name);
   });
 });

@@ -2149,6 +2149,9 @@ Returns the created/updated style ids and names (with a created|updated status) 
       "Create a markdown document and open it in a document tab. " +
       "Use this when the user wants a text document (spec, brief, notes, article, plan, README) and not a visual design. " +
       "Do not use batch_design for text documents. " +
+      "For a test plan, test report, bug report, design brief, design spec or usability test, " +
+      "load the matching skill first (test-plan, test-report, bug-report, design-brief, design-spec or usability-test), " +
+      "unless its instructions are already in this conversation. The skill gives the template. " +
       "Write the full document in the `markdown` argument. " +
       "Use only this markdown: headings, paragraphs, bold, italic, strikethrough, inline code, links, " +
       "bullet, numbered and task lists, tables, quotes, code blocks, horizontal rules, images. " +

@@ -28,6 +28,7 @@ import {
   getAllSkills,
   getSkill,
   getSkillTools,
+  DOC_ONLY_SKILL_NAMES,
   QA_ONLY_SKILL_NAMES,
 } from "./skills.js";
 import { renderMemorySnapshot } from "./memory/render.js";
@@ -540,7 +541,11 @@ export async function prepareChatTurn(
   // parameter is not offered, so they are hidden from the catalog and from
   // auto-pick there. An explicit /slash invocation stays allowed.
   const qaOffered = browseAgentOffered && clientHasQa;
-  const isSkillOffered = (name: string): boolean => qaOffered || !QA_ONLY_SKILL_NAMES.has(name);
+  // Same rule for document skills: they write with doc_*, which only a
+  // docTabs client gets (see the doc_* gate below).
+  const docsOffered = input.clientCapabilities?.docTabs === true;
+  const isSkillOffered = (name: string): boolean =>
+    (qaOffered || !QA_ONLY_SKILL_NAMES.has(name)) && (docsOffered || !DOC_ONLY_SKILL_NAMES.has(name));
 
   // Jev auto-pick: when no slash command already resolved a skill, ask Jev
   // whether the message matches one of the curated skills up front, instead
