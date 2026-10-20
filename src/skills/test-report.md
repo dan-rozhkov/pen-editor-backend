@@ -43,6 +43,7 @@ Never invent facts. Numbers must come from real results. Never invent counts, da
 - Write in the user's language. Translate the template headings and labels. Keep IDs such as `TC-01` and `BUG-01`, and the status values, the same inside the document.
 - Use only the markdown that the `doc_create` description allows. A table cell holds ONE line of inline text. Put multi-line content in lists under a heading.
 - A `mermaid` code block renders a diagram.
+- Write the metadata table as a property list (see the `doc_create` description).
 - Delete optional sections that do not apply. Do not leave empty headings.
 - After `doc_create`, reply in chat with 1 to 3 sentences. Give the verdict and name the `[TBD]` items the user must fill.
 
@@ -57,7 +58,7 @@ Never invent facts. Numbers must come from real results. Never invent counts, da
 
 [2-3 sentences: the reason. Name the blocking defects or the conditions.]
 
-| Field | Value |
+|  |  |
 | --- | --- |
 | Build under test | [version or build id] |
 | Environment | [URL, browser, device] |

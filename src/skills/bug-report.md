@@ -37,6 +37,7 @@ Never invent facts: steps, versions, error text, counts. Put a visible placehold
 - Write in the user's language. Translate the template headings and labels. Keep IDs such as `BUG-01` and the status values the same inside the document.
 - Use only the markdown that the `doc_create` description allows. A table cell holds ONE line of inline text. Put multi-line content in lists under a heading.
 - Use the field table only for single-line fields. Put steps, expected and actual results under headings, in lists or paragraphs.
+- Write the metadata table as a property list (see the `doc_create` description).
 - Delete optional sections that do not apply. Do not leave empty headings.
 - After `doc_create`, reply in chat with 1 to 3 sentences. Say how many bugs the document holds and which `[TBD]` items the user must fill.
 
@@ -45,10 +46,10 @@ Never invent facts: steps, versions, error text, counts. Put a visible placehold
 ````markdown
 # Bug report: [Area] [Summary]
 
-| Field | Value |
+|  |  |
 | --- | --- |
 | ID | [BUG-01] |
-| Status | New |
+| Status | <span data-bg="gray">New</span> |
 | Area | [component or feature] |
 | Environment | [build, OS, browser and version, device] |
 | Reproducibility | [Always / Sometimes, N of M / Once] |

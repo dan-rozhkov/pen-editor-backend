@@ -570,6 +570,17 @@ describe("document template skills", () => {
     expect(writers).toEqual([...DOC_TEMPLATE_SKILLS].sort());
   });
 
+  it("bug-report template writes its metadata as a property list", () => {
+    expect(getSkill("bug-report")!.content).toContain("|  |  |\n| --- | --- |");
+  });
+
+  it("doc_create describes the empty-header property list", () => {
+    const description = penTools.doc_create.description ?? "";
+    expect(description).toContain("property list");
+    expect(description).toContain("`|  |  |`");
+    expect(penTools.doc_edit.description ?? "").toContain("property lists");
+  });
+
   it("doc_create routes every template skill by name", () => {
     const description = penTools.doc_create.description ?? "";
     for (const name of DOC_TEMPLATE_SKILLS) expect(description).toContain(name);

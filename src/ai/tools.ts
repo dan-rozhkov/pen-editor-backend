@@ -2156,6 +2156,10 @@ Returns the created/updated style ids and names (with a created|updated status) 
       "Use only this markdown: headings, paragraphs, bold, italic, strikethrough, inline code, links, " +
       "bullet, numbered and task lists, tables, quotes, code blocks, horizontal rules, images. " +
       "A table starts with a header row. A table cell holds one line of inline text. " +
+      "A property list shows fields and values, like page properties: a two-column table whose header row is empty (`|  |  |`, then `| --- | --- |`), then one `| Field | value |` row per field. " +
+      "If a value is unknown, leave its cell empty. The document then shows \"Empty\". Exception: when a skill asks for a `[TBD: ...]` placeholder, write that placeholder. " +
+      "Write a tag value as a highlight, for example `<span data-bg=\"gray\">Active</span>`. " +
+      "Use a property list for metadata at the top of a document, such as status, owner, dates and links. " +
       "To align a column, write `:---` (left), `:---:` (center) or `---:` (right) in the separator row. " +
       "Three HTML forms are allowed, and no other HTML. " +
       "A toggle: `<details>` on its own line, then `<summary>Title</summary>`, a blank line, the body in markdown, a blank line, `</details>`. " +
@@ -2188,7 +2192,7 @@ Returns the created/updated style ids and names (with a created|updated status) 
       "Each `oldString` must match exactly once in the document, unless `replaceAll` is true. " +
       "Use `markdown` only to replace the whole document. " +
       "Give `edits` or `markdown`, not both. " +
-      "Use the same markdown subset as doc_create, including toggles, colours and mermaid diagrams. " +
+      "Use the same markdown subset as doc_create, including toggles, colours, property lists and mermaid diagrams. " +
       "Give `title` to rename the document. You may give `title` alone. " +
       "Returns JSON with the result, or {error}.",
     inputSchema: z.object({

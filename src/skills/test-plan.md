@@ -35,6 +35,7 @@ Never invent facts: requirements, versions, dates, names, limits. Put a visible 
 - Use only the markdown that the `doc_create` description allows. A table cell holds ONE line of inline text. Put multi-line content in lists under a heading.
 - Put steps in numbered lists under the test case heading.
 - A `mermaid` code block renders a diagram.
+- Write the metadata table as a property list (see the `doc_create` description).
 - Delete optional sections that do not apply. Do not leave empty headings.
 - After `doc_create`, reply in chat with 1 to 3 sentences. Say what the plan covers and which `[TBD]` items the user must fill.
 
@@ -43,7 +44,7 @@ Never invent facts: requirements, versions, dates, names, limits. Put a visible 
 ````markdown
 # Test plan: [subject]
 
-| Field | Value |
+|  |  |
 | --- | --- |
 | Version | [1.0] |
 | Author | [name] |
@@ -81,7 +82,7 @@ Never invent facts: requirements, versions, dates, names, limits. Put a visible 
 
 ## 5. Environment and data
 
-| Item | Value |
+|  |  |
 | --- | --- |
 | Environment | [test URL] |
 | Browsers and devices | [Chrome 130, Safari 18, iPhone 15] |
