@@ -151,7 +151,7 @@ export function buildShowcasePrompt(
 // blank document, so the honest answer is the one the frontend handler gives
 // for an empty file, in the same shape. Kept literally identical to
 // pen-editor/src/lib/tools/getEditorState.ts and getVariables.ts.
-const EMPTY_DOCUMENT_STATE = JSON.stringify({
+export const EMPTY_DOCUMENT_STATE = JSON.stringify({
   pages: [{ id: "page-1", name: "Page 1" }],
   activePageId: "page-1",
   roots: [],
@@ -165,7 +165,7 @@ const EMPTY_DOCUMENT_STATE = JSON.stringify({
 // a "Decide for me" option. So answer as a user who delegates every choice,
 // rather than reporting the tool broken — which would either stall the flow
 // or push the agent to skip the brief step entirely.
-const DELEGATED_BRIEF_ANSWER =
+export const DELEGATED_BRIEF_ANSWER =
   "Decide for me — use your own judgment for every question above, " +
   "and pick whatever produces the strongest, most opinionated result. " +
   "Do not ask again; proceed straight to building.";
@@ -176,10 +176,20 @@ const EMULATED_CLIENT_TOOLS: Record<string, () => Promise<string>> = {
   ask_user: async () => DELEGATED_BRIEF_ANSWER,
 };
 
+/** The execute for a client-executed tool with no special handling: the
+ * emulated answer when there is one, else the "unavailable" stub. Shared with
+ * the eval harness (src/evals/harness.ts). */
+export function emulatedClientToolExecute(name: string): () => Promise<string> {
+  return (
+    EMULATED_CLIENT_TOOLS[name] ??
+    (async () => `Tool "${name}" is unavailable in autonomous showcase generation mode.`)
+  );
+}
+
 // Deterministic stand-in used once the image budget is spent, and when a
 // generation fails. Mirrors what the prototype skill asks for by default, so
 // the HTML still ends up with a real <img> rather than a gap.
-function placeholderImageUrl(prompt: string): string {
+export function placeholderImageUrl(prompt: string): string {
   const seed = encodeURIComponent(prompt.slice(0, 40).replace(/\s+/g, "-"));
   return `https://picsum.photos/seed/${seed}/800/600`;
 }
@@ -430,13 +440,9 @@ function instrumentTools(
       continue;
     }
 
-    const emulated = EMULATED_CLIENT_TOOLS[name];
     instrumented[name] = {
       ...instrumented[name],
-      execute:
-        emulated ??
-        (async () =>
-          `Tool "${name}" is unavailable in autonomous showcase generation mode.`),
+      execute: emulatedClientToolExecute(name),
     };
   }
 

@@ -16,6 +16,8 @@
     "showcase:reencode": "tsx --env-file-if-exists=.env src/showcase/reencodeRun.ts",
     "showcase:pin": "tsx --env-file-if-exists=.env src/showcase/pinRun.ts",
     "showcase:delete": "tsx --env-file-if-exists=.env src/showcase/deleteRun.ts",
+    "evals:run": "tsx --env-file-if-exists=.env src/evals/run.ts",
+    "evals:calibrate": "tsx --env-file-if-exists=.env src/evals/calibrateRun.ts",
     "traces:prune": "tsx --env-file-if-exists=.env src/tracing/pruneRun.ts",
     "memory:curate": "tsx --env-file-if-exists=.env src/ai/memory/curatorRun.ts",
     "skills:curate": "tsx --env-file-if-exists=.env src/ai/selfimprove/curateRun.ts",

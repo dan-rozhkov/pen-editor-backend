@@ -37,3 +37,6 @@ flaky-tests.json
 # cache. The incremental cache is reports/stryker-incremental.json,
 # already covered by reports/ above.
 .stryker-tmp/
+
+# Agent-eval run output (transcripts, screens, label templates); history.jsonl is tracked.
+evals/runs/

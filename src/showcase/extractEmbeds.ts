@@ -357,3 +357,46 @@ export function extractEmbedScreens(
 
   return screens;
 }
+
+export interface EmbedNode {
+  name: string;
+  htmlContent: string;
+  width?: number;
+  height?: number;
+  x?: number;
+  y?: number;
+}
+
+function readNumericField(interior: string, key: string): number | undefined {
+  const m = new RegExp(`(?:^|,)\\s*(?:"${key}"|'${key}'|${key})\\s*:\\s*(-?\\d+(?:\\.\\d+)?)\\s*(?=,|$)`).exec(
+    interior,
+  );
+  return m ? Number(m[1]) : undefined;
+}
+
+// Like extractEmbedScreens, but also reads the embed's top-level geometry
+// (width/height/x/y) — used by the eval graders. Fields that are not plain
+// numeric literals come back undefined.
+export function extractEmbedNodes(operations: string): EmbedNode[] {
+  const nodes: EmbedNode[] = [];
+  for (const statement of splitBatchDesignStatements(operations)) {
+    if (!isCreateOp(statement)) continue;
+    if ((nodeTypeOfCreateOp(statement) ?? "frame") !== "embed") continue;
+    const { name, htmlContent } = readEmbedFields(statement);
+    if (!htmlContent) continue;
+    const trimmed = statement.trim();
+    const opMatch = trimmed.match(CREATE_OP_RE);
+    const objStart = opMatch ? findFirstTopLevelBrace(trimmed, opMatch[0].length) : -1;
+    const objEnd = objStart === -1 ? -1 : findMatchingBrace(trimmed, objStart);
+    const interior = objEnd === -1 ? "" : trimmed.slice(objStart + 1, objEnd);
+    nodes.push({
+      name: name ?? DEFAULT_SCREEN_NAME,
+      htmlContent,
+      width: readNumericField(interior, "width"),
+      height: readNumericField(interior, "height"),
+      x: readNumericField(interior, "x"),
+      y: readNumericField(interior, "y"),
+    });
+  }
+  return nodes;
+}
