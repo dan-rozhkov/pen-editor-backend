@@ -7,7 +7,7 @@ import type { SteelClient } from "../services/steel.js";
 import { redactedError } from "@sideform/browser-agent/adapters/playwright";
 import { originsArg, requiredTokenArg } from "./journalArgs.js";
 
-export const COMMAND_NAMES = ["open", "act", "findImages", "read", "snapshot", "screenshot", "capture", "tabs", "perform", "assert", "applyFixture", "releaseFixture", "startJournal", "stopJournal", "captureCheckpoint", "clearActEmulation"] as const;
+export const COMMAND_NAMES = ["open", "act", "findImages", "read", "snapshot", "screenshot", "capture", "tabs", "perform", "assert", "applyFixture", "releaseFixture", "startJournal", "stopJournal", "captureCheckpoint", "clearActEmulation", "requests"] as const;
 export type CommandName = (typeof COMMAND_NAMES)[number];
 export type CommandResult = Record<string, unknown>;
 export type CommandRunner = Record<CommandName, (args?: unknown) => Promise<CommandResult>>;

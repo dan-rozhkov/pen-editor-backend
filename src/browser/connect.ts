@@ -57,6 +57,8 @@ export function toCommandRunner(controller: BrowserController): CommandRunner {
       await controller.clearActEmulation();
       return { ok: true };
     },
+    // Read-only drain of the cloud browser's request log: { requests, dropped? }.
+    requests: async () => (await controller.requests()) as unknown as Record<string, unknown>,
     captureCheckpoint: async (args) => {
       const t = requiredTokenArg(args);
       if ("error" in t) return { ok: false, error: t.error };

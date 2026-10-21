@@ -41,6 +41,7 @@ function fakes() {
     stopJournal: vi.fn(async () => ({ ok: true })),
     captureCheckpoint: vi.fn(async () => ({ ok: true, complete: true, summary: "s", fixture: {} })),
     clearActEmulation: vi.fn(async () => ({ ok: true })),
+    requests: vi.fn(async () => ({ requests: [] })),
   };
   const connect = vi.fn(async (url: string): Promise<ConnectedBrowser> => ({
     controller,
@@ -170,6 +171,23 @@ describe("cloud browser routes", () => {
     const runner = toCommandRunner(bc as unknown as BrowserController);
     expect(await runner.clearActEmulation(undefined)).toEqual({ ok: true });
     expect(bc.clearActEmulation).toHaveBeenCalledTimes(1);
+  });
+
+  it("forwards requests to the session's controller and returns its object", async () => {
+    const f = fakes();
+    const { cmd } = await start({}, f);
+    const { handle } = (await cmd("open", { userId: USER, chatId: "c" })).json();
+    const res = (await cmd("requests", { userId: USER, chatId: "c", handle })).json();
+    expect(f.controller.requests).toHaveBeenCalled();
+    expect(res.result).toEqual({ requests: [] });
+  });
+
+  it("toCommandRunner maps requests to controller.requests() unchanged", async () => {
+    const out = { requests: [{ url: "https://a.test/" }], dropped: 2 };
+    const bc = { requests: vi.fn(async () => out) };
+    const runner = toCommandRunner(bc as unknown as BrowserController);
+    expect(await runner.requests(undefined)).toEqual(out);
+    expect(bc.requests).toHaveBeenCalledTimes(1);
   });
 
   describe("checkpoint journal (through the real toCommandRunner)", () => {
