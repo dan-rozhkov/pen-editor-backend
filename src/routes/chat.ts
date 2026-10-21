@@ -1,4 +1,3 @@
-import { SECRET_NAME_PATTERN } from "@sideform/browser-agent/agent";
 import {
   streamText,
   stepCountIs,
@@ -189,14 +188,6 @@ const chatBodySchema = z.object({
   // agentMode "browse" only: the desktop browser has saved logins, so the
   // subagent may carry browse_fill_login. Ignored in every other mode.
   browseLogin: z.boolean().optional(),
-  // Names of the secrets the user added for this chat. The chat request never
-  // carries a value: the client swaps a placeholder for the value only inside
-  // the browser command (for the cloud browser that command goes through this
-  // backend to Steel; the model and the chat history never see it). A bad name
-  // must never fail the whole chat, so the schema only bounds the payload; the
-  // handler drops names that fail SECRET_NAME_PATTERN. Honoured only with
-  // clientCapabilities.browseSecrets.
-  browseSecrets: z.array(z.string().max(200)).max(200).optional(),
   // Client-generated stable anonymous id (localStorage `pen.userId`). Absent
   // → every memory feature is silently off for this request, which is what
   // keeps the showcase runner and any older client working untouched. The
@@ -243,9 +234,6 @@ const chatBodySchema = z.object({
       // Without it the five doc_* tools are removed from the turn (chatTurn.ts).
       docTabs: z.boolean().optional(),
       traceTabs: z.boolean().optional(),
-      // The client replaces `{{secret:<name>}}` in browse_act `type` text with
-      // the real value. Static per client (prompt-cache safe).
-      browseSecrets: z.boolean().optional(),
     })
     .optional(),
 });
@@ -347,11 +335,7 @@ export async function chatRoutes(
       browseCapture,
       browseQa,
       browseLogin,
-      browseSecrets: rawBrowseSecrets,
     } = parsed.data;
-    const browseSecrets = [
-      ...new Set((rawBrowseSecrets ?? []).filter((n) => SECRET_NAME_PATTERN.test(n))),
-    ].slice(0, 20);
 
     // The browse subagent turn exists only in BROWSE_MODE=agent; elsewhere a
     // request for it is refused before any model call.
@@ -475,7 +459,6 @@ export async function chatRoutes(
         browseCapture,
         browseQa,
         browseLogin,
-        browseSecrets,
         memoryStore,
         learnedSkillStore,
         auditDb,
