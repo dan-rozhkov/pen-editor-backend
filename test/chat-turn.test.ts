@@ -429,6 +429,24 @@ describe("prepareChatTurn", () => {
     });
   });
 
+  describe("workflow_* gate", () => {
+    const names = ["workflow_list", "workflow_create", "workflow_read", "workflow_edit", "workflow_open"];
+    it.each([
+      ["no clientCapabilities", undefined, false],
+      ["workflowTabs false", { workflowTabs: false }, false],
+      ["workflowTabs absent", { docTabs: true }, false],
+      ["workflowTabs true", { workflowTabs: true }, true],
+    ])("%s", async (_label, caps, expected) => {
+      const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+      const turn = await prepareChatTurn({
+        config: makeConfig(),
+        messages: [userMessage("make a checklist")],
+        clientCapabilities: caps,
+      });
+      for (const n of names) expect(turn.tools[n] !== undefined).toBe(expected);
+    });
+  });
+
   describe("trace_* gate", () => {
     const names = ["trace_list", "trace_read"];
     it.each([

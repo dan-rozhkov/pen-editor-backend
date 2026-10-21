@@ -2225,7 +2225,8 @@ Returns the created/updated style ids and names (with a created|updated status) 
       "Give `edits` or `markdown`, not both. " +
       "Use the same markdown subset as doc_create, including toggles, colours, property lists, callouts, links and mermaid diagrams. " +
       "Give `title` to rename the document. You may give `title` alone. " +
-      "Returns JSON with the result, or {error}.",
+      "Returns {\"workflowId\",\"title\",\"rev\",\"steps\":[{\"index\",\"text\"}],\"markdown\"}. " +
+      "The step numbers in `steps` match the numbers in `markdown`. On failure it returns {\"error\"}.",
     inputSchema: z.object({
       docId: z.string().min(1).describe("Document id."),
       edits: z
@@ -2309,6 +2310,77 @@ Returns the created/updated style ids and names (with a created|updated status) 
       "Do not call this after doc_create. doc_create already opens the tab.",
     inputSchema: z.object({
       docId: z.string().min(1).describe("Document id."),
+    }),
+  }),
+
+  workflow_list: tool({
+    description:
+      "List the workflows saved in the browser. " +
+      "Use workflow_* tools when the user wants a workflow: an ordered list of steps that an agent completes in sequence. " +
+      "A workflow has no branches. " +
+      "Returns {\"workflows\":[{\"workflowId\",\"title\",\"stepCount\",\"updatedAt\"}]}. " +
+      "Call this before workflow_read or workflow_edit if you do not know the workflowId.",
+    inputSchema: z.object({}),
+  }),
+
+  workflow_create: tool({
+    description:
+      "Create a workflow and open it in a workflow tab. " +
+      "A workflow is an ordered list of steps. The steps run in sequence. " +
+      "Each step is one short instruction. Write steps that the agent can complete with its tools. " +
+      "Write one action per step. " +
+      "Write plain text. Do not number the steps. Do not use markdown list markers. " +
+      "This tool already opens the tab. Do not call workflow_open after it. " +
+      "Returns {\"workflowId\",\"title\",\"stepCount\",\"markdown\"}. " +
+      "If the tab did not open, it also returns `openError`. The workflow is saved anyway. Tell the user that the tab did not open, and give the error.",
+    inputSchema: z.object({
+      title: z.string().min(1).describe("Workflow title."),
+      steps: z
+        .array(z.string().min(1))
+        .min(1)
+        .max(100)
+        .describe("Ordered steps. 1 to 100 steps. One action per step. Plain text. No numbering."),
+    }),
+  }),
+
+  workflow_read: tool({
+    description:
+      "Read a workflow. " +
+      "Always read a workflow before you edit it. " +
+      "Returns {\"workflowId\",\"title\",\"rev\",\"steps\":[{\"index\",\"text\"}],\"markdown\"}. " +
+      "`markdown` is the steps as a numbered list. The step numbers in `steps` match the numbers in `markdown`.",
+    inputSchema: z.object({
+      workflowId: z.string().min(1).describe("Workflow id from workflow_list or workflow_create."),
+    }),
+  }),
+
+  workflow_edit: tool({
+    description:
+      "Edit a workflow. Read it with workflow_read first. " +
+      "Give `title`, `steps`, or both. Give at least one. " +
+      "`steps` REPLACES the whole list of steps. Send every step, including the steps that do not change. " +
+      "Use the same step rules as workflow_create. " +
+      "Returns {\"workflowId\",\"title\",\"rev\",\"steps\":[{\"index\",\"text\"}],\"markdown\"}. " +
+      "The step numbers in `steps` match the numbers in `markdown`. On failure it returns {\"error\"}.",
+    inputSchema: z.object({
+      workflowId: z.string().min(1).describe("Workflow id."),
+      title: z.string().min(1).optional().describe("New title."),
+      steps: z
+        .array(z.string().min(1))
+        .min(1)
+        .max(100)
+        .optional()
+        .describe("New full list of steps. Replaces all current steps. 1 to 100 steps."),
+    }),
+  }),
+
+  workflow_open: tool({
+    description:
+      "Open a workflow in its tab, or switch to the tab if it is open. " +
+      "Do not call this after workflow_create. workflow_create already opens the tab. " +
+      "Returns {\"workflowId\",\"opened\":true}, or {\"error\"}.",
+    inputSchema: z.object({
+      workflowId: z.string().min(1).describe("Workflow id."),
     }),
   }),
 

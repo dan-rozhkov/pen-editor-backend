@@ -70,6 +70,11 @@ describe("penTools registry", () => {
         "doc_edit",
         "doc_open",
         "doc_insert_image",
+        "workflow_list",
+        "workflow_create",
+        "workflow_read",
+        "workflow_edit",
+        "workflow_open",
         "trace_list",
         "trace_read",
         "analyze_image",
@@ -147,6 +152,11 @@ describe("penTools registry", () => {
       "doc_edit",
       "doc_open",
       "doc_insert_image",
+      "workflow_list",
+      "workflow_create",
+      "workflow_read",
+      "workflow_edit",
+      "workflow_open",
       "trace_list",
       "trace_read",
       "get_screenshot",
@@ -1870,6 +1880,21 @@ describe("doc_* schemas", () => {
     expect(schemaOf("doc_read").safeParse({ docId: "d1" }).success).toBe(true);
     expect(schemaOf("doc_open").safeParse({ docId: "d1" }).success).toBe(true);
     expect(schemaOf("doc_list").safeParse({}).success).toBe(true);
+  });
+  it("workflow_create needs a title and 1 to 100 non-empty steps", () => {
+    const s = schemaOf("workflow_create");
+    expect(s.safeParse({ title: "Launch", steps: ["Open the site"] }).success).toBe(true);
+    expect(s.safeParse({ title: "Launch", steps: [] }).success).toBe(false);
+    expect(s.safeParse({ title: "Launch", steps: [""] }).success).toBe(false);
+    expect(s.safeParse({ title: "", steps: ["a"] }).success).toBe(false);
+    expect(s.safeParse({ title: "L", steps: Array(101).fill("a") }).success).toBe(false);
+  });
+  it("workflow_read, workflow_open take workflowId; workflow_list takes nothing; workflow_edit steps are optional", () => {
+    expect(schemaOf("workflow_read").safeParse({ workflowId: "w1" }).success).toBe(true);
+    expect(schemaOf("workflow_open").safeParse({ workflowId: "w1" }).success).toBe(true);
+    expect(schemaOf("workflow_list").safeParse({}).success).toBe(true);
+    expect(schemaOf("workflow_edit").safeParse({ workflowId: "w1", title: "T" }).success).toBe(true);
+    expect(schemaOf("workflow_edit").safeParse({ workflowId: "w1", steps: [] }).success).toBe(false);
   });
   it("trace_read needs a non-empty traceId; trace_list takes nothing", () => {
     expect(schemaOf("trace_read").safeParse({ traceId: "t1" }).success).toBe(true);

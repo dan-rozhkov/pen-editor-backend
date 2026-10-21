@@ -233,6 +233,10 @@ const chatBodySchema = z.object({
       // The client shows markdown documents as tabs and runs doc_* tools.
       // Without it the five doc_* tools are removed from the turn (chatTurn.ts).
       docTabs: z.boolean().optional(),
+      // The client shows workflows (ordered step lists) as tabs and runs
+      // workflow_* tools. Without it the five workflow_* tools are removed
+      // from the turn (chatTurn.ts).
+      workflowTabs: z.boolean().optional(),
       traceTabs: z.boolean().optional(),
     })
     .optional(),
