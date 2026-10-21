@@ -15,12 +15,12 @@ Write a design spec as a document with `doc_create`. Developers read it to build
 ## Gather the inputs
 
 1. Read the canvas first. Do not ask for what the canvas shows.
-   - `get_editor_state`: the list of screens and their names.
+   - `get_editor_state`: the list of screens, their names and their node ids. You need the ids for the links.
    - `read_embed_html`: for each embed screen, the HTML. Read states, copy, colours and tokens from it.
    - `get_variables`: the design tokens (colours, spacing, type).
    - `get_screenshot`, if it is available, to check what a screen shows.
    - A repo read with `read_design_repo`: component names, so you can name things as the code does.
-   - A design brief document, if one exists (`doc_list`, `doc_read`). Link to it in Overview.
+   - A design brief document, if one exists (`doc_list`, `doc_read`). Link to it in Overview as `[Title](/doc?id={docId})` (the docId comes from `doc_list`). If there is none, write `[TBD: ...]` text, not a link.
 2. If key facts are missing and the `ask_user` tool is in your tool list, call it ONCE with a short form for the missing facts only. Typical gaps: the user goal, the target platform and breakpoints, the data source, the error rules.
 3. Never invent facts. A state that the design does not show gets the marker `[TBD: not designed]`. Do not describe it as if it exists. Put `[TBD: what is missing]` for any other missing fact.
 
@@ -31,6 +31,10 @@ Write a design spec as a document with `doc_create`. Developers read it to build
 - Write the document in the user's language. Translate the template headings and labels. Keep tokens, component names and string keys as they are in the code.
 - Use only the markdown that the `doc_create` description allows. A table cell holds ONE line of inline text. Put multi-line content in lists under a heading.
 - A `mermaid` code block renders a diagram.
+- Link every screen to the canvas: `[Screen name](/app?node={nodeId})` (the node id comes from `get_editor_state`). If you have no node id, write `[TBD: ...]` text, not a link.
+- In the States table, write one of three values for each state: `covered`, `out of scope`, or `[TBD: not designed]`. Replace each `[TBD: covered / not designed / out of scope]` placeholder with one of them.
+- Show each key screen as a picture. Call `doc_insert_image` with its `nodeId`, `alt` = the screen name and `afterHeading` = the heading of that screen block. Do not write `data:` URLs.
+- Write open questions and risks that block the developers as a callout: `> [!WARNING]`, then the text on the next quote line.
 - Repeat the `### Screen: [name]` block once for each screen. Delete optional sections that do not apply.
 - After `doc_create`, reply in chat with 1 to 3 sentences: what the spec covers and which `[TBD]` items the developers or the user must settle.
 
@@ -43,8 +47,8 @@ Write a design spec as a document with `doc_create`. Developers read it to build
 
 - **Purpose:** [what this feature does]
 - **User goal:** [what the user wants to get done]
-- **Brief:** [link to the design brief, or [TBD: brief link]]
-- **Status:** [draft | ready for dev]
+- **Brief:** [TBD: link to the design brief]
+- **Status:** [TBD: draft / ready for dev]
 
 ## Flow
 
@@ -62,6 +66,7 @@ flowchart LR
 
 ### Screen: [name]
 
+- **Canvas:** [TBD: link to the screen on the canvas]
 - **Purpose:** [one sentence]
 - **Layout regions:** [header, content, footer, with sizes or rules]
 - **Components:** [names as in the code]
@@ -71,18 +76,18 @@ flowchart LR
 
 | State | Status | Notes |
 | --- | --- | --- |
-| Default | covered | |
-| Hover | covered | [what changes] |
-| Focus | covered | [ring style] |
-| Active | [TBD: not designed] | |
-| Disabled | out of scope | [reason] |
-| Loading | [TBD: not designed] | |
-| Empty | covered | [copy] |
-| Error | covered | [message, recovery] |
-| Partial success | out of scope | [reason] |
-| Offline | out of scope | [reason] |
-| Success | covered | |
-| Permission / gated | out of scope | [reason] |
+| Default | [TBD: covered / not designed / out of scope] | |
+| Hover | [TBD: covered / not designed / out of scope] | [what changes] |
+| Focus | [TBD: covered / not designed / out of scope] | [ring style] |
+| Active | [TBD: covered / not designed / out of scope] | |
+| Disabled | [TBD: covered / not designed / out of scope] | [reason] |
+| Loading | [TBD: covered / not designed / out of scope] | |
+| Empty | [TBD: covered / not designed / out of scope] | [copy] |
+| Error | [TBD: covered / not designed / out of scope] | [message, recovery] |
+| Partial success | [TBD: covered / not designed / out of scope] | [reason] |
+| Offline | [TBD: covered / not designed / out of scope] | [reason] |
+| Success | [TBD: covered / not designed / out of scope] | |
+| Permission / gated | [TBD: covered / not designed / out of scope] | [reason] |
 
 **Interactions**
 
@@ -106,19 +111,17 @@ flowchart LR
 | < 640px | [change] | fluid |
 | >= 1024px | [change] | fixed max width [px] |
 
-Describe the layout between breakpoints too, not only at them.
-
 ## Content & strings
 
 | Key | Text | Notes |
 | --- | --- | --- |
-| `checkout.pay` | Pay now | Button, max 20 characters |
+| `[string key]` | [text] | [where it is used, length limit] |
 
 ## Tokens & components
 
 | Item | Token or component | Notes |
 | --- | --- | --- |
-| Primary button fill | `color.accent` [hex] | |
+| [Primary button fill] | `[token name]` [hex] | |
 | Card | `Card` | [variants, detached overrides and why] |
 
 ## Accessibility
@@ -144,7 +147,10 @@ Describe the layout between breakpoints too, not only at them.
 
 ## Open questions for developers
 
-- [question, owner]
+> [!WARNING]
+> [Question that blocks the build, owner.]
+
+- [Other question, owner]
 ````
 
 ## Writing rules

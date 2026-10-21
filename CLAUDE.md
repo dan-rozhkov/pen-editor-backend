@@ -354,6 +354,10 @@ removes one entry, `--user <id> --clear [--dry-run]` wipes both targets. Only
 `showcase:pin`/`showcase:delete` (`src/ai/memory/curator.ts` +
 `curatorRun.ts`). Every deletion writes an `origin: "curator"` audit row.
 
+## Document tools and templates
+
+`doc_*` tools (`doc_list`, `doc_create`, `doc_read`, `doc_edit`, `doc_open`, `doc_insert_image`) are client-executed and offered only when `clientCapabilities.docTabs` is true (`DOC_TOOL_NAMES` in `chatTurn.ts`). `doc_insert_image` takes `imageUrl` or `nodeId` (exactly one; a node is screenshotted by the client). `GET /api/doc-templates` serves the `markdown` blocks under `## Template` / `## Template: <kind>` of the six document skills (`src/ai/docTemplates.ts`, cached); keep that heading/fence structure in those skills.
+
 ## Self-authored skills (`src/ai/skills/`, phase 2 of the self-improvement loop)
 
 With **`SELF_SKILLS_ENABLED=true`** and `TRACE_DATABASE_URL` set, the agent

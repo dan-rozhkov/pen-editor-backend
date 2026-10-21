@@ -69,6 +69,7 @@ describe("penTools registry", () => {
         "doc_read",
         "doc_edit",
         "doc_open",
+        "doc_insert_image",
         "trace_list",
         "trace_read",
         "analyze_image",
@@ -145,6 +146,7 @@ describe("penTools registry", () => {
       "doc_read",
       "doc_edit",
       "doc_open",
+      "doc_insert_image",
       "trace_list",
       "trace_read",
       "get_screenshot",
@@ -1840,6 +1842,29 @@ describe("doc_* schemas", () => {
     expect(create.safeParse({ title: "T", markdown: "" }).success).toBe(true);
     expect(create.safeParse({ title: "", markdown: "x" }).success).toBe(false);
     expect(create.safeParse({ title: "x".repeat(201), markdown: "x" }).success).toBe(false);
+  });
+  it("doc_insert_image needs exactly one of imageUrl and nodeId", () => {
+    const img = schemaOf("doc_insert_image");
+    const base = { docId: "d1", alt: "Login screen" };
+    expect(img.safeParse({ ...base, imageUrl: "https://x.test/a.png" }).success).toBe(true);
+    expect(img.safeParse({ ...base, nodeId: "n1", afterHeading: "Evidence" }).success).toBe(true);
+    expect(img.safeParse(base).success).toBe(false);
+    expect(img.safeParse({ ...base, imageUrl: "https://x.test/a.png", nodeId: "n1" }).success).toBe(false);
+    expect(img.safeParse({ docId: "d1", alt: "", nodeId: "n1" }).success).toBe(false);
+    expect(img.safeParse({ ...base, alt: "x".repeat(201), nodeId: "n1" }).success).toBe(false);
+  });
+  it("doc_insert_image treats blank strings as absent and requires an http(s) URL", () => {
+    const img = schemaOf("doc_insert_image");
+    const base = { docId: "d1", alt: "Login screen" };
+    expect(img.safeParse({ ...base, nodeId: "n1", imageUrl: "" }).success).toBe(true);
+    expect(img.safeParse({ ...base, nodeId: "n1", imageUrl: "   " }).success).toBe(true);
+    expect(img.safeParse({ ...base, imageUrl: "https://x.test/a.png", nodeId: "" }).success).toBe(true);
+    expect(img.safeParse({ ...base, imageUrl: "" }).success).toBe(false);
+    expect(img.safeParse({ ...base, nodeId: "" }).success).toBe(false);
+    expect(img.safeParse({ ...base, imageUrl: "", nodeId: "" }).success).toBe(false);
+    expect(img.safeParse({ ...base, imageUrl: "data:image/png;base64,AAAA" }).success).toBe(false);
+    expect(img.safeParse({ ...base, imageUrl: "ftp://x.test/a.png" }).success).toBe(false);
+    expect(img.safeParse({ ...base, imageUrl: "/relative.png" }).success).toBe(false);
   });
   it("doc_read, doc_open take docId; doc_list takes nothing", () => {
     expect(schemaOf("doc_read").safeParse({ docId: "d1" }).success).toBe(true);

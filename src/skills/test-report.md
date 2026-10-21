@@ -43,7 +43,11 @@ Never invent facts. Numbers must come from real results. Never invent counts, da
 - Write in the user's language. Translate the template headings and labels. Keep IDs such as `TC-01` and `BUG-01`, and the status values, the same inside the document.
 - Use only the markdown that the `doc_create` description allows. A table cell holds ONE line of inline text. Put multi-line content in lists under a heading.
 - A `mermaid` code block renders a diagram.
-- Write the metadata table as a property list (see the `doc_create` description).
+- Write the metadata table as a property list (see the `doc_create` description). Write a date as `YYYY-MM-DD`.
+- Write the verdict as a callout. The template starts with `> [!WARNING]` and `[TBD: Go / Go with conditions / No-go]`. Set the callout kind to match the verdict: Go is `> [!IMPORTANT]`, Go with conditions is `> [!WARNING]`, No-go is `> [!CAUTION]`. Then write the verdict text and the reason.
+- In the two charts, the numbers are samples. Replace them with the numbers from the tables, and delete the `%%` comment line. If a number is unknown, leave the chart out.
+- Link the test plan in the property list as `[Title](/doc?id={docId})` (the docId comes from `doc_list`). Link every open defect to its bug report document the same way. If no such document exists, write `[TBD: ...]` text, not a link.
+- Write the exit criteria status and the defect fields as tags with fixed colours: Met green, Not met red. Severity: Critical red, High orange, Medium yellow, Low gray. Priority: P1 red, P2 orange, P3 yellow, P4 gray. Use the same tags as the bug-report and test-plan documents.
 - Delete optional sections that do not apply. Do not leave empty headings.
 - After `doc_create`, reply in chat with 1 to 3 sentences. Give the verdict and name the `[TBD]` items the user must fill.
 
@@ -54,17 +58,16 @@ Never invent facts. Numbers must come from real results. Never invent counts, da
 
 ## Verdict
 
-**[Go / No-go / Go with conditions]**
-
-[2-3 sentences: the reason. Name the blocking defects or the conditions.]
+> [!WARNING]
+> **[TBD: Go / Go with conditions / No-go]** [2-3 sentences: the reason. Name the blocking defects or the conditions.]
 
 |  |  |
 | --- | --- |
 | Build under test | [version or build id] |
 | Environment | [URL, browser, device] |
-| Test period | [dates] |
-| Test plan | [link or title] |
-| Author | [name] |
+| Test period | [TBD: YYYY-MM-DD to YYYY-MM-DD] |
+| Test plan | [TBD: link to the test plan] |
+| Author | [TBD: name] |
 
 ## Execution results
 
@@ -80,6 +83,25 @@ Never invent facts. Numbers must come from real results. Never invent counts, da
 | --- | --- | --- | --- | --- |
 | [Checkout] | [N] | [N] | [N] | [N] |
 
+```mermaid
+%% Example numbers. Replace them with the numbers from the tables.
+pie title Test outcomes
+  "Passed" : 24
+  "Failed" : 2
+  "Blocked" : 2
+  "Not run" : 2
+```
+
+```mermaid
+%% Example numbers. Replace them with the numbers from the tables.
+xychart-beta
+  title "Passed and planned cases by area"
+  x-axis ["Area 1", "Area 2"]
+  y-axis "Cases" 0 --> 20
+  bar [16, 8]
+  line [20, 10]
+```
+
 ## Other outcomes (optional)
 
 | Outcome | Count | Scenarios and reason |
@@ -92,14 +114,14 @@ Never invent facts. Numbers must come from real results. Never invent counts, da
 
 | Criterion | Status | Reason |
 | --- | --- | --- |
-| [100% of P1 cases passed] | Met / Not met | [97%: TC-12 failed] |
-| [No open Critical or High defects] | Met / Not met | [BUG-03 is High and open] |
+| [100% of P1 cases passed] | [TBD: Met / Not met] | [reason, with numbers] |
+| [No open Critical or High defects] | [TBD: Met / Not met] | [reason, with defect IDs] |
 
 ## Open defects
 
 | ID | Title | Severity | Priority | Status |
 | --- | --- | --- | --- | --- |
-| [BUG-03] | [Order total ignores the discount] | High | [P1] | New |
+| [BUG-ID] | [TBD: link to the bug report] | [TBD: severity] | [TBD: priority] | [TBD: status] |
 
 [Defect totals by severity: Critical N, High N, Medium N, Low N.]
 
@@ -110,11 +132,11 @@ Never invent facts. Numbers must come from real results. Never invent counts, da
 ## Deviations from the plan
 
 - [What was added, dropped or changed against the plan, and why.]
-- [Not run: TC-20 to TC-24, blocked by the test environment.]
+- [Not run: case IDs, and the reason.]
 
 ## Recommendations (optional)
 
-- [Fix BUG-03 and retest before release.]
+- [Action, owner, and the reason.]
 ````
 
 ## Writing rules
@@ -128,7 +150,13 @@ Never invent facts. Numbers must come from real results. Never invent counts, da
 7. Do not hide blocked or not-run tests. Give the count and the reason for each group.
 8. Report flaky scenarios (failed once, passed on the rerun) apart from failures. Count inconclusive, error, setup_failed and aborted outcomes as Blocked or not run, with the reason. Do not count any of them as bugs or as passed.
 9. Use the same severity scale as the bug reports: Critical, High, Medium, Low.
-10. Keep the report short. Link to the bug reports and the plan. Do not copy them.
+10. Keep the numbers consistent. The charts and the tables use the SAME numbers. Build the charts from the tables, not from memory. Check the sums before you write:
+   - Executed = Passed + Failed. A Blocked case is not executed.
+   - Planned = Executed + Blocked + Not run.
+   - The pie slices (Passed, Failed, Blocked, Not run) add up to Planned.
+   - The rows of "Results by area" add up to the totals row. In the area chart, each `bar` value is Passed and each `line` value is Planned of the same area, in the same order as the table.
+   - If a number is unknown, write `[TBD]` in the table and leave the chart out. Do not guess.
+11. Keep the report short. Link to the bug reports and the plan. Do not copy them.
 
 ## Mistakes to avoid
 

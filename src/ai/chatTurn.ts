@@ -293,7 +293,7 @@ export interface PreparedChatTurn {
 }
 
 const TRACE_TOOL_NAMES = ["trace_list", "trace_read"] as const;
-const DOC_TOOL_NAMES = ["doc_list", "doc_create", "doc_read", "doc_edit", "doc_open"] as const;
+const DOC_TOOL_NAMES = ["doc_list", "doc_create", "doc_read", "doc_edit", "doc_open", "doc_insert_image"] as const;
 
 // Assembles everything streamText needs for a turn: slash-command skill
 // detection/injection, the system prompt, sanitized/converted model

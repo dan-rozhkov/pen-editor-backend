@@ -2166,6 +2166,13 @@ Returns the created/updated style ids and names (with a created|updated status) 
       "Coloured text: `<span data-color=\"red\">text</span>`. A highlight: `<span data-bg=\"yellow\">text</span>`. " +
       "Colour names: gray, brown, orange, yellow, green, blue, purple, pink, red. " +
       "A diagram: a fenced code block with the language `mermaid`. The document shows it as a picture. " +
+      "A callout: a quote whose first line is `[!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]` or `[!CAUTION]`, " +
+      "then the text on the next quote line, for example `> [!WARNING]` and `> Text.`. Use it for a verdict, a blocker or a warning. " +
+      "A link to another document: `[Title](/doc?id=<docId>)`. Take the docId from doc_list or doc_create. " +
+      "A link to a frame or node on the canvas: `[Name](/app?node=<nodeId>)`. " +
+      "In a property list, write a date as `YYYY-MM-DD`. Write a status-like value as a tag. " +
+      "Reuse the same tag text and colour that other documents use for the same field. Call doc_list and doc_read to check. " +
+      "An image with a public https URL may be written as `![alt](https://...)`. A screenshot of a canvas node, or a `data:` image, needs doc_insert_image. Never write `data:` URLs. " +
       "Do not use footnotes or other HTML. The editor deletes them when the user edits the document. " +
       "This tool already opens the tab. Do not call doc_open after it. " +
       "Returns JSON: {docId, title}.",
@@ -2192,7 +2199,7 @@ Returns the created/updated style ids and names (with a created|updated status) 
       "Each `oldString` must match exactly once in the document, unless `replaceAll` is true. " +
       "Use `markdown` only to replace the whole document. " +
       "Give `edits` or `markdown`, not both. " +
-      "Use the same markdown subset as doc_create, including toggles, colours, property lists and mermaid diagrams. " +
+      "Use the same markdown subset as doc_create, including toggles, colours, property lists, callouts, links and mermaid diagrams. " +
       "Give `title` to rename the document. You may give `title` alone. " +
       "Returns JSON with the result, or {error}.",
     inputSchema: z.object({
@@ -2216,6 +2223,60 @@ Returns the created/updated style ids and names (with a created|updated status) 
         .describe("Full replacement markdown. Do not combine with `edits`."),
       title: z.string().min(1).max(200).optional().describe("New title."),
     }),
+  }),
+
+  doc_insert_image: tool({
+    description:
+      "Insert an image into a markdown document, with a visible caption. " +
+      "Use it for evidence and screenshots: a bug report, a design spec, a QA report. " +
+      "Give exactly one source. `imageUrl` is an http or https URL of an image. " +
+      "`nodeId` is a canvas node id. The app takes a screenshot of that node. " +
+      "For a browse_screenshot, use its `placedNodeId` as `nodeId`. " +
+      "`alt` is the alt text and also the caption. " +
+      "`afterHeading` is the exact text of a heading in the document. The image goes at the end of that section. " +
+      "If you omit `afterHeading`, the image goes at the end of the document. " +
+      "The tool never stores inline base64 or `data:` URLs in the document. " +
+      "Returns JSON: {docId, url}, or {error}.",
+    inputSchema: z
+      .object({
+        docId: z.string().min(1).describe("Document id from doc_list or doc_create."),
+        imageUrl: z
+          .string()
+          .optional()
+          .describe("http or https URL of an image. Give this or `nodeId`, not both. An empty string counts as not given."),
+        nodeId: z
+          .string()
+          .optional()
+          .describe(
+            "Canvas node id. The app takes a screenshot of this node. Give this or `imageUrl`, not both. An empty string counts as not given.",
+          ),
+        alt: z.string().min(1).max(200).describe("Alt text. It is also the visible caption. 1 to 200 characters."),
+        afterHeading: z
+          .string()
+          .optional()
+          .describe("Exact text of a heading. The image goes at the end of that section. Omit for the end of the document."),
+      })
+      .superRefine((a, ctx) => {
+        // An empty or blank string counts as absent. The fields stay plain
+        // optional strings so the JSON schema that the model sees stays typed.
+        const imageUrl = a.imageUrl?.trim() || undefined;
+        const nodeId = a.nodeId?.trim() || undefined;
+        if ((imageUrl !== undefined) === (nodeId !== undefined)) {
+          ctx.addIssue({ code: "custom", message: "Give exactly one of `imageUrl` or `nodeId`." });
+          return;
+        }
+        if (imageUrl !== undefined) {
+          let ok = /^https?:\/\//i.test(imageUrl);
+          if (ok) {
+            try {
+              new URL(imageUrl);
+            } catch {
+              ok = false;
+            }
+          }
+          if (!ok) ctx.addIssue({ code: "custom", path: ["imageUrl"], message: "`imageUrl` must be an http or https URL." });
+        }
+      }),
   }),
 
   doc_open: tool({

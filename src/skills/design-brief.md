@@ -29,6 +29,11 @@ Write a design brief as a document with `doc_create`. The brief aligns the desig
 - To update an existing brief, use `doc_list`, `doc_read`, then `doc_edit`.
 - Write the document in the user's language. Translate the template headings and labels.
 - Use only the markdown that the `doc_create` description allows. A table cell holds ONE line of inline text. Put multi-line content in lists under a heading.
+- If the canvas already has screens, link them as `[Screen name](/app?node={nodeId})` (the node id comes from `get_editor_state`). If a design spec or other document exists (`doc_list`), link it as `[Title](/doc?id={docId})` (the docId comes from `doc_list`). If no such screen or document exists, write `[TBD: ...]` text, not a link.
+- Write a risk or an open question that blocks the work as a callout: `> [!WARNING]`, then the text on the next quote line.
+- Include the Budget section only for agency or contract work.
+- To show a key existing screen, call `doc_insert_image` with its `nodeId`. Do not write `data:` URLs.
+- Write dates in the property list and the tables as `YYYY-MM-DD`.
 - Delete optional sections that do not apply. Do not leave empty headings.
 - Keep the brief to 1 or 2 pages.
 - After `doc_create`, reply in chat with 1 to 3 sentences: what the brief covers and which `[TBD]` items the user must fill.
@@ -78,6 +83,7 @@ Write a design brief as a document with `doc_create`. The brief aligns the desig
 
 - **Brand:** [colours as hex codes, logo, tone]
 - **Design system:** [library, tokens, components to reuse]
+- **Existing screens:** [TBD: link to a screen on the canvas, or leave out]
 - **Typography:** [font families, sizes]
 - **Platform:** [web, iOS, Android, breakpoints, browsers]
 - **Technical and legal:** [limits, accessibility level, compliance]
@@ -92,9 +98,9 @@ Write a design brief as a document with `doc_create`. The brief aligns the desig
 
 | Milestone | Date | Notes |
 | --- | --- | --- |
-| Kickoff | [TBD: date] | |
-| First review | [TBD: date] | [who reviews] |
-| Final handoff | [TBD: date] | |
+| Kickoff | [TBD: YYYY-MM-DD] | |
+| First review | [TBD: YYYY-MM-DD] | [who reviews] |
+| Final handoff | [TBD: YYYY-MM-DD] | |
 
 ## Stakeholders & decisions
 
@@ -112,7 +118,7 @@ Write a design brief as a document with `doc_create`. The brief aligns the desig
 
 ## Budget (optional)
 
-[Amount, split by phase, or [TBD: budget]. Use for agency or contract work.]
+[TBD: budget, split by phase]
 ````
 
 ## Writing rules

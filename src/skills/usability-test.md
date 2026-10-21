@@ -32,6 +32,9 @@ Write a usability test plan or a usability test report as a document with `doc_c
 - To update an existing document, use `doc_list`, `doc_read`, then `doc_edit`.
 - Write the document in the user's language. Translate the template headings and labels. Keep IDs such as `F-01` and `Task 1` consistent.
 - Use only the markdown that the `doc_create` description allows. A table cell holds ONE line of inline text. Put multi-line content in lists under a heading.
+- Write the finding severity as a tag with a fixed colour: 4 red, 3 orange, 2 yellow, 1 gray, 0 gray. Use the same colour for the same number in the whole document.
+- Show a key screen or a finding as a picture with `doc_insert_image` (`nodeId` of the screen, or an image URL; `alt` says what it shows). Do not write `data:` URLs. Link the screens as `[Name](/app?node={nodeId})` (the node id comes from `get_editor_state`) and the brief or spec as `[Title](/doc?id={docId})` (the docId comes from `doc_list`). If you have no node id or document, write `[TBD: ...]` text, not a link.
+- In the findings table, replace the `[TBD: 0-4]` placeholder with the severity tag.
 - Use the template for the chosen kind only. Delete optional sections that do not apply.
 - After `doc_create`, reply in chat with 1 to 3 sentences: what the document covers and which `[TBD]` items the user must fill.
 
@@ -51,8 +54,6 @@ Write a usability test plan or a usability test report as a document with `doc_c
 | Group | Profile | Screener | Count |
 | --- | --- | --- | --- |
 | [group] | [experience with the product or domain, device, context] | [questions] | 5 |
-
-Recruit about 5 participants for each user group for qualitative findings.
 
 ## Method
 
@@ -85,9 +86,9 @@ Recruit about 5 participants for each user group for qualitative findings.
 
 | Step | Date | Owner |
 | --- | --- | --- |
-| Pilot session | [TBD: date] | |
-| Sessions | [TBD: dates] | |
-| Readout | [TBD: date] | |
+| Pilot session | [TBD: YYYY-MM-DD] | |
+| Sessions | [TBD: YYYY-MM-DD to YYYY-MM-DD] | |
+| Readout | [TBD: YYYY-MM-DD] | |
 ````
 
 ## Template: report
@@ -99,12 +100,12 @@ Recruit about 5 participants for each user group for qualitative findings.
 
 - **Goal:** [what we wanted to learn]
 - **Method:** [moderated or not, remote or not, length]
-- **Dates:** [TBD: dates]
+- **Dates:** [TBD: YYYY-MM-DD to YYYY-MM-DD]
 - **Participants:** [N] in [groups]
 
 ## Top findings
 
-1. [Most important finding, one sentence, with severity]
+1. [Most important finding, one sentence, with severity as a tag]
 2. [Second finding]
 3. [Third finding]
 
@@ -124,7 +125,7 @@ Recruit about 5 participants for each user group for qualitative findings.
 
 | ID | Finding | Where | Evidence | Severity | Principle | Recommendation |
 | --- | --- | --- | --- | --- | --- | --- |
-| F-01 | [what went wrong] | [screen] | [x of N], "[quote]" | 3 | [heuristic] | [fix] |
+| F-01 | [what went wrong] | [TBD: link to the screen] | [x of N], "[quote]" | [TBD: 0-4] | [heuristic] | [fix] |
 
 Severity: 0 not a problem, 1 cosmetic, 2 minor, 3 major, 4 catastrophe.
 
@@ -139,7 +140,7 @@ Severity: 0 not a problem, 1 cosmetic, 2 minor, 3 major, 4 catastrophe.
 
 ## Next steps
 
-- [action, owner, date]
+- [action, owner, TBD: YYYY-MM-DD]
 
 ## Appendix
 

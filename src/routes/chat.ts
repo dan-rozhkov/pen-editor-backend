@@ -24,6 +24,7 @@ import { AGENT_MODES } from "../ai/system-prompt.js";
 import { logSession, type LogStep } from "../logging.js";
 import { randomUUID } from "node:crypto";
 import { getAllSkills } from "../ai/skills.js";
+import { getDocTemplates } from "../ai/docTemplates.js";
 import { isOpenCodeProvider, parseModelRef } from "../ai/modelRef.js";
 import { writeRawTraceSafe, type TraceStore } from "../tracing/traceStore.js";
 import { releaseMCPTools } from "../ai/mcp.js";
@@ -865,5 +866,9 @@ export async function chatRoutes(
       description: s.description,
     }));
     return reply.send({ skills });
+  });
+
+  app.get("/api/doc-templates", async (_request, reply) => {
+    return reply.send({ templates: await getDocTemplates() });
   });
 }

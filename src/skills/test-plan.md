@@ -35,7 +35,10 @@ Never invent facts: requirements, versions, dates, names, limits. Put a visible 
 - Use only the markdown that the `doc_create` description allows. A table cell holds ONE line of inline text. Put multi-line content in lists under a heading.
 - Put steps in numbered lists under the test case heading.
 - A `mermaid` code block renders a diagram.
-- Write the metadata table as a property list (see the `doc_create` description).
+- Write the metadata table as a property list (see the `doc_create` description). Write a date as `YYYY-MM-DD`.
+- Call `doc_list`. If a design spec or design brief of the subject exists, link it as `[Title](/doc?id={docId})` (the docId comes from `doc_list`). If none exists, write `[TBD: ...]` text, not a link.
+- In the scenarios table, replace each `[TBD: P1 / P2 / P3 / P4]` placeholder with the Priority tag.
+- Write Priority as a tag with a fixed colour: P1 red, P2 orange, P3 yellow, P4 gray. Use the same tags in the bug-report and test-report documents.
 - Delete optional sections that do not apply. Do not leave empty headings.
 - After `doc_create`, reply in chat with 1 to 3 sentences. Say what the plan covers and which `[TBD]` items the user must fill.
 
@@ -48,8 +51,10 @@ Never invent facts: requirements, versions, dates, names, limits. Put a visible 
 | --- | --- |
 | Version | [1.0] |
 | Author | [name] |
-| Date | [date] |
+| Date | [TBD: YYYY-MM-DD] |
 | Build under test | [version or build id] |
+| Design spec | [TBD: link to the design spec, or leave empty] |
+| Design brief | [TBD: link to the design brief, or leave empty] |
 
 ## 1. Introduction
 
@@ -93,8 +98,8 @@ Never invent facts: requirements, versions, dates, names, limits. Put a visible 
 
 | ID | Scenario | Requirement | Priority | Type |
 | --- | --- | --- | --- | --- |
-| SC-01 | [User can pay with a valid card] | [REQ-12] | P1 | Functional |
-| SC-02 | [Payment is refused for an expired card] | [REQ-13] | P1 | Negative |
+| SC-01 | [User can pay with a valid card] | [REQ-12] | [TBD: P1 / P2 / P3 / P4] | Functional |
+| SC-02 | [Payment is refused for an expired card] | [REQ-13] | [TBD: P1 / P2 / P3 / P4] | Negative |
 
 ## 7. Test cases
 
@@ -127,7 +132,7 @@ Never invent facts: requirements, versions, dates, names, limits. Put a visible 
 
 | Role | Person | Task | Dates |
 | --- | --- | --- | --- |
-| [QA lead] | [name] | [Plan and report] | [dates] |
+| [QA lead] | [name] | [Plan and report] | [TBD: YYYY-MM-DD to YYYY-MM-DD] |
 
 ## 10. Traceability (optional)
 

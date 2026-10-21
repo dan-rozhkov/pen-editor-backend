@@ -405,7 +405,7 @@ describe("prepareChatTurn", () => {
   });
 
   describe("doc_* gate", () => {
-    const names = ["doc_list", "doc_create", "doc_read", "doc_edit", "doc_open"];
+    const names = ["doc_list", "doc_create", "doc_read", "doc_edit", "doc_open", "doc_insert_image"];
     it.each([
       ["no clientCapabilities", undefined, false],
       ["docTabs false", { docTabs: false }, false],

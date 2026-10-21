@@ -37,7 +37,9 @@ Never invent facts: steps, versions, error text, counts. Put a visible placehold
 - Write in the user's language. Translate the template headings and labels. Keep IDs such as `BUG-01` and the status values the same inside the document.
 - Use only the markdown that the `doc_create` description allows. A table cell holds ONE line of inline text. Put multi-line content in lists under a heading.
 - Use the field table only for single-line fields. Put steps, expected and actual results under headings, in lists or paragraphs.
-- Write the metadata table as a property list (see the `doc_create` description).
+- Write the metadata table as a property list (see the `doc_create` description). Write Status, Severity and Priority as tags with the fixed colours in the writing rules. In the template, Severity and Priority are `[TBD: ...]` placeholders. Replace each one with the tag.
+- Insert each screenshot with `doc_insert_image` and `afterHeading` "Evidence". Give `nodeId` (the `placedNodeId` from `browse_screenshot`) or an image URL, and an `alt` that says what the image shows. Then delete the `[TBD: screenshot]` line.
+- Write a link to a document as `[Title](/doc?id={docId})` (the docId comes from `doc_list`). If no such document exists, write `[TBD: ...]` text, not a link.
 - Delete optional sections that do not apply. Do not leave empty headings.
 - After `doc_create`, reply in chat with 1 to 3 sentences. Say how many bugs the document holds and which `[TBD]` items the user must fill.
 
@@ -53,9 +55,11 @@ Never invent facts: steps, versions, error text, counts. Put a visible placehold
 | Area | [component or feature] |
 | Environment | [build, OS, browser and version, device] |
 | Reproducibility | [Always / Sometimes, N of M / Once] |
-| Severity | [Critical / High / Medium / Low] |
-| Priority | [set at triage, for example P1] |
+| Severity | [TBD: Critical / High / Medium / Low] |
+| Priority | [TBD: P1 / P2 / P3 / P4, set at triage] |
 | Regression | [Yes, worked in build X / No / Unknown] (optional) |
+| Test plan | [TBD: link to the test plan, if one exists] (optional) |
+| Test report | [TBD: link to the test report, if one exists] (optional) |
 
 ## Preconditions
 
@@ -80,7 +84,7 @@ Never invent facts: steps, versions, error text, counts. Put a visible placehold
 - Console errors: `[error text]`
 - Failed requests: [method, URL, status]
 - QA run reason: [qa.reason]
-- Screenshots: [link]
+- Screenshot: [TBD: screenshot]
 
 ## Workaround (optional)
 
@@ -98,7 +102,7 @@ Never invent facts: steps, versions, error text, counts. Put a visible placehold
 ## Writing rules
 
 1. Write one bug per report. Two problems in one report make it hard to assign, fix and close.
-2. Search for duplicates with `doc_list` before you create a report.
+2. Search for duplicates with `doc_list` before you create a report. In the same list, look for the test plan and the test report of the subject. If they exist, link them in the property list as `[Title](/doc?id={docId})` (the docId comes from `doc_list`). If they do not exist, write `[TBD: ...]` text, not a link.
 3. Write a summary that names the problem, not the fix. Keep it near 60 characters. Add an optional `[Area]` tag at the start. Good: "[Checkout] Total ignores the discount code". Bad: "Fix the total".
 4. Number the steps. Start from a clean state. Keep the steps minimal: remove every step that is not needed to show the bug.
 5. Write expected and actual results as two separate parts. Say what you see, not what you think is wrong inside.
@@ -112,6 +116,11 @@ Never invent facts: steps, versions, error text, counts. Put a visible placehold
    - Example: a crash in a rare feature is High severity and low priority. A misaligned button in a launch campaign is Low severity and high priority. If you cannot know the priority, write `[TBD: set at triage]`.
 9. Keep facts apart from guesses about the cause. Put guesses under Notes and mark them.
 10. Use these statuses: New, Triaged, In progress, Fixed, Ready for retest, Verified, Closed, Reopened. Closing variants: Won't fix, Duplicate, Cannot reproduce, Deferred. A new report has the status New.
+11. Write Status, Severity and Priority as tags, always with the same colours. Do not use other colours.
+   - Status: New gray, Triaged yellow, In progress blue, Fixed green, Ready for retest orange, Verified green, Closed gray, Reopened red, Duplicate purple, Won't fix, Cannot reproduce and Deferred brown.
+   - Severity: Critical red, High orange, Medium yellow, Low gray.
+   - Priority: P1 red, P2 orange, P3 yellow, P4 gray.
+12. Do not put a screenshot in the document as a `[link]` or a `data:` URL. Use `doc_insert_image`.
 
 ## Mistakes to avoid
 
