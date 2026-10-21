@@ -10,7 +10,7 @@ import { markCacheBreakpoint, usesAnthropicPromptCache } from "./anthropicCache.
 import { createHash } from "node:crypto";
 import type { Config } from "../config.js";
 import { bareModelId, createModel, parseModelRef, providerHandlesToolResultImages } from "./provider.js";
-import { penTools, browseOpenToolApp, browseAgentToolWithApp, browseAgentToolNoQa, browseAgentToolQaIsolated, browseAgentToolQaNoAssert, browseAgentToolQaIsolatedNoAssert, makeBatchDesignTool, makeAnalyzeImageTool } from "./tools.js";
+import { penTools, browseOpenToolApp, browseOpenToolAppNative, browseAgentToolWithApp, browseAgentToolNoQa, browseAgentToolQaIsolated, browseAgentToolQaNoAssert, browseAgentToolQaIsolatedNoAssert, makeBatchDesignTool, makeAnalyzeImageTool } from "./tools.js";
 import { BROWSE_AGENT_TOOL_NAMES, QA_ASSERT_TOOL, QA_VERDICT_TOOL } from "@sideform/browser-agent/agent";
 import { browseAgentPrompt, buildSystemPrompt, type AgentMode, type BrowserGuidance } from "./system-prompt.js";
 import { resolveTaskPolicy, type TaskPolicy } from "./taskPolicy.js";
@@ -245,7 +245,7 @@ export interface PrepareChatTurnInput {
    * Undefined/false → the browse_* tools are dropped below, same as any
    * other caller (the showcase runner, tests) that never wires this.
    */
-  clientCapabilities?: { desktopBrowser?: boolean; browser?: "desktop" | "cloud"; browseQa?: boolean; browseIsolation?: boolean; browseAssert?: boolean; browseApps?: boolean; canvasTabs?: boolean; docTabs?: boolean; traceTabs?: boolean };
+  clientCapabilities?: { desktopBrowser?: boolean; browser?: "desktop" | "cloud"; browseQa?: boolean; browseIsolation?: boolean; browseAssert?: boolean; browseApps?: boolean; browseNativeApps?: boolean; canvasTabs?: boolean; docTabs?: boolean; traceTabs?: boolean };
   /**
    * agentMode "browse" only: the user directly asked to copy the page onto the
    * canvas, so the subagent may carry browse_capture. Ignored otherwise.
@@ -849,6 +849,8 @@ export async function prepareChatTurn(
   const clientHasAssert = clientHasQa && input.clientCapabilities?.browseAssert === true;
   // Desktop apps (browse_open / browse_agent `app`): desktop browser only.
   const clientHasApps = browserKind === "desktop" && input.clientCapabilities?.browseApps === true;
+  // Native macOS apps: only on top of clientHasApps (the text extends the app text).
+  const clientHasNativeApps = clientHasApps && input.clientCapabilities?.browseNativeApps === true;
   const browserGuidance: BrowserGuidance | undefined = browseAgentOffered
     ? clientHasQa
       ? clientHasIsolation
@@ -1311,7 +1313,7 @@ export async function prepareChatTurn(
 
     // Desktop-app variant of browse_open (main manual mode and the browse
     // subagent). Absent when browse_* was removed above.
-    if (clientHasApps && !browseAgentOffered && tools.browse_open) tools.browse_open = browseOpenToolApp;
+    if (clientHasApps && !browseAgentOffered && tools.browse_open) tools.browse_open = clientHasNativeApps ? browseOpenToolAppNative : browseOpenToolApp;
 
     // browse_fill_login belongs to the browsing subagent alone (the allowlist
     // below adds it back for a browse turn with browseLogin). Every other
@@ -1329,7 +1331,7 @@ export async function prepareChatTurn(
         if (name.startsWith("browse_") && name !== "browse_agent") delete tools[name];
       }
       if (clientHasApps) {
-        tools.browse_agent = browseAgentToolWithApp({ qa: clientHasQa, isolated: clientHasIsolation, assert: clientHasAssert });
+        tools.browse_agent = browseAgentToolWithApp({ qa: clientHasQa, isolated: clientHasIsolation, assert: clientHasAssert, native: clientHasNativeApps });
       } else if (!clientHasQa) tools.browse_agent = browseAgentToolNoQa;
       else if (clientHasIsolation) {
         tools.browse_agent = clientHasAssert ? browseAgentToolQaIsolated : browseAgentToolQaIsolatedNoAssert;

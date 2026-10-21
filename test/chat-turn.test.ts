@@ -3,6 +3,13 @@ import { DOC_ONLY_SKILL_NAMES, loadSkills, getSkill } from "../src/ai/skills.js"
 import { createModel } from "../src/ai/provider.js";
 import { AGENT_BROWSER_GUIDANCE, AGENT_BROWSER_QA_GUIDANCE, AGENT_BROWSER_QA_ISOLATED_GUIDANCE, BROWSE_AGENT_LOGIN_PROMPT, BROWSE_AGENT_PROMPT, browseAgentPrompt, MANUAL_BROWSER_GUIDANCE } from "../src/ai/system-prompt.js";
 import { asSchema } from "ai";
+import { browseAgentToolWithApp, browseOpenToolApp, browseOpenToolAppNative } from "../src/ai/tools.js";
+import {
+  PEN_EDITOR_BROWSE_AGENT_APP_FIELD,
+  PEN_EDITOR_BROWSE_AGENT_APP_RULES,
+  PEN_EDITOR_BROWSE_APP_SLOTS,
+} from "../src/ai/browseToolText.js";
+import flagOffGolden from "./fixtures/browse-app-flag-off.golden.json" with { type: "json" };
 import { makeConfig } from "./helpers.js";
 
 vi.mock("../src/ai/mcp.js", () => ({
@@ -1322,6 +1329,138 @@ describe("browse subagent", () => {
           clientCapabilities: { browser: "cloud", browseApps: true },
         });
         expect(keys(cloud.tools.browse_agent)).not.toContain("app");
+      });
+    });
+
+    describe("browseNativeApps capability (native macOS apps)", () => {
+      const cfgAgent = makeConfig({ BROWSE_MODE: "agent" });
+      const desc = (t: unknown) => (t as { description: string }).description;
+      const NATIVE_MARK = "accessibility tree";
+      const NATIVE_PHRASES = [
+        "as shown in the Dock or in its window title",
+        "\"Qure Dev\"",
+        "controlled without a restart",
+        "any macOS app",
+        "window screenshots",
+        "The user confirms each attach in a dialog.",
+        "accessibility role",
+        "`browse_tabs` lists the windows",
+        "Back, forward, reload, upload and viewport do not work there.",
+        "`browse_find_images`, `browse_capture` and assertions are not available there.",
+        "permission error",
+        "Do not retry.",
+        "bring the app to the front and move the pointer",
+        "An Electron app that is not running starts with a new profile",
+        "You cannot see native menus or file dialogs.",
+        "the user must confirm the launch",
+        "is not an Electron app cannot be started",
+      ];
+
+      it("manual mode: native text needs desktop AND browseApps AND browseNativeApps", async () => {
+        const plain = await prepare({ clientCapabilities: { ...DESKTOP, browseApps: true } });
+        expect(desc(plain.tools.browse_open)).not.toContain(NATIVE_MARK);
+        const on = await prepare({ clientCapabilities: { ...DESKTOP, browseApps: true, browseNativeApps: true } });
+        for (const p of NATIVE_PHRASES) expect(desc(on.tools.browse_open)).toContain(p);
+        expect(desc(on.tools.browse_open)).toContain("In an Electron app that Sideform launched, do not use an `about:blank` or `data:` window");
+        expect(desc(on.tools.browse_open)).not.toContain("the user is asked to restart it");
+        // Ignored without browseApps.
+        const noApps = await prepare({ clientCapabilities: { ...DESKTOP, browseNativeApps: true } });
+        const off = await prepare({ clientCapabilities: DESKTOP });
+        expect(desc(noApps.tools.browse_open)).toBe(desc(off.tools.browse_open));
+        // Ignored on the cloud browser.
+        const cloud = await prepare({
+          config: makeConfig({ STEEL_API_KEY: "k" }),
+          clientCapabilities: { browser: "cloud", browseApps: true, browseNativeApps: true },
+        });
+        expect(desc(cloud.tools.browse_open)).toBe(desc(off.tools.browse_open));
+        // No flag: byte-identical to the plain app variant.
+        const explicitOff = await prepare({ clientCapabilities: { ...DESKTOP, browseApps: true, browseNativeApps: false } });
+        expect(desc(explicitOff.tools.browse_open)).toBe(desc(plain.tools.browse_open));
+      });
+
+      it("flag-off app texts, descriptions and schemas are byte-identical to the pre-native output", async () => {
+        const g = flagOffGolden;
+        expect(PEN_EDITOR_BROWSE_APP_SLOTS.openApp).toBe(g.texts.openApp);
+        expect(PEN_EDITOR_BROWSE_AGENT_APP_FIELD).toBe(g.texts.field);
+        expect(PEN_EDITOR_BROWSE_AGENT_APP_RULES).toBe(g.texts.rules);
+        const json = (t: unknown) => JSON.stringify(asSchema((t as { inputSchema: Parameters<typeof asSchema>[0] }).inputSchema).jsonSchema);
+        const keys = [[false, false, false], [true, false, false], [true, true, false], [true, true, true], [true, false, true]] as const;
+        for (const [qa, isolated, assert] of keys) {
+          const t = browseAgentToolWithApp({ qa, isolated, assert });
+          const want = g.tools[`${qa}${isolated}${assert}` as keyof typeof g.tools] as { d: string; s: string };
+          expect(desc(t)).toBe(want.d);
+          expect(json(t)).toBe(want.s);
+        }
+        expect(desc(browseOpenToolApp)).toBe(g.tools.open.d);
+        expect(json(browseOpenToolApp)).toBe(g.tools.open.s);
+      });
+
+      it("browseApps-only and cloud+browseNativeApps send the same browse_agent bytes as flag-off", async () => {
+        const base = { config: cfgAgent };
+        const bytes = (t: { tools: Record<string, unknown> }) => {
+          const a = t.tools.browse_agent as { inputSchema: Parameters<typeof asSchema>[0] };
+          return JSON.stringify([desc(a), asSchema(a.inputSchema).jsonSchema]);
+        };
+        const appsOnly = await prepare({ ...base, clientCapabilities: { ...DESKTOP, browseApps: true } });
+        const appsExplicitOff = await prepare({ ...base, clientCapabilities: { ...DESKTOP, browseApps: true, browseNativeApps: false } });
+        expect(bytes(appsOnly)).toBe(bytes(appsExplicitOff));
+        const plain = await prepare({ ...base, clientCapabilities: DESKTOP });
+        const cloudOn = await prepare({
+          config: makeConfig({ BROWSE_MODE: "agent", STEEL_API_KEY: "k" }),
+          clientCapabilities: { browser: "cloud", browseApps: true, browseNativeApps: true },
+        });
+        const cloudOff = await prepare({
+          config: makeConfig({ BROWSE_MODE: "agent", STEEL_API_KEY: "k" }),
+          clientCapabilities: { browser: "cloud", browseApps: true },
+        });
+        expect(bytes(cloudOn)).toBe(bytes(cloudOff));
+        expect(bytes(plain)).not.toBe(bytes(appsOnly));
+      });
+
+      it("native browse_open schema describes `app` as a name or a path", () => {
+        const schema = asSchema(browseOpenToolAppNative.inputSchema).jsonSchema as {
+          properties: Record<string, { description?: string }>;
+        };
+        expect(schema.properties.app.description).toContain("Dock");
+        expect(schema.properties.app.description).not.toContain("Electron");
+        const plain = asSchema(browseOpenToolApp.inputSchema).jsonSchema as { properties: Record<string, { description?: string }> };
+        expect(plain.properties.app.description).toContain("Electron");
+      });
+
+      it("subagent turn gets the native browse_open text", async () => {
+        const on = await prepare({
+          config: cfgAgent,
+          agentMode: "browse",
+          clientCapabilities: { ...DESKTOP, browseApps: true, browseNativeApps: true },
+        });
+        for (const p of NATIVE_PHRASES) expect(desc(on.tools.browse_open)).toContain(p);
+      });
+
+      it("browse_agent: native `app` field and guidance, gated, deterministic", async () => {
+        const base = { config: cfgAgent };
+        const plain = await prepare({ ...base, clientCapabilities: { ...DESKTOP, browseApps: true } });
+        expect(desc(plain.tools.browse_agent)).not.toContain(NATIVE_MARK);
+        const caps = { ...DESKTOP, browseApps: true, browseNativeApps: true };
+        const on = await prepare({ ...base, clientCapabilities: caps });
+        const on2 = await prepare({ ...base, clientCapabilities: caps });
+        expect(desc(on.tools.browse_agent)).toBe(desc(on2.tools.browse_agent));
+        expect(desc(on.tools.browse_agent)).toContain("the name of the app as shown in the Dock or in its window title");
+        const schema = asSchema((on.tools.browse_agent as { inputSchema: Parameters<typeof asSchema>[0] }).inputSchema).jsonSchema as {
+          properties: Record<string, { description?: string }>;
+        };
+        for (const p of NATIVE_PHRASES) expect(schema.properties.app.description).toContain(p);
+        for (const withQa of [{}, { browseQa: true, browseIsolation: true, browseAssert: true }]) {
+          const t = await prepare({ ...base, clientCapabilities: { ...caps, ...withQa } });
+          expect(desc(t.tools.browse_agent)).toContain("Dock");
+        }
+        const noApps = await prepare({ ...base, clientCapabilities: { ...DESKTOP, browseNativeApps: true } });
+        const off = await prepare({ ...base, clientCapabilities: DESKTOP });
+        expect(desc(noApps.tools.browse_agent)).toBe(desc(off.tools.browse_agent));
+        const cloud = await prepare({
+          config: makeConfig({ BROWSE_MODE: "agent", STEEL_API_KEY: "k" }),
+          clientCapabilities: { browser: "cloud", browseApps: true, browseNativeApps: true },
+        });
+        expect(desc(cloud.tools.browse_agent)).not.toContain(NATIVE_MARK);
       });
     });
 

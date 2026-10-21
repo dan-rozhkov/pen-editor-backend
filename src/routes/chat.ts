@@ -222,6 +222,10 @@ const chatBodySchema = z.object({
       // The client can start a desktop Electron app (browse_open / browse_agent
       // `app`). Honoured only with browser "desktop" (chatTurn.ts).
       browseApps: z.boolean().optional(),
+      // The desktop client can also attach to a running macOS app by name
+      // (accessibility tree). Honoured only with browser "desktop" AND
+      // browseApps (chatTurn.ts); otherwise treated as false.
+      browseNativeApps: z.boolean().optional(),
       // The client shows canvases as tabs and can run open_canvas_tab. Constant
       // per client, so the tool set stays stable within a session. Without it
       // open_canvas_tab is removed from the turn (chatTurn.ts).

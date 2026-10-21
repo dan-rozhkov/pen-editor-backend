@@ -1,4 +1,4 @@
-import { tool } from "ai";
+import { asSchema, jsonSchema, tool } from "ai";
 import { z } from "zod";
 import type { Config } from "../config.js";
 import { describeImage } from "../services/vision.js";
@@ -15,6 +15,10 @@ import {
 import { DEVICE_PRESETS, parsePageFixture } from "@sideform/browser-agent/fixture";
 import {
   PEN_EDITOR_BROWSE_AGENT_APP_FIELD,
+  PEN_EDITOR_BROWSE_AGENT_APP_FIELD_NATIVE,
+  PEN_EDITOR_BROWSE_AGENT_APP_RULES_NATIVE,
+  PEN_EDITOR_BROWSE_OPEN_APP_FIELD_NATIVE,
+  PEN_EDITOR_BROWSE_APP_SLOTS_NATIVE,
   PEN_EDITOR_BROWSE_AGENT_APP_RULES,
   PEN_EDITOR_BROWSE_APP_SLOTS,
   PEN_EDITOR_BROWSE_SLOTS,
@@ -1361,6 +1365,21 @@ export const browseOpenToolApp = tool({
   description: browseAppDefs.browse_open.description,
   inputSchema: browseAppDefs.browse_open.inputSchema,
 });
+/** Same, with the native macOS app text (clientCapabilities.browseNativeApps). */
+const browseAppNativeDefs = createBrowseToolDefinitions(PEN_EDITOR_BROWSE_APP_SLOTS_NATIVE);
+// Same schema as the package's, with a native `app` description (the package
+// text says "Electron .app path"). The package schema is a preprocess wrapper
+// that cannot be extended, so the description is patched in its JSON schema.
+const browseOpenNativeJson = structuredClone(asSchema(browseAppNativeDefs.browse_open.inputSchema).jsonSchema) as {
+  properties?: { app?: { description?: string } };
+};
+if (browseOpenNativeJson.properties?.app) {
+  browseOpenNativeJson.properties.app.description = PEN_EDITOR_BROWSE_OPEN_APP_FIELD_NATIVE;
+}
+export const browseOpenToolAppNative = tool({
+  description: browseAppNativeDefs.browse_open.description,
+  inputSchema: jsonSchema(browseOpenNativeJson as Parameters<typeof jsonSchema>[0]),
+});
 
 // browse_agent `setup`: a PageFixture (@sideform/browser-agent/fixture) without
 // `version` and `url` (the tool's `url` is the start URL). The package parser is
@@ -1532,23 +1551,28 @@ export const browseAgentToolNoQa = browseAgentTool(false);
 
 const BROWSE_AGENT_RESUME_GUIDANCE = "(To continue from a checkpoint, pass only `resume`: no `url`, no `setup`.)";
 // App variant only: sits in the HEAD next to the url/resume guidance.
-const BROWSE_AGENT_APP_GUIDANCE =
-  " To work in a desktop app instead of a web page, pass `app` (the path of a macOS .app of an Electron app) and no `url`, `setup`, `resume` or `capture`. Run one app run at a time: do not call browse_agent with `app` in parallel. " +
-  PEN_EDITOR_BROWSE_AGENT_APP_RULES;
+const browseAgentAppGuidance = (appWhat: string, rules: string) =>
+  ` To work in a desktop app instead of a web page, pass \`app\` (${appWhat}) and no \`url\`, \`setup\`, \`resume\` or \`capture\`. Run one app run at a time: do not call browse_agent with \`app\` in parallel. ` + rules;
+const BROWSE_AGENT_APP_GUIDANCE = browseAgentAppGuidance("the path of a macOS .app of an Electron app", PEN_EDITOR_BROWSE_AGENT_APP_RULES);
+const BROWSE_AGENT_APP_GUIDANCE_NATIVE = browseAgentAppGuidance(
+  "the name of the app as shown in the Dock or in its window title, or the path of a .app",
+  PEN_EDITOR_BROWSE_AGENT_APP_RULES_NATIVE,
+);
 const browseAgentAppCache = new Map<string, ReturnType<typeof browseAgentTool>>();
 /**
  * browse_agent with the extra `app` field, for a desktop client that advertises
  * clientCapabilities.browseApps. Same QA/isolation/assert axes as the
  * variants above; built once per combination so the bytes are stable.
  */
-export function browseAgentToolWithApp(opts: { qa: boolean; isolated: boolean; assert: boolean }) {
+export function browseAgentToolWithApp(opts: { qa: boolean; isolated: boolean; assert: boolean; native?: boolean }) {
   const qa = opts.qa;
   const isolated = qa && opts.isolated;
   const assert = qa && opts.assert;
-  const key = `${qa}:${isolated}:${assert}`;
+  const native = opts.native === true;
+  const key = `${qa}:${isolated}:${assert}${native ? ":native" : ""}`;
   let t = browseAgentAppCache.get(key);
   if (!t) {
-    t = browseAgentTool(qa, isolated, assert, true);
+    t = browseAgentTool(qa, isolated, assert, native ? "native" : true);
     browseAgentAppCache.set(key, t);
   }
   return t;
@@ -1574,7 +1598,7 @@ function stripBrowseAgentPlaceholders(input: unknown): unknown {
   return out;
 }
 
-function browseAgentTool(qa: boolean, isolated = false, assert = false, app = false) {
+function browseAgentTool(qa: boolean, isolated = false, assert = false, app: boolean | "native" = false) {
   const base = z.object({
       goal: z
         .string()
@@ -1602,7 +1626,7 @@ function browseAgentTool(qa: boolean, isolated = false, assert = false, app = fa
         .describe("Set true ONLY when the user directly asks to copy or clone the page onto the canvas. The subagent then gets the browse_capture tool and copies the page once. The result then carries `captured: { nodeId, width, height, url, title }`."),
       ...(app
         ? {
-            app: z.string().trim().min(1).max(1024).optional().describe(PEN_EDITOR_BROWSE_AGENT_APP_FIELD),
+            app: z.string().trim().min(1).max(1024).optional().describe(app === "native" ? PEN_EDITOR_BROWSE_AGENT_APP_FIELD_NATIVE : PEN_EDITOR_BROWSE_AGENT_APP_FIELD),
           }
         : {}),
       ...(qa
@@ -1647,7 +1671,7 @@ function browseAgentTool(qa: boolean, isolated = false, assert = false, app = fa
           ? BROWSE_AGENT_DESCRIPTION_WITH_QA_ASSERT
           : BROWSE_AGENT_DESCRIPTION_WITH_QA
         : BROWSE_AGENT_DESCRIPTION;
-      return app ? base.replace(BROWSE_AGENT_RESUME_GUIDANCE, BROWSE_AGENT_RESUME_GUIDANCE + BROWSE_AGENT_APP_GUIDANCE) : base;
+      return app ? base.replace(BROWSE_AGENT_RESUME_GUIDANCE, BROWSE_AGENT_RESUME_GUIDANCE + (app === "native" ? BROWSE_AGENT_APP_GUIDANCE_NATIVE : BROWSE_AGENT_APP_GUIDANCE)) : base;
     })(),
     inputSchema: qa && !isolated ? withQaResumeCheck(schema) : schema,
   });

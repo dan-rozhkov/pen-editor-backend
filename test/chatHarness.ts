@@ -119,16 +119,25 @@ export function waitForEvent(
 }
 
 // Posts one turn with `body` (messages added from `prompt`) against a fresh mock model and
-// returns the tool names the model was offered.
-export async function toolsSentFor(
+// returns the tool definitions the model was offered.
+export async function toolDefsSentFor(
   url: string,
   prompt: string,
   body: Record<string, unknown> = {},
-): Promise<Array<string | undefined>> {
+): Promise<Array<{ name?: string; description?: string }>> {
   const model = mockModel(textStreamChunks("ok"));
   chatMocks.model = model;
   const res = await postChat(url, { messages: [userMessage(prompt)], ...body });
   if (res.status !== 200) throw new Error(`chat returned ${res.status}`);
   await res.text();
-  return (model.doStreamCalls[0].tools ?? []).map((t: { name?: string }) => t.name);
+  return (model.doStreamCalls[0].tools ?? []) as Array<{ name?: string; description?: string }>;
+}
+
+// Same, reduced to the tool names.
+export async function toolsSentFor(
+  url: string,
+  prompt: string,
+  body: Record<string, unknown> = {},
+): Promise<Array<string | undefined>> {
+  return (await toolDefsSentFor(url, prompt, body)).map((t) => t.name);
 }

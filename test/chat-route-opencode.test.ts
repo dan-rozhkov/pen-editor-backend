@@ -6,6 +6,7 @@ import {
   postChat,
   recordingAnalyticsClient,
   startApp,
+  toolDefsSentFor,
   toolsSentFor,
   waitForEvent,
   type RunningApp,
@@ -161,6 +162,18 @@ describe("POST /api/chat — agentMode browse gate", () => {
     } finally {
       await close();
     }
+  });
+
+  it("passes browseNativeApps from clientCapabilities through to the browse_open text", async () => {
+    const browseOpenDescription = async (caps: Record<string, unknown>) =>
+      (
+        await toolDefsSentFor(server.url, "open the app", {
+          clientCapabilities: { desktopBrowser: true, browser: "desktop", ...caps },
+        })
+      ).find((t) => t.name === "browse_open")?.description ?? "";
+    expect(await browseOpenDescription({ browseApps: true, browseNativeApps: true })).toContain("accessibility tree");
+    expect(await browseOpenDescription({ browseApps: true })).not.toContain("accessibility tree");
+    expect(await browseOpenDescription({ browseNativeApps: true })).not.toContain("accessibility tree");
   });
 
   it("passes browseLogin from the body to the subagent's tool set", async () => {
