@@ -17,7 +17,7 @@ A bug report lets a developer reproduce a problem and fix it without asking ques
 Use what the conversation already has first:
 
 - `browse_agent` results with `qa: true`, for example from a bug-hunt run. Take the steps, `qa.reason`, console errors and failed requests from them. Use only what the run showed.
-- QA runs saved in trace tabs. If `trace_list` and `trace_read` are in your tool list, read the run there: steps, checks, console errors and failed requests.
+- Browser runs saved in trace tabs. If `trace_list` and `trace_read` are in your tool list, read the run there: steps, console errors, failed requests and, for a QA run, its checks. A trace without QA results has no verdict.
 - The design on the canvas (`get_editor_state`) for the expected behaviour of a screen.
 - The spec or PRD, for the expected result.
 - Screenshots, logs or text that the user attached.

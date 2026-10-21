@@ -2315,7 +2315,7 @@ Returns the created/updated style ids and names (with a created|updated status) 
   trace_list: tool({
     description:
       "List the trace tabs open in the desktop app. " +
-      "A trace is the recorded run of a browse_agent QA run: steps, screenshots, console errors, failed requests, QA check results. " +
+      "A trace is the recorded run of browse_agent: steps, screenshots, console errors, failed requests and, for a QA run, the QA check results. " +
       "Use it when the user talks about a trace, a test run or \"this run\". Use it also when you need the traceId. " +
       "Returns JSON: {tabs: [{traceId, title, active}]}. " +
       "active: true is the tab the user looks at now.",
