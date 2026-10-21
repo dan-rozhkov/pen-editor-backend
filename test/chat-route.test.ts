@@ -255,6 +255,28 @@ describe("POST /api/chat — validation errors", () => {
     expect(body.error).toBe("Invalid request body");
   });
 
+  it("drops bad browseSecrets names instead of failing the chat", async () => {
+    chatMocks.model = mockModel(textStreamChunks("ok", usage(undefined, 5)));
+    const res = await postChat(server.url, {
+      messages: [userMessage("hi")],
+      browseSecrets: ["has space", "{{secret:x}}", "", "a".repeat(41), "ok_name"],
+      clientCapabilities: { browseSecrets: true },
+    });
+    expect(res.status).toBe(200);
+    await res.text();
+  });
+
+  it("accepts browseSecrets names and the browseSecrets capability", async () => {
+    chatMocks.model = mockModel(textStreamChunks("ok", usage(undefined, 5)));
+    const res = await postChat(server.url, {
+      messages: [userMessage("hi")],
+      browseSecrets: ["github_password", "A-1"],
+      clientCapabilities: { browseSecrets: true },
+    });
+    expect(res.status).toBe(200);
+    await res.text();
+  });
+
   it("returns 400 for an invalid body", async () => {
     const res = await postChat(server.url, { nonsense: true });
     expect(res.status).toBe(400);

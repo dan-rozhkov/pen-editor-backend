@@ -12,7 +12,7 @@ import type { Config } from "../config.js";
 import { bareModelId, createModel, parseModelRef, providerHandlesToolResultImages } from "./provider.js";
 import { penTools, browseOpenToolApp, browseOpenToolAppNative, browseAgentToolWithApp, browseAgentToolNoQa, browseAgentToolQaIsolated, browseAgentToolQaNoAssert, browseAgentToolQaIsolatedNoAssert, makeBatchDesignTool, makeAnalyzeImageTool } from "./tools.js";
 import { BROWSE_AGENT_TOOL_NAMES, QA_ASSERT_TOOL, QA_VERDICT_TOOL } from "@sideform/browser-agent/agent";
-import { browseAgentPrompt, buildSystemPrompt, type AgentMode, type BrowserGuidance } from "./system-prompt.js";
+import { browseAgentPrompt, browserSecretsMessage, buildSystemPrompt, type AgentMode, type BrowserGuidance } from "./system-prompt.js";
 import { resolveTaskPolicy, type TaskPolicy } from "./taskPolicy.js";
 import { applyImageBudget, planImageElision } from "./image-budget.js";
 import { freezeElidedSlots, resolveImageRescues } from "./imageRelevance.js";
@@ -245,7 +245,7 @@ export interface PrepareChatTurnInput {
    * Undefined/false → the browse_* tools are dropped below, same as any
    * other caller (the showcase runner, tests) that never wires this.
    */
-  clientCapabilities?: { desktopBrowser?: boolean; browser?: "desktop" | "cloud"; browseQa?: boolean; browseIsolation?: boolean; browseAssert?: boolean; browseApps?: boolean; browseNativeApps?: boolean; canvasTabs?: boolean; docTabs?: boolean; traceTabs?: boolean };
+  clientCapabilities?: { desktopBrowser?: boolean; browser?: "desktop" | "cloud"; browseQa?: boolean; browseIsolation?: boolean; browseAssert?: boolean; browseApps?: boolean; browseNativeApps?: boolean; canvasTabs?: boolean; docTabs?: boolean; traceTabs?: boolean; browseSecrets?: boolean };
   /**
    * agentMode "browse" only: the user directly asked to copy the page onto the
    * canvas, so the subagent may carry browse_capture. Ignored otherwise.
@@ -260,6 +260,12 @@ export interface PrepareChatTurnInput {
    * Ignored otherwise.
    */
   browseLogin?: boolean;
+  /**
+   * Names of the secrets the user added for this chat (the chat request never
+   * carries a value; the model and the history never see one). Delivered as a trailing `<browser_secrets>` message, only when
+   * clientCapabilities.browseSecrets is true and a browser is available.
+   */
+  browseSecrets?: string[];
 }
 
 export interface PreparedChatTurn {
@@ -874,10 +880,19 @@ export async function prepareChatTurn(
   // capability in its own body, so the same gate applies there.
   const browseAssertAllowed = browseQaAllowed && input.clientCapabilities?.browseAssert === true;
 
+  // Secret placeholders: a static client capability, so the prompt text is
+  // constant per capability set. The names go in a trailing message instead.
+  // browse_task has no substitution, so the main chat in "task" mode gets none.
+  const secretsAllowed =
+    input.clientCapabilities?.browseSecrets === true &&
+    hasBrowser &&
+    (browseSub || browserGuidance !== "task");
+
   const system = browseSub
-    ? browseAgentPrompt({ qa: browseQaAllowed, login: browseLoginAllowed })
+    ? browseAgentPrompt({ qa: browseQaAllowed, login: browseLoginAllowed, secrets: secretsAllowed })
     : buildSystemPrompt(skillCatalog, {
         browserGuidance,
+        browserSecrets: secretsAllowed,
         memoryGuidance: memoryInjected,
         memorySnapshot: memorySnapshotBlock,
         selfSkillsGuidance: selfSkillsInjected,
@@ -1110,6 +1125,16 @@ export async function prepareChatTurn(
     modelMessages.push({
       role: "user",
       content: `<canvas_context>\nAutomatic message from the Sideform editor (not from the user): the current state of the canvas.\n\n${canvasContext}\n</canvas_context>`,
+    });
+  }
+
+  // Secret names go LAST (after canvas_context): they vary per request, the
+  // prompt text above does not.
+  const secretNames = secretsAllowed ? [...new Set(input.browseSecrets ?? [])] : [];
+  if (secretNames.length > 0) {
+    modelMessages.push({
+      role: "user",
+      content: browserSecretsMessage(secretNames, browseSub || browserGuidance === "manual"),
     });
   }
 

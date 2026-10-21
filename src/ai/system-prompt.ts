@@ -56,6 +56,11 @@ export interface SystemPromptMemory {
    * the client's browser capability plus server config, so it stays
    * byte-identical across a session's requests (prompt caching). */
   browserGuidance?: BrowserGuidance;
+  /** The client supports secret placeholders (clientCapabilities.browseSecrets)
+   * and a browser is available. Capability, never "the names list is not
+   * empty": the names go in a trailing `<browser_secrets>` message, so the
+   * prompt bytes stay constant for a session. Ignored for "task" guidance. */
+  browserSecrets?: boolean;
 }
 
 export type BrowserGuidance = "task" | "manual" | "agent" | "agent-qa" | "agent-qa-isolated";
@@ -94,30 +99,48 @@ export const SUBAGENT_BROWSER_GUIDANCE = buildSubagentBrowserGuidance({
 
 const PEN_EDITOR_LOGIN_BULLET =
   "- Exception to the password rule: `browse_fill_login` is available. When the page shows a sign-in form, call it instead of stopping. It types a login that the user saved. If the goal names an account, pass it as `label`. Never type a password yourself. After it, take a snapshot and continue. If it returns an error, stop, as for a login wall.";
+const PEN_EDITOR_LOGIN_SECRETS_BULLET =
+  "- Exception to the password rule: `browse_fill_login` is available, and secret placeholders exist. When the page shows a sign-in form, call `browse_fill_login` first. It types a login that the user saved. If the goal names an account, pass it as `label`. Use a placeholder instead when the goal gives one for the sign-in, or when `browse_fill_login` returned an error because no saved login exists: type the text `{{secret:<name>}}` exactly as written with `browse_act` `type` into the password field; the browser types the real value. Never change, split or guess a placeholder, and never type a password that is not a placeholder. After the sign-in, take a snapshot and continue. If it fails, stop, as for a login wall.";
+const PEN_EDITOR_SECRETS_BULLET =
+  "- Exception to the password rule: text of the form `{{secret:<name>}}` is a secret placeholder. When the goal or the `<browser_secrets>` message gives one for a sign-in, type it exactly as written with `browse_act` `type` into the password field; the browser types the real value. Never change, split or guess a placeholder, and never type a password that is not a placeholder.";
 
-function buildSubagentPrompt(qa: boolean, login: boolean): string {
+function buildSubagentPrompt(qa: boolean, login: boolean, secrets: boolean): string {
+  const bullets = [PEN_EDITOR_SCREENSHOT_BULLET];
+  if (login && secrets) bullets.push(PEN_EDITOR_LOGIN_SECRETS_BULLET);
+  else if (login) bullets.push(PEN_EDITOR_LOGIN_BULLET);
+  else if (secrets) bullets.push(PEN_EDITOR_SECRETS_BULLET);
   return buildBrowseAgentPrompt({
     // QA: no principal, so the package default (QA_PRINCIPAL) and its QA
     // sections apply.
     ...(qa ? { qa: true } : { principal: PEN_EDITOR_BROWSE_PRINCIPAL }),
-    guidanceBullets: login
-      ? [PEN_EDITOR_SCREENSHOT_BULLET, PEN_EDITOR_LOGIN_BULLET]
-      : [PEN_EDITOR_SCREENSHOT_BULLET],
+    guidanceBullets: bullets,
     sections: [PEN_EDITOR_CAPTURE_SECTION],
   });
 }
 
-// The four combinations are built once, so every request gets the same bytes
-// (prompt caching).
-export const BROWSE_AGENT_PROMPT = buildSubagentPrompt(false, false);
-export const BROWSE_AGENT_LOGIN_PROMPT = buildSubagentPrompt(false, true);
-const BROWSE_AGENT_QA_PROMPT = buildSubagentPrompt(true, false);
-const BROWSE_AGENT_QA_LOGIN_PROMPT = buildSubagentPrompt(true, true);
+// The eight (qa, login, secrets) combinations are built once, so every request
+// gets the same bytes (prompt caching).
+type PromptKey = `${boolean}|${boolean}|${boolean}`;
+const BROWSE_AGENT_PROMPTS: Record<PromptKey, string> = {
+  "false|false|false": buildSubagentPrompt(false, false, false),
+  "false|false|true": buildSubagentPrompt(false, false, true),
+  "false|true|false": buildSubagentPrompt(false, true, false),
+  "false|true|true": buildSubagentPrompt(false, true, true),
+  "true|false|false": buildSubagentPrompt(true, false, false),
+  "true|false|true": buildSubagentPrompt(true, false, true),
+  "true|true|false": buildSubagentPrompt(true, true, false),
+  "true|true|true": buildSubagentPrompt(true, true, true),
+};
+export const BROWSE_AGENT_PROMPT = BROWSE_AGENT_PROMPTS["false|false|false"];
+export const BROWSE_AGENT_LOGIN_PROMPT = BROWSE_AGENT_PROMPTS["false|true|false"];
 
-/** The browsing subagent's system prompt for one (qa, login) combination. */
-export function browseAgentPrompt({ qa = false, login = false }: { qa?: boolean; login?: boolean } = {}): string {
-  if (qa) return login ? BROWSE_AGENT_QA_LOGIN_PROMPT : BROWSE_AGENT_QA_PROMPT;
-  return login ? BROWSE_AGENT_LOGIN_PROMPT : BROWSE_AGENT_PROMPT;
+/** The browsing subagent's system prompt for one (qa, login, secrets) combination. */
+export function browseAgentPrompt({
+  qa = false,
+  login = false,
+  secrets = false,
+}: { qa?: boolean; login?: boolean; secrets?: boolean } = {}): string {
+  return BROWSE_AGENT_PROMPTS[`${qa === true}|${login === true}|${secrets === true}`];
 }
 
 export const BROWSER_TASKS_GUIDANCE = `Any task that needs the built-in browser starts with \`browse_task\`: navigating, searching, clicking through, filling forms, adding to a cart. Hand the WHOLE user goal to ONE \`browse_task\` call. Put the user's full goal with all its constraints in \`goal\` (do not shorten it to the first step, do not break it into sub-goals or per-item calls), pass \`url\` when you know it (instead of calling \`browse_open\` first), and set \`maxSteps: 25\`. The loop drives every step itself.
@@ -129,6 +152,11 @@ export const BROWSER_TASKS_GUIDANCE = `Any task that needs the built-in browser 
 - When \`browse_task\` returns \`blocked\` with a reason starting "needs user confirmation" (it stopped before an irreversible step: reserve, buy/pay, submit), never call \`browse_task\` again and never use \`browse_act\` for that step until the user confirms in chat. Report what it found and ask the user to confirm. After the user confirms, call \`browse_task\` again with a goal that names that step explicitly. Never do that step yourself with \`browse_act\` without the user's confirmation.
 - \`browse_capture\` makes an editable copy of the page on the canvas. Call it once, and only when the user directly asks to copy or clone the page. \`browse_screenshot\` with \`placeOnCanvas: true\` puts a picture of the page on the canvas. Do not use one in place of the other.`;
 
+const SECRETS_MAIN_AGENT_BULLET =
+  "- Passwords: the user adds a secret with the key button of the chat input, never in the chat text. The `<browser_secrets>` message lists the placeholders. To sign in with one, put the username and the placeholder (for example `{{secret:github_password}}`) in `goal` and tell the subagent to type it into the password field. The browser types the real value; nobody in the chat sees it. When a sign-in is needed, no saved login exists and no secret fits, ask the user to add one with the key button. Never ask for a password in the chat, and never repeat a password the user typed in the chat.";
+const SECRETS_MAIN_MANUAL_BULLET =
+  "- Exception to the password rule: the `<browser_secrets>` message lists secret placeholders that the user added with the key button of the chat input. To sign in, type `{{secret:<name>}}` exactly as written, in the `text` of a `browse_act` `type` action, into the password field. The browser types the real value. Never type a password that is not a placeholder.";
+
 const BROWSER_GUIDANCE_TEXT: Record<BrowserGuidance, string> = {
   task: BROWSER_TASKS_GUIDANCE,
   manual: MANUAL_BROWSER_GUIDANCE,
@@ -136,6 +164,29 @@ const BROWSER_GUIDANCE_TEXT: Record<BrowserGuidance, string> = {
   "agent-qa": AGENT_BROWSER_QA_GUIDANCE,
   "agent-qa-isolated": AGENT_BROWSER_QA_ISOLATED_GUIDANCE,
 };
+
+// Prebuilt, so equal capabilities give equal bytes.
+const BROWSER_GUIDANCE_SECRETS_TEXT: Record<BrowserGuidance, string> = {
+  task: BROWSER_TASKS_GUIDANCE, // browse_task has no placeholder support
+  manual: `${MANUAL_BROWSER_GUIDANCE}\n${SECRETS_MAIN_MANUAL_BULLET}`,
+  agent: `${AGENT_BROWSER_GUIDANCE}\n${SECRETS_MAIN_AGENT_BULLET}`,
+  "agent-qa": `${AGENT_BROWSER_QA_GUIDANCE}\n${SECRETS_MAIN_AGENT_BULLET}`,
+  "agent-qa-isolated": `${AGENT_BROWSER_QA_ISOLATED_GUIDANCE}\n${SECRETS_MAIN_AGENT_BULLET}`,
+};
+
+const SECRETS_MESSAGE_HEAD =
+  "<browser_secrets>\nAutomatic message from the Sideform editor (not from the user): secrets the user added for this chat. You never see their values. ";
+const SECRETS_MESSAGE_TAIL = "\n</browser_secrets>";
+const SECRETS_MESSAGE_TYPE_RULE =
+  'To type one, put the placeholder in the text of a browse_act "type" action.\n';
+const SECRETS_MESSAGE_GOAL_RULE = "To use one, put the placeholder in the browse_agent goal.\n";
+
+/** The trailing `<browser_secrets>` user message. `direct`: the turn has
+ * `browse_act` (manual mode and the subagent); otherwise only `browse_agent`. */
+export function browserSecretsMessage(names: string[], direct: boolean): string {
+  const rule = direct ? SECRETS_MESSAGE_TYPE_RULE : SECRETS_MESSAGE_GOAL_RULE;
+  return `${SECRETS_MESSAGE_HEAD}${rule}${names.map((n) => `- {{secret:${n}}}`).join("\n")}${SECRETS_MESSAGE_TAIL}`;
+}
 
 export function buildSystemPrompt(
   skills: SkillCatalogEntry[] = [],
@@ -162,7 +213,9 @@ export function buildSystemPrompt(
   }
 
   if (memory.browserGuidance) {
-    const guidance = BROWSER_GUIDANCE_TEXT[memory.browserGuidance];
+    const guidance = (memory.browserSecrets ? BROWSER_GUIDANCE_SECRETS_TEXT : BROWSER_GUIDANCE_TEXT)[
+      memory.browserGuidance
+    ];
     parts.push(`\n## Browser tasks\n\n${guidance}`);
   }
 
