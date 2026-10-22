@@ -393,6 +393,25 @@ describe("loadSkills / getSkill", () => {
     expect(proto.content).toContain("FIT-TO-CANVAS CHECK");
   });
 
+  it("pins the spacing pass in the prototype skill", () => {
+    const proto = getSkill("prototype")!;
+    expect(proto.content).toContain("### Spacing pass");
+    // The ladder lives in :root, so every screen gets one without a tool call.
+    for (const token of ["--space-inside", "--space-item", "--space-group", "--space-section", "--space-page"]) {
+      expect(proto.content).toContain(token);
+    }
+    expect(proto.content).toContain("4/8/12/16/20/24/32/40/48/64");
+    expect(proto.content).toContain("Container padding ≥ the gap between its items");
+    // Checklist item to catch the 20/20/20 look before emitting HTML.
+    expect(proto.content).toContain("SPACING-LADDER CHECK");
+  });
+
+  it("pins the spacing ladder in the slides skill", () => {
+    const slides = getSkill("slides")!;
+    expect(slides.content).toContain("Spacing ladder in the master `:root`");
+    expect(slides.content).toContain("4/8/12/16/20/24/32/40/48/64");
+  });
+
   it("pins the fit-to-canvas rules in the slides skill", () => {
     const slides = getSkill("slides")!;
     expect(slides.content).toContain("Fit to canvas");
