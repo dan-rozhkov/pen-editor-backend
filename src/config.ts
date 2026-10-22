@@ -517,6 +517,13 @@ export const envSchema = z.object({
   // that default with a test, is what this repo now does everywhere Jev can
   // change behavior.
   IMAGE_RELEVANCE_MODE: z.enum(["off", "shadow", "enforce"]).default("off"),
+  // Text budget (src/ai/text-budget.ts, docs/specs/2026-10-23-context-compaction-design.md
+  // "Phase 1"): masks old, large browse_* tool outputs in the history. off =
+  // do nothing; shadow (default) = compute and log/report what WOULD be
+  // removed, send the history unchanged; enforce = send the masked history.
+  TEXT_BUDGET_MODE: z.enum(["off", "shadow", "enforce"]).default("shadow"),
+  // Estimated history size (chars / 4) below which the pass masks nothing.
+  TEXT_BUDGET_START_TOKENS: z.coerce.number().int().nonnegative().default(64000),
   // Probability threshold above which a candidate's Noul ("is this image
   // still needed for what's being asked right now?") counts as a rescue.
   // 0.6 mirrors SKILL_ROUTING_MIN_CONFIDENCE's default rather than being

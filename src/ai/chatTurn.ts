@@ -15,6 +15,7 @@ import { BROWSE_AGENT_TOOL_NAMES, QA_ASSERT_TOOL, QA_VERDICT_TOOL } from "@sidef
 import { browseAgentPrompt, buildSystemPrompt, type AgentMode, type BrowserGuidance } from "./system-prompt.js";
 import { resolveTaskPolicy, type TaskPolicy } from "./taskPolicy.js";
 import { applyImageBudget, planImageElision } from "./image-budget.js";
+import { applyTextBudget, planTextBudget, type TextBudgetReport } from "./text-budget.js";
 import { freezeElidedSlots, resolveImageRescues } from "./imageRelevance.js";
 import { applyVisionPreprocessing, modelSupportsVision } from "./vision-messages.js";
 import { SCREENSHOT_TOOL_NAMES, promoteScreenshotToolOutputs } from "./screenshotOutput.js";
@@ -238,6 +239,8 @@ export interface PrepareChatTurnInput {
 }
 
 export interface PreparedChatTurn {
+  /** Text-budget pass report (counts only); undefined when TEXT_BUDGET_MODE is off. */
+  textBudget?: TextBudgetReport;
   model: LanguageModel;
   system: string;
   modelMessages: ModelMessage[];
@@ -898,7 +901,29 @@ export async function prepareChatTurn(
   // paths sent the raw base64 JSON string to the model as text instead of an
   // image. This promotes both tools' outputs into that shape right here, so
   // every pass below it sees exactly what it already assumed.
-  const convertedMessages = promoteScreenshotToolOutputs(convertedMessagesRaw);
+  const promotedMessages = promoteScreenshotToolOutputs(convertedMessagesRaw);
+
+  // Text budget (see text-budget.ts): masks old, large browse_* outputs.
+  // shadow only reports; enforce feeds the masked history to the passes below.
+  let textBudget: TextBudgetReport | undefined;
+  let convertedMessages = promotedMessages;
+  if (config.TEXT_BUDGET_MODE !== "off") {
+    const opts = { startTokens: config.TEXT_BUDGET_START_TOKENS };
+    if (config.TEXT_BUDGET_MODE === "enforce") {
+      const applied = applyTextBudget(promotedMessages, opts);
+      convertedMessages = applied.messages;
+      textBudget = { mode: "enforce", ...applied.report };
+    } else {
+      textBudget = { mode: "shadow", ...planTextBudget(promotedMessages, opts) };
+    }
+    if (textBudget.elidedParts > 0) {
+      const verb = textBudget.mode === "enforce" ? "elided" : "would elide";
+      const pct = ((textBudget.elidedChars / Math.max(1, textBudget.totalChars)) * 100).toFixed(1);
+      console.log(
+        `[text-budget] ${textBudget.mode}: ${verb} ${textBudget.elidedParts} part(s), ${textBudget.elidedChars} of ${textBudget.totalChars} chars (${pct}%)`,
+      );
+    }
+  }
 
   // Bounds the number of LIVE images in history, but ONLY on the path where
   // images actually survive as images: a vision model on a provider that can
@@ -1382,6 +1407,7 @@ export async function prepareChatTurn(
     }
 
     return {
+      textBudget,
       model,
       system,
       modelMessages,

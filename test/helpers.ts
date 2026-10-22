@@ -89,6 +89,8 @@ export function makeConfig(overrides: Partial<Config> = {}): Config {
     // Real shipped default ("off"), not a second hardcoded copy — a test
     // that needs Jev image relevance on overrides this point by point.
     IMAGE_RELEVANCE_MODE: envSchema.shape.IMAGE_RELEVANCE_MODE.parse(undefined),
+    TEXT_BUDGET_MODE: envSchema.shape.TEXT_BUDGET_MODE.parse(undefined),
+    TEXT_BUDGET_START_TOKENS: envSchema.shape.TEXT_BUDGET_START_TOKENS.parse(undefined),
     IMAGE_RELEVANCE_MIN_NOUL: envSchema.shape.IMAGE_RELEVANCE_MIN_NOUL.parse(undefined),
     IMAGE_RELEVANCE_TIMEOUT_MS: envSchema.shape.IMAGE_RELEVANCE_TIMEOUT_MS.parse(undefined),
     IMAGE_RELEVANCE_SHADOW_TIMEOUT_MS:

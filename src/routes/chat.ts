@@ -514,6 +514,7 @@ export async function chatRoutes(
       systemPromptHash,
       slashSkillName,
       skillSource,
+      textBudget,
     } = preparedTurn;
     const maxSteps = MAX_AGENT_STEPS;
 
@@ -558,6 +559,8 @@ export async function chatRoutes(
         steps,
         systemPromptHash,
         resolvedTaskPolicy: taskPolicy,
+        // Counts only (text-budget.ts); absent when TEXT_BUDGET_MODE=off.
+        textBudget,
       },
       streamError,
       inputTokens: usage?.inputTokens ?? 0,
@@ -675,6 +678,11 @@ export async function chatRoutes(
             // computing headline metrics from raw event counts, since a
             // single user turn can otherwise emit several partial events.
             turn_complete: turnComplete,
+            // Counts/enums only (no PII); null when the pass is off.
+            text_budget_mode: textBudget?.mode ?? null,
+            text_budget_elided_parts: textBudget?.elidedParts ?? null,
+            text_budget_elided_chars: textBudget?.elidedChars ?? null,
+            text_budget_total_chars: textBudget?.totalChars ?? null,
           },
         });
 
@@ -731,6 +739,12 @@ export async function chatRoutes(
             userId,
             system,
             turnTools: tools,
+            // In TEXT_BUDGET_MODE=enforce this is the MASKED history. Only
+            // browse_* results are masked, and the browse subagent turn
+            // skips the review. With BROWSE_MODE=manual the main turn carries
+            // browse_* tools, so the review then reads placeholders for old
+            // page snapshots. Pass the unmasked history here before enforce
+            // goes live in manual mode.
             modelMessages,
             assistantText: steps.map((s) => s.text).join("\n").trim(),
             stepCount: steps.length,
