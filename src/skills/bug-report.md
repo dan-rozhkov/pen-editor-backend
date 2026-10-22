@@ -17,8 +17,8 @@ A bug report lets a developer reproduce a problem and fix it without asking ques
 Use what the conversation already has first:
 
 - `browse_agent` results with `qa: true`, for example from a bug-hunt run. Take the steps, `qa.reason`, console errors and failed requests from them. Use only what the run showed.
-- Browser runs saved in trace tabs. If `trace_list` and `trace_read` are in your tool list, read the run there: steps, console errors, failed requests and, for a QA run, its checks. A trace without QA results has no verdict.
-- The design on the canvas (`get_editor_state`) for the expected behaviour of a screen.
+- Browser runs saved in trace tabs. If `trace_list` and `trace_read` are in your tool list, read the run there: steps, console errors, failed requests and, for a QA run, its checks. A trace without QA results has no verdict. `trace_read` also lists the screenshots of the run in `frames` (`frameId`, `step`, `kind`). Choose the frames that show the bug.
+- The design on the canvas (`get_editor_state`) for the expected behaviour of a screen. Use it only if a canvas tab is already open. Never open a canvas tab only to write a bug report.
 - The spec or PRD, for the expected result.
 - Screenshots, logs or text that the user attached.
 
@@ -38,7 +38,8 @@ Never invent facts: steps, versions, error text, counts. Put a visible placehold
 - Use only the markdown that the `doc_create` description allows. A table cell holds ONE line of inline text. Put multi-line content in lists under a heading.
 - Use the field table only for single-line fields. Put steps, expected and actual results under headings, in lists or paragraphs.
 - Write the metadata table as a property list (see the `doc_create` description). Write Status, Severity and Priority as tags with the fixed colours in the writing rules. In the template, Severity and Priority are `[TBD: ...]` placeholders. Replace each one with the tag.
-- Insert each screenshot with `doc_insert_image` and `afterHeading` "Evidence". Give `nodeId` (the `placedNodeId` from `browse_screenshot`) or an image URL, and an `alt` that says what the image shows. Then delete the `[TBD: screenshot]` line.
+- Insert each screenshot with `doc_insert_image` and `afterHeading` "Evidence", and an `alt` that says what the image shows. For a screenshot from a trace, give `traceId` and the `frameId` from `trace_read`. Do one call for each relevant frame. Otherwise give `nodeId` (the `placedNodeId` from `browse_screenshot`) or an image URL. Then delete the `[TBD: screenshot]` line.
+- The H1 of the template is the `title` argument of `doc_create`. Start `markdown` after it, with the first section. The document shows the title above the body, so a `#` heading with the title in the body shows it twice.
 - Write a link to a document as `[Title](/doc?id={docId})` (the docId comes from `doc_list`). If no such document exists, write `[TBD: ...]` text, not a link.
 - Delete optional sections that do not apply. Do not leave empty headings.
 - After `doc_create`, reply in chat with 1 to 3 sentences. Say how many bugs the document holds and which `[TBD]` items the user must fill.

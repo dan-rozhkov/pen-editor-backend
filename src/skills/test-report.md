@@ -49,6 +49,7 @@ Never invent facts. Numbers must come from real results. Never invent counts, da
 - Link the test plan in the property list as `[Title](/doc?id={docId})` (the docId comes from `doc_list`). Link every open defect to its bug report document the same way. If no such document exists, write `[TBD: ...]` text, not a link.
 - Write the exit criteria status and the defect fields as tags with fixed colours: Met green, Not met red. Severity: Critical red, High orange, Medium yellow, Low gray. Priority: P1 red, P2 orange, P3 yellow, P4 gray. Use the same tags as the bug-report and test-plan documents.
 - Delete optional sections that do not apply. Do not leave empty headings.
+- The H1 of the template is the `title` argument of `doc_create`. Start `markdown` after it, with the first section. The document shows the title above the body, so a `#` heading with the title in the body shows it twice.
 - After `doc_create`, reply in chat with 1 to 3 sentences. Give the verdict and name the `[TBD]` items the user must fill.
 
 ## Template

@@ -2198,6 +2198,7 @@ Returns the created/updated style ids and names (with a created|updated status) 
       "Reuse the same tag text and colour that other documents use for the same field. Call doc_list and doc_read to check. " +
       "An image with a public https URL may be written as `![alt](https://...)`. A screenshot of a canvas node, or a `data:` image, needs doc_insert_image. Never write `data:` URLs. " +
       "Do not use footnotes or other HTML. The editor deletes them when the user edits the document. " +
+      "The title shows above the body. Do not start `markdown` with the title as a `#` heading. " +
       "This tool already opens the tab. Do not call doc_open after it. " +
       "Returns JSON: {docId, title}.",
     inputSchema: z.object({
@@ -2222,11 +2223,11 @@ Returns the created/updated style ids and names (with a created|updated status) 
       "Prefer `edits` for small changes. Each edit replaces text. " +
       "Each `oldString` must match exactly once in the document, unless `replaceAll` is true. " +
       "Use `markdown` only to replace the whole document. " +
+      "The title shows above the body. Do not start `markdown` with the title as a `#` heading. " +
       "Give `edits` or `markdown`, not both. " +
       "Use the same markdown subset as doc_create, including toggles, colours, property lists, callouts, links and mermaid diagrams. " +
       "Give `title` to rename the document. You may give `title` alone. " +
-      "Returns {\"workflowId\",\"title\",\"rev\",\"steps\":[{\"index\",\"text\"}],\"markdown\"}. " +
-      "The step numbers in `steps` match the numbers in `markdown`. On failure it returns {\"error\"}.",
+      "Returns JSON: {docId, title, applied}, or {error}.",
     inputSchema: z.object({
       docId: z.string().min(1).describe("Document id."),
       edits: z
@@ -2257,6 +2258,9 @@ Returns the created/updated style ids and names (with a created|updated status) 
       "Give exactly one source. `imageUrl` is an http or https URL of an image. " +
       "`nodeId` is a canvas node id. The app takes a screenshot of that node. " +
       "For a browse_screenshot, use its `placedNodeId` as `nodeId`. " +
+      "`traceId` is a trace id from trace_list. It puts a screenshot of a browse_agent trace into the document. " +
+      "Add `frameId` to choose the screenshot: take the frameId from the `frames` list of trace_read. " +
+      "If you omit `frameId`, the app uses the last screenshot of the trace. " +
       "`alt` is the alt text and also the caption. " +
       "`afterHeading` is the exact text of a heading in the document. The image goes at the end of that section. " +
       "If you omit `afterHeading`, the image goes at the end of the document. " +
@@ -2268,13 +2272,25 @@ Returns the created/updated style ids and names (with a created|updated status) 
         imageUrl: z
           .string()
           .optional()
-          .describe("http or https URL of an image. Give this or `nodeId`, not both. An empty string counts as not given."),
+          .describe("http or https URL of an image. Give this, `nodeId` or `traceId`, only one. An empty string counts as not given."),
         nodeId: z
           .string()
           .optional()
           .describe(
-            "Canvas node id. The app takes a screenshot of this node. Give this or `imageUrl`, not both. An empty string counts as not given.",
+            "Canvas node id. The app takes a screenshot of this node. Give this, `imageUrl` or `traceId`, only one. An empty string counts as not given.",
           ),
+        traceId: z
+          .string()
+          .optional()
+          .describe(
+            "Trace id from trace_list. The app takes a screenshot from this trace. Give this, `imageUrl` or `nodeId`, only one. An empty string counts as not given.",
+          ),
+        frameId: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe("Screenshot number (`frameId`) from trace_read. Only with `traceId`. Omit for the last screenshot of the trace."),
         alt: z.string().min(1).max(200).describe("Alt text. It is also the visible caption. 1 to 200 characters."),
         afterHeading: z
           .string()
@@ -2286,8 +2302,13 @@ Returns the created/updated style ids and names (with a created|updated status) 
         // optional strings so the JSON schema that the model sees stays typed.
         const imageUrl = a.imageUrl?.trim() || undefined;
         const nodeId = a.nodeId?.trim() || undefined;
-        if ((imageUrl !== undefined) === (nodeId !== undefined)) {
-          ctx.addIssue({ code: "custom", message: "Give exactly one of `imageUrl` or `nodeId`." });
+        const traceId = a.traceId?.trim() || undefined;
+        if ([imageUrl, nodeId, traceId].filter((v) => v !== undefined).length !== 1) {
+          ctx.addIssue({ code: "custom", message: "Give exactly one of `imageUrl`, `nodeId` or `traceId`." });
+          return;
+        }
+        if (a.frameId !== undefined && traceId === undefined) {
+          ctx.addIssue({ code: "custom", path: ["frameId"], message: "`frameId` needs `traceId`." });
           return;
         }
         if (imageUrl !== undefined) {
@@ -2397,7 +2418,8 @@ Returns the created/updated style ids and names (with a created|updated status) 
   trace_read: tool({
     description:
       "Read one trace as text: goal, status, each step (action, target, result, error), QA checks, console errors and failed requests. " +
-      "Screenshots are not included. " +
+      "Screenshots are not included as images. The summary lists them in `frames`: [{frameId, step, kind}]. " +
+      "To put a screenshot into a document, call doc_insert_image with `traceId` and `frameId`. " +
       "Returns JSON, or {error}.",
     inputSchema: z.object({
       traceId: z.string().min(1).describe("Trace id from trace_list."),

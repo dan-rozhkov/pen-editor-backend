@@ -1876,6 +1876,26 @@ describe("doc_* schemas", () => {
     expect(img.safeParse({ ...base, imageUrl: "ftp://x.test/a.png" }).success).toBe(false);
     expect(img.safeParse({ ...base, imageUrl: "/relative.png" }).success).toBe(false);
   });
+  it("doc_insert_image accepts traceId with an optional frameId, and rejects mixed sources", () => {
+    const img = schemaOf("doc_insert_image");
+    const base = { docId: "d1", alt: "Pricing page" };
+    expect(img.safeParse({ ...base, traceId: "t1" }).success).toBe(true);
+    expect(img.safeParse({ ...base, traceId: "t1", frameId: 0, afterHeading: "Evidence" }).success).toBe(true);
+    expect(img.safeParse({ ...base, traceId: "t1", imageUrl: "" }).success).toBe(true);
+    expect(img.safeParse({ ...base, traceId: "t1", nodeId: "n1" }).success).toBe(false);
+    expect(img.safeParse({ ...base, traceId: "t1", imageUrl: "https://x.test/a.png" }).success).toBe(false);
+    expect(img.safeParse({ ...base, traceId: "" }).success).toBe(false);
+    expect(img.safeParse({ ...base, nodeId: "n1", frameId: 1 }).success).toBe(false);
+    expect(img.safeParse({ ...base, traceId: "t1", frameId: -1 }).success).toBe(false);
+    expect(img.safeParse({ ...base, traceId: "t1", frameId: 1.5 }).success).toBe(false);
+  });
+  it("doc_create and doc_edit tell the model not to repeat the title as a heading", () => {
+    for (const name of ["doc_create", "doc_edit"] as const) {
+      expect(penTools[name].description).toContain("Do not start `markdown` with the title");
+    }
+    expect(penTools.doc_edit.description).not.toContain("workflowId");
+    expect(penTools.trace_read.description).toContain("frameId");
+  });
   it("doc_read, doc_open take docId; doc_list takes nothing", () => {
     expect(schemaOf("doc_read").safeParse({ docId: "d1" }).success).toBe(true);
     expect(schemaOf("doc_open").safeParse({ docId: "d1" }).success).toBe(true);

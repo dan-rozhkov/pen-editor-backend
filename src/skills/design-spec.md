@@ -14,7 +14,7 @@ Write a design spec as a document with `doc_create`. Developers read it to build
 
 ## Gather the inputs
 
-1. Read the canvas first. Do not ask for what the canvas shows.
+1. Read the canvas first, if a canvas tab is open. Do not ask for what the canvas shows. If no canvas tab is open, do not open one only for this document: use the conversation and ask for the screens.
    - `get_editor_state`: the list of screens, their names and their node ids. You need the ids for the links.
    - `read_embed_html`: for each embed screen, the HTML. Read states, copy, colours and tokens from it.
    - `get_variables`: the design tokens (colours, spacing, type).
@@ -36,6 +36,7 @@ Write a design spec as a document with `doc_create`. Developers read it to build
 - Show each key screen as a picture. Call `doc_insert_image` with its `nodeId`, `alt` = the screen name and `afterHeading` = the heading of that screen block. Do not write `data:` URLs.
 - Write open questions and risks that block the developers as a callout: `> [!WARNING]`, then the text on the next quote line.
 - Repeat the `### Screen: [name]` block once for each screen. Delete optional sections that do not apply.
+- The H1 of the template is the `title` argument of `doc_create`. Start `markdown` after it, with the first section. The document shows the title above the body, so a `#` heading with the title in the body shows it twice.
 - After `doc_create`, reply in chat with 1 to 3 sentences: what the spec covers and which `[TBD]` items the developers or the user must settle.
 
 ## Template

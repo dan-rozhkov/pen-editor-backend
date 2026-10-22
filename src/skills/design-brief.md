@@ -17,7 +17,7 @@ Write a design brief as a document with `doc_create`. The brief aligns the desig
 1. Use what the conversation already has. Sources that fit a brief:
    - The user's request and any attached files, links or notes.
    - A repo read with `read_design_repo` (product name, platform, stack, existing screens).
-   - The canvas: call `get_editor_state` for existing screens, and `get_variables` for brand colours, fonts and tokens. Quote real hex codes and font names.
+   - The canvas, only if a canvas tab is already open (do not open one for this document): call `get_editor_state` for existing screens, and `get_variables` for brand colours, fonts and tokens. Quote real hex codes and font names.
    - Earlier research or `browse_agent` results (competitors, references).
 2. Find these facts: the problem and its evidence, the goals and how to measure them, the audience, the scope and the deliverables, the constraints, the dates, the owner and the approver.
 3. If key facts are missing and the `ask_user` tool is in your tool list, call it ONCE with a short form for the missing facts only. Ask for the problem, the measurable goal, the audience, the deadline and the approver first. Do not ask for facts you can find.
@@ -36,6 +36,7 @@ Write a design brief as a document with `doc_create`. The brief aligns the desig
 - Write dates in the property list and the tables as `YYYY-MM-DD`.
 - Delete optional sections that do not apply. Do not leave empty headings.
 - Keep the brief to 1 or 2 pages.
+- The H1 of the template is the `title` argument of `doc_create`. Start `markdown` after it, with the first section. The document shows the title above the body, so a `#` heading with the title in the body shows it twice.
 - After `doc_create`, reply in chat with 1 to 3 sentences: what the brief covers and which `[TBD]` items the user must fill.
 
 ## Template

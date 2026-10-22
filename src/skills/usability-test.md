@@ -19,7 +19,7 @@ Write a usability test plan or a usability test report as a document with `doc_c
 
 1. Choose the kind. If the user gave `kind`, use it. If sessions have not happened, write a plan. If the user has session data, notes or recordings, write a report.
 2. Use what the conversation already has:
-   - The canvas: `get_editor_state` for the screens under test, `read_embed_html` for their copy, `get_screenshot` if available.
+   - The canvas, only if a canvas tab is already open (do not open one for this document): `get_editor_state` for the screens under test, `read_embed_html` for their copy, `get_screenshot` if available.
    - A design brief or design spec document (`doc_list`, `doc_read`): goals, audience, flows.
    - `browse_agent` or QA results for a live product.
    - For a report: the user's notes, transcripts, task results and survey scores.
@@ -36,6 +36,7 @@ Write a usability test plan or a usability test report as a document with `doc_c
 - Show a key screen or a finding as a picture with `doc_insert_image` (`nodeId` of the screen, or an image URL; `alt` says what it shows). Do not write `data:` URLs. Link the screens as `[Name](/app?node={nodeId})` (the node id comes from `get_editor_state`) and the brief or spec as `[Title](/doc?id={docId})` (the docId comes from `doc_list`). If you have no node id or document, write `[TBD: ...]` text, not a link.
 - In the findings table, replace the `[TBD: 0-4]` placeholder with the severity tag.
 - Use the template for the chosen kind only. Delete optional sections that do not apply.
+- Each template starts with an H1. That H1 is the `title` argument of `doc_create`. Start `markdown` after it. The document shows the title above the body, so do not repeat it as a `#` heading.
 - After `doc_create`, reply in chat with 1 to 3 sentences: what the document covers and which `[TBD]` items the user must fill.
 
 ## Template: plan

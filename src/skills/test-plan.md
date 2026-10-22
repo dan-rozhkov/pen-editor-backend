@@ -17,7 +17,7 @@ A test plan says what will be tested, how, by whom and when, and when testing is
 Use what the conversation already has first. Fit these sources to the request:
 
 - The feature spec or PRD that the user gave or attached. It is the main source of requirements.
-- The design on the canvas. Call `get_editor_state` to list the screens, states, forms and controls. Each screen state is a candidate for a scenario.
+- The design on the canvas, only if a canvas tab is already open (do not open one for this document). Call `get_editor_state` to list the screens, states, forms and controls. Each screen state is a candidate for a scenario.
 - A repo read earlier with `read_design_repo`, for routes, validation rules and limits.
 - A live app. Only if the spec is not enough and the user gave a URL, make one recon `browse_agent` call WITHOUT `qa`. Ask it to map pages, forms, modals and navigation.
 
@@ -40,6 +40,7 @@ Never invent facts: requirements, versions, dates, names, limits. Put a visible 
 - In the scenarios table, replace each `[TBD: P1 / P2 / P3 / P4]` placeholder with the Priority tag.
 - Write Priority as a tag with a fixed colour: P1 red, P2 orange, P3 yellow, P4 gray. Use the same tags in the bug-report and test-report documents.
 - Delete optional sections that do not apply. Do not leave empty headings.
+- The H1 of the template is the `title` argument of `doc_create`. Start `markdown` after it, with the first section. The document shows the title above the body, so a `#` heading with the title in the body shows it twice.
 - After `doc_create`, reply in chat with 1 to 3 sentences. Say what the plan covers and which `[TBD]` items the user must fill.
 
 ## Template
