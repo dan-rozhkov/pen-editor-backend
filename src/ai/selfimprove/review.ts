@@ -4,7 +4,7 @@ import { logSession } from "../../logging.js";
 import { bareModelId, createModel, isOpenCodeProvider, parseModelRef } from "../provider.js";
 import type { MemoryStore } from "../memory/store.js";
 import { isAttributionId, type ReviewAttribution } from "./attribution.js";
-import { createMemoryToolContext, getMemoryTools, memoryInputSchema } from "../memory/tool.js";
+import { createMemoryToolContext, getMemoryTools, memoryFilterContext, memoryInputSchema } from "../memory/tool.js";
 import { renderMemorySnapshot } from "../memory/render.js";
 import { selectReviewPrompt } from "../skills/prompts.js";
 import type { LearnedSkillStore } from "../skills/learnedStore.js";
@@ -404,7 +404,9 @@ export async function maybeRunReview(
     // and vice versa.
     const reviewTools: ToolSet = { ...buildReviewToolStubs(input.turnTools) };
     if (config.MEMORY_ENABLED) {
-      const ctx = createMemoryToolContext(store, userId, "background_review", attribution);
+      const ctx = createMemoryToolContext(
+        store, userId, "background_review", attribution, memoryFilterContext(config, undefined),
+      );
       Object.assign(reviewTools, getMemoryTools(ctx));
     } else if (config.SELF_SKILLS_ENABLED) {
       // Memory is off: `turnTools` (built from the REAL turn's tool set)

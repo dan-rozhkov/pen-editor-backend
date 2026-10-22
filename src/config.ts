@@ -588,6 +588,30 @@ export const envSchema = z.object({
   // IMAGE_RELEVANCE_TIMEOUT_MS: a caller on the request/tool-result path
   // must not be held open indefinitely by a slow or hung vendor.
   TASTE_CHECK_TIMEOUT_MS: z.coerce.number().positive().default(6_000),
+  // --- System One memory write filter ---
+  // src/ai/memory/filter.ts asks System One, before an `add` to persistent
+  // memory is written, (1) is the entry a durable fact that stays useful in a
+  // future unrelated conversation, and (2) does an existing entry already
+  // state the same fact. Entries live forever (no TTL), so a one-off task
+  // detail saved today is injected into every prompt tomorrow. Same
+  // off/shadow/enforce shape as IMAGE_RELEVANCE_MODE/TASTE_CHECK_MODE:
+  // "off" never calls the vendor and never reads the snapshot; "shadow" asks
+  // and logs what it WOULD drop while writing exactly as before; "enforce"
+  // drops the adds it is confident about. Needs TYPESAFE_API_KEY.
+  MEMORY_FILTER_MODE: z.enum(["off", "shadow", "enforce"]).default("off"),
+  // An add is "not durable" when the durable Noul is BELOW this. Deliberately
+  // low: only a confident "no" drops a write, and a Noul near 0.5 means the
+  // model is unsure, which keeps the entry (a lost memory costs more than a
+  // redundant one).
+  MEMORY_FILTER_DURABLE_MIN: z.coerce.number().min(0).max(1).default(0.3),
+  // An add is a "duplicate" when the duplicate Noul is AT OR ABOVE this.
+  MEMORY_FILTER_DUPLICATE_MIN: z.coerce.number().min(0).max(1).default(0.7),
+  // Enforce awaits the vendor inside the memory tool call, so the cap is
+  // small next to a multi-second LLM turn. Fail-open on expiry.
+  MEMORY_FILTER_TIMEOUT_MS: z.coerce.number().positive().default(2_000),
+  // Shadow's own, laxer cap (see IMAGE_RELEVANCE_SHADOW_TIMEOUT_MS): the
+  // enforce budget would censor the very latency tail shadow measures.
+  MEMORY_FILTER_SHADOW_TIMEOUT_MS: z.coerce.number().positive().default(10_000),
 });
 
 export type Config = z.infer<typeof envSchema>;

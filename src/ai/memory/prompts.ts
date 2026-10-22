@@ -38,3 +38,12 @@ export const MEMORY_WRITE_SAVED =
 
 export const MEMORY_CIRCUIT_BREAKER =
   "Stop retrying memory calls — leave memory unchanged for now and continue with your reply to the user. The fact can be saved in a later turn.";
+
+// Told to the model when the System One memory filter dropped adds. Plain
+// words and an explicit "do not retry": a model that reads a refusal as a
+// transient failure re-issues the same add and burns its step budget.
+export const MEMORY_FILTER_SKIPPED =
+  "Some entries were not saved because the memory filter judged them one-off or already stored. Do not retry them. Continue with your reply to the user.";
+
+export const MEMORY_FILTER_ALL_SKIPPED =
+  "Nothing was saved: the memory filter judged every entry one-off or already stored. Do not retry them. Continue with your reply to the user.";

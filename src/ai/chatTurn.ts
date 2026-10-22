@@ -31,8 +31,9 @@ import {
   DOC_ONLY_SKILL_NAMES,
   QA_ONLY_SKILL_NAMES,
 } from "./skills.js";
+import { MEMORY_SNAPSHOT_TIMEOUT_MS, withTimeout } from "./withTimeout.js";
 import { renderMemorySnapshot } from "./memory/render.js";
-import { createMemoryToolContext, getMemoryTools } from "./memory/tool.js";
+import { createMemoryToolContext, getMemoryTools, memoryFilterContext } from "./memory/tool.js";
 import type { MemoryStore } from "./memory/store.js";
 import { getLearnedCatalog, type LearnedSkill, type LearnedSkillStore } from "./skills/learnedStore.js";
 import { createSkillRunContext } from "./skills/runContext.js";
@@ -42,16 +43,6 @@ import { getUserSkillCatalog } from "./skills/userSkillCatalog.js";
 import type { UserSkill, UserSkillStore } from "./skills/userStore.js";
 import { createSystemOne, type SystemOneClient } from "../services/systemone.js";
 import { routeSkill, SKILL_ROUTING_SHADOW_BUDGET_MS, type SkillRouteVerdict } from "./skillRouting.js";
-
-// Bounds the memory-snapshot read on top of (not instead of) the pool's own
-// connectionTimeoutMillis (src/tracing/traceStore.ts): that setting only
-// covers acquiring a connection, but a connection that IS acquired can still
-// hang mid-query if the network black-holes packets after the handshake
-// (no RST, so the client never sees a rejected promise). Racing the read
-// against a short local timer is what actually caps every request's worst
-// case, since a hang here — not an exception — is exactly what a plain
-// try/catch cannot degrade from.
-const MEMORY_SNAPSHOT_TIMEOUT_MS = 2_000;
 
 // Same reasoning as MEMORY_SNAPSHOT_TIMEOUT_MS: the learned-skill catalog
 // read (getLearnedCatalog) sits in this same hot path, so a hung — not
@@ -79,22 +70,6 @@ const USER_SKILLS_TIMEOUT_MS = 2_000;
 // validateUserSkill.ts) already keeps a single user under this in practice;
 // this is the same defense-in-depth the learned cap is.
 const MAX_USER_SKILLS_IN_PROMPT = 50;
-
-function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (err) => {
-        clearTimeout(timer);
-        reject(err);
-      },
-    );
-  });
-}
 
 // Strips reasoning/thinking blocks and provider metadata from chat history.
 // Some providers reject stale/invalid thinking signatures when prior assistant turns are replayed.
@@ -1171,7 +1146,10 @@ export async function prepareChatTurn(
     if (memoryInjected && memoryStore && input.userId) {
       Object.assign(
         tools,
-        getMemoryTools(createMemoryToolContext(memoryStore, input.userId, "foreground")),
+        getMemoryTools(
+          createMemoryToolContext(memoryStore, input.userId, "foreground", undefined,
+            memoryFilterContext(config, input.systemOneClient)),
+        ),
       );
     }
     if (learnedStore && auditDb) {

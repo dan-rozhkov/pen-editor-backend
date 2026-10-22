@@ -100,6 +100,11 @@ export function makeConfig(overrides: Partial<Config> = {}): Config {
     TASTE_CHECK_MODE: envSchema.shape.TASTE_CHECK_MODE.parse(undefined),
     TASTE_CHECK_MIN_NOUL: envSchema.shape.TASTE_CHECK_MIN_NOUL.parse(undefined),
     TASTE_CHECK_TIMEOUT_MS: envSchema.shape.TASTE_CHECK_TIMEOUT_MS.parse(undefined),
+    MEMORY_FILTER_MODE: envSchema.shape.MEMORY_FILTER_MODE.parse(undefined),
+    MEMORY_FILTER_DURABLE_MIN: envSchema.shape.MEMORY_FILTER_DURABLE_MIN.parse(undefined),
+    MEMORY_FILTER_DUPLICATE_MIN: envSchema.shape.MEMORY_FILTER_DUPLICATE_MIN.parse(undefined),
+    MEMORY_FILTER_TIMEOUT_MS: envSchema.shape.MEMORY_FILTER_TIMEOUT_MS.parse(undefined),
+    MEMORY_FILTER_SHADOW_TIMEOUT_MS: envSchema.shape.MEMORY_FILTER_SHADOW_TIMEOUT_MS.parse(undefined),
     SUPPORT_INBOX_ADDRESSES: "support@sideform.pro,privacy@sideform.pro",
     ...overrides,
   };
