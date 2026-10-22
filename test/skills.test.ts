@@ -605,3 +605,18 @@ describe("document template skills", () => {
     for (const name of DOC_TEMPLATE_SKILLS) expect(description).toContain(name);
   });
 });
+
+describe("QA retrospective skill rules", () => {
+  it("keeps the QA retrospective rules in bug-hunt, bug-report and test-report", () => {
+    const hunt = getSkill("bug-hunt")!.content;
+    expect(hunt).toContain("Never guess an API URL");
+    expect(hunt).toContain("`qa.unmatchedMocks`");
+    expect(hunt).toContain("`visible: true`");
+    expect(hunt).toContain("do not delete anything");
+    expect(hunt).toContain("Judge:");
+    expect(hunt).toContain("`placed`");
+    expect(getSkill("bug-report")!.content).toContain("only if a rerun reproduced it");
+    expect(getSkill("bug-report")!.content).toContain("only when it is in your tool list");
+    expect(getSkill("test-report")!.content).toContain("`qa.unmatchedMocks`");
+  });
+});

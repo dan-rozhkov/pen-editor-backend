@@ -30,6 +30,7 @@ import type { ModelMessage } from "ai";
 export const SCREENSHOT_TOOL_NAMES: ReadonlySet<string> = new Set([
   "get_screenshot",
   "browse_screenshot",
+  "trace_frame",
 ]);
 
 export interface ScreenshotImage {

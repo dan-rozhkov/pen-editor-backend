@@ -77,6 +77,7 @@ describe("penTools registry", () => {
         "workflow_open",
         "trace_list",
         "trace_read",
+        "trace_frame",
         "analyze_image",
         "publish_to_showcase",
         "read_design_repo",
@@ -159,6 +160,7 @@ describe("penTools registry", () => {
       "workflow_open",
       "trace_list",
       "trace_read",
+      "trace_frame",
       "get_screenshot",
       "publish_to_showcase",
       "read_design_repo",
@@ -1915,6 +1917,18 @@ describe("doc_* schemas", () => {
     expect(schemaOf("workflow_list").safeParse({}).success).toBe(true);
     expect(schemaOf("workflow_edit").safeParse({ workflowId: "w1", title: "T" }).success).toBe(true);
     expect(schemaOf("workflow_edit").safeParse({ workflowId: "w1", steps: [] }).success).toBe(false);
+  });
+  it("trace_frame needs traceId and frameId; placement fields are optional and typed", () => {
+    const s = schemaOf("trace_frame");
+    expect(s.safeParse({ traceId: "t1", frameId: 3 }).success).toBe(true);
+    expect(s.safeParse({ traceId: "t1", frameId: 3, placeOnCanvas: true, x: 10, y: 20 }).success).toBe(true);
+    expect(s.safeParse({ traceId: "t1" }).success).toBe(false);
+    expect(s.safeParse({ traceId: "", frameId: "f3" }).success).toBe(false);
+    expect(s.safeParse({ traceId: "t1", frameId: -1 }).success).toBe(false);
+    expect(s.safeParse({ traceId: "t1", frameId: "f3" }).success).toBe(false);
+    expect(penTools.trace_frame.execute).toBeUndefined();
+    expect(penTools.trace_read.description).toContain("frames");
+    expect(penTools.trace_read.description).toContain("trace_frame");
   });
   it("trace_read needs a non-empty traceId; trace_list takes nothing", () => {
     expect(schemaOf("trace_read").safeParse({ traceId: "t1" }).success).toBe(true);

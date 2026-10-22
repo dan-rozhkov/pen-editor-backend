@@ -5,8 +5,8 @@ import { penTools } from "../src/ai/tools.js";
 const DATA_URL = "data:image/png;base64,iVBORw0KGgo=";
 
 describe("SCREENSHOT_TOOL_NAMES", () => {
-  it("contains exactly get_screenshot and browse_screenshot", () => {
-    expect([...SCREENSHOT_TOOL_NAMES].sort()).toEqual(["browse_screenshot", "get_screenshot"]);
+  it("contains exactly get_screenshot, browse_screenshot and trace_frame", () => {
+    expect([...SCREENSHOT_TOOL_NAMES].sort()).toEqual(["browse_screenshot", "get_screenshot", "trace_frame"]);
   });
 });
 

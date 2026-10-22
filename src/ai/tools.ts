@@ -1478,7 +1478,7 @@ export const browseAgentSetup = z
       .array(fixtureNetworkRule)
       .max(20)
       .optional()
-      .describe("API mocks, desktop and cloud browser (at most 20): `url` with `*` wildcards, optional method, status (200-599), headers, body (string or JSON object), delayMs, abort, times."),
+      .describe("API mocks, desktop and cloud browser (at most 20): `url`, optional method, status (200-599), headers, body (string or JSON object), delayMs, abort, times. `url` is a glob over the full URL. `*` matches any characters. Without `*` the URL must match exactly, query string included. Take the URL from recon; do not guess it. A rule that matches no request is listed in the run result as `qa.unmatchedMocks`."),
     emulate: fixtureEmulate
       .optional()
       .describe("Browser environment for the whole run (all tabs of the setup): `device` preset (iphone-15, pixel-8, ipad, desktop-1440, desktop-1920), or `viewport` {width, height, deviceScaleFactor?, mobile?}, `touch`, `userAgent`, `locale` (for example de-DE), `timezone` (for example Europe/Berlin), `colorScheme` (light or dark), `reducedMotion`. Explicit fields override the preset. Tabs that the page opens later are not emulated."),
@@ -1492,9 +1492,9 @@ export const browseAgentSetup = z
 // the model is never told about a flag its client cannot honour. Both variants
 // are built once, so their bytes are stable across requests (prompt caching).
 const BROWSE_AGENT_DESCRIPTION_HEAD =
-  "Run a whole browser task in the built-in browser through a dedicated browsing subagent, and get its final answer. The subagent does NOT see this chat: `goal` must carry the whole task with every constraint, every name and date, and what to report back (for example the prices, the names, the final URL). If the user wants a picture (screenshot) of the page on the canvas, say so in `goal`: the subagent then calls browse_screenshot with placeOnCanvas. If the user wants an editable copy of the page on the canvas, set `capture: true` and say in `goal` which page or part to copy. When the task names a site or a page, pass its start URL in `url`: the browser opens it before the subagent starts, which saves a step. (To continue from a checkpoint, pass only `resume`: no `url`, no `setup`.) To prepare the page first (a known state, API mocks, a check that it is the right page), pass `setup`. Returns `{ status: \"done\" | \"error\" | \"aborted\" | \"step_limit\" | \"timeout\" | \"setup_failed\", answer, steps }`, plus `captured: { nodeId, width, height, url, title }` when the page was copied onto the canvas.";
+  "Run a whole browser task in the built-in browser through a dedicated browsing subagent, and get its final answer. The subagent does NOT see this chat: `goal` must carry the whole task with every constraint, every name and date, and what to report back (for example the prices, the names, the final URL). If the user wants a picture (screenshot) of the page on the canvas, say so in `goal`: the subagent then calls browse_screenshot with placeOnCanvas. If the user wants an editable copy of the page on the canvas, set `capture: true` and say in `goal` which page or part to copy. When the task names a site or a page, pass its start URL in `url`: the browser opens it before the subagent starts, which saves a step. (To continue from a checkpoint, pass only `resume`: no `url`, no `setup`.) To prepare the page first (a known state, API mocks, a check that it is the right page), pass `setup`. Returns `{ status: \"done\" | \"error\" | \"aborted\" | \"step_limit\" | \"timeout\" | \"setup_failed\", answer, steps }`, plus `captured: { nodeId, width, height, url, title }` when the page was copied onto the canvas, and `placed: [{ nodeId, url }]`: the screenshots the subagent placed on the canvas during the run.";
 const BROWSE_AGENT_DESCRIPTION_QA =
-  " When `qa: true` was set, the result also carries `qa: { outcome: \"passed\" | \"failed\" | \"inconclusive\" | \"error\" | \"setup_failed\" | \"aborted\", verdict?, reason?, steps: [{ tool, args, ok, error? }], stepsDropped? }`: `qa.outcome` and `qa.reason` are the verdict of the test. The `qa` object may also carry `consoleErrors` and `failedRequests` (lists of what the page reported during the run, with `consoleErrorsDropped` and `failedRequestsDropped` counts).";
+  " When `qa: true` was set, the result also carries `qa: { outcome: \"passed\" | \"failed\" | \"inconclusive\" | \"error\" | \"setup_failed\" | \"aborted\", verdict?, reason?, steps: [{ tool, args, ok, error? }], stepsDropped? }`: `qa.outcome` and `qa.reason` are the verdict of the test. The `qa` object may also carry `unmatchedMocks` (the `setup.network` rules that matched no request: the mock did not run, so the run proves nothing about that case), `consoleErrors` and `failedRequests` (lists of what the page reported during the run, with `consoleErrorsDropped` and `failedRequestsDropped` counts).";
 // Only for clients with the browseAssert capability.
 const BROWSE_AGENT_DESCRIPTION_ASSERT =
   " The `qa` object may also carry `checks` (the results of the `qa_assert` calls and of the final `checks` input). If a final check fails, a `passed` verdict becomes `failed`.";
@@ -2418,12 +2418,42 @@ Returns the created/updated style ids and names (with a created|updated status) 
   trace_read: tool({
     description:
       "Read one trace as text: goal, status, each step (action, target, result, error), QA checks, console errors and failed requests. " +
-      "Screenshots are not included as images. The summary lists them in `frames`: [{frameId, step, kind}]. " +
+      "Screenshots are not included as images. The result has a `frames` index: [{frameId, step, kind}]. " +
+      "To see one frame, call trace_frame with `traceId` and `frameId`. " +
       "To put a screenshot into a document, call doc_insert_image with `traceId` and `frameId`. " +
       "Returns JSON, or {error}.",
     inputSchema: z.object({
       traceId: z.string().min(1).describe("Trace id from trace_list."),
     }),
+  }),
+
+  trace_frame: tool({
+    description:
+      "Get one frame (screenshot) of a browse_agent trace as an image. " +
+      "Take `traceId` from trace_list. Take `frameId` from the `frames` list of trace_read: [{frameId, step, kind}]. " +
+      "With `placeOnCanvas: true` the app also places the image on the canvas. The result then has `placedNodeId`. " +
+      "Use `x` and `y` to set the canvas position. They are used only with `placeOnCanvas`. " +
+      "Use it to look at the page at one step of a run, or to get a node id for a bug-report screenshot. " +
+      "If the frame is stored as a URL, the result has `imageUrl` instead of an image. Then call analyze_image with that URL. " +
+      "If placing on the canvas failed, the result has `placeError`. The image is still returned. " +
+      "Returns the image and JSON ({traceId, frameId, placedNodeId?, placeError?}), or {error}. With `imageUrl`: JSON ({traceId, frameId, imageUrl, placedNodeId?, placeError?}).",
+    inputSchema: z.object({
+      traceId: z.string().min(1).describe("Trace id from trace_list."),
+      frameId: z
+        .number()
+        .int()
+        .min(0)
+        .describe("Screenshot number (`frameId`) from the `frames` list of trace_read."),
+      placeOnCanvas: z.boolean().optional().describe("true: also place the image on the canvas and return `placedNodeId`. Default false."),
+      x: z.number().optional().describe("Canvas x of the placed image. Only with placeOnCanvas."),
+      y: z.number().optional().describe("Canvas y of the placed image. Only with placeOnCanvas."),
+    }),
+    // Same image path as browse_screenshot: see screenshotOutput.ts.
+    toModelOutput: ({ output }) => {
+      const content = screenshotOutputToContent("trace_frame", output);
+      if (content) return content;
+      return { type: "text", value: typeof output === "string" ? output : JSON.stringify(output) };
+    },
   }),
 
   ask_user: tool({
@@ -2768,7 +2798,7 @@ Returns the created/updated style ids and names (with a created|updated status) 
 
   browse_fill_login: tool({
     description:
-      "Type a login that the user saved in the desktop browser into the sign-in form of the current tab. You never see the password. Call it when the page shows a sign-in form. Without `label` it uses the saved login for this site. With `label` it uses the saved account whose label or username matches. Set `submit: true` to also press Enter after the fields are filled. After it, take a snapshot. Returns `{ ok, origin, label, filled, submitted }`. An error means there is no saved login for this site: stop, as for a login wall. This tool runs in the user's browser (client side) and has no server-side execute.",
+      "Type a login that the user saved in the desktop browser into the sign-in form of the current tab. You never see the password. Call it when the page shows a sign-in form. Without `label` it uses the saved login for this site. With `label` it uses the saved account whose label or username matches. Set `submit: true` to also press Enter after the fields are filled. After it, take a snapshot. Returns `{ ok, origin, label, filled, submitted, sessionEstablished?, note? }`. If the result has `sessionEstablished: false`, the sign-in did not work. Do not continue as if signed in. Take a snapshot and look for an error message or a captcha. An error means there is no saved login for this site: stop, as for a login wall. This tool runs in the user's browser (client side) and has no server-side execute.",
     inputSchema: z.object({
       label: z
         .string()

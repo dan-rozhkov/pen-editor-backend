@@ -22,6 +22,8 @@ Use what the conversation already has first:
 - The spec or PRD, for the expected result.
 - Screenshots, logs or text that the user attached.
 
+Report a defect only if a rerun reproduced it. If you have no rerun that reproduced the bug, run one first, or do not file the report.
+
 Before you write, search for duplicates. Call `doc_list` and look for a report of the same problem. If one exists, update it with `doc_read` and `doc_edit`. Do not write a second report.
 
 Facts you need: the exact steps, the expected result, the actual result, the environment (build, browser, OS, device) and how often it happens.
@@ -38,7 +40,7 @@ Never invent facts: steps, versions, error text, counts. Put a visible placehold
 - Use only the markdown that the `doc_create` description allows. A table cell holds ONE line of inline text. Put multi-line content in lists under a heading.
 - Use the field table only for single-line fields. Put steps, expected and actual results under headings, in lists or paragraphs.
 - Write the metadata table as a property list (see the `doc_create` description). Write Status, Severity and Priority as tags with the fixed colours in the writing rules. In the template, Severity and Priority are `[TBD: ...]` placeholders. Replace each one with the tag.
-- Insert each screenshot with `doc_insert_image` and `afterHeading` "Evidence", and an `alt` that says what the image shows. For a screenshot from a trace, give `traceId` and the `frameId` from `trace_read`. Do one call for each relevant frame. Otherwise give `nodeId` (the `placedNodeId` from `browse_screenshot`) or an image URL. Then delete the `[TBD: screenshot]` line.
+- Insert each screenshot with `doc_insert_image` and `afterHeading` "Evidence", and an `alt` that says what the image shows. For a screenshot from a trace, give `traceId` and the `frameId` from `trace_read`. This is the way to put a trace frame into a document. Do one call for each relevant frame. Otherwise give `nodeId`: a node id from the `placed` field of the `browse_agent` result, or the `placedNodeId` of `browse_screenshot`. Or give an image URL. Use `trace_frame` only when it is in your tool list, and only to look at a frame or to place it on the canvas. Then delete the `[TBD: screenshot]` line.
 - The H1 of the template is the `title` argument of `doc_create`. Start `markdown` after it, with the first section. The document shows the title above the body, so a `#` heading with the title in the body shows it twice.
 - Write a link to a document as `[Title](/doc?id={docId})` (the docId comes from `doc_list`). If no such document exists, write `[TBD: ...]` text, not a link.
 - Delete optional sections that do not apply. Do not leave empty headings.
@@ -55,7 +57,7 @@ Never invent facts: steps, versions, error text, counts. Put a visible placehold
 | Status | <span data-bg="gray">New</span> |
 | Area | [component or feature] |
 | Environment | [build, OS, browser and version, device] |
-| Reproducibility | [Always / Sometimes, N of M / Once] |
+| Reproducibility | [Always / Sometimes, N of M. A rerun must have reproduced it] |
 | Severity | [TBD: Critical / High / Medium / Low] |
 | Priority | [TBD: P1 / P2 / P3 / P4, set at triage] |
 | Regression | [Yes, worked in build X / No / Unknown] (optional) |
@@ -107,7 +109,7 @@ Never invent facts: steps, versions, error text, counts. Put a visible placehold
 3. Write a summary that names the problem, not the fix. Keep it near 60 characters. Add an optional `[Area]` tag at the start. Good: "[Checkout] Total ignores the discount code". Bad: "Fix the total".
 4. Number the steps. Start from a clean state. Keep the steps minimal: remove every step that is not needed to show the bug.
 5. Write expected and actual results as two separate parts. Say what you see, not what you think is wrong inside.
-6. Give the reproducibility: always, sometimes with a count ("3 of 5"), or once. If a rerun did not fail, say so.
+6. Give the reproducibility: always, or sometimes with a count ("3 of 5"). A bug seen once and never reproduced is not a report; list it as flaky in the chat.
 7. Add evidence: console errors, failed requests, `qa.reason`, screenshots. Check that the bug exists in the latest build. Name the build.
 8. Use the same severity scale in every report. Severity is the technical impact. Priority is the urgency of the fix, and it is set at triage. The two are independent.
    - Critical: data loss, security problem, payment error, or the core flow is blocked.

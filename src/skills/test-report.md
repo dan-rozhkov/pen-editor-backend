@@ -27,6 +27,8 @@ Map QA scenario outcomes into the counts like this:
 - `passed` goes to Passed.
 - `failed`, confirmed on the rerun, goes to Failed.
 - A scenario that failed and then passed on the rerun is flaky. Report it separately. It is not a failure.
+- A judge downgrade (the `qa.reason` starts with "Judge:") and `inconclusive` with the reason "Agent said pass, but check failed" are not a pass. Read the failed checks and the judge reason. Count the scenario as Failed only after a rerun that confirmed it. Otherwise count it as Blocked or not run, with the reason.
+- A run with `qa.unmatchedMocks` is not verified. The mock did not run. Count the scenario as not run.
 - `inconclusive`, `error`, `setup_failed` and `aborted` are not a pass and not a failure. Count each one as Blocked or not run, with the reason.
 - A scenario that was planned and not run goes to not run. A scenario that could not start because of a blocker goes to blocked.
 

@@ -93,7 +93,7 @@ export const SUBAGENT_BROWSER_GUIDANCE = buildSubagentBrowserGuidance({
 });
 
 const PEN_EDITOR_LOGIN_BULLET =
-  "- Exception to the password rule: `browse_fill_login` is available. When the page shows a sign-in form, call it instead of stopping. It types a login that the user saved. If the goal names an account, pass it as `label`. Never type a password yourself. After it, take a snapshot and continue. If it returns an error, stop, as for a login wall.";
+  "- Exception to the password rule: `browse_fill_login` is available. When the page shows a sign-in form, call it instead of stopping. It types a login that the user saved. If the goal names an account, pass it as `label`. Never type a password yourself. After it, take a snapshot and continue. If the result has `sessionEstablished: false`, the sign-in did not work. Do not continue as if signed in. Take a snapshot and look for an error message or a captcha. If it returns an error, stop, as for a login wall.";
 
 function buildSubagentPrompt(qa: boolean, login: boolean): string {
   return buildBrowseAgentPrompt({

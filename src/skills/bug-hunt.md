@@ -33,16 +33,25 @@ Find real bugs in a running web app. Use the `browse_agent` tool with `qa: true`
 
 Set `setup.fresh: true` in every `qa: true` scenario and in every rerun. It resets tabs, cookies and storage for the sites that the setup names. It isolates each scenario from the recon run and from other scenarios. The exception is a scenario that continues from a checkpoint.
 
-1. **Recon.** Make one `browse_agent` call WITHOUT `qa`. Ask it to map the pages, forms, modals, lists, navigation and login. Use the map to pick the core flows. Do not reuse the recon tab state. Step 2 and the later steps start fresh.
-2. **Round 1: happy path.** Run one `qa: true` scenario for each core flow. If a core happy path fails, rerun it once (see step 4) before you report it. If it fails again, report it and stop attacking that flow. Deep attacks on a broken flow waste runs. If it does not fail again, it is flaky. Continue to attack the flow.
-3. **Round 2: attacks.** Read the Round 1 results again. Ask: what did the developer not think about? Pick 2 or 3 attack families from the catalog for each feature. Write each scenario as a narrow `goal`: exact steps and one explicit expected result.
+1. **Recon.** Make one `browse_agent` call WITHOUT `qa`. Ask it to map the pages, forms, modals, lists, navigation and login. Also ask it to record the method and the full URL of each list request and each write request (from the trace request log or the network). Use the map to pick the core flows. Do not reuse the recon tab state. Step 2 and the later steps start fresh.
+   - Never guess an API URL. Example: the real URL was workspace-scoped, `/api/v1/workspaces/<id>/contacts`, not `/api/v1/contacts`. Write a `setup.network` mock only from a recorded URL.
+   - If recon stops with status `step_limit`, continue with `resume` from its checkpoint, or split recon by page. Do not leave the app map incomplete.
+2. **Trial run.** Before you batch mocked scenarios, run one trial scenario with the mock. Confirm that the mock changed the behaviour and that `qa.unmatchedMocks` is absent. A run with `unmatchedMocks` proves nothing about the error path. Fix the URL and rerun.
+3. **Round 1: happy path.** Run one `qa: true` scenario for each core flow. If a core happy path fails, rerun it once (see step 5) before you report it. If it fails again, report it and stop attacking that flow. Deep attacks on a broken flow waste runs. If it does not fail again, it is flaky. Continue to attack the flow.
+4. **Round 2: attacks.** Read the Round 1 results again. Ask: what did the developer not think about? Pick 2 or 3 attack families from the catalog for each feature. Write each scenario as a narrow `goal`: exact steps and one explicit expected result.
    - Look at the `browse_agent` schema. If it has a `checks` parameter, every attack run MUST pass `checks`. Never send an attack run with no `checks`.
    - Always include `{ "type": "no_console_errors" }`.
    - Also add one check for the expected result: `text`, `count`, `value`, `element` or `url`.
    - If the schema has no `checks` parameter, put the expected result in `goal` only.
-4. **Reproduce.** Rerun every failed scenario once with the same `goal` and `setup`. If it does not fail again, report it as flaky. Do not report it as a bug. The outcomes `inconclusive`, `error` and `setup_failed` are not bugs. Fix the scenario and run it again, or list it as untested.
-5. **Escalate.** Bugs cluster. After a confirmed bug, run 1 or 2 more scenarios near it.
-6. **Budget.** Run about 8 to 12 scenarios in total. Stop earlier when you have 5 or more confirmed bugs. Run more if the user asks.
+   - Take `count` selectors from recon. Do not guess a selector such as `tr`. For table rows use `visible: true`, because a hidden empty-state row also matches.
+   - Use CSS selectors only in checks. For text use `{ "type": "text" }`. Do not use `text=` or `:has-text(` in a selector.
+   - To check the text of a dialog, write in `goal`: "open the dialog, read it, then cancel; do not delete anything". Do not mix "open the dialog" with "confirm".
+5. **Reproduce.** Rerun every failed scenario once with the same `goal` and `setup`. If it does not fail again, report it as flaky. Do not report it as a bug. The outcomes `inconclusive`, `error` and `setup_failed` are not bugs. Fix the scenario and run it again, or list it as untested.
+   - A judge downgrade (the `qa.reason` starts with "Judge:") is a signal. So is `inconclusive` with the reason "Agent said pass, but check failed". Read the failed checks and the judge reason. Fix the check or rerun. Do not dismiss the signal. Do not count it as a defect before a rerun.
+6. **Escalate.** Bugs cluster. After a confirmed bug, run 1 or 2 more scenarios near it.
+7. **Second pass.** Verify each UX observation with its own run. Do not leave an observation unverified.
+8. **Evidence.** For each confirmed bug, put this in the `goal` of the run (or rerun) that shows it: "Take one screenshot with browse_screenshot and waitFor on the element that shows the bug. Place it on the canvas." Then cite the node ids from the `placed` field of the `browse_agent` result.
+9. **Budget.** Run about 8 to 12 scenarios in total. Stop earlier when you have 5 or more confirmed bugs. Run more if the user asks.
 
 ## Attack catalog
 
@@ -65,7 +74,7 @@ Set `setup.fresh: true` in every `qa: true` scenario and in every rerun. It rese
    Try: status 500, status 4xx, `abort`, a slow response with `delayMs`, an empty body, a malformed JSON body.
    Expect: an error message, a way to retry, no infinite spinner, no lost user input.
 7. **Empty and huge data** — lists with too little or too much data.
-   Try: zero items, one item, many items. Use mocks in `setup.network`.
+   Try: zero items, one item, many items. Use mocks in `setup.network`. If recon showed no list request, the server renders the list, and a response mock cannot empty it. Then use a search or filter that matches nothing, or a test account with no data. If neither is possible, mark the case untested.
    Expect: a designed empty state. Pagination or scroll works. Long titles do not break the layout.
 8. **Viewport and device** — use `setup.emulate`.
    Try: `setup.emulate.device` `iphone-15`, `pixel-8`, `ipad` or `desktop-1920`, or a narrow `setup.emulate.viewport`, a tablet in landscape.
@@ -103,7 +112,7 @@ A good scenario has exact steps and one expected result. Example of a server fai
 }
 ```
 
-Use the real field names of the `browse_agent` schema in your call. Send `checks` whenever the schema has it.
+Take the mock URL from recon. Use the real field names of the `browse_agent` schema in your call. Send `checks` whenever the schema has it.
 
 A bad goal: "Test the form."
 Why it is bad: it has no steps, no input and no expected result. The subagent cannot decide pass or fail. The result tells you nothing.

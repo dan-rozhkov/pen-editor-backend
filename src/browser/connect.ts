@@ -36,8 +36,11 @@ export function toCommandRunner(controller: BrowserController): CommandRunner {
     releaseFixture: async (args) => {
       const t = tokenArg(args);
       if ("error" in t) return { ok: false, error: t.error };
-      await controller.releaseFixture(t.token);
-      return { ok: true };
+      // The package's controller resolves to { mockHits } when it released network mocks; the
+      // client reports the rules that matched no request. Typed loosely until the package bump.
+      const released = (await controller.releaseFixture(t.token)) as unknown;
+      const mockHits = (released as { mockHits?: unknown } | undefined)?.mockHits;
+      return { ok: true, ...(Array.isArray(mockHits) ? { mockHits } : {}) };
     },
     // The checkpoint journal. Over HTTP the registry (cloudSessions) maps its own
     // backend token to the controller's owner token and only calls these once a
