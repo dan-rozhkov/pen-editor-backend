@@ -2198,7 +2198,6 @@ Returns the created/updated style ids and names (with a created|updated status) 
       "Reuse the same tag text and colour that other documents use for the same field. Call doc_list and doc_read to check. " +
       "An image with a public https URL may be written as `![alt](https://...)`. A screenshot of a canvas node, or a `data:` image, needs doc_insert_image. Never write `data:` URLs. " +
       "To set the display width of an image in pixels, add `#width=<N>` to its URL, for example `![alt](https://x.com/a.png#width=480)`. Omit it for full width. " +
-      "An image gallery shows small thumbnails. A click opens the full image. Write it as a quote whose first line is `[!GALLERY]`, then one image per quote line, for example `> [!GALLERY]`, `> ![First](https://...)`, `> ![Second](https://...)`. Use it for 2 or more related images. " +
       "Do not use footnotes or other HTML. The editor deletes them when the user edits the document. " +
       "The title shows above the body. Do not start `markdown` with the title as a `#` heading. " +
       "This tool already opens the tab. Do not call doc_open after it. " +
@@ -2227,7 +2226,7 @@ Returns the created/updated style ids and names (with a created|updated status) 
       "Use `markdown` only to replace the whole document. " +
       "The title shows above the body. Do not start `markdown` with the title as a `#` heading. " +
       "Give `edits` or `markdown`, not both. " +
-      "Use the same markdown subset as doc_create, including toggles, colours, property lists, callouts, image widths, image galleries, links and mermaid diagrams. " +
+      "Use the same markdown subset as doc_create, including toggles, colours, property lists, callouts, image widths, links and mermaid diagrams. " +
       "Give `title` to rename the document. You may give `title` alone. " +
       "Returns JSON: {docId, title, applied}, or {error}.",
     inputSchema: z.object({
