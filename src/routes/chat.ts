@@ -542,7 +542,7 @@ export async function chatRoutes(
     const buildTraceRow = (
       steps: LogStep[],
       streamError: string | null,
-      usage?: { inputTokens?: number; outputTokens?: number },
+      usage?: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number },
     ) => ({
       sessionId: traceSessionId,
       // Already validated by isPlausibleUserId above — an implausible client
@@ -562,6 +562,7 @@ export async function chatRoutes(
       streamError,
       inputTokens: usage?.inputTokens ?? 0,
       outputTokens: usage?.outputTokens ?? 0,
+      cacheReadTokens: usage?.cacheReadTokens ?? null,
     });
 
     // Builds one attempt's streamText(...) call. `attemptState.discarded` is
@@ -645,6 +646,9 @@ export async function chatRoutes(
         // step is a real, complete user turn. Computed once here (not
         // recomputed) and reused both for the analytics property below and
         // for runReviewSafe's own turnComplete gate further down.
+        // undefined when the provider did not report it; stored as null
+        // (raw_traces) / null (PostHog), never as 0.
+        const cacheReadTokens = usage.inputTokenDetails?.cacheReadTokens;
         const lastStep = steps[steps.length - 1];
         const turnComplete = !lastStep || lastStep.toolCalls.length === 0;
 
@@ -657,6 +661,7 @@ export async function chatRoutes(
             tool_call_count: steps.reduce((n, s) => n + s.toolCalls.length, 0),
             prompt_tokens: usage.inputTokens ?? 0,
             completion_tokens: usage.outputTokens ?? 0,
+            cache_read_tokens: cacheReadTokens ?? null,
             finish_reason: steps[steps.length - 1]?.finishReason ?? null,
             mode: agentMode,
             skill: slashSkillName ?? null,
@@ -700,6 +705,7 @@ export async function chatRoutes(
             buildTraceRow(logSteps, null, {
               inputTokens: usage.inputTokens ?? 0,
               outputTokens: usage.outputTokens ?? 0,
+              cacheReadTokens,
             }),
           );
         }

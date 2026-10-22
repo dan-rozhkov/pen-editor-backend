@@ -204,6 +204,18 @@ describe("createTraceStore", () => {
     expect(pool.calls[0].params?.[0]).toBe("tab-1-1");
     expect(pool.calls[0].params?.[1]).toBeNull(); // no userId on this fixture row
     expect(JSON.parse(pool.calls[0].params?.[4] as string)).toEqual(row.payload);
+    expect(pool.calls[0].params?.[8]).toBeNull(); // no cacheReadTokens on this fixture row
+  });
+
+  it("stores cacheReadTokens in cache_read_tokens", async () => {
+    const pool = fakePool();
+    const store = createTraceStore(
+      makeConfig({ TRACE_DATABASE_URL: "postgres://x" }),
+      pool,
+    );
+    await store!.writeRawTrace({ ...row, cacheReadTokens: 7 });
+    expect(pool.calls[0].sql).toContain("cache_read_tokens");
+    expect(pool.calls[0].params?.[8]).toBe(7);
   });
 
   it("strips base64 image payloads out of the stored history", async () => {

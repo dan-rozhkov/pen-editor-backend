@@ -116,6 +116,7 @@ describe("chat route analytics", () => {
       tool_call_count: 0,
       prompt_tokens: expect.any(Number),
       completion_tokens: expect.any(Number),
+      cache_read_tokens: 0,
       mode: "edits",
       // Finding #2: a step-less final step is a real, complete user turn.
       turn_complete: true,

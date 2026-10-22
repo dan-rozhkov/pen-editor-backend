@@ -54,6 +54,37 @@ describe("chat route trace writing", () => {
     await close();
   });
 
+  it("records the provider's cache-read tokens for the request", async () => {
+    chatMocks.model = mockModel(
+      textStreamChunks("hi", {
+        inputTokens: { total: 10, noCache: 3, cacheRead: 7, cacheWrite: 0 },
+        outputTokens: { total: 5, text: 5, reasoning: 0 },
+      }),
+    );
+    const store = recordingTraceStore();
+    const { url, close } = await startTracedApp(store);
+    await chatTurn(url, { id: "tab-cache-1", messages: [userMessage("hello")] });
+    await vi.waitFor(() => expect(store.rows).toHaveLength(1));
+    expect(store.rows[0].inputTokens).toBe(10);
+    expect(store.rows[0].cacheReadTokens).toBe(7);
+    await close();
+  });
+
+  it("writes a null cacheReadTokens when the provider does not report it", async () => {
+    chatMocks.model = mockModel(
+      textStreamChunks("hi", {
+        inputTokens: { total: 10, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+        outputTokens: { total: 5, text: 5, reasoning: 0 },
+      }),
+    );
+    const store = recordingTraceStore();
+    const { url, close } = await startTracedApp(store);
+    await chatTurn(url, { id: "tab-cache-2", messages: [userMessage("hello")] });
+    await vi.waitFor(() => expect(store.rows).toHaveLength(1));
+    expect(store.rows[0].cacheReadTokens).toBeNull();
+    await close();
+  });
+
   it("writes a null userId when the request body has none", async () => {
     chatMocks.model = mockModel(textStreamChunks("hi"));
     const store = recordingTraceStore();

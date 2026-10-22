@@ -19,6 +19,9 @@ export interface RawTraceRow {
   streamError: string | null;
   inputTokens: number;
   outputTokens: number;
+  // Part of inputTokens served from the provider's prompt cache. Absent/null
+  // when the provider did not report it — not the same as 0.
+  cacheReadTokens?: number | null;
 }
 
 // Minimal query surface so tests can pass a fake instead of a real pg.Pool.
@@ -170,8 +173,8 @@ export function createTraceStore(
     async writeRawTrace(row) {
       await db.query(
         `INSERT INTO raw_traces
-           (session_id, user_id, model, agent_mode, payload, stream_error, input_tokens, output_tokens)
-         VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)`,
+           (session_id, user_id, model, agent_mode, payload, stream_error, input_tokens, output_tokens, cache_read_tokens)
+         VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9)`,
         [
           row.sessionId,
           row.userId ?? null,
@@ -181,6 +184,7 @@ export function createTraceStore(
           row.streamError,
           row.inputTokens,
           row.outputTokens,
+          row.cacheReadTokens ?? null,
         ],
       );
     },
