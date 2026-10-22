@@ -243,9 +243,9 @@ describe("loadConfig", () => {
     expect(loadConfig().BROWSE_AGENT_MODEL).toBe("deepseek/deepseek-v4.1-flash");
   });
 
-  it("defaults OPENROUTER_PROVIDER_ORDER to Together for deepseek flash and lets an empty value turn it off", () => {
+  it("defaults OPENROUTER_PROVIDER_ORDER to Cohere for deepseek flash and lets an empty value turn it off", () => {
     process.env = { ...BASE_ENV } as NodeJS.ProcessEnv;
-    expect(loadConfig().OPENROUTER_PROVIDER_ORDER).toBe("deepseek/deepseek-v4.1-flash=together");
+    expect(loadConfig().OPENROUTER_PROVIDER_ORDER).toBe("deepseek/deepseek-v4.1-flash=cohere");
     process.env = { ...BASE_ENV, OPENROUTER_PROVIDER_ORDER: "" } as NodeJS.ProcessEnv;
     expect(loadConfig().OPENROUTER_PROVIDER_ORDER).toBe("");
   });
