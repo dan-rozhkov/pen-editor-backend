@@ -2,6 +2,10 @@ import { randomUUID } from "node:crypto";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { APICallError, wrapLanguageModel } from "ai";
 import type { LanguageModel } from "ai";
+
+// `ai` re-exports the V2/V3 model interfaces and the V4 middleware but not
+// LanguageModelV4 itself; this selects it out of the LanguageModel union.
+type LanguageModelV4 = Extract<LanguageModel, { specificationVersion: "v4" }>;
 import type { Config } from "../config.js";
 import { parseModelRef, isOpenCodeProvider } from "./modelRef.js";
 import { createOpenCodeModel } from "./opencode.js";
@@ -177,17 +181,19 @@ function withReasoningMandatoryFallback(
   primary: LanguageModel,
   buildWithoutReasoning: () => LanguageModel,
 ): LanguageModel {
-  const model = primary as Parameters<typeof wrapLanguageModel>[0]["model"];
+  // openrouter() returns a V4 model under ai 7 / provider 3 (it is not a
+  // string id and not a V2/V3 legacy model), so the V4 cast is exact.
+  const model = primary as LanguageModelV4;
   return wrapLanguageModel({
     model,
     middleware: {
-      specificationVersion: "v3",
+      specificationVersion: "v4",
       wrapGenerate: async ({ doGenerate, params }) => {
         try {
           return await doGenerate();
         } catch (err) {
           if (!isReasoningMandatoryError(err)) throw err;
-          const fallback = buildWithoutReasoning() as typeof model;
+          const fallback = buildWithoutReasoning() as LanguageModelV4;
           return fallback.doGenerate(params);
         }
       },
@@ -196,7 +202,7 @@ function withReasoningMandatoryFallback(
           return await doStream();
         } catch (err) {
           if (!isReasoningMandatoryError(err)) throw err;
-          const fallback = buildWithoutReasoning() as typeof model;
+          const fallback = buildWithoutReasoning() as LanguageModelV4;
           return fallback.doStream(params);
         }
       },

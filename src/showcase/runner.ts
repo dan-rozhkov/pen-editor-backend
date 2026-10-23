@@ -1,4 +1,4 @@
-import { generateText, stepCountIs, type ToolSet } from "ai";
+import { generateText, isStepCount, type ToolSet } from "ai";
 import type { Config } from "../config.js";
 import { prepareChatTurn } from "../ai/chatTurn.js";
 import { bareModelId } from "../ai/provider.js";
@@ -50,7 +50,7 @@ export const SHOWCASE_MODEL_ID = "openrouter:google/gemini-3.7-flash";
 // 1-2 queries and screen inspections, generate_image, and the
 // find_empty_space_on_canvas stub the skill asks for. Then five separate
 // batch_design calls, plus room for retries. Running out is NOT an error:
-// stepCountIs just ends the turn and the screens made so far get published
+// isStepCount just ends the turn and the screens made so far get published
 // short (3/5, say), so err on the generous side.
 export const SHOWCASE_MAX_STEPS = 28;
 
@@ -587,10 +587,10 @@ export async function runShowcaseGeneration(
 
         await generateText({
           model: prepared.model,
-          system: prepared.system,
+          instructions: prepared.system,
           messages: prepared.modelMessages,
           tools,
-          stopWhen: stepCountIs(SHOWCASE_MAX_STEPS),
+          stopWhen: isStepCount(SHOWCASE_MAX_STEPS),
           // withAgentRetry is the single retry policy here — without this, the
           // AI SDK's own default (2 internal retries) would stack on top of it.
           maxRetries: 0,

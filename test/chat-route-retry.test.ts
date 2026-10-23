@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { request as httpRequest } from "node:http";
-import type { LanguageModelV3StreamPart } from "@ai-sdk/provider";
+import type { LanguageModelV4StreamPart } from "@ai-sdk/provider";
 import { loadSkills } from "../src/ai/skills.js";
 import { makeConfig } from "./helpers.js";
 import type { AnalyticsClient } from "../src/analytics/posthog.js";
@@ -25,11 +25,11 @@ vi.mock("../src/ai/provider.js", async (importOriginal) =>
 );
 vi.mock("../src/ai/mcp.js", async () => (await import("./chatMocks.js")).mockMcpModule());
 
-function errorChunks(error: unknown): LanguageModelV3StreamPart[] {
+function errorChunks(error: unknown): LanguageModelV4StreamPart[] {
   return [{ type: "stream-start", warnings: [] }, { type: "error", error }];
 }
 
-function errorAfterTextChunks(text: string, error: unknown): LanguageModelV3StreamPart[] {
+function errorAfterTextChunks(text: string, error: unknown): LanguageModelV4StreamPart[] {
   return [
     { type: "stream-start", warnings: [] },
     { type: "text-start", id: "t1" },

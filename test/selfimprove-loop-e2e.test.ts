@@ -13,14 +13,14 @@
 // Style/infra borrowed from:
 //   - test/memory-chat-route.test.ts   (buildApp + listen + fetch, capturing
 //     the exact prompt the mocked provider received)
-//   - test/chat-route.test.ts          (scripted MockLanguageModelV3, SSE
+//   - test/chat-route.test.ts          (scripted MockLanguageModelV4, SSE
 //     body assertions)
 //   - test/selfskills-review.test.ts   (background review shape)
 //   - test/selfimprove-curate-pglite.test.ts (createPgliteHarness, injecting
 //     a PGlite pool into the real store factories)
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
-import type { LanguageModelV3StreamPart } from "@ai-sdk/provider";
+import { MockLanguageModelV4, simulateReadableStream } from "ai/test";
+import type { LanguageModelV4StreamPart } from "@ai-sdk/provider";
 import { loadSkills } from "../src/ai/skills.js";
 import { makeConfig } from "./helpers.js";
 import { createPgliteHarness, type PgliteHarness } from "./pgliteShowcaseHelpers.js";
@@ -41,7 +41,7 @@ vi.mock("../src/ai/provider.js", async (importOriginal) =>
 );
 
 let toolCallSeq = 0;
-function toolChunks(toolName: string, input: Record<string, unknown>): LanguageModelV3StreamPart[] {
+function toolChunks(toolName: string, input: Record<string, unknown>): LanguageModelV4StreamPart[] {
   toolCallSeq += 1;
   return [
     { type: "stream-start", warnings: [] },
@@ -66,7 +66,7 @@ function toolCall(toolName: string, input: Record<string, unknown>): ScriptStep 
   return { kind: "tool", toolName, input };
 }
 
-function chunksForStep(step: ScriptStep): LanguageModelV3StreamPart[] {
+function chunksForStep(step: ScriptStep): LanguageModelV4StreamPart[] {
   return step.kind === "text" ? textStreamChunks(step.text) : toolChunks(step.toolName, step.input);
 }
 
@@ -112,8 +112,8 @@ function resultForStep(step: ScriptStep): {
 // observable DB side effect of the review before issuing the next request,
 // which is what keeps this ordering race-free (see the comment above
 // `waitForCounters`'s call sites).
-function makeScriptedModel(queue: ScriptStep[]): MockLanguageModelV3 {
-  return new MockLanguageModelV3({
+function makeScriptedModel(queue: ScriptStep[]): MockLanguageModelV4 {
+  return new MockLanguageModelV4({
     doStream: async () => {
       const next = queue.shift();
       if (!next) {
@@ -166,7 +166,7 @@ async function postChat(url: string, body: unknown): Promise<string> {
 }
 
 // The system message is always prompt[0] for this codebase's turns (see
-// LanguageModelV3Message's `role: 'system'` variant) — plucking it out lets
+// LanguageModelV4Message's `role: 'system'` variant) — plucking it out lets
 // prefix comparisons ignore the ever-growing conversation history below it.
 function systemOf(call: { prompt: unknown }): string {
   const msg = (call.prompt as Array<{ role: string; content: unknown }>).find(
@@ -212,7 +212,7 @@ describe("self-improvement loop — end to end", () => {
     let server: RunningApp;
     let url: string;
     let queue: ScriptStep[];
-    let model: MockLanguageModelV3;
+    let model: MockLanguageModelV4;
 
     beforeAll(async () => {
       await loadSkills();
@@ -703,7 +703,7 @@ describe("self-improvement loop — end to end", () => {
       expect((audit.rows[0] as { n: number }).n).toBe(0);
 
       // And the system prompt never advertises either subsystem.
-      const model = chatMocks.model as MockLanguageModelV3;
+      const model = chatMocks.model as MockLanguageModelV4;
       const system = systemOf(model.doStreamCalls[model.doStreamCalls.length - 1]);
       expect(system).not.toContain("Persistent Memory");
       expect(system).not.toContain("(learned)");

@@ -594,6 +594,12 @@ function connectAndFetchTools(token: string, visionConfigured: boolean): Promise
           type: "http",
           url: MOBBIN_SERVER.url,
           headers: { Authorization: `Bearer ${token}` },
+          // @ai-sdk/mcp 2.x flipped the default from 'follow' to 'error' (SSRF
+          // hardening). Keep the pre-upgrade behaviour for this one fixed,
+          // first-party endpoint: if Mobbin ever fronts /mcp with a redirect
+          // (trailing slash, apex -> api host), 'error' would turn every
+          // Mobbin turn into a connect failure.
+          redirect: "follow",
         },
       });
       const tools = await client.tools();

@@ -1,4 +1,4 @@
-import { generateObject, type LanguageModel } from "ai";
+import { generateText, Output, type LanguageModel } from "ai";
 import { z } from "zod";
 
 export interface SummaryItem {
@@ -35,10 +35,10 @@ export async function clusterSummaries(
   items: SummaryItem[],
 ): Promise<ClusterAssignment[]> {
   const prompt = items.map((i) => `[${i.id}] ${i.summary}`).join("\n\n");
-  const { object } = await generateObject({
+  const { output: object } = await generateText({
     model,
-    schema: clusteringSchema,
-    system: CLUSTERING_SYSTEM,
+    output: Output.object({ schema: clusteringSchema }),
+    instructions: CLUSTERING_SYSTEM,
     prompt,
   });
 

@@ -43,7 +43,7 @@ describe("get_screenshot toModelOutput", () => {
     // few hundred KB of base64 it cannot read and pays for on every step.
     expect(toModelOutput({ output: JSON.stringify({ imageData: DATA_URL }) })).toEqual({
       type: "content",
-      value: [{ type: "image-data", data: "iVBORw0KGgo=", mediaType: "image/png" }],
+      value: [{ type: "file", mediaType: "image/png", data: { type: "data", data: "iVBORw0KGgo=" } }],
     });
   });
 

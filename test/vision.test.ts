@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MockLanguageModelV3 } from "ai/test";
+import { MockLanguageModelV4 } from "ai/test";
 import { makeConfig } from "./helpers.js";
 
 vi.mock("../src/ai/provider.js");
@@ -27,7 +27,7 @@ function mockModel(text: string) {
     usage: USAGE,
     warnings: [],
   }));
-  const model = new MockLanguageModelV3({
+  const model = new MockLanguageModelV4({
     // Without this, the AI SDK tries to actually download image URLs before
     // calling the model (since a mock model declares no supported URL
     // types by default) — declare image/* as natively supported so the URL
@@ -83,8 +83,11 @@ describe("describeImage", () => {
       text: "Describe everything visible in this image in thorough detail. Include any text, layout structure, colors, typography, spacing, imagery, UI controls and any other notable visual information.",
     });
     expect(content[1].type).toBe("file");
-    expect(String(content[1].data)).toBe("https://example.com/a.png");
-    expect(content[1].mediaType).toBe("image/*");
+    // V4 prompt shape: tagged file data, and a FULL image media type (the
+    // OpenRouter provider only emits an image_url for `image/...`).
+    expect(content[1].data).toMatchObject({ type: "url" });
+    expect(String(content[1].data.url)).toBe("https://example.com/a.png");
+    expect(content[1].mediaType).toBe("image/png");
     expect(call.maxOutputTokens).toBe(config.VISION_MAX_TOKENS);
   });
 
@@ -146,7 +149,7 @@ describe("describeImage", () => {
   });
 
   it("returns ok:false when the model call throws", async () => {
-    const model = new MockLanguageModelV3({
+    const model = new MockLanguageModelV4({
       supportedUrls: { "image/*": [/.*/] },
       doGenerate: async () => {
         throw new Error("provider exploded");
@@ -167,7 +170,7 @@ describe("describeImage", () => {
   // it settles — see the doc comment above the withAgentRetry call.
   it("retries a persistently-retryable provider error exactly once (maxRetries: 1), not the default 2", async () => {
     let calls = 0;
-    const model = new MockLanguageModelV3({
+    const model = new MockLanguageModelV4({
       supportedUrls: { "image/*": [/.*/] },
       doGenerate: async () => {
         calls++;
@@ -220,7 +223,7 @@ describe("negative cache for failed describeImage calls", () => {
     // block. Real timers are used because AbortSignal.timeout's internal
     // timer isn't controlled by vi.useFakeTimers().
     const config = makeConfig({ VISION_TIMEOUT_MS: 30 });
-    const model = new MockLanguageModelV3({
+    const model = new MockLanguageModelV4({
       supportedUrls: { "image/*": [/.*/] },
       doGenerate: (options: { abortSignal?: AbortSignal }) =>
         new Promise((_resolve, reject) => {
@@ -282,7 +285,7 @@ describe("negative cache for failed describeImage calls", () => {
 
   it("does NOT negatively cache an ordinary thrown provider error (429, 5xx, connection reset) — the next call gets a fresh shot", async () => {
     let callCount = 0;
-    const model = new MockLanguageModelV3({
+    const model = new MockLanguageModelV4({
       supportedUrls: { "image/*": [/.*/] },
       doGenerate: async () => {
         callCount++;
@@ -317,7 +320,7 @@ describe("negative cache for failed describeImage calls", () => {
   });
 
   it("never lets a failure leak into the success cache", async () => {
-    const model = new MockLanguageModelV3({
+    const model = new MockLanguageModelV4({
       supportedUrls: { "image/*": [/.*/] },
       doGenerate: async () => {
         throw new Error("boom");

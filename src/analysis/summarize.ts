@@ -1,4 +1,4 @@
-import { generateObject, type LanguageModel } from "ai";
+import { generateText, Output, type LanguageModel } from "ai";
 import { z } from "zod";
 import { containsPii, scrubPii } from "./pii.js";
 
@@ -36,10 +36,10 @@ async function summarizeOnce(
   model: LanguageModel,
   sessionText: string,
 ): Promise<SessionSummary> {
-  const { object } = await generateObject({
+  const { output: object } = await generateText({
     model,
-    schema: sessionSummarySchema,
-    system: SUMMARIZER_SYSTEM,
+    output: Output.object({ schema: sessionSummarySchema }),
+    instructions: SUMMARIZER_SYSTEM,
     prompt: scrubPii(sessionText),
   });
   return object;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MockLanguageModelV3 } from "ai/test";
+import { MockLanguageModelV4 } from "ai/test";
 import {
   buildInsightsForSession,
   insightInsertValues,
@@ -112,7 +112,7 @@ describe("buildInsightsForSession", () => {
     memory_requests: [],
     agent_claims: [],
   };
-  const model = new MockLanguageModelV3({
+  const model = new MockLanguageModelV4({
     doGenerate: async () => ({
       content: [{ type: "text", text: JSON.stringify(extracted) }],
       finishReason: { unified: "stop", raw: "stop" },

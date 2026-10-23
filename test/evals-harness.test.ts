@@ -1,8 +1,8 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { tool } from "ai";
 import { z } from "zod";
-import { MockLanguageModelV3 } from "ai/test";
-import type { LanguageModelV3GenerateResult } from "@ai-sdk/provider";
+import { MockLanguageModelV4 } from "ai/test";
+import type { LanguageModelV4GenerateResult } from "@ai-sdk/provider";
 import { loadSkills } from "../src/ai/skills.js";
 import { makeConfig } from "./helpers.js";
 import { getMCPTools } from "../src/ai/mcp.js";
@@ -24,9 +24,9 @@ vi.mock("../src/ai/mcp.js", () => ({
   releaseMCPTools: vi.fn(),
 }));
 
-function scripted(results: Array<LanguageModelV3GenerateResult | (() => Promise<LanguageModelV3GenerateResult>)>) {
+function scripted(results: Array<LanguageModelV4GenerateResult | (() => Promise<LanguageModelV4GenerateResult>)>) {
   let call = 0;
-  return new MockLanguageModelV3({
+  return new MockLanguageModelV4({
     doGenerate: async () => {
       const r = results[Math.min(call, results.length - 1)];
       call += 1;
@@ -55,7 +55,7 @@ const SLIDES_TASK: EvalTask = {
   mode: "slides",
   graders: [{ type: "filmstrip" }, { type: "html-complete" }, { type: "embeds-present", min: 5 }],
 };
-const neverSettles = () => new Promise<LanguageModelV3GenerateResult>(() => {});
+const neverSettles = () => new Promise<LanguageModelV4GenerateResult>(() => {});
 
 describe("eval harness", () => {
   let runTrial: typeof import("../src/evals/harness.js").runTrial;

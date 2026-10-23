@@ -23,7 +23,7 @@ import {
 
 // ---------------------------------------------------------------------------
 // Mocks: same shape as test/chat-route.test.ts / test/chat-trace.test.ts —
-// the provider returns a MockLanguageModelV3 (ai/test) and MCP tools are
+// the provider returns a MockLanguageModelV4 (ai/test) and MCP tools are
 // controlled per test, no network calls and no real API keys. See the
 // hoisting contract at the top of test/chatMocks.ts.
 // ---------------------------------------------------------------------------

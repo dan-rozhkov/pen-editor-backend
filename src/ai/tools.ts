@@ -2731,7 +2731,7 @@ Returns the created/updated style ids and names (with a created|updated status) 
     // Same reasoning as get_screenshot's toModelOutput, but this tool also
     // carries structured data (url/title/size/snapshotId/elements) alongside
     // the pixels, so it must promote to a "content" part with BOTH a text
-    // part (the JSON, minus the ~1MB imageData string) and an image-data
+    // part (the JSON, minus the ~1MB imageData string) and an image file
     // part — losing either would either blind the model or drop the element
     // table annotate mode exists to provide. applyVisionPreprocessing
     // (src/ai/vision-messages.ts) rewrites only the image part for a

@@ -93,19 +93,27 @@ export function parseModelRef(ref: string): ModelRef {
 // inside a plain text tool message.
 //
 // OpenRouter: verified directly against the provider's installed source
-// (node_modules/@openrouter/ai-sdk-provider/dist/index.js:3142-3151,
-// mapToolResultContentParts): for ToolResultPart["output"].type === "content"
-// — the shape get_screenshot returns — an "image-data" part becomes a real
-// `{type: "image_url", image_url: {...}}` chat content part.
+// (@openrouter/ai-sdk-provider 3.x, node_modules/@openrouter/ai-sdk-provider/
+// dist/index.js, mapToolResultContentParts): for ToolResultPart["output"].type
+// === "content" — the shape get_screenshot returns — a `file` part whose
+// mediaType starts with `image/` becomes a real `{type: "image_url",
+// image_url: {...}}` chat content part. (ai 7 core normalises the old
+// `image-data` / `image-url` aliases into that same `file` part before any
+// provider sees them; this repo now emits the `file` shape itself —
+// screenshotOutput.ts — and always with a FULL `image/<subtype>`, because a
+// bare `image` mediaType would fail the `startsWith("image/")` test and be
+// sent as a generic file part instead.)
 //
 // OpenCode (both "opencode" and "opencode-go" route through
 // @ai-sdk/openai-compatible; opencode-go is repaired by a request-body
 // transform, see the note on the return below — see src/ai/opencode.ts): verified false
 // against that package's installed source
-// (node_modules/@ai-sdk/openai-compatible/dist/index.js:~290, the `case
-// "tool":` branch) — for ToolResultPart["output"].type === "content", it
-// does `JSON.stringify(output.value)` and sends the result as plain text
-// tool-message content. A get_screenshot result would arrive as a giant
+// (@ai-sdk/openai-compatible 3.x, node_modules/@ai-sdk/openai-compatible/dist/
+// index.js, convertToOpenAICompatibleChatMessages' `case "tool":` branch) —
+// for ToolResultPart["output"].type === "content" it does
+// `JSON.stringify(output.value)` (unless the unused-here
+// `supportsMultiPartToolContent` setting is on) and sends the result as plain
+// text tool-message content. A get_screenshot result would arrive as a giant
 // base64 JSON string described as "text", exactly the @ai-sdk/deepseek
 // failure mode this axis exists to catch (see the module header above).
 //

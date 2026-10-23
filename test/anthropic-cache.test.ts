@@ -30,7 +30,7 @@ async function wireMessages(messages: ModelMessage[]): Promise<WireMessage[]> {
   });
   await generateText({
     model: openrouter("anthropic/claude-haiku-5.5"),
-    system: cachedSystemPrompt("SYSTEM"),
+    instructions: cachedSystemPrompt("SYSTEM"),
     messages,
   });
   return body!.messages;

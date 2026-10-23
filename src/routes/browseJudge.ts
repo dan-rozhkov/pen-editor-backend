@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { generateObject } from "ai";
+import { generateText, Output } from "ai";
 import { z } from "zod";
 import {
   QA_JUDGE_CONTEXT_MAX_CHARS,
@@ -100,16 +100,16 @@ export async function browseJudgeRoutes(app: FastifyInstance, config: Config): P
       }
       const gone = abortOnClientDisconnect(reply);
       try {
-        const { object } = await generateObject({
+        const { output: object } = await generateText({
           model: createModel(config, config.QA_JUDGE_MODEL),
-          schema: qaJudgeSchema,
-          system: QA_JUDGE_SYSTEM,
+          output: Output.object({ schema: qaJudgeSchema }),
+          instructions: QA_JUDGE_SYSTEM,
           prompt: buildQaJudgePrompt(parsed.data as QaJudgeInput),
           maxOutputTokens: 400,
           maxRetries: 0,
           abortSignal: AbortSignal.any([gone.signal, AbortSignal.timeout(QA_JUDGE_TIMEOUT_MS)]),
         });
-        // generateObject already validated the object; the parser here only
+        // generateText + Output.object already validated the object; the parser here only
         // trims and cuts a long reason.
         const verdict = parseQaJudgeVerdict(object);
         if (!verdict.ok) {

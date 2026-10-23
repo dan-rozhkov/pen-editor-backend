@@ -16,6 +16,12 @@ import {
 } from "../services/vision.js";
 import { parseScreenshotDataUrl, SCREENSHOT_TOOL_NAMES } from "./screenshotOutput.js";
 import { parseModelRef, providerHandlesToolResultImages } from "./modelRef.js";
+import {
+  fullImageMediaType,
+  imageMediaTypeFromUrl,
+  imageMediaTypeOfFileData,
+  isImageMediaType,
+} from "./imageMediaType.js";
 
 // Budget for ONE turn — but of NEW vision calls, not of images total. The
 // route caps images per *message* (MAX_IMAGE_PARTS, src/routes/chat.ts), but
@@ -110,10 +116,6 @@ export function modelSupportsVision(config: Config, modelId: string): boolean {
   return model ? model.supportsVision : true;
 }
 
-function isImageMediaType(mediaType: string | undefined): boolean {
-  return typeof mediaType === "string" && mediaType.startsWith("image/");
-}
-
 // Normalizes the several shapes an ImagePart/FilePart's payload can take
 // into a single string describeImage() can consume (a data: URL or an
 // http(s) URL). Returns null when the payload isn't something we know how
@@ -123,15 +125,42 @@ function toImageString(data: unknown, mediaType: string | undefined): string | n
   if (typeof data === "string") {
     if (data.startsWith("data:") || /^https?:\/\//i.test(data)) return data;
     // Bare base64 payload — wrap it so describeImage() gets a real data: URL.
-    return `data:${mediaType ?? "image/png"};base64,${data}`;
+    return `data:${fullImageMediaType(mediaType)};base64,${data}`;
   }
   if (data instanceof Uint8Array) {
-    return `data:${mediaType ?? "image/png"};base64,${Buffer.from(data).toString("base64")}`;
+    return `data:${fullImageMediaType(mediaType)};base64,${Buffer.from(data).toString("base64")}`;
   }
   if (data instanceof ArrayBuffer) {
-    return `data:${mediaType ?? "image/png"};base64,${Buffer.from(new Uint8Array(data)).toString("base64")}`;
+    return `data:${fullImageMediaType(mediaType)};base64,${Buffer.from(new Uint8Array(data)).toString("base64")}`;
   }
   return null;
+}
+
+/**
+ * toImageString for a FilePart.data / tool-result file part's data, which in
+ * AI SDK 7 is either one of the bare shorthands toImageString already knows
+ * or a tagged object: {type:"data", data}, {type:"url", url},
+ * {type:"reference", ...} (a provider-side file id: no bytes for us to
+ * describe, so null) or {type:"text", ...} (null). convertToModelMessages in
+ * ai 7 turns every UI file part into {type:"url", url: URL}, so the tagged
+ * url form is the common one for user attachments.
+ */
+function fileDataToImageString(data: unknown, mediaType: string | undefined): string | null {
+  if (
+    data !== null &&
+    typeof data === "object" &&
+    !(data instanceof URL) &&
+    !(data instanceof Uint8Array) &&
+    !(data instanceof ArrayBuffer) &&
+    typeof (data as { type?: unknown }).type === "string"
+  ) {
+    const tagged = data as { type: string; data?: unknown; url?: unknown };
+    const type = imageMediaTypeOfFileData(data) ?? mediaType;
+    if (tagged.type === "data") return toImageString(tagged.data, type);
+    if (tagged.type === "url") return toImageString(tagged.url, type);
+    return null;
+  }
+  return toImageString(data, imageMediaTypeOfFileData(data) ?? mediaType);
 }
 
 // By the time this pass runs, an image-bearing tool result has already been
@@ -141,11 +170,13 @@ function toImageString(data: unknown, mediaType: string | undefined): string | n
 // `toModelOutput`, promoting the handler's `JSON.stringify({ imageData })`.
 // For every MCP tool (Mobbin included) it's `mcpToModelOutput`
 // (@ai-sdk/mcp), which promotes an MCP `{type:"image", data, mimeType}`
-// content part into exactly the same `image-data` shape — confirmed by
-// reading node_modules/@ai-sdk/mcp/dist/index.js's mcpToModelOutput, which
-// is wired onto every tool the client returns, not only the ones this repo
-// hand-wraps. So regardless of which tool produced it, the shape here is
-// usually `{type:"content", value:[{type:"image-data", data, mediaType}]}`
+// content part into the same image `file` shape (`image-data` before AI SDK
+// 7) — confirmed by reading node_modules/@ai-sdk/mcp/dist/index.js's
+// mcpToModelOutput, which is wired onto every tool the client returns, not
+// only the ones this repo hand-wraps. So regardless of which tool produced
+// it, the shape here is usually
+// `{type:"content", value:[{type:"file", mediaType:"image/…", data:{type:"data", data}}]}`
+// (older histories: `{type:"image-data", data, mediaType}`)
 // — and that part is exactly what must NOT survive for a vision-less model
 // or a provider that can't carry a tool-result image. The text/json/object
 // shapes are still handled, since toModelOutput passes an error result
@@ -241,6 +272,88 @@ function mcpContentParts(output: ToolResultPart["output"]): unknown[] | null {
   return value.content;
 }
 
+/**
+ * Is this a model-facing tool-result content part that carries an image?
+ *
+ * Recognises BOTH generations of the shape, because stored histories and old
+ * clients still send the first one and the SDK still accepts it (as a
+ * deprecated alias it migrates at runtime):
+ *  - AI SDK 6: image-data, image-url, image-file-id, image-file-reference,
+ *    and the generic file-data / file-url / file-id / file-reference / media
+ *    when their mediaType is an image.
+ *  - AI SDK 7: the single {type:"file", mediaType:"image" | "image/*",
+ *    data: <tagged | bare>}.
+ * An image part that slips past this function is the INVARIANT violation
+ * applyVisionPreprocessing exists to prevent, so it errs towards "image".
+ */
+function isModelImageContentPart(part: unknown): boolean {
+  if (!part || typeof part !== "object") return false;
+  const typed = part as { type?: unknown; mediaType?: unknown; data?: unknown; url?: unknown };
+  const declared = typeof typed.mediaType === "string" ? typed.mediaType : undefined;
+  switch (typed.type) {
+    // The image-* family is an image by its own type name.
+    case "image-data":
+    case "image-url":
+    case "image-file-id":
+    case "image-file-reference":
+      return true;
+    // Inline bytes: the SDK sniffs them and relabels the part as image/* when
+    // they match an image signature, whatever mediaType was declared.
+    case "file":
+    case "file-data":
+    case "media":
+      if (isImageMediaType(declared) || imageMediaTypeOfFileData(typed.data) !== undefined) return true;
+      // A url with no declared type: the SDK/provider guess it from the extension.
+      return declared === undefined && fileDataUrlImageType(typed.data) !== undefined;
+    // Legacy url variant: the SDK guesses a missing mediaType from the URL's
+    // extension (.png -> image/png), and the provider then emits an image_url.
+    case "file-url":
+      return (
+        isImageMediaType(declared) ||
+        (declared === undefined && typeof typed.url === "string" && imageMediaTypeFromUrl(typed.url) !== undefined)
+      );
+    case "file-id":
+    case "file-reference":
+      return isImageMediaType(declared);
+    default:
+      return false;
+  }
+}
+
+/** Extension-implied image type of a tagged `{type:"url"}` / URL / http(s) string file data. */
+function fileDataUrlImageType(data: unknown): string | undefined {
+  if (data instanceof URL) return imageMediaTypeFromUrl(data);
+  if (typeof data === "string") return /^https?:\/\//i.test(data) ? imageMediaTypeFromUrl(data) : undefined;
+  if (data && typeof data === "object" && (data as { type?: unknown }).type === "url") {
+    const url = (data as { url?: unknown }).url;
+    return url instanceof URL || typeof url === "string" ? imageMediaTypeFromUrl(url) : undefined;
+  }
+  return undefined;
+}
+
+/** The data URL / http(s) URL of a part isModelImageContentPart accepted, or null when it holds no bytes we can describe (a provider file id). */
+function modelImageContentString(part: unknown): string | null {
+  const typed = part as {
+    type: string;
+    data?: unknown;
+    url?: unknown;
+    mediaType?: string;
+  };
+  switch (typed.type) {
+    case "image-data":
+    case "file-data":
+    case "media":
+      return toImageString(typed.data, typed.mediaType);
+    case "image-url":
+    case "file-url":
+      return typeof typed.url === "string" ? typed.url : null;
+    case "file":
+      return fileDataToImageString(typed.data, typed.mediaType);
+    default:
+      return null;
+  }
+}
+
 function extractToolResultImages(
   output: ToolResultPart["output"],
   toolName: string,
@@ -253,18 +366,11 @@ function extractToolResultImages(
   // mcpContentParts' comment): passing `tools` to convertToModelMessages
   // would bring it back, and this is the defense that must not have a gap.
   if (output.type === "content") {
-    const parts = output.value.filter(
-      (part) =>
-        (part.type === "image-data" || part.type === "file-data" || part.type === "media") &&
-        part.mediaType.startsWith("image/"),
-    );
+    const parts = output.value.filter(isModelImageContentPart);
     if (parts.length === 0) return NO_IMAGES;
     return {
       count: parts.length,
-      first: () => {
-        const part = parts[0] as { mediaType: string; data: unknown };
-        return `data:${part.mediaType};base64,${String(part.data)}`;
-      },
+      first: () => modelImageContentString(parts[0]),
     };
   }
 
@@ -339,20 +445,7 @@ const ADDITIONAL_IMAGE_NOTE =
   "[Additional image in this tool result omitted — only the first was processed.]";
 
 function isImageContentPart(part: unknown): boolean {
-  if (!part || typeof part !== "object") return false;
-  const typed = part as { type?: unknown; mediaType?: unknown };
-  if (typed.type === "image-data" || typed.type === "file-data" || typed.type === "media") {
-    return typeof typed.mediaType === "string" && typed.mediaType.startsWith("image/");
-  }
-  // A url-shaped part carries a `url`, not a payload, and only `image-url`
-  // is an image by its own type — `file-url` needs an explicit image
-  // mediaType, or a `file-url` pointing at a PDF would be silently replaced
-  // by an image placeholder.
-  if (typed.type === "image-url") return true;
-  if (typed.type === "file-url") {
-    return typeof typed.mediaType === "string" && typed.mediaType.startsWith("image/");
-  }
-  return mcpImagePayload(part) !== null;
+  return isModelImageContentPart(part) || mcpImagePayload(part) !== null;
 }
 
 /**
@@ -533,12 +626,15 @@ function computeImageSlots(messages: ModelMessage[]): ImageSlot[] {
               "user-part",
             ),
           );
-        } else if (typed.type === "file" && isImageMediaType(typed.mediaType)) {
+        } else if (
+          typed.type === "file" &&
+          (isImageMediaType(typed.mediaType) || imageMediaTypeOfFileData(typed.data) !== undefined)
+        ) {
           slots.push(
             makeSlot(
               messageIndex,
               partIndex,
-              oneUserImage(() => toImageString(typed.data, typed.mediaType)),
+              oneUserImage(() => fileDataToImageString(typed.data, typed.mediaType)),
               "Image",
               "user-part",
             ),

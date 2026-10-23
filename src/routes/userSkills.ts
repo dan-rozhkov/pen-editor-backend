@@ -4,7 +4,7 @@
 // no store lifecycle (app.ts's onClose hook already closes the shared
 // UserSkillStore); it only turns HTTP requests into store calls.
 import type { FastifyInstance } from "fastify";
-import { generateObject } from "ai";
+import { generateText, Output } from "ai";
 import { z } from "zod";
 import type { Config } from "../config.js";
 import { createModel } from "../ai/provider.js";
@@ -346,7 +346,7 @@ export async function userSkillRoutes(
     "/api/user-skills/generate",
     {
       config: {
-        // The one route in this file that calls an LLM (generateObject) —
+        // The one route in this file that calls an LLM (generateText + Output.object) —
         // its CRUD siblings above are cheap Postgres reads/writes and stay
         // unthrottled. userId is only shape-checked, not authenticated, so
         // this is the same unauthenticated-paid-call profile as
@@ -366,15 +366,15 @@ export async function userSkillRoutes(
     // separately), so it needs no store at all — but userId is still
     // required and shape-checked, per this route family's blanket rule.
     try {
-      const { object } = await generateObject({
+      const { output: object } = await generateText({
         // STRUCTURED_MODEL, not the chat model: this call relies on a real
         // json_schema response_format (see STRUCTURED_MODEL's doc comment in
         // src/config.ts), so it must not follow whatever model the operator
         // — or a user in the composer — picked for chat and silently
         // degrade into NoObjectGeneratedError territory.
         model: createModel(config, config.STRUCTURED_MODEL),
-        schema: generateResultSchema,
-        system: GENERATE_SYSTEM_PROMPT,
+        output: Output.object({ schema: generateResultSchema }),
+        instructions: GENERATE_SYSTEM_PROMPT,
         prompt: parsed.data.prompt,
       });
       return reply.send({ draft: object });

@@ -33,9 +33,9 @@ import { abortableSleep, getRetryDelayMs, isRetryableAgentError } from "./retry.
  * result per attempt. `attemptState.discarded` is flipped to `true`
  * synchronously by this module the moment (and only when) an attempt's
  * error is judged retryable and about to be replayed — callers wire it into
- * that attempt's own `streamText({ onFinish, onAbort })` handlers so
+ * that attempt's own `streamText({ onEnd, onAbort })` handlers so
  * trace/analytics side effects are skipped for a discarded attempt. This
- * flag is not defensive: AI SDK v6 *does* call `onFinish`/`onAbort` for a
+ * flag is not defensive: AI SDK v6 *did* call `onFinish`/`onAbort` (now `onEnd`) for a
  * discarded attempt (confirmed via the `[tokens] input: ...` log line
  * firing for an attempt whose stream we're about to throw away) — without
  * the `discarded` check, a retried attempt would write a second, bogus

@@ -22,8 +22,8 @@
 // fine) — importing src/app.js here would re-enter the very module whose
 // mock is still being built. Server/HTTP mechanics live in chatHarness.ts.
 import { vi } from "vitest";
-import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
-import type { LanguageModelV3StreamPart } from "@ai-sdk/provider";
+import { MockLanguageModelV4, simulateReadableStream } from "ai/test";
+import type { LanguageModelV4StreamPart } from "@ai-sdk/provider";
 
 // Per-test-file mutable state behind the mocked createModel/getMCPTools.
 // Module state is per file (vitest isolates each test file's module graph),
@@ -67,9 +67,9 @@ export const USAGE = {
   outputTokens: { total: 5, text: 5, reasoning: 0 },
 };
 
-type Usage = Extract<LanguageModelV3StreamPart, { type: "finish" }>["usage"];
+type Usage = Extract<LanguageModelV4StreamPart, { type: "finish" }>["usage"];
 
-export function textStreamChunks(text: string, usage: Usage = USAGE): LanguageModelV3StreamPart[] {
+export function textStreamChunks(text: string, usage: Usage = USAGE): LanguageModelV4StreamPart[] {
   return [
     { type: "stream-start", warnings: [] },
     { type: "text-start", id: "t1" },
@@ -83,7 +83,7 @@ export function toolCallStreamChunks(
   toolName: string,
   input: Record<string, unknown>,
   usage: Usage = USAGE,
-): LanguageModelV3StreamPart[] {
+): LanguageModelV4StreamPart[] {
   return [
     { type: "stream-start", warnings: [] },
     { type: "tool-call", toolCallId: "call-1", toolName, input: JSON.stringify(input) },
@@ -92,8 +92,8 @@ export function toolCallStreamChunks(
 }
 
 // A model whose every doStream call replays the same scripted chunks.
-export function mockModel(chunks: LanguageModelV3StreamPart[]): MockLanguageModelV3 {
-  return new MockLanguageModelV3({
+export function mockModel(chunks: LanguageModelV4StreamPart[]): MockLanguageModelV4 {
+  return new MockLanguageModelV4({
     doStream: async () => ({
       stream: simulateReadableStream({ chunks, chunkDelayInMs: null }),
     }),
@@ -102,9 +102,9 @@ export function mockModel(chunks: LanguageModelV3StreamPart[]): MockLanguageMode
 
 // A multi-step model: the Nth doStream call (one per agent step inside a
 // single streamText turn) replays the Nth script; the last one repeats.
-export function sequenceModel(...steps: LanguageModelV3StreamPart[][]): MockLanguageModelV3 {
+export function sequenceModel(...steps: LanguageModelV4StreamPart[][]): MockLanguageModelV4 {
   let call = 0;
-  return new MockLanguageModelV3({
+  return new MockLanguageModelV4({
     doStream: async () => {
       const chunks = steps[Math.min(call, steps.length - 1)];
       call += 1;

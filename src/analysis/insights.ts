@@ -1,4 +1,4 @@
-import { generateObject, type LanguageModel } from "ai";
+import { generateText, Output, type LanguageModel } from "ai";
 import { z } from "zod";
 import { scrubPii } from "./pii.js";
 
@@ -84,10 +84,10 @@ export async function extractInsights(
   model: LanguageModel,
   sessionText: string,
 ): Promise<SessionInsights> {
-  const { object } = await generateObject({
+  const { output: object } = await generateText({
     model,
-    schema: sessionInsightsSchema,
-    system: INSIGHTS_SYSTEM,
+    output: Output.object({ schema: sessionInsightsSchema }),
+    instructions: INSIGHTS_SYSTEM,
     prompt: scrubPii(sessionText),
   });
   return scrubInsights(object);

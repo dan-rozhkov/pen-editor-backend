@@ -1,4 +1,4 @@
-import { APICallError, generateText, stepCountIs, type ToolSet } from "ai";
+import { APICallError, generateText, isStepCount, type ToolSet } from "ai";
 import type { Config } from "../config.js";
 import { prepareChatTurn } from "../ai/chatTurn.js";
 import type { SystemOneClient } from "../services/systemone.js";
@@ -185,10 +185,10 @@ export async function runTrial(input: RunTrialInput): Promise<TrialResult> {
         const result = await raceAbort(
           generateText({
             model: prepared.model,
-            system: prepared.system,
+            instructions: prepared.system,
             messages: prepared.modelMessages,
             tools,
-            stopWhen: stepCountIs(SHOWCASE_MAX_STEPS),
+            stopWhen: isStepCount(SHOWCASE_MAX_STEPS),
             // No retry inside a trial: a flake is a failed trial, pass^k must see it.
             maxRetries: 0,
             abortSignal,

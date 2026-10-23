@@ -10,6 +10,7 @@ import { randomUUID } from "node:crypto";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { LanguageModel } from "ai";
 import type { ModelProviderId } from "./modelRef.js";
+import { fullImageMediaType, isImageMediaType } from "./imageMediaType.js";
 
 type OpenCodeProviderId = Extract<ModelProviderId, "opencode" | "opencode-go">;
 
@@ -148,10 +149,20 @@ type ChatPart =
   | { type: "text"; text: string }
   | { type: "image_url"; image_url: { url: string } };
 
-// Maps one v6 ToolResultOutput "content" part (plus the legacy v2 `media`
-// shape) to an OpenAI content part. Returns `undefined` for a part we cannot
-// express (file-id, non-image files, unknown shapes) — the caller then leaves
-// the whole message untouched. `isImage` reports whether it carried an image.
+// Maps one ToolResultOutput "content" part to an OpenAI content part.
+// Returns `undefined` for a part we cannot express (file-id, non-image files,
+// unknown shapes) — the caller then leaves the whole message untouched.
+// `isImage` reports whether it carried an image.
+//
+// What reaches this function is the PROVIDER-level prompt part that
+// @ai-sdk/openai-compatible `JSON.stringify`d, i.e. AFTER `ai` 7 core already
+// normalised every tool-result image alias (`image-data`, `image-url`,
+// `file-data`, `file-url`, `media`, ...) into one shape:
+//   {type:"file", mediaType:"image/png", data:{type:"data", data:"<base64>"}}
+//   {type:"file", mediaType:"image/png", data:{type:"url", url:"https://..."}}
+// The old per-alias cases are kept anyway: they cost nothing, they are what
+// the previous major produced, and they keep this function correct if a
+// provider ever hands it an un-normalised part.
 function toChatPart(part: unknown): { part: ChatPart; isImage: boolean } | undefined {
   if (typeof part !== "object" || part === null) return undefined;
   const p = part as Record<string, unknown>;
@@ -164,19 +175,38 @@ function toChatPart(part: unknown): { part: ChatPart; isImage: boolean } | undef
     case "media":
     case "image-data":
     case "file-data":
-      if (str(p.data) && typeof p.mediaType === "string" && p.mediaType.startsWith("image/")) {
+      if (str(p.data) && isImageMediaType(p.mediaType)) {
         return {
-          part: { type: "image_url", image_url: { url: `data:${p.mediaType};base64,${p.data}` } },
+          part: { type: "image_url", image_url: { url: `data:${fullImageMediaType(p.mediaType as string)};base64,${p.data}` } },
           isImage: true,
         };
       }
       return undefined;
+    case "file": {
+      // The AI SDK 7 shape. `mediaType` may be just "image" when the SDK
+      // could not sniff a subtype from the bytes.
+      const mediaType = p.mediaType;
+      if (typeof mediaType !== "string" || !isImageMediaType(mediaType)) return undefined;
+      const data = p.data;
+      if (typeof data !== "object" || data === null) return undefined;
+      const tagged = data as Record<string, unknown>;
+      if (tagged.type === "data" && str(tagged.data)) {
+        return {
+          part: { type: "image_url", image_url: { url: `data:${fullImageMediaType(mediaType)};base64,${tagged.data}` } },
+          isImage: true,
+        };
+      }
+      if (tagged.type === "url" && str(tagged.url)) {
+        return { part: { type: "image_url", image_url: { url: tagged.url } }, isImage: true };
+      }
+      return undefined;
+    }
     case "image-url":
       return str(p.url)
         ? { part: { type: "image_url", image_url: { url: p.url } }, isImage: true }
         : undefined;
     case "file-url":
-      if (str(p.url) && typeof p.mediaType === "string" && p.mediaType.startsWith("image/")) {
+      if (str(p.url) && isImageMediaType(p.mediaType)) {
         return { part: { type: "image_url", image_url: { url: p.url } }, isImage: true };
       }
       return undefined;
@@ -184,6 +214,12 @@ function toChatPart(part: unknown): { part: ChatPart; isImage: boolean } | undef
       return undefined;
   }
 }
+
+// Cheap pre-filter for restoreToolResultImages: the quoted alias names, or the
+// AI SDK 7 `"type":"file"` form (whitespace-tolerant). NOT the bare token
+// "file": big read_repo_files results mention that constantly and would be
+// JSON.parsed on every step.
+const TOOL_IMAGE_PREFILTER = /"(?:media|image-data|image-url|file-data|file-url)"|"type"\s*:\s*"file"/;
 
 /**
  * @ai-sdk/openai-compatible serializes a tool result of output type "content"
@@ -203,7 +239,7 @@ export function restoreToolResultImages(args: Record<string, unknown>): Record<s
     const msg = m as Record<string, unknown>;
     if (msg.role !== "tool" || typeof msg.content !== "string") return m;
     // Cheap pre-filter: skip the parse for results that cannot hold an image.
-    if (!msg.content.startsWith("[") || !/"(media|image-data|image-url|file-data|file-url)"/.test(msg.content)) {
+    if (!msg.content.startsWith("[") || !TOOL_IMAGE_PREFILTER.test(msg.content)) {
       return m;
     }
     let parsed: unknown;

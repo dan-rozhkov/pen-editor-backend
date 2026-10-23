@@ -108,7 +108,7 @@ describe("maybeRunReview — scenario evidence", () => {
 
     expect(await maybeRunReview(input({ store }))).toBe("ran");
 
-    // The AI SDK's LanguageModelV3 doGenerate has no separate `system` field
+    // The AI SDK's LanguageModelV4 doGenerate has no separate `system` field
     // — the provider spec folds the turn's system prompt into `prompt[0]`
     // as a `{ role: "system" }` message (same assertion shape as
     // memory-review.test.ts). That first message must stay byte-identical

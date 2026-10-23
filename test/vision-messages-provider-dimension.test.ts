@@ -69,7 +69,7 @@ describe("applyVisionPreprocessing with a provider that cannot carry tool-result
         role: "user",
         content: [
           { type: "text", text: "look at this" },
-          { type: "image", image: "https://example.com/a.png", mediaType: "image/png" },
+          { type: "file", data: "https://example.com/a.png", mediaType: "image/png" },
         ],
       },
       screenshotToolMessage(),

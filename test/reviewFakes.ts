@@ -6,8 +6,8 @@
 // `src/` module at runtime (provider.js stays untouched), so it is safe to
 // import statically next to a `vi.mock("../src/ai/provider.js", ...)`.
 import { vi } from "vitest";
-import { MockLanguageModelV3 } from "ai/test";
-import type { LanguageModelV3GenerateResult } from "@ai-sdk/provider";
+import { MockLanguageModelV4 } from "ai/test";
+import type { LanguageModelV4GenerateResult } from "@ai-sdk/provider";
 import type { ModelMessage, ToolSet } from "ai";
 import { penTools } from "../src/ai/tools.js";
 import type { MemoryStore } from "../src/ai/memory/store.js";
@@ -19,7 +19,7 @@ export const GENERATE_USAGE = {
   outputTokens: { total: 5, text: 5, reasoning: 0 },
 };
 
-export function textResult(text: string): LanguageModelV3GenerateResult {
+export function textResult(text: string): LanguageModelV4GenerateResult {
   return {
     content: [{ type: "text", text }],
     finishReason: { unified: "stop", raw: "stop" },
@@ -31,7 +31,7 @@ export function textResult(text: string): LanguageModelV3GenerateResult {
 export function toolCallResult(
   toolName: string,
   input: Record<string, unknown>,
-): LanguageModelV3GenerateResult {
+): LanguageModelV4GenerateResult {
   return {
     content: [
       {
@@ -54,15 +54,15 @@ export interface CapturedGenerateCall {
 }
 
 // Records every doGenerate call into `captured` and answers with `results` in
-// order, repeating the last one. A plain counter, not MockLanguageModelV3's
+// order, repeating the last one. A plain counter, not MockLanguageModelV4's
 // array form: that form indexes by call count *after* pushing (1-based), so
 // passing the array straight through would skip results[0].
 export function capturingGenerateModel(
   captured: CapturedGenerateCall[],
-  ...results: LanguageModelV3GenerateResult[]
-): MockLanguageModelV3 {
+  ...results: LanguageModelV4GenerateResult[]
+): MockLanguageModelV4 {
   let call = 0;
-  return new MockLanguageModelV3({
+  return new MockLanguageModelV4({
     doGenerate: async (options: { system?: unknown; prompt: unknown; tools?: unknown }) => {
       captured.push({ system: options.system, prompt: options.prompt, tools: options.tools });
       const result = results[Math.min(call, results.length - 1)];
@@ -78,16 +78,16 @@ export function generateCaptureRig() {
   const capturedCalls: CapturedGenerateCall[] = [];
   return {
     capturedCalls,
-    reviewModel: (result: LanguageModelV3GenerateResult) =>
+    reviewModel: (result: LanguageModelV4GenerateResult) =>
       capturingGenerateModel(capturedCalls, result),
-    multiStepReviewModel: (results: LanguageModelV3GenerateResult[]) =>
+    multiStepReviewModel: (results: LanguageModelV4GenerateResult[]) =>
       capturingGenerateModel(capturedCalls, ...results),
   };
 }
 
 // A provider that fails outright on every call.
-export function throwingGenerateModel(message = "provider exploded"): MockLanguageModelV3 {
-  return new MockLanguageModelV3({
+export function throwingGenerateModel(message = "provider exploded"): MockLanguageModelV4 {
+  return new MockLanguageModelV4({
     doGenerate: async () => {
       throw new Error(message);
     },
@@ -97,8 +97,8 @@ export function throwingGenerateModel(message = "provider exploded"): MockLangua
 // A provider that never answers, but rejects once the caller's abortSignal
 // fires — what a real provider's fetch does. A bare `new Promise(() => {})`
 // would ignore the signal and hang the test instead of exercising a timeout.
-export function neverRespondingGenerateModel(): MockLanguageModelV3 {
-  return new MockLanguageModelV3({
+export function neverRespondingGenerateModel(): MockLanguageModelV4 {
+  return new MockLanguageModelV4({
     doGenerate: (options: { abortSignal?: AbortSignal }) =>
       new Promise((_resolve, reject) => {
         options.abortSignal?.addEventListener("abort", () => {

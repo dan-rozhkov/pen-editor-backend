@@ -30,7 +30,7 @@ function userImageMessage(tag: string): ModelMessage {
     role: "user",
     content: [
       { type: "text", text: `look at ${tag}` },
-      { type: "image", image: `https://example.com/${tag}.png`, mediaType: "image/png" },
+      { type: "file", data: `https://example.com/${tag}.png`, mediaType: "image/png" },
     ],
   } as ModelMessage;
 }

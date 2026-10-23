@@ -197,13 +197,13 @@ export const envSchema = z.object({
   // the client connection/request context open forever (see withTimeout in
   // src/ai/mcp.ts for the analogous MCP-side guard).
   IMAGE_GENERATION_TIMEOUT_MS: z.coerce.number().default(90_000),
-  // Model used by generateObject() call sites that need a real json_schema
+  // Model used by structured-output (generateText + Output.object) call sites that need a real json_schema
   // response format (src/routes/userSkills.ts, src/ai/prototype-link.ts).
   // Pinned separately from CHAT_MODEL so that pointing the chat agent at a
   // model without structured-output support (or letting a user pick one)
   // cannot silently degrade these two features: without a real json_schema
   // the schema is pushed into a system message instead, which drifts out of
-  // shape and throws generateObject's NoObjectGeneratedError.
+  // shape and throws NoObjectGeneratedError.
   STRUCTURED_MODEL: z.string().default("openrouter:deepseek/deepseek-v4.1-flash"),
   // Model for browse_task's second-opinion cascade (browseStep.ts in
   // @sideform/browser-agent/policy, cascadeStep) — a separate role from STRUCTURED_MODEL (which

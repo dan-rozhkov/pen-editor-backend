@@ -1271,7 +1271,7 @@ describe("browse_screenshot schema", () => {
     expect(schema.safeParse({ annotate: "yes" }).success).toBe(false);
   });
 
-  it("toModelOutput promotes a data URL to a content part with text (minus imageData) + image-data", () => {
+  it("toModelOutput promotes a data URL to a content part with text (minus imageData) + image file part", () => {
     const tool = penTools.browse_screenshot as {
       toModelOutput?: (args: { output: unknown }) => unknown;
     };
@@ -1287,7 +1287,7 @@ describe("browse_screenshot schema", () => {
     });
     const result = tool.toModelOutput!({ output }) as {
       type: string;
-      value: Array<{ type: string; text?: string; data?: string; mediaType?: string }>;
+      value: Array<{ type: string; text?: string; data?: { type: string; data: string }; mediaType?: string }>;
     };
     expect(result.type).toBe("content");
     expect(result.value).toHaveLength(2);
@@ -1298,8 +1298,8 @@ describe("browse_screenshot schema", () => {
     expect(parsedText.url).toBe("https://example.com");
     expect(parsedText.snapshotId).toBe("snap-1");
     expect(parsedText.elements).toEqual([{ index: 0, tag: "button", label: "Submit", ops: ["click"] }]);
-    expect(imagePart.type).toBe("image-data");
-    expect(imagePart.data).toBe("QUJD");
+    expect(imagePart.type).toBe("file");
+    expect(imagePart.data).toEqual({ type: "data", data: "QUJD" });
     expect(imagePart.mediaType).toBe("image/jpeg");
   });
 

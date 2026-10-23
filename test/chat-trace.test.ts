@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { request as httpRequest } from "node:http";
-import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
+import { MockLanguageModelV4, simulateReadableStream } from "ai/test";
 import type { TraceStore } from "../src/tracing/traceStore.js";
 import { makeConfig } from "./helpers.js";
 import {
@@ -14,7 +14,7 @@ import {
 import { chatTurn, postChat, recordingTraceStore, startApp } from "./chatHarness.js";
 
 // ---------------------------------------------------------------------------
-// Mocks: the provider returns a MockLanguageModelV3 (ai/test) and MCP tools
+// Mocks: the provider returns a MockLanguageModelV4 (ai/test) and MCP tools
 // are controlled per test — no network calls and no real API keys. See the
 // hoisting contract at the top of test/chatMocks.ts.
 // ---------------------------------------------------------------------------
@@ -126,7 +126,7 @@ describe("chat route trace writing", () => {
     // step 1 is already on record — exercising the onAbort trace path with
     // real steps instead of the historical `steps: []`.
     let call = 0;
-    chatMocks.model = new MockLanguageModelV3({
+    chatMocks.model = new MockLanguageModelV4({
       doStream: async ({ abortSignal }) => {
         call += 1;
         if (call === 1) {

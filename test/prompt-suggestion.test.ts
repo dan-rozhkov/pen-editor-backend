@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { MockLanguageModelV3 } from "ai/test";
+import { MockLanguageModelV4 } from "ai/test";
 import { makeConfig } from "./helpers.js";
 
 vi.mock("../src/ai/provider.js", async (importOriginal) =>
@@ -11,8 +11,8 @@ import { createModel } from "./structuredModelFakes.js";
 const { cleanSuggestion, generatePromptSuggestion } = await import("../src/ai/prompt-suggestion.js");
 const { buildApp } = await import("../src/app.js");
 
-function textModel(text: string, onPrompt?: (p: string) => void): MockLanguageModelV3 {
-  return new MockLanguageModelV3({
+function textModel(text: string, onPrompt?: (p: string) => void): MockLanguageModelV4 {
+  return new MockLanguageModelV4({
     doGenerate: async (opts: { prompt: unknown }) => {
       onPrompt?.(JSON.stringify(opts.prompt));
       return {
@@ -65,7 +65,7 @@ describe("POST /api/prompt-suggestion", () => {
 
   it("responds 200 null when the model errors", async () => {
     createModel.mockReturnValueOnce(
-      new MockLanguageModelV3({
+      new MockLanguageModelV4({
         doGenerate: async () => {
           throw new Error("boom");
         },
@@ -118,7 +118,7 @@ describe("generatePromptSuggestion abort", () => {
   it("passes the caller's abort signal to the model call", async () => {
     let seen: AbortSignal | undefined;
     createModel.mockReturnValueOnce(
-      new MockLanguageModelV3({
+      new MockLanguageModelV4({
         doGenerate: async (opts: { abortSignal?: AbortSignal }) => {
           seen = opts.abortSignal;
           await new Promise((_r, rej) => {

@@ -1,6 +1,7 @@
 import {
   streamText,
-  stepCountIs,
+  toUIMessageStream,
+  isStepCount,
   NoSuchToolError,
   InvalidToolInputError,
   type ToolSet,
@@ -122,13 +123,13 @@ export function classifyErrorKind(error: unknown): string {
   return "unknown";
 }
 
-// Shared by onFinish/onAbort: turns AI SDK step results into the trimmed
+// Shared by onEnd/onAbort: turns AI SDK step results into the trimmed
 // shape used for both session logging (logSteps) and trace payloads.
 function mapSteps(steps: readonly StepResult<ToolSet>[]): LogStep[] {
   return steps.map((step, i) => ({
     stepNumber: i,
     text: step.text,
-    // AI SDK v6 emits `input`/`output` on step tool calls/results; `args`/`result`
+    // AI SDK 6+ emits `input`/`output` on step tool calls/results; `args`/`result`
     // are the v4-era names and are always undefined. The LogStep field names stay
     // as-is so stored traces keep their shape.
     toolCalls: step.toolCalls.map((tc: Record<string, unknown>) => ({
@@ -168,7 +169,15 @@ function reviewAttribution(
 
 const chatBodySchema = z.object({
   id: z.string().max(ATTRIBUTION_ID_MAX).optional(),
-  messages: z.array(z.record(z.unknown())).min(1, "messages must not be empty"),
+  messages: z
+    .array(z.record(z.unknown()))
+    .min(1, "messages must not be empty")
+    // AI SDK 7 refuses system messages in `messages`, and the system prompt is
+    // server-owned: a client-sent one is a 400 here instead of an error thrown
+    // later inside the stream (200 SSE + failed trace + agent_turn_failed).
+    .refine((msgs) => !msgs.some((m) => m.role === "system"), {
+      message: "system messages are not allowed in messages",
+    }),
   canvasContext: z.string().optional(),
   // The model the user picked in the composer. Must be one of
   // getAllowedModels(config) (exactly what GET /api/models reports) — an id
@@ -529,7 +538,7 @@ export async function chatRoutes(
       // this turn never had one), exactly once, regardless of how the
       // request ended — success, client abort, or a retried/failed
       // attempt. Must happen here rather than in any single attempt's
-      // onFinish/onAbort: prepareChatTurn (and therefore getMCPTools) runs
+      // onEnd/onAbort: prepareChatTurn (and therefore getMCPTools) runs
       // ONCE per request, but a retried request can build several
       // streamText attempts sharing this same `tools` object, so releasing
       // per-attempt would double-release (harmless, refCount floors at 0)
@@ -570,19 +579,20 @@ export async function chatRoutes(
 
     // Builds one attempt's streamText(...) call. `attemptState.discarded` is
     // flipped to true by streamWithRetry the instant it decides to retry
-    // this attempt away — onAbort/onFinish check it first so trace/analytics
+    // this attempt away — onAbort/onEnd check it first so trace/analytics
     // side effects never fire for a turn the client never fully saw. This
-    // check is load-bearing, not defensive: AI SDK v6 does call
-    // onFinish/onAbort for a discarded attempt (see ai/streamWithRetry.ts's
+    // check is load-bearing, not defensive: the AI SDK does call
+    // onEnd/onAbort (onFinish in v6) for a discarded attempt (see ai/streamWithRetry.ts's
     // doc comment), so without it a retried turn would write an extra
     // `raw_traces` row and fire a false `agent_turn_completed`/`_failed`.
     const buildAttempt = (
       _attempt: number,
       attemptState: AttemptState,
     ): StreamAttempt => {
-      // Input tokens of the LAST step only (not `onFinish`'s `usage`, which
-      // is `totalUsage` summed across every step of a multi-step tool
-      // loop). The last step's prompt IS the model's actual context size at
+      // Input tokens of the LAST step only (not the summed usage across every
+      // step of a multi-step tool loop: AI SDK 7's `onEnd`/result `usage` is
+      // that sum, hence `finalStep.usage` where the old per-final-step
+      // number is needed). The last step's prompt IS the model's actual context size at
       // the end of the turn — earlier steps' input tokens are history that
       // was already counted in a prior request's total, so summing them
       // double-counts and is useless for a "how full is the context window"
@@ -594,19 +604,19 @@ export async function chatRoutes(
       const result = streamText({
       model,
       // Anthropic caches only at an explicit breakpoint (anthropicCache.ts).
-      system: usesAnthropicPromptCache(selectedModelId)
+      instructions: usesAnthropicPromptCache(selectedModelId)
         ? cachedSystemPrompt(system)
         : system,
       messages: modelMessages,
       tools,
-      stopWhen: stepCountIs(maxSteps),
+      stopWhen: isStepCount(maxSteps),
       abortSignal: abortController.signal,
       // Our own retry policy (ai/retry.ts + streamWithRetry.ts) is the only
       // source of truth for retries on this call — the AI SDK's built-in
       // default (2 internal retries with its own backoff) would otherwise
       // stack on top of ours, multiplying provider calls and time-to-error.
       maxRetries: 0,
-      onStepFinish({ usage }) {
+      onStepEnd({ usage }) {
         // `?? lastStep...` rather than `?? 0`: a provider that reports usage
         // on an early step but omits it on the final one would otherwise
         // destroy a measurement we already had in hand, and the `<= 0` guard
@@ -633,8 +643,13 @@ export async function chatRoutes(
           properties: { model: selectedModelId, error_kind: "aborted" },
         });
       },
-      onFinish({ usage, steps }) {
+      onEnd({ finalStep, steps }) {
         if (attemptState.discarded) return;
+        // AI SDK 6's onFinish `usage` was the FINAL STEP's usage (`totalUsage`
+        // was the sum); in 7 `usage` is the sum, so read the final step to
+        // keep prompt_tokens / raw_traces.input_tokens meaning "the last
+        // request's prompt" exactly as before.
+        const usage = finalStep.usage;
         console.log(
           `[tokens] input: ${usage.inputTokens}, output: ${usage.outputTokens}, cache read: ${usage.inputTokenDetails?.cacheReadTokens ?? "n/a"}`,
         );
@@ -763,7 +778,7 @@ export async function chatRoutes(
         // value to the `finish` chunk WITHOUT emitting a separate
         // `message-metadata` chunk anywhere else in the stream.
         //
-        // AI SDK v6 calls `messageMetadata` on both the `start` AND
+        // The AI SDK calls `messageMetadata` on both the `start` AND
         // `finish` TextStreamParts. Returning a value on any part other
         // than `finish` makes `toUIMessageStream` emit a standalone
         // `message-metadata` UI chunk right there — and streamWithRetry.ts's
@@ -776,13 +791,16 @@ export async function chatRoutes(
         // invisible to the retry buffer exactly like the rest of `finish`.
         // This is an invariant, not a style choice: do not widen this past
         // `finish`.
+        // The top-level helper, not `result.toUIMessageStream` (deprecated in 7).
         toUIMessageStream: (opts) =>
-          result.toUIMessageStream({
+          toUIMessageStream({
+            stream: result.stream,
+            tools,
             ...opts,
             messageMetadata: ({ part }) => {
               if (part.type !== "finish") return undefined;
               // 0 means the model/provider never reported usage for ANY step
-              // of this turn (see onStepFinish, which keeps the last known
+              // of this turn (see onStepEnd, which keeps the last known
               // value) — send nothing rather than a misleading "0 tokens
               // used" the frontend would render as an empty meter.
               if (lastStepInputTokens <= 0) return undefined;

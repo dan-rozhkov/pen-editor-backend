@@ -119,7 +119,7 @@ function isRetryableByText(message: string): boolean {
 
 /**
  * Classifies whether a thrown error from a model call (`generateText`,
- * `generateObject`, `streamText`) looks like a transient provider/transport
+ * `generateText` with an output, `streamText`) looks like a transient provider/transport
  * failure worth retrying.
  *
  * Order matters: non-retryable (quota/billing) patterns are checked before
@@ -252,7 +252,7 @@ export interface AgentRetryPolicy {
   maxDelayMs?: number;
 }
 
-/** Default policy for non-streaming model calls (`generateText`/`generateObject`). */
+/** Default policy for non-streaming model calls (`generateText`, with or without an `output`). */
 export const DEFAULT_AGENT_RETRY: AgentRetryPolicy = {
   maxRetries: 2,
   baseDelayMs: 1000,

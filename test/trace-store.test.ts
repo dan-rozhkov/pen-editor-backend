@@ -87,6 +87,20 @@ describe("redactBase64DataUrls", () => {
     });
   });
 
+  // AI SDK 7's tool-result image: {type:"file", mediaType, data:{type:"data",
+  // data:"<base64>"}} — the base64 sits in a "data" field one level down.
+  it("redacts the base64 inside an AI SDK 7 tagged file part", () => {
+    const big = "C".repeat(2000);
+    const json = `{"type":"file","mediaType":"image/png","data":{"type":"data","data":"${big}"}}`;
+    const out = redactBase64DataUrls(json);
+    expect(out).not.toContain(big);
+    expect(JSON.parse(out)).toEqual({
+      type: "file",
+      mediaType: "image/png",
+      data: { type: "data", data: "[redacted 2000 chars]" },
+    });
+  });
+
   it("redacts a bare MCP embedded-resource 'blob' field with no data: prefix", () => {
     const big = "B".repeat(2000);
     const json = `{"type":"resource","resource":{"blob":"${big}","mimeType":"image/png"}}`;

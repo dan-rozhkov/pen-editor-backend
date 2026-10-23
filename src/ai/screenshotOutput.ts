@@ -72,9 +72,18 @@ export function parseScreenshotDataUrl(output: unknown): ScreenshotImage | null 
   return null;
 }
 
+// AI SDK 7's canonical tool-result image: a `file` part with an image
+// mediaType (the `image-data` variant it replaces is deprecated). The FULL
+// mediaType (`image/png`, not just `image`) is deliberate: OpenRouter's
+// provider only promotes a tool-result file to a native `image_url` when the
+// mediaType it receives starts with `image/`.
 export type ScreenshotContentPart =
   | { type: "text"; text: string }
-  | { type: "image-data"; data: string; mediaType: string };
+  | { type: "file"; mediaType: string; data: { type: "data"; data: string } };
+
+function screenshotFilePart(image: ScreenshotImage): ScreenshotContentPart {
+  return { type: "file", mediaType: image.mediaType, data: { type: "data", data: image.base64 } };
+}
 
 export interface ScreenshotContentOutput {
   type: "content";
@@ -95,11 +104,11 @@ export interface ScreenshotContentOutput {
  * leave the output untouched in that case.
  *
  * get_screenshot's payload IS the image and nothing else, so it promotes to a
- * single image-data part. browse_screenshot's payload additionally carries
+ * single image `file` part. browse_screenshot's payload additionally carries
  * url/title/snapshotId/elements alongside imageData, so it promotes to TWO
  * parts: a text part with the JSON minus imageData (so the element table
  * survives vision preprocessing, which only ever rewrites image parts) plus
- * the image-data part.
+ * the image `file` part.
  */
 export function screenshotOutputToContent(
   toolName: string,
@@ -111,7 +120,7 @@ export function screenshotOutputToContent(
   if (toolName === "get_screenshot") {
     return {
       type: "content",
-      value: [{ type: "image-data", data: image.base64, mediaType: image.mediaType }],
+      value: [screenshotFilePart(image)],
     };
   }
 
@@ -130,7 +139,7 @@ export function screenshotOutputToContent(
     type: "content",
     value: [
       { type: "text", text: JSON.stringify(withoutImage) },
-      { type: "image-data", data: image.base64, mediaType: image.mediaType },
+      screenshotFilePart(image),
     ],
   };
 }

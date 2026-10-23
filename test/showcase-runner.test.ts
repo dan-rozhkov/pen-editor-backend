@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { MockLanguageModelV3 } from "ai/test";
-import type { LanguageModelV3GenerateResult } from "@ai-sdk/provider";
+import { MockLanguageModelV4 } from "ai/test";
+import type { LanguageModelV4GenerateResult } from "@ai-sdk/provider";
 import { loadSkills } from "../src/ai/skills.js";
 import { makeConfig } from "./helpers.js";
 import { textResult, toolCallResult } from "./reviewFakes.js";
@@ -38,13 +38,13 @@ vi.mock("../src/ai/mcp.js", () => ({
   releaseMCPTools: vi.fn(),
 }));
 
-// MockLanguageModelV3's array form of `doGenerate` indexes by
+// MockLanguageModelV4's array form of `doGenerate` indexes by
 // `doGenerateCalls.length` *after* pushing the current call — i.e. 1-based,
 // not 0-based — so passing the results array directly skips index 0 and
 // eventually reads past the end. A plain counter avoids that off-by-one.
-function mockModel(results: LanguageModelV3GenerateResult[]): MockLanguageModelV3 {
+function mockModel(results: LanguageModelV4GenerateResult[]): MockLanguageModelV4 {
   let call = 0;
-  return new MockLanguageModelV3({
+  return new MockLanguageModelV4({
     doGenerate: async () => {
       const result = results[Math.min(call, results.length - 1)];
       call += 1;
@@ -57,10 +57,10 @@ function mockModel(results: LanguageModelV3GenerateResult[]): MockLanguageModelV
 // a result — used to simulate a retryable mid-turn failure (e.g. one that
 // happens after batch_design already ran for that attempt).
 function mockModelWithFailure(
-  results: Array<LanguageModelV3GenerateResult | Error>,
-): MockLanguageModelV3 {
+  results: Array<LanguageModelV4GenerateResult | Error>,
+): MockLanguageModelV4 {
   let call = 0;
-  return new MockLanguageModelV3({
+  return new MockLanguageModelV4({
     doGenerate: async () => {
       const result = results[Math.min(call, results.length - 1)];
       call += 1;
@@ -162,7 +162,7 @@ describe("runShowcaseGeneration", () => {
     const offered: string[][] = [];
     let call = 0;
     const results = [textResult("done")];
-    holders.model = new MockLanguageModelV3({
+    holders.model = new MockLanguageModelV4({
       doGenerate: async (options) => {
         offered.push((options.tools ?? []).map((t) => t.name));
         const result = results[Math.min(call, results.length - 1)];
@@ -297,7 +297,7 @@ describe("runShowcaseGeneration", () => {
 
   it("finding #3: retries an attempt that harvested zero screens, and returns the retried attempt's screens", async () => {
     let calls = 0;
-    const results: LanguageModelV3GenerateResult[] = [
+    const results: LanguageModelV4GenerateResult[] = [
       // Attempt 1: a single clean-finish step, no batch_design call at all.
       textResult("nothing to see here"),
       // Attempt 2: a real screen, then a clean finish.
@@ -307,7 +307,7 @@ describe("runShowcaseGeneration", () => {
       }),
       textResult("done"),
     ];
-    holders.model = new MockLanguageModelV3({
+    holders.model = new MockLanguageModelV4({
       doGenerate: async () => {
         const result = results[Math.min(calls, results.length - 1)];
         calls++;
@@ -323,7 +323,7 @@ describe("runShowcaseGeneration", () => {
 
   it("finding #3: an empty harvest on every attempt still ends the run without throwing (today's behavior), after exhausting the retry budget", async () => {
     let calls = 0;
-    holders.model = new MockLanguageModelV3({
+    holders.model = new MockLanguageModelV4({
       doGenerate: async () => {
         calls++;
         return textResult("I could not complete this task.");
@@ -457,7 +457,7 @@ describe("runShowcaseGeneration", () => {
       const prompts: unknown[] = [];
       let call = 0;
       const results = [toolCallResult("batch_design", { operations }), textResult("done")];
-      holders.model = new MockLanguageModelV3({
+      holders.model = new MockLanguageModelV4({
         doGenerate: async (options) => {
           prompts.push(options.prompt);
           const result = results[Math.min(call, results.length - 1)];
@@ -495,7 +495,7 @@ describe("runShowcaseGeneration", () => {
         }),
         textResult("done"),
       ];
-      holders.model = new MockLanguageModelV3({
+      holders.model = new MockLanguageModelV4({
         doGenerate: async (options) => {
           prompts.push(options.prompt);
           const result = results[Math.min(call, results.length - 1)];
@@ -531,7 +531,7 @@ describe("runShowcaseGeneration", () => {
         }),
         textResult("done"),
       ];
-      holders.model = new MockLanguageModelV3({
+      holders.model = new MockLanguageModelV4({
         doGenerate: async (options) => {
           prompts.push(options.prompt);
           const result = results[Math.min(call, results.length - 1)];
@@ -611,7 +611,7 @@ describe("runShowcaseGeneration", () => {
         }),
         textResult("done"),
       ];
-      holders.model = new MockLanguageModelV3({
+      holders.model = new MockLanguageModelV4({
         doGenerate: async (options) => {
           prompts.push(options.prompt);
           const result = results[Math.min(call, results.length - 1)];
@@ -650,7 +650,7 @@ describe("runShowcaseGeneration", () => {
       vi.stubGlobal("fetch", fetchMock);
       const prompts: unknown[] = [];
       let call = 0;
-      const results: Array<LanguageModelV3GenerateResult | Error> = [
+      const results: Array<LanguageModelV4GenerateResult | Error> = [
         toolCallResult("batch_design", {
           operations: 's1=I(document, {type: "embed", name: "Home", htmlContent: "<div>attempt1</div>"})',
         }),
@@ -660,7 +660,7 @@ describe("runShowcaseGeneration", () => {
         }),
         textResult("done"),
       ];
-      holders.model = new MockLanguageModelV3({
+      holders.model = new MockLanguageModelV4({
         doGenerate: async (options) => {
           prompts.push(options.prompt);
           const result = results[Math.min(call, results.length - 1)];

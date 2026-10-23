@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { MockLanguageModelV3 } from "ai/test";
+import { MockLanguageModelV4 } from "ai/test";
 import { makeConfig } from "./helpers.js";
 
 const USAGE = {
@@ -22,7 +22,7 @@ const { buildApp } = await import("../src/app.js");
 let prompts: string[];
 
 function answering(obj: unknown) {
-  return new MockLanguageModelV3({
+  return new MockLanguageModelV4({
     doGenerate: async (options) => {
       prompts.push(JSON.stringify(options.prompt));
       return {
@@ -82,7 +82,7 @@ describe("POST /api/browse/judge", () => {
   });
 
   it("answers 200 { error } when the model fails", async () => {
-    state.model = new MockLanguageModelV3({
+    state.model = new MockLanguageModelV4({
       doGenerate: async () => {
         throw new Error("upstream exploded");
       },

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { LanguageModelV3GenerateResult } from "@ai-sdk/provider";
+import type { LanguageModelV4GenerateResult } from "@ai-sdk/provider";
 import type { ModelMessage } from "ai";
 import {
   capturingGenerateModel,
@@ -42,7 +42,7 @@ vi.mock("../src/ai/provider.js", async (importOriginal) => {
   };
 });
 
-const reviewModel = (result: LanguageModelV3GenerateResult) => capturingGenerateModel([], result);
+const reviewModel = (result: LanguageModelV4GenerateResult) => capturingGenerateModel([], result);
 
 const MESSAGES: ModelMessage[] = [{ role: "user", content: "remember I like short answers" }];
 

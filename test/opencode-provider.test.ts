@@ -349,19 +349,47 @@ describe("createOpenCodeModel tool-result images", () => {
   }
 
   it("turns an image tool result into image_url parts", async () => {
+    // AI SDK 7 shape: a `file` part with an image mediaType and tagged data.
+    // The second part declares only the top-level segment; the SDK sniffs the
+    // subtype from the bytes (this PNG signature), so both come out as png.
     const { tool } = await sentMessages({
       type: "content",
       value: [
         { type: "text", text: "shot" },
-        { type: "image-data", data: png, mediaType: "image/png" },
-        { type: "file-data", data: png, mediaType: "image/jpeg" },
+        { type: "file", mediaType: "image/png", data: { type: "data", data: png } },
+        { type: "file", mediaType: "image", data: { type: "data", data: png } },
       ],
     });
     expect(tool.content).toEqual([
       { type: "text", text: "shot" },
       { type: "image_url", image_url: { url: `data:image/png;base64,${png}` } },
-      { type: "image_url", image_url: { url: `data:image/jpeg;base64,${png}` } },
+      { type: "image_url", image_url: { url: `data:image/png;base64,${png}` } },
     ]);
+  });
+
+  it("still restores the deprecated image-data / file-data aliases the SDK migrates", async () => {
+    // Old clients and stored histories still carry these. The SDK logs a
+    // one-off deprecation warning for them, which this test provokes on
+    // purpose, so it silences the logger for its own duration.
+    const previous = globalThis.AI_SDK_LOG_WARNINGS;
+    globalThis.AI_SDK_LOG_WARNINGS = false;
+    try {
+      const { tool } = await sentMessages({
+        type: "content",
+        value: [
+          { type: "text", text: "shot" },
+          { type: "image-data", data: png, mediaType: "image/png" },
+          { type: "file-data", data: png, mediaType: "image/jpeg" },
+        ],
+      });
+      expect(tool.content).toEqual([
+        { type: "text", text: "shot" },
+        { type: "image_url", image_url: { url: `data:image/png;base64,${png}` } },
+        { type: "image_url", image_url: { url: `data:image/jpeg;base64,${png}` } },
+      ]);
+    } finally {
+      globalThis.AI_SDK_LOG_WARNINGS = previous;
+    }
   });
 
   it("leaves text and json tool results byte-identical", async () => {
@@ -375,8 +403,10 @@ describe("createOpenCodeModel tool-result images", () => {
     const { tool } = await sentMessages({
       type: "content",
       value: [
-        { type: "image-data", data: png, mediaType: "image/png" },
-        { type: "file-data", data: png, mediaType: "application/pdf" },
+        { type: "file", mediaType: "image/png", data: { type: "data", data: png } },
+        // Real PDF bytes ("%PDF-"): the SDK sniffs image signatures out of
+        // any inline data and would re-label PNG bytes as an image.
+        { type: "file", mediaType: "application/pdf", data: { type: "data", data: "JVBERi0=" } },
       ],
     });
     expect(typeof tool.content).toBe("string");
@@ -384,11 +414,58 @@ describe("createOpenCodeModel tool-result images", () => {
 
   it("applies together with disableReasoning", async () => {
     const { body, tool } = await sentMessages(
-      { type: "content", value: [{ type: "image-data", data: png, mediaType: "image/png" }] },
+      { type: "content", value: [{ type: "file", mediaType: "image/png", data: { type: "data", data: png } }] },
       { disableReasoning: true },
     );
     expect(body.reasoning_effort).toBe("none");
     expect(Array.isArray(tool.content)).toBe(true);
+  });
+});
+
+describe("restoreToolResultImages file parts", () => {
+  const restore = (parts: unknown[]) =>
+    (
+      restoreToolResultImages({
+        messages: [{ role: "tool", tool_call_id: "c", content: JSON.stringify(parts) }],
+      }).messages as { content: unknown }[]
+    )[0].content;
+
+  it("maps the AI SDK 7 file part (tagged data and url) to image_url", () => {
+    expect(
+      restore([
+        { type: "file", mediaType: "image/webp", data: { type: "data", data: "QUJD" } },
+        { type: "file", mediaType: "image", data: { type: "data", data: "QUJD" } },
+        { type: "file", mediaType: "image/png", data: { type: "url", url: "https://x.test/c.png" } },
+      ]),
+    ).toEqual([
+      { type: "image_url", image_url: { url: "data:image/webp;base64,QUJD" } },
+      { type: "image_url", image_url: { url: "data:image/png;base64,QUJD" } },
+      { type: "image_url", image_url: { url: "https://x.test/c.png" } },
+    ]);
+  });
+
+  it("does not JSON.parse a big result that merely mentions the word file", () => {
+    const parse = vi.spyOn(JSON, "parse");
+    const content = JSON.stringify([{ type: "text", text: `a "file" and "files": ${"x".repeat(1000)}` }]);
+    const out = restoreToolResultImages({ messages: [{ role: "tool", tool_call_id: "c", content }] });
+    expect((out.messages as { content: unknown }[])[0].content).toBe(content);
+    expect(parse).not.toHaveBeenCalled();
+    parse.mockRestore();
+  });
+
+  it("matches the file type tag whatever the whitespace", () => {
+    const content = '[{ "type" : "file", "mediaType": "image/png", "data": {"type":"data","data":"QUJD"} }]';
+    const out = restoreToolResultImages({ messages: [{ role: "tool", tool_call_id: "c", content }] });
+    expect((out.messages as { content: unknown }[])[0].content).toEqual([
+      { type: "image_url", image_url: { url: "data:image/png;base64,QUJD" } },
+    ]);
+  });
+
+  it("leaves a result alone when a file part is not an image or has no bytes", () => {
+    const pdf = [{ type: "file", mediaType: "application/pdf", data: { type: "data", data: "QUJD" } }];
+    const reference = [{ type: "file", mediaType: "image/png", data: { type: "reference", reference: { openai: "f" } } }];
+    expect(restore(pdf)).toBe(JSON.stringify(pdf));
+    expect(restore(reference)).toBe(JSON.stringify(reference));
   });
 });
 

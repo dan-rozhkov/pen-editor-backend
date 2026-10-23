@@ -1,4 +1,4 @@
-import { generateText, stepCountIs, tool, type ModelMessage, type ToolSet } from "ai";
+import { generateText, isStepCount, tool, type ModelMessage, type ToolSet } from "ai";
 import type { Config } from "../../config.js";
 import { logSession } from "../../logging.js";
 import { bareModelId, createModel, isOpenCodeProvider, parseModelRef } from "../provider.js";
@@ -217,7 +217,7 @@ export interface MaybeRunReviewInput {
 
 export type ReviewOutcome = "disabled" | "mid-turn" | "not-due" | "ran" | "timed-out";
 
-// Fire-and-forget from the chat route's onFinish. The user's response has
+// Fire-and-forget from the chat route's onEnd. The user's response has
 // already streamed by the time this runs, so every failure path here is a
 // log line and nothing more.
 //
@@ -466,11 +466,11 @@ export async function maybeRunReview(
     scenariosForAudit = scenarios;
     const result = await generateText({
       model: createModel(config, reviewModelOverride(input.modelOverride)),
-      system: input.system,
+      instructions: input.system,
       messages,
       tools: reviewTools,
-      stopWhen: stepCountIs(REVIEW_MAX_STEPS),
-      // Nobody is waiting on this run (fire-and-forget from onFinish, after
+      stopWhen: isStepCount(REVIEW_MAX_STEPS),
+      // Nobody is waiting on this run (fire-and-forget from onEnd, after
       // the user's response already streamed) and nobody can cancel it, so
       // it needs its own wall-clock cap rather than relying on a caller to
       // abort it — see DEFAULT_REVIEW_TIMEOUT_MS above for why.
@@ -548,9 +548,12 @@ export async function maybeRunReview(
             outputTokens: step.usage.outputTokens ?? 0,
           },
         })),
+        // finalStep.usage, not result.usage: in AI SDK 7 `usage` sums every
+        // step, while the log field has always held the final step's usage
+        // (AI SDK 6 `result.usage`). Same value as before.
         totalUsage: {
-          inputTokens: result.usage.inputTokens ?? 0,
-          outputTokens: result.usage.outputTokens ?? 0,
+          inputTokens: result.finalStep.usage.inputTokens ?? 0,
+          outputTokens: result.finalStep.usage.outputTokens ?? 0,
         },
       }).catch((err) => console.error("[review] failed to write review log:", err));
     }
@@ -612,7 +615,7 @@ function isReviewTimeoutError(err: unknown): boolean {
   return cause instanceof Error && cause.name === "TimeoutError";
 }
 
-/** Call site for onFinish: guards both a rejected promise and a synchronous
+/** Call site for onEnd: guards both a rejected promise and a synchronous
  * throw, exactly like writeRawTraceSafe. */
 export function runReviewSafe(input: MaybeRunReviewInput): void {
   try {

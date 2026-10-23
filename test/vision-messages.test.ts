@@ -76,7 +76,7 @@ describe("applyVisionPreprocessing", () => {
         role: "user",
         content: [
           { type: "text", text: "look at this" },
-          { type: "image", image: "https://example.com/a.png", mediaType: "image/png" },
+          { type: "file", data: "https://example.com/a.png", mediaType: "image/png" },
         ],
       },
     ];
@@ -95,7 +95,7 @@ describe("applyVisionPreprocessing", () => {
         role: "user",
         content: [
           { type: "text", text: "look at this" },
-          { type: "image", image: "https://example.com/a.png", mediaType: "image/png" },
+          { type: "file", data: "https://example.com/a.png", mediaType: "image/png" },
         ],
       },
     ];
@@ -454,7 +454,7 @@ describe("applyVisionPreprocessing", () => {
     const turn1: ModelMessage[] = [
       {
         role: "user",
-        content: [{ type: "image", image: imageA, mediaType: "image/png" }],
+        content: [{ type: "file", data: imageA, mediaType: "image/png" }],
       },
     ];
     const result1 = await applyVisionPreprocessing(turn1, { config, modelId: BLIND_MODEL });
@@ -562,7 +562,7 @@ describe("applyVisionPreprocessing", () => {
       {
         role: "user",
         content: [
-          { type: "image", image: "https://example.com/dead.png", mediaType: "image/png" },
+          { type: "file", data: "https://example.com/dead.png", mediaType: "image/png" },
         ],
       },
     ];
@@ -581,8 +581,8 @@ describe("applyVisionPreprocessing", () => {
     const config = makeConfig();
     const sharedImage = "https://example.com/dup.png";
     const messages: ModelMessage[] = [
-      { role: "user", content: [{ type: "image", image: sharedImage, mediaType: "image/png" }] },
-      { role: "user", content: [{ type: "image", image: sharedImage, mediaType: "image/png" }] },
+      { role: "user", content: [{ type: "file", data: sharedImage, mediaType: "image/png" }] },
+      { role: "user", content: [{ type: "file", data: sharedImage, mediaType: "image/png" }] },
     ];
 
     const result = await applyVisionPreprocessing(messages, { config, modelId: BLIND_MODEL });
@@ -605,7 +605,7 @@ describe("applyVisionPreprocessing", () => {
     vi.mocked(describeImage).mockResolvedValue({ ok: true, text: "A settings screen." });
     const config = makeConfig();
     const messages: ModelMessage[] = [
-      { role: "user", content: [{ type: "image", image: sharedImage, mediaType: "image/png" }] },
+      { role: "user", content: [{ type: "file", data: sharedImage, mediaType: "image/png" }] },
       {
         role: "tool",
         content: [
@@ -720,7 +720,7 @@ describe("applyVisionPreprocessing", () => {
       {
         role: "user",
         content: [
-          { type: "image", image: "https://example.com/real.png", mediaType: "image/png" },
+          { type: "file", data: "https://example.com/real.png", mediaType: "image/png" },
         ],
       },
     ];
@@ -747,7 +747,7 @@ describe("applyVisionPreprocessing", () => {
       {
         role: "user",
         content: [
-          { type: "image", image: "https://example.com/a.png", mediaType: "image/png" },
+          { type: "file", data: "https://example.com/a.png", mediaType: "image/png" },
         ],
       },
     ];
@@ -816,7 +816,7 @@ describe("applyVisionPreprocessing (provider tool-result-image dimension)", () =
     const messages: ModelMessage[] = [
       {
         role: "user",
-        content: [{ type: "image", image: "https://example.com/a.png", mediaType: "image/png" }],
+        content: [{ type: "file", data: "https://example.com/a.png", mediaType: "image/png" }],
       },
     ];
 
@@ -829,5 +829,198 @@ describe("applyVisionPreprocessing (provider tool-result-image dimension)", () =
     const content = (result[0] as { content: unknown[] }).content;
     expect(content[0]).toMatchObject({ type: "text" });
     expect((content[0] as { text: string }).text).toContain("A blue login screen.");
+  });
+});
+
+// AI SDK 7 renamed every image shape (`image` user part and the `image-*`
+// tool-result variants all collapse into `file` with an image mediaType and a
+// tagged `data`), but old clients and stored histories still send the old
+// ones. The INVARIANT must hold for both generations: whichever way an image
+// arrives for a slot this pass decided to convert, no image part may survive.
+// A tool message whose one result is a `content` output holding `parts`.
+const toolContent = (...parts: unknown[]): ModelMessage[] =>
+  [
+    {
+      role: "tool",
+      content: [
+        { type: "tool-result", toolCallId: "c1", toolName: "mobbin_search", output: { type: "content", value: parts } },
+      ],
+    },
+  ] as ModelMessage[];
+
+// The `value` array of the first tool result in a processed message list.
+const toolValue = (result: ModelMessage[]): Array<{ type: string; text?: string }> =>
+  (result[0] as { content: Array<{ output: { value: Array<{ type: string; text?: string }> } }> }).content[0].output.value;
+
+describe("applyVisionPreprocessing — image part shapes of AI SDK 6 and 7", () => {
+  const PNG_DATA_URL = "data:image/png;base64,QUJD";
+
+  const userShapes: Array<[string, unknown, string]> = [
+    ["v6 image part", { type: "image", image: "https://example.com/a.png", mediaType: "image/png" }, "https://example.com/a.png"],
+    ["bare-string file part", { type: "file", data: "https://example.com/a.png", mediaType: "image/png" }, "https://example.com/a.png"],
+    [
+      "tagged url file part (what ai 7 convertToModelMessages emits for a UI file part)",
+      { type: "file", data: { type: "url", url: new URL("https://example.com/a.png") }, mediaType: "image/png" },
+      "https://example.com/a.png",
+    ],
+    [
+      "tagged url file part holding a data: URL",
+      { type: "file", data: { type: "url", url: new URL(PNG_DATA_URL) }, mediaType: "image/png" },
+      PNG_DATA_URL,
+    ],
+    [
+      "tagged data file part with the top-level-only mediaType",
+      { type: "file", data: { type: "data", data: "QUJD" }, mediaType: "image" },
+      PNG_DATA_URL,
+    ],
+  ];
+
+  it.each(userShapes)("converts a user %s", async (_label, part, expectedImage) => {
+    vi.mocked(describeImage).mockResolvedValue({ ok: true, text: "A described image." });
+    const messages: ModelMessage[] = [{ role: "user", content: [part] }] as ModelMessage[];
+
+    const result = await applyVisionPreprocessing(messages, { config: makeConfig(), modelId: BLIND_MODEL });
+
+    expect(vi.mocked(describeImage).mock.calls[0][0].image).toBe(expectedImage);
+    const content = (result[0] as { content: Array<{ type: string; text?: string }> }).content;
+    expect(content).toHaveLength(1);
+    expect(content[0].type).toBe("text");
+    expect(content[0].text).toContain("A described image.");
+  });
+
+  const toolShapes: Array<[string, unknown, string]> = [
+    ["v6 image-data part", { type: "image-data", data: "QUJD", mediaType: "image/png" }, PNG_DATA_URL],
+    ["v6 file-data part", { type: "file-data", data: "QUJD", mediaType: "image/png" }, PNG_DATA_URL],
+    ["v6 image-url part", { type: "image-url", url: "https://example.com/t.png" }, "https://example.com/t.png"],
+    ["v6 image file-url part", { type: "file-url", url: "https://example.com/t.png", mediaType: "image/png" }, "https://example.com/t.png"],
+    ["v7 file part, tagged data", { type: "file", mediaType: "image/png", data: { type: "data", data: "QUJD" } }, PNG_DATA_URL],
+    ["v7 file part, top-level-only mediaType", { type: "file", mediaType: "image", data: { type: "data", data: "QUJD" } }, PNG_DATA_URL],
+    [
+      "v7 file part, tagged url",
+      { type: "file", mediaType: "image/webp", data: { type: "url", url: new URL("https://example.com/t.webp") } },
+      "https://example.com/t.webp",
+    ],
+  ];
+
+  it.each(toolShapes)("converts a tool-result %s and keeps its sibling text", async (_label, part, expectedImage) => {
+    vi.mocked(describeImage).mockResolvedValue({ ok: true, text: "A described result." });
+    const messages = [
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "c1",
+            toolName: "mobbin_search",
+            output: { type: "content", value: [{ type: "text", text: "app: Acme" }, part] },
+          },
+        ],
+      },
+    ] as ModelMessage[];
+
+    const result = await applyVisionPreprocessing(messages, { config: makeConfig(), modelId: BLIND_MODEL });
+
+    expect(vi.mocked(describeImage).mock.calls[0][0].image).toBe(expectedImage);
+    const output = (
+      result[0] as { content: Array<{ output: { type: string; value: Array<{ type: string; text?: string }> } }> }
+    ).content[0].output;
+    expect(output.type).toBe("content");
+    expect(output.value.map((p) => p.type)).toEqual(["text", "text"]);
+    expect(output.value[0].text).toBe("app: Acme");
+    expect(output.value[1].text).toContain("A described result.");
+  });
+
+  // AI SDK 7 sniffs inline bytes and relabels the part image/* whatever was
+  // declared, so these reach the provider as images and must be converted.
+  const PNG_B64 = "iVBORw0KGgo=";
+  const sniffedShapes: Array<[string, unknown]> = [
+    ["tagged data, declared octet-stream", { type: "file", mediaType: "application/octet-stream", data: { type: "data", data: PNG_B64 } }],
+    ["bare base64 string, declared octet-stream", { type: "file", mediaType: "application/octet-stream", data: PNG_B64 }],
+    ["Uint8Array, declared octet-stream", { type: "file", mediaType: "application/octet-stream", data: Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) }],
+    ["JPEG bytes declared as pdf", { type: "file", mediaType: "application/pdf", data: { type: "data", data: "/9j/4AAQ" } }],
+    ["data: URL whose own mime is an image", { type: "file", mediaType: "application/octet-stream", data: { type: "url", url: new URL("data:image/png;base64,QUJD") } }],
+  ];
+
+  it.each(sniffedShapes)("converts a tool-result file part: %s", async (_label, part) => {
+    vi.mocked(describeImage).mockResolvedValue({ ok: true, text: "A sniffed image." });
+    const messages = toolContent(part);
+
+    const result = await applyVisionPreprocessing(messages, { config: makeConfig(), modelId: BLIND_MODEL });
+
+    expect(describeImage).toHaveBeenCalledTimes(1);
+    expect(toolValue(result).map((p) => p.type)).toEqual(["text"]);
+  });
+
+  it.each(sniffedShapes)("converts a user file part: %s", async (_label, part) => {
+    vi.mocked(describeImage).mockResolvedValue({ ok: true, text: "A sniffed image." });
+    const result = await applyVisionPreprocessing([{ role: "user", content: [part] }] as ModelMessage[], {
+      config: makeConfig(),
+      modelId: BLIND_MODEL,
+    });
+
+    expect(describeImage).toHaveBeenCalledTimes(1);
+    expect((result[0] as { content: Array<{ type: string }> }).content.map((p) => p.type)).toEqual(["text"]);
+  });
+
+  // The SDK guesses a missing mediaType from the URL extension (.png ->
+  // image/png), after which the provider emits an image_url.
+  const extensionShapes: Array<[string, unknown, string]> = [
+    ["file-url without mediaType", { type: "file-url", url: "https://example.com/pic.PNG?x=1" }, "https://example.com/pic.PNG?x=1"],
+    ["v7 file with a tagged url and no mediaType", { type: "file", data: { type: "url", url: new URL("https://example.com/a/pic.webp") } }, "https://example.com/a/pic.webp"],
+  ];
+
+  it.each(extensionShapes)("converts a tool-result %s by extension", async (_label, part, expected) => {
+    vi.mocked(describeImage).mockResolvedValue({ ok: true, text: "By extension." });
+    const messages = toolContent(part);
+
+    const result = await applyVisionPreprocessing(messages, { config: makeConfig(), modelId: BLIND_MODEL });
+
+    expect(vi.mocked(describeImage).mock.calls[0][0].image).toBe(expected);
+    expect(toolValue(result).map((p) => p.type)).toEqual(["text"]);
+  });
+
+  it("leaves a file-url without mediaType and a non-image extension alone", async () => {
+    const messages = [
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "c1",
+            toolName: "mobbin_search",
+            output: { type: "content", value: [{ type: "file-url", url: "https://example.com/doc.pdf" }] },
+          },
+        ],
+      },
+    ] as ModelMessage[];
+
+    const result = await applyVisionPreprocessing(messages, { config: makeConfig(), modelId: BLIND_MODEL });
+
+    expect(result).toEqual(messages);
+    expect(describeImage).not.toHaveBeenCalled();
+  });
+
+  it("leaves a non-image v7 file part (a PDF) alone", async () => {
+    const messages = [
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "c1",
+            toolName: "mobbin_search",
+            output: {
+              type: "content",
+              value: [{ type: "file", mediaType: "application/pdf", data: { type: "data", data: "JVBERi0=" } }],
+            },
+          },
+        ],
+      },
+    ] as ModelMessage[];
+
+    const result = await applyVisionPreprocessing(messages, { config: makeConfig(), modelId: BLIND_MODEL });
+
+    expect(result).toEqual(messages);
+    expect(describeImage).not.toHaveBeenCalled();
   });
 });

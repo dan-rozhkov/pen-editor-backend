@@ -1,4 +1,4 @@
-import { generateObject } from "ai";
+import { generateText, Output } from "ai";
 import { z } from "zod";
 import type { Config } from "../config.js";
 import { createModel } from "./provider.js";
@@ -102,14 +102,14 @@ export async function generatePrototypeLinks(
     screens.map((s) => [s.id, new Set(s.candidates.map((c) => c.protoId))]),
   );
 
-  const { object } = await generateObject({
+  const { output: object } = await generateText({
     // STRUCTURED_MODEL, not the chat model: this call relies on a real
     // json_schema response_format (see STRUCTURED_MODEL's doc comment in
     // src/config.ts), so it must not follow whatever model the operator —
     // or a user in the composer — picked for chat, and silently degrade
     // into NoObjectGeneratedError territory.
     model: createModel(config, config.STRUCTURED_MODEL),
-    schema: prototypeLinkResultSchema,
+    output: Output.object({ schema: prototypeLinkResultSchema }),
     prompt: buildPrompt(screens),
   });
 

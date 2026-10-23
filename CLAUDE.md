@@ -15,7 +15,7 @@ CI (`.github/workflows/ci.yml`) runs lint + test + build on every push to `main`
 ## Testing
 - Tests live in `test/` (outside tsconfig's `include: ["src"]`, so `npm run build` ignores them). Config in `vitest.config.ts`.
 - The app is constructed via `buildApp(config, { logger: false })` from `src/app.ts` — never `src/index.ts` (it reads env and listens). Build the `Config` object directly with `test/helpers.ts` → `makeConfig()`.
-- The LLM is mocked: `vi.mock` `src/ai/provider.js` so `createModel` returns `MockLanguageModelV3` from `ai/test` with `simulateReadableStream`-scripted chunks; mock `src/ai/mcp.js` (`getMCPTools`) the same way. To assert on what the model received (skill injection, canvasContext), capture the `doStream` arguments.
+- The LLM is mocked: `vi.mock` `src/ai/provider.js` so `createModel` returns `MockLanguageModelV4` from `ai/test` with `simulateReadableStream`-scripted chunks; mock `src/ai/mcp.js` (`getMCPTools`) the same way. To assert on what the model received (skill injection, canvasContext), capture the `doStream` arguments.
 - The chat route uses `reply.hijack()` and pipes to `reply.raw`, so `app.inject()` does not return the stream — use `app.listen({ port: 0 })` + `fetch` and read the SSE body as text (terminated by `data: [DONE]`). See `test/chat-route.test.ts`.
 - Client-executed tools must have **no** `execute` in `penTools`; `test/tools-contract.test.ts` pins this and the tool-name list — update it when adding a tool (its frontend twin `toolContract.test.ts` in pen-editor checks cross-repo sync).
 - **Lint on tests:** `eslint.config.js` scopes `@vitest/eslint-plugin` (`no-conditional-tests`, `no-conditional-in-test`, `no-disabled-tests`, `no-focused-tests`, all errors) to `test/**`. A discriminated-union result (zod `safeParse`, an `{ ok }` return) needs narrowing without an `if` in the test body — use `assert()` from `test/helpers.ts` (a TS assertion function) right after the `expect()` that pins the branch. `test/showcase-screenshot.test.ts` disables `no-conditional-in-test` file-wide with a comment — its `if (!browser) return` skip is real (no Chromium in CI), not a masked assertion.
@@ -56,8 +56,8 @@ fall-back-to-default an unknown id still gets. Only `/chat/completions`-family
 models are supported; `OPENCODE_CHAT_COMPLETIONS_MODELS` is an allowlist
 because OpenCode's other two endpoint families answer with junk rather than a
 clear error. Two traps found by reading `node_modules`, both silent:
-`@ai-sdk/openai-compatible` **v3 is incompatible with `ai` v6** (needs v2 —
-the majors are offset), and a `User-Agent` set on the provider config is
+`@ai-sdk/openai-compatible` majors are offset from `ai`'s (**v3 pairs with `ai`
+7**, v2 with `ai` 6 — a mismatch fails silently), and a `User-Agent` set on the provider config is
 overwritten by `ai`'s own, so both required OpenCode headers are forced in a
 `fetch` wrapper instead.
 
@@ -102,7 +102,8 @@ OpenRouter" — i.e. the wrong *provider* with no error. With one provider it
 just means what it says. Test: `test/load-config.test.ts`.
 
 **`STRUCTURED_MODEL`** (default `openrouter:deepseek/deepseek-v4.1-flash`)
-stays pinned separately for the two `generateObject()` call sites that need
+stays pinned separately for the two structured-output (`generateText` +
+`Output.object`) call sites that need
 a real `json_schema` response format (`POST /api/user-skills/generate`,
 `src/ai/prototype-link.ts`), so a chat model without structured-output
 support — an operator's, or a user's pick — can't silently degrade them into
@@ -110,7 +111,7 @@ support — an operator's, or a user's pick — can't silently degrade them into
 
 **Tool-result images.** `get_screenshot`'s result reaches the model as a
 `ToolResultPart` with `output.type === "content"`; OpenRouter's integration
-promotes an `image-data` part inside that to a real `image_url` content
+promotes a `file` part with a FULL `image/…` mediaType inside that (AI SDK 7 shape; `image-data` before) to a real `image_url` content
 part. `src/ai/vision-messages.ts`'s `applyVisionPreprocessing` still treats
 this as a second, independent dimension from "can the model see at all"
 (`providerHandlesToolResultImages`), because `@ai-sdk/deepseek`
@@ -119,6 +120,14 @@ of base64 as "text", with no error anywhere. That dimension is therefore
 true for OpenRouter and for OpenCode Go `deepseek-v4.1-flash` only (the one id verified live), and the false branch is covered by
 `test/vision-messages-provider-dimension.test.ts`, which mocks the axis.
 
+**AI SDK 7 (migrated from 6) — things that are easy to undo by accident.**
+- The system prompt travels ONLY as `instructions`. `streamText`/`generateText` reject a `{role:"system"}` entry in `messages` (and that also closes the hole where a client-sent system message reached the model), so the Anthropic cache breakpoint on the system prompt is passed as `instructions: cachedSystemPrompt(system)` (a `SystemModelMessage` with `providerOptions.openrouter.cacheControl`; `Instructions` accepts one or an array, and `convertToLanguageModelPrompt` keeps its `providerOptions`). Never use `allowSystemInMessages`. `test/anthropic-cache.test.ts` pins the wire body. Our own `PreparedChatTurn.system` / `MaybeRunReviewInput.system` fields keep the name `system` (a plain string); only SDK call sites say `instructions`.
+- `usage` on a result/`onEnd` event is the SUM over all steps. The chat route's analytics/`raw_traces`/`[tokens]` log and the context meter (`finish` `messageMetadata.contextTokens`) deliberately report the LAST step (`finalStep.usage` in `onEnd`, per-step `onStepEnd` for the meter) — the 6 semantics. Do not "simplify" them to `usage`.
+- A tool-result image is `{type:"file", mediaType:"image/png", data:{type:"data", data}}` (`screenshotOutput.ts`); always a FULL `image/<sub>` mediaType, because the OpenRouter provider only emits `image_url` for `startsWith("image/")`. `vision-messages.ts` recognises BOTH generations (`image-data`/`image-url`/`file-data`/`media`/user `image` parts from old clients and stored histories, and the 7 `file` shape incl. top-level-only `"image"` and tagged `{type:"url"|"data"}` data; `convertToModelMessages` now emits user attachments as `data:{type:"url", url:URL}`), `opencode.ts` restores the stringified 7 shape into `image_url` parts. Tests feeding the deprecated aliases through the real SDK must set `globalThis.AI_SDK_LOG_WARNINGS = false` for their duration.
+- `generateObject` is deprecated: structured calls are `generateText({ output: Output.object({ schema }) })` and read `result.output`.
+- `@ai-sdk/mcp` 2 defaults the HTTP transport to `redirect: "error"`; the Mobbin client sets `"follow"` explicitly.
+- Tests use `MockLanguageModelV4` (the V3 mock goes through an adapter and hides the real V4 prompt shape).
+
 ## Trace analysis (`src/analysis/`, `src/tracing/`)
 
 When `TRACE_DATABASE_URL` is set, the chat route fire-and-forget-writes raw session
@@ -126,7 +135,7 @@ traces to Postgres (`raw_traces`, TTL `TRACE_RAW_TTL_DAYS` days). `npm run analy
 runs the Clio-style worker: applies `src/analysis/migrations/`, assembles sessions
 (the longest `messages` history per session id — client-tool results/errors arrive
 in later requests' histories), strips PII (regex + prompt rules + output validation),
-summarizes each session with `ANALYSIS_MODEL` via `generateObject`, LLM-clusters all
+summarizes each session with `ANALYSIS_MODEL` via `generateText` + `Output.object`, LLM-clusters all
 summaries, writes `reports/YYYY-MM-DD.md` (gitignored) and stores everything in
 `session_summaries`/`analysis_runs`/`clusters`. Only `raw_traces` ever holds
 unsanitized content — minus images: `writeRawTrace` runs `redactBase64DataUrls`
@@ -187,7 +196,7 @@ chat route: it captures a message containing a marker string and checks that
 string never appears anywhere in any captured event's properties.
 
 Events today: `agent_turn_completed`/`agent_turn_failed` (`src/routes/
-chat.ts`, at the same `onFinish`/`onAbort`/stream-`onError` callbacks that
+chat.ts`, at the same `onEnd`/`onAbort`/stream-`onError` callbacks that
 already write trace rows — `distinctId` is the client's `userId` when
 shape-valid, else the request's session id, else `'anonymous'`, so frontend
 and backend events join on one person), `showcase_published` (`src/routes/
@@ -277,7 +286,7 @@ Three tables (migration `009_agent_memory.sql`, index in `010_...idx.sql`):
   `src/ai/skills/prompts.ts`), and the stub is the second line of defense
   if the model reaches for it anyway. The run also carries its own
   wall-clock cap (`AbortSignal.timeout`, 90s by default) since it is
-  fire-and-forget from `onFinish` after the client has already disconnected
+  fire-and-forget from `onEnd` after the client has already disconnected
   — nobody can cancel a stuck provider call otherwise, and it would hold the
   full transcript (which can carry multi-MB base64 image parts) in memory
   indefinitely; a cancellation from that timeout is logged distinctly from
@@ -648,7 +657,7 @@ skill the user just disabled stays advertised in the prompt for up to 15s while
 `src/routes/userSkills.ts` is the CRUD surface — `GET/POST /api/user-skills`,
 `PATCH/DELETE /api/user-skills/:name`, plus `POST /api/user-skills/generate`
 (Figma's "describe your workflow and let the agent write the skill": one
-`generateObject` call, returns a `{name, description, body}` draft and persists
+`generateText` + `Output.object` call, returns a `{name, description, body}` draft and persists
 **nothing** — the client reviews it first). `userId` is a hard **400** on every
 one of them, the `GET /api/memory/activity` stance rather than chat.ts's
 silent-degrade one, since these routes read and write one person's library.

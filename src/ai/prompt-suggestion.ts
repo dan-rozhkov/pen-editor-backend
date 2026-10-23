@@ -70,7 +70,7 @@ export async function generatePromptSuggestion(
     model: createModel(config, config.PROMPT_SUGGESTION_MODEL, {
       reasoningEffort: "none",
     }),
-    system: SYSTEM_PROMPT,
+    instructions: SYSTEM_PROMPT,
     prompt: buildPrompt(messages),
     maxOutputTokens: 120,
     temperature: 0.3,

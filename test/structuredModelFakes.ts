@@ -17,15 +17,15 @@
 // resolve to the SAME module instance (vitest isolates the module graph per
 // test file, so `createModel`'s mock state never leaks between files).
 import { vi } from "vitest";
-import { MockLanguageModelV3 } from "ai/test";
+import { MockLanguageModelV4 } from "ai/test";
 
 // A one-shot structured-output response containing `json` as the model's
 // entire text output (generateObject parses this as the schema result).
 // Tests script a different response per case with
 // `createModel.mockImplementationOnce/mockReturnValueOnce(() => jsonModel(...))`,
-// exactly like they did with their own local MockLanguageModelV3 literal.
-export function jsonModel(json: unknown): MockLanguageModelV3 {
-  return new MockLanguageModelV3({
+// exactly like they did with their own local MockLanguageModelV4 literal.
+export function jsonModel(json: unknown): MockLanguageModelV4 {
+  return new MockLanguageModelV4({
     doGenerate: async () => ({
       finishReason: "stop",
       usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
@@ -61,7 +61,7 @@ export function mockJsonModelOnce(json: unknown): {
   let seenPrompt = "";
   createModel.mockImplementationOnce(
     () =>
-      new MockLanguageModelV3({
+      new MockLanguageModelV4({
         doGenerate: async (options: { abortSignal?: AbortSignal; prompt?: unknown }) => {
           seenSignal = options.abortSignal;
           seenPrompt = JSON.stringify(options.prompt ?? "");

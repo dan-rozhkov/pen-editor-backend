@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { MockLanguageModelV3 } from "ai/test";
+import { MockLanguageModelV4 } from "ai/test";
 import { makeConfig } from "./helpers.js";
 
 // The real provider export is `createModel(config, modelOverride?)`, not a
@@ -16,7 +16,7 @@ createModel.mockImplementation(() =>
   modelReturning([{ screenId: "login", protoId: "p0", targetScreenId: "dashboard" }]),
 );
 
-function modelReturning(links: unknown[]): MockLanguageModelV3 {
+function modelReturning(links: unknown[]): MockLanguageModelV4 {
   return jsonModel({ links });
 }
 
@@ -99,7 +99,7 @@ describe("generatePrototypeLinks", () => {
   it("includes each candidate's classHint in the prompt sent to the model", async () => {
     let captured = "";
     createModel.mockReturnValueOnce(
-      new MockLanguageModelV3({
+      new MockLanguageModelV4({
         doGenerate: async (opts: { prompt: unknown }) => {
           captured = JSON.stringify(opts.prompt);
           return {
@@ -132,7 +132,7 @@ describe("generatePrototypeLinks", () => {
   it("instructs the model to wire a theme toggle to the opposite-theme screen variant", async () => {
     let captured = "";
     createModel.mockReturnValueOnce(
-      new MockLanguageModelV3({
+      new MockLanguageModelV4({
         doGenerate: async (opts: { prompt: unknown }) => {
           captured = JSON.stringify(opts.prompt);
           return {

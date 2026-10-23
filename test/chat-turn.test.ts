@@ -44,7 +44,7 @@ vi.mock("../src/services/vision.js", async (importOriginal) => {
 // real OpenRouter provider construction only — createModel itself doesn't
 // make network calls, it just builds a LanguageModel descriptor, so no mock
 // is required here (unlike test/chat-route.test.ts, which mocks it to swap
-// in MockLanguageModelV3 for streaming).
+// in MockLanguageModelV4 for streaming).
 
 function userMessage(text: string) {
   return { role: "user", parts: [{ type: "text", text }] };
@@ -853,7 +853,7 @@ describe("prepareChatTurn", () => {
     // go through the REAL prepareChatTurn (real convertToModelMessages, the
     // new promoteScreenshotToolOutputs pass, and real applyVisionPreprocessing)
     // end to end, so they would have failed before the fix.
-    it("promotes the get_screenshot text output to a real image-data part, not base64 inside a JSON string", async () => {
+    it("promotes the get_screenshot text output to a real image file part, not base64 inside a JSON string", async () => {
       const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
       const config = makeConfig(); // shipped default: vision-capable, native tool-result images
 
@@ -866,12 +866,12 @@ describe("prepareChatTurn", () => {
       };
       const output = toolMessage.content[0].output;
       expect(output.type).toBe("content");
-      const parts = output.value as Array<{ type: string; data?: string }>;
+      const parts = output.value as Array<{ type: string; data?: unknown }>;
       expect(parts).toEqual([
-        { type: "image-data", data: "iVBORw0KGgoAAAANSUhEUg", mediaType: "image/png" },
+        { type: "file", mediaType: "image/png", data: { type: "data", data: "iVBORw0KGgoAAAANSUhEUg" } },
       ]);
       // The bug's failure mode: the base64 sitting inside a plain text/JSON
-      // output instead of a real image-data part. Assert the negative too.
+      // output instead of a real image file part. Assert the negative too.
       expect(
         toolMessage.content.some(
           (c) => c.output.type === "text" || c.output.type === "json",
@@ -910,7 +910,7 @@ describe("prepareChatTurn", () => {
       ];
     }
 
-    it("carries a real image-data part on the native vision path, not a base64 JSON string", async () => {
+    it("carries a real image file part on the native vision path, not a base64 JSON string", async () => {
       const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
       const config = makeConfig(); // shipped default: vision-capable, native tool-result images
 
@@ -926,14 +926,14 @@ describe("prepareChatTurn", () => {
       const parts = output.value as Array<{
         type: string;
         text?: string;
-        data?: string;
+        data?: unknown;
         mediaType?: string;
       }>;
-      const imagePart = parts.find((p) => p.type === "image-data");
+      const imagePart = parts.find((p) => p.type === "file");
       expect(imagePart).toEqual({
-        type: "image-data",
-        data: "QUJDRUxFTUVOVFM",
+        type: "file",
         mediaType: "image/jpeg",
+        data: { type: "data", data: "QUJDRUxFTUVOVFM" },
       });
       // The url/title/snapshotId/elements table survives as a sibling text
       // part rather than being flattened into (or dropped from) the image.

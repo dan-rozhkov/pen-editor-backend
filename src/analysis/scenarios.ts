@@ -1,4 +1,4 @@
-import { generateObject, type LanguageModel } from "ai";
+import { generateText, Output, type LanguageModel } from "ai";
 import { z } from "zod";
 import { scrubPii } from "./pii.js";
 
@@ -38,7 +38,7 @@ export const MIN_BUCKET_ATOMS = 2;
 /** Hard cap on atoms fed to a single extraction prompt. Without a
  * --window-days bound the global bucket accumulates the platform's ENTIRE
  * history every run, and once the prompt outgrows the model's context
- * `generateObject` throws — which run.ts's per-bucket try/catch swallows, so
+ * `generateText` with `Output.object` throws — which run.ts's per-bucket try/catch swallows, so
  * an over-cap bucket would otherwise silently stop being mined FOREVER.
  * Keeps the freshest atoms (relies on run.ts ordering rows by recency) and
  * the caller must log how much it trimmed (bucket.truncatedAtoms). */
@@ -161,10 +161,10 @@ export async function extractScenarios(
 ): Promise<ExtractedScenario[]> {
   const known = new Set(atoms.map((a) => a.sessionId));
   const prompt = atoms.map((a) => `[${a.sessionId}] (${a.kind}) ${a.text}`).join("\n");
-  const { object } = await generateObject({
+  const { output: object } = await generateText({
     model,
-    schema: extractionSchema,
-    system: EXTRACTION_SYSTEM,
+    output: Output.object({ schema: extractionSchema }),
+    instructions: EXTRACTION_SYSTEM,
     prompt,
   });
   return object.scenarios

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MockLanguageModelV3 } from "ai/test";
+import { MockLanguageModelV4 } from "ai/test";
 import {
   atomsOf,
   bucketAtoms,
@@ -20,7 +20,7 @@ const USAGE = {
 
 function objectModel(objects: Array<Record<string, unknown>>) {
   let call = 0;
-  return new MockLanguageModelV3({
+  return new MockLanguageModelV4({
     doGenerate: async () => ({
       content: [
         { type: "text", text: JSON.stringify(objects[Math.min(call++, objects.length - 1)]) },

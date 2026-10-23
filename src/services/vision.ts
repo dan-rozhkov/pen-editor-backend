@@ -3,6 +3,7 @@ import { generateText } from "ai";
 import type { Config } from "../config.js";
 import { createModel } from "../ai/provider.js";
 import { withAgentRetry } from "../ai/retry.js";
+import { imageMediaTypeFor } from "../ai/imageMediaType.js";
 
 const NO_QUESTION_PROMPT =
   "Describe everything visible in this image in thorough detail. Include any text, layout structure, colors, typography, spacing, imagery, UI controls and any other notable visual information.";
@@ -252,7 +253,10 @@ export async function describeImage(params: {
               role: "user",
               content: [
                 { type: "text", text: prompt },
-                { type: "image", image },
+                // `image` is an http(s) URL, a data: URL or bare base64; the
+                // bare-string `data` shorthand resolves all three the same way
+                // the deprecated `{type:"image", image}` part did.
+                { type: "file", data: image, mediaType: imageMediaTypeFor(image) },
               ],
             },
           ],
