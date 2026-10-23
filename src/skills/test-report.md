@@ -18,7 +18,7 @@ Use what the conversation already has first:
 
 - The test plan in the document list. Call `doc_list`, then `doc_read`. Take the scope, the planned case count and the exit criteria from it.
 - `browse_agent` results with `qa: true` from earlier in the conversation, for example a bug-hunt run. Use only what those results show.
-- Browser runs saved in trace tabs. If `trace_list` and `trace_read` are in your tool list, read the run there: steps, console errors, failed requests and, for a QA run, its checks. A trace without QA results has no verdict.
+- Browser runs saved as traces. If `trace_read` is in your tool list, read the run there. A run of this chat gives its trace id in `trace.id` of the `browse_agent` result. `trace_list` lists only the traces that are open as tabs. Read in the trace: steps, console errors, failed requests and, for a QA run, its checks. A trace without QA results has no verdict.
 - Bug reports already written in this conversation or in the document list.
 - Results that the user pasted or attached.
 

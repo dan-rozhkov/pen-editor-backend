@@ -1494,7 +1494,7 @@ export const browseAgentSetup = z
 const BROWSE_AGENT_DESCRIPTION_HEAD =
   "Run a whole browser task in the built-in browser through a dedicated browsing subagent, and get its final answer. The subagent does NOT see this chat: `goal` must carry the whole task with every constraint, every name and date, and what to report back (for example the prices, the names, the final URL). If the user wants a picture (screenshot) of the page on the canvas, say so in `goal`: the subagent then calls browse_screenshot with placeOnCanvas. If the user wants an editable copy of the page on the canvas, set `capture: true` and say in `goal` which page or part to copy. When the task names a site or a page, pass its start URL in `url`: the browser opens it before the subagent starts, which saves a step. (To continue from a checkpoint, pass only `resume`: no `url`, no `setup`.) To prepare the page first (a known state, API mocks, a check that it is the right page), pass `setup`. Returns `{ status: \"done\" | \"error\" | \"aborted\" | \"step_limit\" | \"timeout\" | \"setup_failed\", answer, steps }`, plus `captured: { nodeId, width, height, url, title }` when the page was copied onto the canvas, and `placed: [{ nodeId, url }]`: the screenshots the subagent placed on the canvas during the run.";
 const BROWSE_AGENT_DESCRIPTION_QA =
-  " When `qa: true` was set, the result also carries `qa: { outcome: \"passed\" | \"failed\" | \"inconclusive\" | \"error\" | \"setup_failed\" | \"aborted\", verdict?, reason?, steps: [{ tool, args, ok, error? }], stepsDropped? }`: `qa.outcome` and `qa.reason` are the verdict of the test. The `qa` object may also carry `unmatchedMocks` (the `setup.network` rules that matched no request: the mock did not run, so the run proves nothing about that case), `consoleErrors` and `failedRequests` (lists of what the page reported during the run, with `consoleErrorsDropped` and `failedRequestsDropped` counts).";
+  " When `qa: true` was set, the result also carries `qa: { outcome: \"passed\" | \"failed\" | \"inconclusive\" | \"error\" | \"setup_failed\" | \"aborted\", verdict?, reason?, steps: [{ tool, args, ok, error? }], stepsDropped? }`: `qa.outcome` and `qa.reason` are the verdict of the test. The `qa` object may also carry `unmatchedMocks` (the `setup.network` rules that matched no request: the mock did not run, so the run proves nothing about that case), `consoleErrors` and `failedRequests` (lists of what the page reported during the run, with `consoleErrorsDropped` and `failedRequestsDropped` counts). When the run trace was saved, the result also carries `trace: { id }`: pass `trace.id` as `traceId` to trace_read, trace_frame and doc_insert_image.";
 // Only for clients with the browseAssert capability.
 const BROWSE_AGENT_DESCRIPTION_ASSERT =
   " The `qa` object may also carry `checks` (the results of the `qa_assert` calls and of the final `checks` input). If a final check fails, a `passed` verdict becomes `failed`.";
@@ -2259,7 +2259,7 @@ Returns the created/updated style ids and names (with a created|updated status) 
       "Give exactly one source. `imageUrl` is an http or https URL of an image. " +
       "`nodeId` is a canvas node id. The app takes a screenshot of that node. " +
       "For a browse_screenshot, use its `placedNodeId` as `nodeId`. " +
-      "`traceId` is a trace id from trace_list. It puts a screenshot of a browse_agent trace into the document. " +
+      "`traceId` is a trace id: `trace.id` from a browse_agent result, or a traceId from trace_list. It puts a screenshot of a browse_agent trace into the document. " +
       "Add `frameId` to choose the screenshot: take the frameId from the `frames` list of trace_read. " +
       "If you omit `frameId`, the app uses the last screenshot of the trace. " +
       "`alt` is the alt text and also the caption. " +
@@ -2284,7 +2284,7 @@ Returns the created/updated style ids and names (with a created|updated status) 
           .string()
           .optional()
           .describe(
-            "Trace id from trace_list. The app takes a screenshot from this trace. Give this, `imageUrl` or `nodeId`, only one. An empty string counts as not given.",
+            "Trace id: `trace.id` from a browse_agent result, or a traceId from trace_list. The app takes a screenshot from this trace. Give this, `imageUrl` or `nodeId`, only one. An empty string counts as not given.",
           ),
         frameId: z
           .number()
@@ -2410,7 +2410,8 @@ Returns the created/updated style ids and names (with a created|updated status) 
     description:
       "List the trace tabs open in the desktop app. " +
       "A trace is the recorded run of browse_agent: steps, screenshots, console errors, failed requests and, for a QA run, the QA check results. " +
-      "Use it when the user talks about a trace, a test run or \"this run\". Use it also when you need the traceId. " +
+      "Use it when the user talks about a trace, a test run or \"this run\". " +
+      "It lists only the traces that are open as tabs. It does not list the traces of runs in this chat: for those, use `trace.id` from the browse_agent result. " +
       "Returns JSON: {tabs: [{traceId, title, active}]}. " +
       "active: true is the tab the user looks at now.",
     inputSchema: z.object({}),
@@ -2424,14 +2425,14 @@ Returns the created/updated style ids and names (with a created|updated status) 
       "To put a screenshot into a document, call doc_insert_image with `traceId` and `frameId`. " +
       "Returns JSON, or {error}.",
     inputSchema: z.object({
-      traceId: z.string().min(1).describe("Trace id from trace_list."),
+      traceId: z.string().min(1).describe("Trace id: `trace.id` from a browse_agent result, or a traceId from trace_list."),
     }),
   }),
 
   trace_frame: tool({
     description:
       "Get one frame (screenshot) of a browse_agent trace as an image. " +
-      "Take `traceId` from trace_list. Take `frameId` from the `frames` list of trace_read: [{frameId, step, kind}]. " +
+      "Take `traceId` from `trace.id` of a browse_agent result, or from trace_list. Take `frameId` from the `frames` list of trace_read: [{frameId, step, kind}]. " +
       "With `placeOnCanvas: true` the app also places the image on the canvas. The result then has `placedNodeId`. " +
       "Use `x` and `y` to set the canvas position. They are used only with `placeOnCanvas`. " +
       "Use it to look at the page at one step of a run, or to get a node id for a bug-report screenshot. " +
@@ -2439,7 +2440,7 @@ Returns the created/updated style ids and names (with a created|updated status) 
       "If placing on the canvas failed, the result has `placeError`. The image is still returned. " +
       "Returns the image and JSON ({traceId, frameId, placedNodeId?, placeError?}), or {error}. With `imageUrl`: JSON ({traceId, frameId, imageUrl, placedNodeId?, placeError?}).",
     inputSchema: z.object({
-      traceId: z.string().min(1).describe("Trace id from trace_list."),
+      traceId: z.string().min(1).describe("Trace id: `trace.id` from a browse_agent result, or a traceId from trace_list."),
       frameId: z
         .number()
         .int()
