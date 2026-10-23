@@ -24,11 +24,36 @@ Use what the conversation already has first:
 
 Report a defect only if a rerun reproduced it. If you have no rerun that reproduced the bug, run one first, or do not file the report.
 
-Before you write, search for duplicates. Call `doc_list` and look for a report of the same problem. If one exists, update it with `doc_read` and `doc_edit`. Do not write a second report.
+## Diagnose before you report
+
+Put each failure in one of three classes. Write a report only for a product bug.
+
+1. **Product bug.** The product does not do what the spec, the design or the user expects. A rerun shows the same failure. Write a report.
+2. **Wrong check.** The scenario or the expected result is wrong or out of date. For example, the spec changed and the check still expects the old behaviour, or the check uses a step that the spec does not have. If the spec still requires the behaviour that the product does not show, it is a product bug, not a wrong check. Do not write a report. Tell the user in chat which check to fix and why.
+3. **Flaky or environment.** The failure did not occur again on the rerun, or the cause is outside the product: a test account that is not set up, a network failure, an anti-bot page, a CAPTCHA. Do not write a report. List the failure in chat as flaky or untested.
+
+If you are not sure that the behaviour is a bug, because you do not know what the product must do, do not write a report yet. If `ask_user` is in your tool list, put the question in the one `ask_user` form (see "Collect the facts"): what the user expected and what they saw. If `ask_user` is not in your tool list, tell the user in chat what you saw and what you need to know. Do not write a report until the class is clear.
+
+If half or more of the checks in one run fail, or most requests fail with a 5xx status or a network error, treat it as one outage. An outage is class 3. Do not write one report for each failed check. Tell the user in chat about the outage: what failed, how many checks, and the first error. Write one report about the outage only if the user asks for it.
+
+Never change the expected result to agree with the actual result. Never remove a step or a check because the product fails it. A softer expected result hides the bug.
+
+## Search for duplicates
+
+Before you write, search for duplicates. Call `doc_list`. A title that is different does not mean a different bug. Compare the behaviour: the same area, the same steps and the same actual result make a duplicate. Read with `doc_read` first the bug reports with the same area, then the reports whose title names the same screen or feature. Read at most 5 reports. A document can hold several bugs (`## BUG-01`, `## BUG-02`), so compare each section.
+
+The open statuses are New, Triaged, In progress, Ready for retest and Reopened.
+
+- If a duplicate exists and it is open, do not write a second report. Use `doc_read` and `doc_edit` to add the new occurrence under Evidence: the date, the build and the new evidence. Update Reproducibility if the count changed.
+- If a duplicate exists and its status is Fixed, Verified, Closed or Cannot reproduce, the bug came back or now reproduces. Set its status to Reopened with the red tag (`<span data-bg="red">Reopened</span>`). Add the build where it occurs under Evidence. If the report names the build with the fix, set Regression to `Yes: last good build [fix build], first bad build [this build]`. Otherwise set Regression to `Yes` and write the builds as Unknown. Do not write a new report.
+- If the duplicate has the status Duplicate, follow its link to the main report and apply these rules to that report.
+- If the duplicate is Won't fix or Deferred, do not change its status. Tell the user in chat that the bug occurs again.
+
+## Collect the facts
 
 Facts you need: the exact steps, the expected result, the actual result, the environment (build, browser, OS, device) and how often it happens.
 
-If key facts are missing and the `ask_user` tool is in your tool list, call it ONCE with a short form for the missing facts only. Do not ask for facts you can find.
+If key facts are missing, or the class of the failure is not clear, and the `ask_user` tool is in your tool list, call it ONCE with a short form for the missing facts and the open question only. Do not ask for facts you can find.
 
 Never invent facts: steps, versions, error text, counts. Put a visible placeholder `[TBD: what is missing]` instead.
 
@@ -60,7 +85,7 @@ Never invent facts: steps, versions, error text, counts. Put a visible placehold
 | Reproducibility | [Always / Sometimes, N of M. A rerun must have reproduced it] |
 | Severity | [TBD: Critical / High / Medium / Low] |
 | Priority | [TBD: P1 / P2 / P3 / P4, set at triage] |
-| Regression | [Yes, worked in build X / No / Unknown] (optional) |
+| Regression | [Yes: last good build X, first bad build Y / No / Unknown] (optional) |
 | Test plan | [TBD: link to the test plan, if one exists] (optional) |
 | Test report | [TBD: link to the test report, if one exists] (optional) |
 
@@ -87,6 +112,7 @@ Never invent facts: steps, versions, error text, counts. Put a visible placehold
 - Console errors: `[error text]`
 - Failed requests: [method, URL, status]
 - QA run reason: [qa.reason]
+- Suspect change: [the deploy, release or commit after which the bug first occurs] (optional)
 - Screenshot: [TBD: screenshot]
 
 ## Workaround (optional)
@@ -105,7 +131,7 @@ Never invent facts: steps, versions, error text, counts. Put a visible placehold
 ## Writing rules
 
 1. Write one bug per report. Two problems in one report make it hard to assign, fix and close.
-2. Search for duplicates with `doc_list` before you create a report. In the same list, look for the test plan and the test report of the subject. If they exist, link them in the property list as `[Title](/doc?id={docId})` (the docId comes from `doc_list`). If they do not exist, write `[TBD: ...]` text, not a link.
+2. Search for duplicates before you create a report (see "Search for duplicates"). In the `doc_list` result, look for the test plan and the test report of the subject. If they exist, link them in the property list as `[Title](/doc?id={docId})` (the docId comes from `doc_list`). If they do not exist, write `[TBD: ...]` text, not a link.
 3. Write a summary that names the problem, not the fix. Keep it near 60 characters. Add an optional `[Area]` tag at the start. Good: "[Checkout] Total ignores the discount code". Bad: "Fix the total".
 4. Number the steps. Start from a clean state. Keep the steps minimal: remove every step that is not needed to show the bug.
 5. Write expected and actual results as two separate parts. Say what you see, not what you think is wrong inside.
@@ -117,13 +143,14 @@ Never invent facts: steps, versions, error text, counts. Put a visible placehold
    - Medium: a feature fails but a workaround exists.
    - Low: a cosmetic or rare problem.
    - Example: a crash in a rare feature is High severity and low priority. A misaligned button in a launch campaign is Low severity and high priority. If you cannot know the priority, write `[TBD: set at triage]`.
-9. Keep facts apart from guesses about the cause. Put guesses under Notes and mark them.
-10. Use these statuses: New, Triaged, In progress, Fixed, Ready for retest, Verified, Closed, Reopened. Closing variants: Won't fix, Duplicate, Cannot reproduce, Deferred. A new report has the status New.
-11. Write Status, Severity and Priority as tags, always with the same colours. Do not use other colours.
+9. Find the change that caused a regression, if you can. The change that caused the bug is the strongest clue for a developer. Give the last build where it worked and the first build where it fails. If the user, a trace or a release list names the deploy or commit between them, write it in "Suspect change". If you do not know these builds, write Unknown. Do not guess a commit.
+10. Keep facts apart from guesses about the cause. Put guesses under Notes and mark them.
+11. Use these statuses: New, Triaged, In progress, Fixed, Ready for retest, Verified, Closed, Reopened. Closing variants: Won't fix, Duplicate, Cannot reproduce, Deferred. A new report has the status New.
+12. Write Status, Severity and Priority as tags, always with the same colours. Do not use other colours.
    - Status: New gray, Triaged yellow, In progress blue, Fixed green, Ready for retest orange, Verified green, Closed gray, Reopened red, Duplicate purple, Won't fix, Cannot reproduce and Deferred brown.
    - Severity: Critical red, High orange, Medium yellow, Low gray.
    - Priority: P1 red, P2 orange, P3 yellow, P4 gray.
-12. Do not put a screenshot in the document as a `[link]` or a `data:` URL. Use `doc_insert_image`.
+13. Do not put a screenshot in the document as a `[link]` or a `data:` URL. Use `doc_insert_image`.
 
 ## Mistakes to avoid
 
@@ -135,6 +162,9 @@ Never invent facts: steps, versions, error text, counts. Put a visible placehold
 - Writing a guess about the cause as a fact.
 - No environment or build version.
 - Reporting a bug that no run or test showed.
+- Reporting a flaky failure, a wrong check or an outage as a product bug.
+- Writing a second report for a known bug because its title is different.
+- Changing the expected result so that the check passes.
 
 ## Sources
 

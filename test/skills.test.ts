@@ -619,4 +619,19 @@ describe("QA retrospective skill rules", () => {
     expect(getSkill("bug-report")!.content).toContain("only when it is in your tool list");
     expect(getSkill("test-report")!.content).toContain("`qa.unmatchedMocks`");
   });
+
+  it("bug-report diagnoses, dedups by behaviour and names the suspect change", () => {
+    const report = getSkill("bug-report")!.content;
+    expect(report).toContain("## Diagnose before you report");
+    expect(report).toContain("Write a report only for a product bug.");
+    expect(report).toContain("treat it as one outage");
+    expect(report).toContain("Never change the expected result to agree with the actual result.");
+    expect(report).toContain("Compare the behaviour");
+    expect(report).toContain("Set its status to Reopened with the red tag");
+    expect(report).toContain("- Suspect change:");
+    expect(report).toContain("Do not guess a commit.");
+    expect(report).toContain("If the duplicate is Won't fix or Deferred, do not change its status.");
+    expect(report).toContain("| Regression | [Yes: last good build X, first bad build Y / No / Unknown] (optional) |");
+    expect(report).toContain('<span data-bg="red">Reopened</span>');
+  });
 });
