@@ -634,4 +634,20 @@ describe("QA retrospective skill rules", () => {
     expect(report).toContain("| Regression | [Yes: last good build X, first bad build Y / No / Unknown] (optional) |");
     expect(report).toContain('<span data-bg="red">Reopened</span>');
   });
+
+  it("bug-report never claims a recheck that did not run, and keeps priority and language", () => {
+    const report = getSkill("bug-report")!.content;
+    expect(report).toContain("When the user asks again about a bug that you already reported");
+    expect(report).toContain("if you did not call `browse_agent` in this turn");
+    expect(report).toContain("Reading a saved trace with `trace_read` is not a new check.");
+    expect(report).toContain("- Setting Priority yourself.");
+    expect(report).toContain("Keep the Priority placeholder");
+    expect(report).not.toContain("Severity and Priority are `[TBD: ...]` placeholders. Replace each one with the tag.");
+    expect(report).not.toContain("`[TBD: set at triage]`");
+    expect(report).toContain("When you edit an existing document, keep its language.");
+    expect(report).toContain("are not a language signal");
+    expect(report).toContain("Do this if the user names a newer build, or asks you to check the bug.");
+    expect(report).toContain("If your rerun does not show the bug");
+    expect(report).toContain("Write Priority as a tag only when the user gave it.");
+  });
 });

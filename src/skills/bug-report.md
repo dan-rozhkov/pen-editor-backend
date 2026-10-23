@@ -40,7 +40,7 @@ Never change the expected result to agree with the actual result. Never remove a
 
 ## Search for duplicates
 
-Before you write, search for duplicates. Call `doc_list`. A title that is different does not mean a different bug. Compare the behaviour: the same area, the same steps and the same actual result make a duplicate. Read with `doc_read` first the bug reports with the same area, then the reports whose title names the same screen or feature. Read at most 5 reports. A document can hold several bugs (`## BUG-01`, `## BUG-02`), so compare each section.
+Before you write, search for duplicates. Call `doc_list`. A title that is different does not mean a different bug. The `Bug report:` prefix can be in another language, for example `Баг-репорт:`. Compare the behaviour: the same area, the same steps and the same actual result make a duplicate. Read with `doc_read` first the bug reports with the same area, then the reports whose title names the same screen or feature. Read at most 5 reports. A document can hold several bugs (`## BUG-01`, `## BUG-02`), so compare each section.
 
 The open statuses are New, Triaged, In progress, Ready for retest and Reopened.
 
@@ -48,6 +48,17 @@ The open statuses are New, Triaged, In progress, Ready for retest and Reopened.
 - If a duplicate exists and its status is Fixed, Verified, Closed or Cannot reproduce, the bug came back or now reproduces. Set its status to Reopened with the red tag (`<span data-bg="red">Reopened</span>`). Add the build where it occurs under Evidence. If the report names the build with the fix, set Regression to `Yes: last good build [fix build], first bad build [this build]`. Otherwise set Regression to `Yes` and write the builds as Unknown. Do not write a new report.
 - If the duplicate has the status Duplicate, follow its link to the main report and apply these rules to that report.
 - If the duplicate is Won't fix or Deferred, do not change its status. Tell the user in chat that the bug occurs again.
+
+When the user asks again about a bug that you already reported, do one of these two things:
+
+- Run the scenario again with `browse_agent`, then add the new run under Evidence. Do this if the user names a newer build, or asks you to check the bug. If `browse_agent` is not in your tool list, say in chat that you cannot check the bug in this chat.
+- Do not run it again. Say in chat that you did not check it again. Name the run that the report cites: its trace id, or the date in its Evidence. If the report names no run, say that. Do not give a time or a chat that you cannot see. Do not add a run of your own to Evidence, and do not change Reproducibility or Environment.
+
+If the user gives a new occurrence (a build, a screenshot, an error text), add it under Evidence as the user's report, as the duplicate rules say. That is not a check by you.
+
+If your rerun does not show the bug, add the run under Evidence and update Reproducibility (for example "2 of 3"). Do not change Status yourself. Tell the user in chat that the rerun passed, so the team can set Fixed, Verified or Cannot reproduce.
+
+Only a `browse_agent` run in this turn is a new check. Reading a saved trace with `trace_read` is not a new check. Never say that you checked, reran or reproduced a bug in this turn if you did not call `browse_agent` in this turn. A report that is only translated or corrected is not a new check.
 
 ## Collect the facts
 
@@ -59,12 +70,13 @@ Never invent facts: steps, versions, error text, counts. Put a visible placehold
 
 ## Output
 
-- Write the document with `doc_create`. The title is `Bug report: [summary]`. If the user gave several bugs, write ONE document with one self-contained section per bug (`## BUG-01 ...`, `## BUG-02 ...`). Each section holds all fields, so it can be copied alone. Write one document per bug only if the user asks. If `doc_create` is not in your tool list, reply in chat with the same markdown.
+- Write the document with `doc_create`. The title is `Bug report: [summary]`, in the language of the document. If the user gave several bugs, write ONE document with one self-contained section per bug (`## BUG-01 ...`, `## BUG-02 ...`). Each section holds all fields, so it can be copied alone. Write one document per bug only if the user asks. If `doc_create` is not in your tool list, reply in chat with the same markdown.
 - To update an existing document, use `doc_list`, `doc_read`, then `doc_edit`.
-- Write in the user's language. Translate the template headings and labels. Keep IDs such as `BUG-01` and the status values the same inside the document.
+- Write in the language of the user's own words in this chat. The `/bug-report` command and a one-word argument after it are not a language signal. Use the language of the user's other messages in this chat. If there are no other words, write in English. If the user's words are Russian, the document is Russian. Translate the title (also the `Bug report:` prefix), the headings and the field names. Keep these values unchanged in every language: IDs such as `BUG-01`, the Status values, the Severity values and the Priority values (for example `Reopened`, `High`, `P2`). You can translate the words of a `[TBD: ...]` placeholder, but keep the `TBD` marker and the values in it, for example `P1 / P2 / P3 / P4`.
+- When you edit an existing document, keep its language. Do not translate a whole document only to add evidence.
 - Use only the markdown that the `doc_create` description allows. A table cell holds ONE line of inline text. Put multi-line content in lists under a heading.
 - Use the field table only for single-line fields. Put steps, expected and actual results under headings, in lists or paragraphs.
-- Write the metadata table as a property list (see the `doc_create` description). Write Status, Severity and Priority as tags with the fixed colours in the writing rules. In the template, Severity and Priority are `[TBD: ...]` placeholders. Replace each one with the tag.
+- Write the metadata table as a property list (see the `doc_create` description). Write Status, Severity and Priority as tags with the fixed colours in the writing rules. In the template, Severity and Priority are `[TBD: ...]` placeholders. Replace the Severity placeholder with the tag. Keep the Priority placeholder `[TBD: P1 / P2 / P3 / P4, set at triage]` (translated as the language rule says) unless the user gave the priority. Then write the priority the user gave as the tag.
 - Insert each screenshot with `doc_insert_image` and `afterHeading` "Evidence", and an `alt` that says what the image shows. For a screenshot from a trace, give `traceId` and the `frameId` from `trace_read`. This is the way to put a trace frame into a document. Do one call for each relevant frame. Otherwise give `nodeId`: a node id from the `placed` field of the `browse_agent` result, or the `placedNodeId` of `browse_screenshot`. Or give an image URL. Use `trace_frame` only when it is in your tool list, and only to look at a frame or to place it on the canvas. Then delete the `[TBD: screenshot]` line.
 - The H1 of the template is the `title` argument of `doc_create`. Start `markdown` after it, with the first section. The document shows the title above the body, so a `#` heading with the title in the body shows it twice.
 - Write a link to a document as `[Title](/doc?id={docId})` (the docId comes from `doc_list`). If no such document exists, write `[TBD: ...]` text, not a link.
@@ -142,11 +154,11 @@ Never invent facts: steps, versions, error text, counts. Put a visible placehold
    - High: a main feature fails and there is no workaround.
    - Medium: a feature fails but a workaround exists.
    - Low: a cosmetic or rare problem.
-   - Example: a crash in a rare feature is High severity and low priority. A misaligned button in a launch campaign is Low severity and high priority. If you cannot know the priority, write `[TBD: set at triage]`.
+   - Example: a crash in a rare feature is High severity and low priority. A misaligned button in a launch campaign is Low severity and high priority. Write the priority only if the user gave it. Otherwise write `[TBD: P1 / P2 / P3 / P4, set at triage]`.
 9. Find the change that caused a regression, if you can. The change that caused the bug is the strongest clue for a developer. Give the last build where it worked and the first build where it fails. If the user, a trace or a release list names the deploy or commit between them, write it in "Suspect change". If you do not know these builds, write Unknown. Do not guess a commit.
 10. Keep facts apart from guesses about the cause. Put guesses under Notes and mark them.
 11. Use these statuses: New, Triaged, In progress, Fixed, Ready for retest, Verified, Closed, Reopened. Closing variants: Won't fix, Duplicate, Cannot reproduce, Deferred. A new report has the status New.
-12. Write Status, Severity and Priority as tags, always with the same colours. Do not use other colours.
+12. Write Status and Severity as tags. Write Priority as a tag only when the user gave it. Always use the same colours. Do not use other colours.
    - Status: New gray, Triaged yellow, In progress blue, Fixed green, Ready for retest orange, Verified green, Closed gray, Reopened red, Duplicate purple, Won't fix, Cannot reproduce and Deferred brown.
    - Severity: Critical red, High orange, Medium yellow, Low gray.
    - Priority: P1 red, P2 orange, P3 yellow, P4 gray.
@@ -165,6 +177,9 @@ Never invent facts: steps, versions, error text, counts. Put a visible placehold
 - Reporting a flaky failure, a wrong check or an outage as a product bug.
 - Writing a second report for a known bug because its title is different.
 - Changing the expected result so that the check passes.
+- Saying in chat that you checked the bug again when you did not run it again.
+- Setting Priority yourself. Priority is `[TBD: P1 / P2 / P3 / P4, set at triage]` unless the user gave it.
+- Writing the document in a language that is not the language of the user's own words. Translate the title, the headings and the field names too.
 
 ## Sources
 
