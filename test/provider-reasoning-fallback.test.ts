@@ -124,13 +124,13 @@ describe("reasoning-mandatory fallback", () => {
     doStream.mockRejectedValueOnce(reasoningMandatoryError());
     fallbackStream.mockResolvedValueOnce({ stream: "ok" });
 
-    // Default OPENROUTER_PROVIDER_ORDER: deepseek flash goes to Cohere first.
+    // Default OPENROUTER_PROVIDER_ORDER: deepseek flash goes to Together first.
     const model = createModel(makeConfig({ CHAT_MODEL }), undefined, {
       chatAgent: true,
     }) as unknown as { doStream: (p: never) => Promise<unknown> };
     await expect(model.doStream(params)).resolves.toEqual({ stream: "ok" });
 
-    const provider = { order: ["cohere"], allow_fallbacks: true };
+    const provider = { order: ["together"], allow_fallbacks: true };
     expect(openrouterFactory.mock.calls[0][1]).toEqual({ provider, reasoning: { effort: "minimal" } });
     expect(openrouterFactory.mock.calls.at(-1)![1]).toEqual({ provider });
   });

@@ -452,11 +452,12 @@ export const envSchema = z.object({
   // Empty = the default OpenRouter routing for all models. Measured
   // 2026-10-15 on deepseek-v4.1-flash: Together TTFT ~0.5 s and ~340 output
   // tokens/s; the default routing gave 2-5 s TTFT and ~20 tokens/s on the
-  // main chat's browse_agent call (a 400-token goal took 15-20 s). Since
-  // 2026-10-22 Cohere goes first (user decision): faster than Together, same
-  // $0.30/M input, cache reads $0.003/M vs Together's $0.006/M. Cohere
-  // serves reasoning too.
-  OPENROUTER_PROVIDER_ORDER: z.string().default("deepseek/deepseek-v4.1-flash=cohere"),
+  // main chat's browse_agent call (a 400-token goal took 15-20 s). Together
+  // serves reasoning on and off. Cohere was first for one day (2026-10-22):
+  // its cache reads cost half, but it hit the prompt cache on 3 of 7
+  // identical 10K-token repeats (Together 7 of 7), and every prod row had
+  // cache_read_tokens 0, so repeat calls cost ~19x more.
+  OPENROUTER_PROVIDER_ORDER: z.string().default("deepseek/deepseek-v4.1-flash=together"),
   // Injecting the wrong skill wastes context and can mislead the whole
   // turn, so only a confident pick acts; everything below this falls back
   // to today's behavior (the model calling load_skill itself). Despite the
