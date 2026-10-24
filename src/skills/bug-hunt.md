@@ -55,7 +55,9 @@ Set `setup.fresh: true` in every `qa: true` scenario and in every rerun. This ap
 7. **Second pass.** Verify each UX observation with its own run. Do not leave an observation unverified.
 8. **Evidence.** For each confirmed bug, put this in the `goal` of the run (or rerun) that shows it: "Take one screenshot with browse_screenshot and waitFor on the element that shows the bug. Place it on the canvas." Then cite the node ids from the `placed` field of the `browse_agent` result.
 9. **Checklists.** The user may give a checklist or a list of features to check. Then group the items by screen or by user flow. Do not send one call per item.
-   - Send one `qa: true` call per group. A group has about 3 to 8 items.
+   - Send one `qa: true` call per group. A group has 2 to 4 items. Small groups run in parallel and end at about the same time.
+   - Send all independent groups in ONE step (see "Parallel runs" for the cap and when it applies). Do not wait for one group before you send the next independent group.
+   - Give the subagent URLs only from recon, from the app, or from the user. Do not ask it to try guessed URLs.
    - Put each item with its ID in `goal`. Say: "Give one `items` entry per ID."
    - Put items that need sign-in in the same group as the other items behind that sign-in. The subagent then signs in once.
    - Do not mix items that write data with items that count or list the same data in parallel runs. Isolation covers the browser only. Server state is shared.

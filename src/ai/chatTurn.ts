@@ -9,6 +9,7 @@ import {
 import { markCacheBreakpoint, usesAnthropicPromptCache } from "./anthropicCache.js";
 import { createHash } from "node:crypto";
 import type { Config } from "../config.js";
+import { withStepWatchdog } from "./stepWatchdog.js";
 import { bareModelId, createModel, parseModelRef, providerHandlesToolResultImages } from "./provider.js";
 import { penTools, browseOpenToolApp, browseOpenToolAppNative, browseAgentToolWithApp, browseAgentToolNoQa, browseAgentToolQaIsolated, browseAgentToolQaNoAssert, browseAgentToolQaIsolatedNoAssert, makeBatchDesignTool, makeAnalyzeImageTool } from "./tools.js";
 import { BROWSE_AGENT_TOOL_NAMES, QA_ASSERT_TOOL, QA_VERDICT_TOOL } from "@sideform/browser-agent/agent";
@@ -657,12 +658,20 @@ export async function prepareChatTurn(
     messages.splice(lastUserIndex >= 0 ? lastUserIndex : messages.length - 1, 0, skillMsg);
   }
 
-  const model = createModel(config, modelOverride, {
+  const baseModel = createModel(config, modelOverride, {
     chatAgent: true,
     sessionId: input.sessionId,
     opencodeApiKey: input.opencodeApiKey,
     ...(browseSub ? { reasoningEffort: "none" as const } : {}),
   });
+  // Only the nested browse subagent gets the per-step watchdog: one stuck
+  // step otherwise blocks the main agent for minutes (155 s seen 24.10).
+  const model = browseSub
+    ? withStepWatchdog(baseModel, {
+        firstChunkMs: config.BROWSE_STEP_FIRST_CHUNK_MS,
+        idleMs: config.BROWSE_STEP_IDLE_MS,
+      })
+    : baseModel;
 
   // Self-authored skills (phase 2). Everything here is additive and
   // best-effort: the flag gates it (ignoring even an explicitly-passed

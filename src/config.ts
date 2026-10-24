@@ -446,6 +446,11 @@ export const envSchema = z.object({
   // Go user). An OpenRouter id: an OpenCode reference is a boot failure (no
   // server-side OpenCode key exists).
   BROWSE_AGENT_MODEL: z.string().default("deepseek/deepseek-v4.1-flash"),
+  // One nested browse step: no first stream part within FIRST_CHUNK_MS aborts
+  // the attempt and retries once; no next part within IDLE_MS errors the
+  // stream. 0 disables. (WebTestBench 24.10: p90 4.5 s, one step 155 s.)
+  BROWSE_STEP_FIRST_CHUNK_MS: z.coerce.number().int().min(0).default(30_000),
+  BROWSE_STEP_IDLE_MS: z.coerce.number().int().min(0).default(40_000),
   // Bench-only: the browsing subagent runs on the request's allowlisted
   // `model` instead of BROWSE_AGENT_MODEL (e.g. an OpenCode Go id, with the
   // X-OpenCode-Key header). Lets bench/browse-task keep a whole QA run off

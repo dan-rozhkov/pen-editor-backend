@@ -1602,3 +1602,23 @@ describe("browse subagent", () => {
     });
   });
 });
+
+describe("browse step watchdog seam", () => {
+  it("wraps the nested browse model and not the main chat model", async () => {
+    const { hasStepWatchdog } = await import("../src/ai/stepWatchdog.js");
+    const browse = await prepare({
+      config: makeConfig({ BROWSE_MODE: "agent" }),
+      agentMode: "browse",
+      clientCapabilities: DESKTOP,
+    });
+    expect(hasStepWatchdog(browse.model)).toBe(true);
+    const main = await prepare({ config: makeConfig({ BROWSE_MODE: "agent" }) });
+    expect(hasStepWatchdog(main.model)).toBe(false);
+    const off = await prepare({
+      config: makeConfig({ BROWSE_MODE: "agent", BROWSE_STEP_FIRST_CHUNK_MS: 0, BROWSE_STEP_IDLE_MS: 0 }),
+      agentMode: "browse",
+      clientCapabilities: DESKTOP,
+    });
+    expect(hasStepWatchdog(off.model)).toBe(false);
+  });
+});

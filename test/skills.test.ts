@@ -328,6 +328,19 @@ describe("loadSkills / getSkill", () => {
     expect(hunt).toContain("`qa.outcome` is the verdict of the whole run");
   });
 
+  it("sizes bug-hunt groups at 2 to 4 items and sends independent groups in one step", () => {
+    const hunt = getSkill("bug-hunt")!.content;
+    expect(hunt).not.toContain("3 to 8");
+    expect(hunt).toContain("A group has 2 to 4 items.");
+    expect(hunt).toContain("Small groups run in parallel and end at about the same time.");
+    expect(hunt).toContain("Send all independent groups in ONE step (see \"Parallel runs\" for the cap and when it applies).");
+    expect(hunt).toContain("issue up to 4 `qa: true` calls in the same step");
+    expect(hunt).toContain("Do not wait for one group before you send the next independent group.");
+    expect(hunt).toContain("Put items that need sign-in in the same group");
+    expect(hunt).toContain("Do not mix items that write data with items that count or list the same data in parallel runs.");
+    expect(hunt).toContain("Give the subagent URLs only from recon, from the app, or from the user. Do not ask it to try guessed URLs.");
+  });
+
   it("keeps the bug-hunt scenario example valid against the browse_agent schema", () => {
     // The example is what the model copies. A field name that the schema
     // rejects (it is strict) turns every copied call into a validation error.
