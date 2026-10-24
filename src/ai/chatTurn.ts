@@ -298,7 +298,10 @@ export async function prepareChatTurn(
   // BROWSE_AGENT_MODEL (OpenRouter, with OPENROUTER_PROVIDER_ORDER), never
   // on the user's main chat model, also for an OpenCode Go user: OM2W 15.10,
   // Go subagent p50 93 s vs OpenRouter + Together 53 s at the same success.
-  const modelOverride = browseSub ? config.BROWSE_AGENT_MODEL : input.modelOverride;
+  // BROWSE_AGENT_FOLLOW_REQUEST_MODEL (bench-only) lets the request's model win.
+  const modelOverride = browseSub && !(config.BROWSE_AGENT_FOLLOW_REQUEST_MODEL && input.modelOverride)
+    ? config.BROWSE_AGENT_MODEL
+    : input.modelOverride;
 
   // Every skill lookup below — the slash command, the catalog in the system
   // prompt, the load_skill tool — silently resolves to nothing on an empty

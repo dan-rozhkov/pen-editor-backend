@@ -446,6 +446,17 @@ export const envSchema = z.object({
   // Go user). An OpenRouter id: an OpenCode reference is a boot failure (no
   // server-side OpenCode key exists).
   BROWSE_AGENT_MODEL: z.string().default("deepseek/deepseek-v4.1-flash"),
+  // Bench-only: the browsing subagent runs on the request's allowlisted
+  // `model` instead of BROWSE_AGENT_MODEL (e.g. an OpenCode Go id, with the
+  // X-OpenCode-Key header). Lets bench/browse-task keep a whole QA run off
+  // OpenRouter. Default false: the product behavior above stays.
+  BROWSE_AGENT_FOLLOW_REQUEST_MODEL: z
+    .string()
+    .optional()
+    .transform((v) => {
+      const s = v?.toLowerCase();
+      return s === "true" || s === "1";
+    }),
   // OpenRouter provider slugs tried first, per model, for EVERY OpenRouter
   // call on that model (main chat, browsing subagent, helpers); other
   // providers stay as fallbacks. Format: `model=slug,slug;model2=slug`.
