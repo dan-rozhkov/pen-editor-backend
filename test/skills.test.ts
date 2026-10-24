@@ -315,6 +315,19 @@ describe("loadSkills / getSkill", () => {
     expect(AGENT_BROWSER_QA_GUIDANCE).toContain("bug-hunt");
   });
 
+  it("gives bug-hunt grouped checklists, a boundary rule and a blocked state", () => {
+    const hunt = getSkill("bug-hunt")!.content;
+    expect(hunt).toContain("**Checklists.**");
+    expect(hunt).toContain("Give one `items` entry per ID.");
+    expect(hunt).toContain("Do not send one call per item.");
+    expect(hunt).toContain("just below, at and just above");
+    expect(hunt).toContain("**Blocked / not tested**");
+    expect(hunt).toContain("Do not rerun a `blocked` item more than once.");
+    expect(hunt).toContain("rerun only the failed items");
+    expect(hunt).toContain("Do not rerun the whole group.");
+    expect(hunt).toContain("`qa.outcome` is the verdict of the whole run");
+  });
+
   it("keeps the bug-hunt scenario example valid against the browse_agent schema", () => {
     // The example is what the model copies. A field name that the schema
     // rejects (it is strict) turns every copied call into a validation error.

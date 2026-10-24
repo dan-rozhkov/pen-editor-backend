@@ -19,6 +19,7 @@ Find real bugs in a running web app. Use the `browse_agent` tool with `qa: true`
 - A finding comes only from what the browser showed: the page, the console or the network.
 - Never report a bug from a guess or from general knowledge.
 - Do not claim a bug that no run showed.
+- Before you report that a feature does not exist, find the condition that makes it appear. Examples: a deadline or a date, a limit, a threshold, a role, an empty list, a full list. Write a scenario that makes data at that boundary: just below, at and just above. Report "missing" only after that scenario.
 
 ## Scope and safety
 
@@ -31,7 +32,7 @@ Find real bugs in a running web app. Use the `browse_agent` tool with `qa: true`
 
 ## Workflow
 
-Set `setup.fresh: true` in every `qa: true` scenario and in every rerun. It resets tabs, cookies and storage for the sites that the setup names. It isolates each scenario from the recon run and from other scenarios. The exception is a scenario that continues from a checkpoint.
+Set `setup.fresh: true` in every `qa: true` scenario and in every rerun. This applies per group call (see Checklists). It resets tabs, cookies and storage for the sites that the setup names. It isolates each scenario from the recon run and from other scenarios. The exception is a scenario that continues from a checkpoint.
 
 1. **Recon.** Make one `browse_agent` call WITHOUT `qa`. Ask it to map the pages, forms, modals, lists, navigation and login. Also ask it to record the method and the full URL of each list request and each write request (from the trace request log or the network). Use the map to pick the core flows. Do not reuse the recon tab state. Step 2 and the later steps start fresh.
    - Never guess an API URL. Example: the real URL was workspace-scoped, `/api/v1/workspaces/<id>/contacts`, not `/api/v1/contacts`. Write a `setup.network` mock only from a recorded URL.
@@ -46,17 +47,26 @@ Set `setup.fresh: true` in every `qa: true` scenario and in every rerun. It rese
    - Take `count` selectors from recon. Do not guess a selector such as `tr`. For table rows use `visible: true`, because a hidden empty-state row also matches.
    - Use CSS selectors only in checks. For text use `{ "type": "text" }`. Do not use `text=` or `:has-text(` in a selector.
    - To check the text of a dialog, write in `goal`: "open the dialog, read it, then cancel; do not delete anything". Do not mix "open the dialog" with "confirm".
-5. **Reproduce.** Rerun every failed scenario once with the same `goal` and `setup`. If it does not fail again, report it as flaky. Do not report it as a bug. The outcomes `inconclusive`, `error` and `setup_failed` are not bugs. Fix the scenario and run it again, or list it as untested.
+5. **Reproduce.** Rerun every failed scenario once with the same `goal` and `setup`. If it does not fail again, report it as flaky.
+   - For a grouped call, rerun only the failed items. Make a new call whose `goal` lists only those item IDs, with the same `setup`. Do not rerun the whole group. An item that passes on the rerun is flaky. Do not report it as a bug. The outcomes `inconclusive`, `error` and `setup_failed` are not bugs. Fix the scenario and run it again once, or list it as Blocked / not tested.
+   - A scenario with outcome `inconclusive`, `error` or `setup_failed`, or an item with `result: "blocked"`, is **Blocked / not tested**. It is never a bug and never a fail. Do not rerun a `blocked` item more than once.
    - A judge downgrade (the `qa.reason` starts with "Judge:") is a signal. So is `inconclusive` with the reason "Agent said pass, but check failed". Read the failed checks and the judge reason. Fix the check or rerun. Do not dismiss the signal. Do not count it as a defect before a rerun.
 6. **Escalate.** Bugs cluster. After a confirmed bug, run 1 or 2 more scenarios near it.
 7. **Second pass.** Verify each UX observation with its own run. Do not leave an observation unverified.
 8. **Evidence.** For each confirmed bug, put this in the `goal` of the run (or rerun) that shows it: "Take one screenshot with browse_screenshot and waitFor on the element that shows the bug. Place it on the canvas." Then cite the node ids from the `placed` field of the `browse_agent` result.
-9. **Budget.** Run about 8 to 12 scenarios in total. Stop earlier when you have 5 or more confirmed bugs. Run more if the user asks.
+9. **Checklists.** The user may give a checklist or a list of features to check. Then group the items by screen or by user flow. Do not send one call per item.
+   - Send one `qa: true` call per group. A group has about 3 to 8 items.
+   - Put each item with its ID in `goal`. Say: "Give one `items` entry per ID."
+   - Put items that need sign-in in the same group as the other items behind that sign-in. The subagent then signs in once.
+   - Do not mix items that write data with items that count or list the same data in parallel runs. Isolation covers the browser only. Server state is shared.
+   - Each `items` entry has a result: `pass`, `fail` or `blocked`. See step 5 for `blocked`.
+   - `qa.outcome` is the verdict of the whole run. It wins over `qa.items`. If the outcome is `failed` and no item failed, the cause is in `qa.reason`: a host check, the judge, or a defect outside the items. If every item was blocked, the result has no verdict and no `qa.items`. Treat every item of that call as blocked.
+10. **Budget.** Run about 8 to 12 scenarios in total. Stop earlier when you have 5 or more confirmed bugs. Run more if the user asks.
 
 ## Attack catalog
 
 1. **Input boundaries** — fields and numbers at the edge of what is valid.
-   Try: empty value, only spaces, 0, -1, the maximum, the maximum plus 1, 10000 characters.
+   Try: empty value, only spaces, 0, -1, the maximum, the maximum plus 1, 10000 characters. For dates, deadlines and thresholds, try a value just below, at and just above the boundary.
    Expect: a clear validation message, no crash, no silent cut of the input.
 2. **Hostile text** — text that breaks parsers and layouts.
    Try: mock the write endpoint in `setup.network` when the form saves data. Then enter unicode, emoji, right-to-left text, zero-width characters, `<script>alert(1)</script>`, `' OR 1=1 --`, one very long word with no spaces. In search and filter fields, also type regex and wildcard characters: `(`, `[`, `*`, `+`, `?`, `\`, `%`, `.*`.
@@ -126,7 +136,7 @@ Why it is bad: it has no steps, no input and no expected result. The subagent ca
 
 Write the report in the user's language. Use this order.
 
-1. A summary line: scenarios run, bugs, flaky, untested.
+1. A summary line: scenarios run, bugs, flaky, blocked.
 2. **Bugs**, sorted by severity. For each bug give:
    - Title
    - Steps to reproduce
@@ -135,7 +145,9 @@ Write the report in the user's language. Use this order.
    - Evidence: `qa.reason`, console errors, failed requests
 3. **Flaky.** Scenarios that failed once and passed on the rerun. Give the steps and what failed the first time.
 4. **UX observations.** Keep them apart from bugs.
-5. **Not tested.** Give a reason for each item.
+5. **Blocked / not tested.** Give a reason for each item. A blocked item is not a bug and not a fail.
+
+When the user gave a checklist, list every item with one of three states: pass, fail or blocked. Give the reason for each fail and each blocked item. If `qa.outcome` is `failed` but no item failed, report the cause from `qa.reason`. If a call had no `qa.items` because every item was blocked, list every item of that call as blocked.
 
 Severity levels:
 - Critical: data loss, security problem, payment error, or the core flow is blocked.
