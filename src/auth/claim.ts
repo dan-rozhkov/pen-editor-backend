@@ -17,6 +17,7 @@ interface ClaimTarget {
 export const CLAIM_TARGETS: readonly ClaimTarget[] = [
   { table: "agent_memory", column: "user_id", uniqueWith: ["target"] },
   { table: "agent_review_state", column: "user_id", uniqueWith: [] },
+  { table: "agent_memory_prefs", column: "user_id", uniqueWith: [] },
   { table: "agent_selfimprove_audit", column: "user_id", uniqueWith: null },
   { table: "agent_scenarios", column: "user_id", uniqueWith: null },
   { table: "user_skills", column: "user_id", uniqueWith: ["name"] },
@@ -59,6 +60,15 @@ export async function claimAnonData(
       return { claimed: false, reason: "already_claimed" };
     }
     const moved: Record<string, number> = {};
+    // Opt-out wins on either side: the generic merge keeps the account's row
+    // and drops the anon one, which would silently discard an anonymous
+    // "agent remembers: off". Fold it into the account row first.
+    await client.query(
+      `UPDATE agent_memory_prefs mine SET enabled = false
+       FROM agent_memory_prefs anon
+       WHERE mine.user_id = $2 AND anon.user_id = $1 AND anon.enabled = false`,
+      [anonId, userId],
+    );
     for (const { table, column, uniqueWith } of CLAIM_TARGETS) {
       if (uniqueWith) {
         // The account's own row wins: delete the anon copy that would

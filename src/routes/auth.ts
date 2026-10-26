@@ -5,6 +5,7 @@ import { oauthProviderAuthServerMetadata, oauthProviderOpenIdConfigMetadata } fr
 import type { Config } from "../config.js";
 import { resolveAuthSettings } from "../auth/settings.js";
 import { readSession } from "../auth/actor.js";
+import { deleteAccount } from "../auth/deleteAccount.js";
 import { claimAnonData, type ClaimPool } from "../auth/claim.js";
 import { isPlausibleUserId } from "../lib/userId.js";
 import { sendWebResponse, toWebHeaders, toWebRequest } from "../auth/webBridge.js";
@@ -24,6 +25,7 @@ const OPENID_METADATA_PATHS = ["/.well-known/openid-configuration", "/.well-know
 const PROTECTED_RESOURCE_PATHS = ["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp"];
 
 const revokeBodySchema = z.object({ clientId: z.string().min(1).max(512) });
+const deleteBodySchema = z.object({ confirmEmail: z.string().min(1).max(320) });
 const claimBodySchema = z.object({ anonId: z.string().min(1).max(64) });
 
 const challengeSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
@@ -136,6 +138,47 @@ export async function authRoutes(
     if (!result.claimed) return reply.status(409).send({ error: result.reason });
     return reply.send({ claimed: true, moved: result.moved });
   });
+
+  // Settings > Delete account. The typed address must match the session's, so
+  // a stray click or a stolen-tab replay cannot wipe an account by accident.
+  app.post(
+    "/api/account/delete",
+    { config: { rateLimit: { max: 5, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      reply.header("Cache-Control", "no-store");
+      if (!auth || !pool) return authDisabled(reply);
+      // Fresh: a revoked session must not be able to delete the account.
+      const session = await requireSession(request, reply, { fresh: true });
+      if (!session) return reply;
+      const parsed = deleteBodySchema.safeParse(request.body);
+      if (!parsed.success || parsed.data.confirmEmail.trim().toLowerCase() !== session.user.email.toLowerCase()) {
+        return reply.status(400).send({ error: "confirm_email_mismatch" });
+      }
+      let cleanupTraces: () => Promise<void>;
+      try {
+        ({ cleanupTraces } = await deleteAccount(pool, { id: session.user.id, email: session.user.email }));
+      } catch (err) {
+        request.log.error({ err }, "[auth] account deletion failed");
+        return reply.status(500).send({ error: "delete_failed" });
+      }
+      // Better Auth's own sign-out produces the clearing Set-Cookie values
+      // (name, secure prefix, cross-subdomain Domain). The session row is
+      // already gone; sign-out tolerates that and still clears the cookies.
+      // Best-effort: the account is already gone, so a failure here must not
+      // turn into a 5xx; the dead session cookie is useless anyway.
+      try {
+        const { headers } = await auth.api.signOut({ headers: toWebHeaders(request.headers), returnHeaders: true });
+        const cookies = headers.getSetCookie();
+        if (cookies.length > 0) reply.header("set-cookie", cookies);
+      } catch (err) {
+        request.log.warn({ err }, "[auth] sign-out after account deletion failed");
+      }
+      // Trace cleanup scans a huge unindexed table: detached, never awaited by
+      // the request (cleanupTraces never rejects; the catch is belt and braces).
+      void cleanupTraces().catch((err) => request.log.error({ err }, "[auth] trace cleanup failed"));
+      return reply.send({ deleted: true });
+    },
+  );
 
   // Desktop sign-in (spec 2026-10-20-desktop-sign-in-design.md). The browser
   // trades its session for a one-time token bound to a PKCE challenge, and

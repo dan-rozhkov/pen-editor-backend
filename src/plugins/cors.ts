@@ -61,7 +61,8 @@ export async function registerCors(app: FastifyInstance, config: Config) {
       // config is what a real cross-origin MCP client (e.g. the MCP
       // Inspector) actually sees on preflight.
       // PATCH: PATCH /api/user-skills/:name.
-      methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+      // PUT: PUT /api/memory/settings.
+      methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
       // Both extra headers carry a credential the BROWSER owns and the server
       // never stores, so each must be named explicitly — this is an allowlist,
       // not a wildcard, and a missing entry kills the cross-origin preflight

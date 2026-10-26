@@ -35,7 +35,7 @@ export interface MemoryPool {
   end(): Promise<void>;
 }
 
-export type AuditOrigin = "foreground" | "background_review" | "curator";
+export type AuditOrigin = "foreground" | "background_review" | "curator" | "user";
 
 /**
  * `memory` and `skill` are WRITES — something actually changed. `review` is
@@ -146,6 +146,21 @@ export interface MemoryStore {
    * without erroring.
    */
   clearUser(userId: string, origin: AuditOrigin): Promise<{ memory: number; user: number }>;
+  /**
+   * Removes the ONE entry of `target` whose text equals `text` exactly (the
+   * settings page's per-entry delete). Not the substring-matching `remove`
+   * operation: a UI click names a precise string. Returns false when no entry
+   * matches. Row-locked and audited like `applyOperations`.
+   */
+  removeEntry(
+    userId: string,
+    target: MemoryTarget,
+    text: string,
+    origin: AuditOrigin,
+  ): Promise<boolean>;
+  /** Per-user "agent remembers" switch. A missing row means enabled. */
+  getMemoryEnabled(userId: string): Promise<boolean>;
+  setMemoryEnabled(userId: string, enabled: boolean): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -455,6 +470,62 @@ export function createMemoryStore(
       } finally {
         client.release();
       }
+    },
+
+    async removeEntry(userId, target, text, origin) {
+      const client = await db.connect();
+      try {
+        await client.query("BEGIN");
+        const read = (await client.query(
+          "SELECT entries FROM agent_memory WHERE user_id = $1 AND target = $2 FOR UPDATE",
+          [userId, target],
+        )) as { rows: Array<{ entries: unknown }> };
+        const current = toEntries(read.rows[0]?.entries);
+        const index = current.indexOf(text);
+        if (index === -1) {
+          await client.query("ROLLBACK");
+          return false;
+        }
+        const next = current.filter((_, i) => i !== index);
+        await client.query(
+          "UPDATE agent_memory SET entries = $3::jsonb, updated_at = now() WHERE user_id = $1 AND target = $2",
+          [userId, target, JSON.stringify(next)],
+        );
+        await insertAuditRow(client, {
+          userId,
+          origin,
+          subsystem: "memory",
+          action: "remove_entry",
+          payload: { target, entryCount: next.length },
+        });
+        await client.query("COMMIT");
+        return true;
+      } catch (err) {
+        try {
+          await client.query("ROLLBACK");
+        } catch {
+          // See applyOperations.
+        }
+        throw err;
+      } finally {
+        client.release();
+      }
+    },
+
+    async getMemoryEnabled(userId) {
+      const result = (await db.query(
+        "SELECT enabled FROM agent_memory_prefs WHERE user_id = $1",
+        [userId],
+      )) as { rows: Array<{ enabled: boolean }> };
+      return result.rows[0]?.enabled !== false;
+    },
+
+    async setMemoryEnabled(userId, enabled) {
+      await db.query(
+        `INSERT INTO agent_memory_prefs (user_id, enabled) VALUES ($1, $2)
+         ON CONFLICT (user_id) DO UPDATE SET enabled = EXCLUDED.enabled, updated_at = now()`,
+        [userId, enabled],
+      );
     },
 
     close: () => db.end(),

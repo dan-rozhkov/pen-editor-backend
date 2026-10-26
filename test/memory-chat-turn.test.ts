@@ -12,9 +12,10 @@ vi.mock("../src/ai/mcp.js", () => ({
   releaseMCPTools: vi.fn(),
 }));
 
-function storeWith(snapshot: MemorySnapshot): MemoryStore {
+function storeWith(snapshot: MemorySnapshot, enabled = true): MemoryStore {
   return {
     loadSnapshot: vi.fn(async () => snapshot),
+    getMemoryEnabled: vi.fn(async () => enabled),
     applyOperations: vi.fn(),
     bumpCounters: vi.fn(),
     writeAudit: vi.fn(),
@@ -70,6 +71,36 @@ describe("prepareChatTurn — memory injection", () => {
     expect(turn.tools.memory).toBeDefined();
     expect(turn.system).toContain(MEMORY_GUIDANCE);
     expect(turn.system).not.toContain("USER PROFILE (who the user is)");
+  });
+
+  it("injects no snapshot and no memory tool when the user switched memory off", async () => {
+    const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+    const turn = await prepareChatTurn({
+      config: makeConfig({ MEMORY_ENABLED: true }),
+      messages: [userMessage("hi")],
+      userId: "u1",
+      memoryStore: storeWith({ user: ["secret pref"], memory: [] }, false),
+    });
+    expect(turn.memoryInjected).toBe(false);
+    expect(turn.tools.memory).toBeUndefined();
+    expect(turn.system).not.toContain("secret pref");
+    expect(turn.system).not.toContain(MEMORY_GUIDANCE);
+  });
+
+  it("degrades to a memory-less turn when the preference read fails", async () => {
+    const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+    const store = storeWith({ user: ["x"], memory: [] });
+    (store.getMemoryEnabled as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("db down"));
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const turn = await prepareChatTurn({
+      config: makeConfig({ MEMORY_ENABLED: true }),
+      messages: [userMessage("hi")],
+      userId: "u1",
+      memoryStore: store,
+    });
+    spy.mockRestore();
+    expect(turn.memoryInjected).toBe(false);
+    expect(turn.tools.memory).toBeUndefined();
   });
 
   it("stays off without a userId (the showcase runner path)", async () => {

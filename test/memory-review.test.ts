@@ -44,6 +44,30 @@ describe("maybeRunReview", () => {
     expect(capturedCalls).toHaveLength(0);
   });
 
+  it("does not review memory for a user who switched memory off", async () => {
+    capturedCalls.length = 0;
+    const { maybeRunReview } = await import("../src/ai/selfimprove/review.js");
+    holders.model = reviewModel(textResult("Nothing to save."));
+    const store = fakeStore(true);
+    (store.getMemoryEnabled as ReturnType<typeof vi.fn>).mockResolvedValue(false);
+
+    expect(await maybeRunReview(input({ store }))).toBe("not-due");
+    expect(capturedCalls).toHaveLength(0);
+  });
+
+  it("skips memory when the preference read fails", async () => {
+    capturedCalls.length = 0;
+    const { maybeRunReview } = await import("../src/ai/selfimprove/review.js");
+    holders.model = reviewModel(textResult("Nothing to save."));
+    const store = fakeStore(true);
+    (store.getMemoryEnabled as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("db down"));
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    expect(await maybeRunReview(input({ store }))).toBe("not-due");
+    spy.mockRestore();
+    expect(capturedCalls).toHaveLength(0);
+  });
+
   it("bumps the counters but does not run the review before the threshold", async () => {
     const { maybeRunReview } = await import("../src/ai/selfimprove/review.js");
     holders.model = reviewModel(textResult("Nothing to save."));

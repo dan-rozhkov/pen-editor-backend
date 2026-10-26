@@ -45,6 +45,7 @@ import { openaiAppsChallengeRoutes } from "./routes/openaiAppsChallenge.js";
 import type { ShowcaseStore } from "./showcase/store.js";
 import { createMemoryStore, type MemoryStore } from "./ai/memory/store.js";
 import { memoryActivityRoutes } from "./routes/memoryActivity.js";
+import { memoryRoutes } from "./routes/memory.js";
 import { getSharedLearnedSkillStore, type LearnedSkillStore } from "./ai/skills/learnedStore.js";
 import { getSharedUserSkillStore, type UserSkillStore } from "./ai/skills/userStore.js";
 import { userSkillRoutes } from "./routes/userSkills.js";
@@ -402,6 +403,7 @@ export async function buildApp(
     options.chatRateLimits,
   );
   await memoryActivityRoutes(app, config, memoryStore);
+  await memoryRoutes(app, config, memoryStore);
   await userSkillRoutes(app, config, userSkillStore);
   await sharedCanvasRoutes(app, config, sharedCanvasStore);
   await modelsRoutes(app, config);

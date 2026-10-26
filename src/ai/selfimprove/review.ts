@@ -299,10 +299,6 @@ export async function maybeRunReview(
     // — so a later flip-on does not inherit whatever had already
     // accumulated before the flip), and that reported due-ness must never
     // be allowed to fire a review for a disabled subsystem.
-    const due = {
-      memoryDue: config.MEMORY_ENABLED && counters.memoryReviewDue,
-      skillDue: config.SELF_SKILLS_ENABLED && Boolean(counters.skillReviewDue),
-    };
     // Third due-source: a pattern already confirmed by several past sessions.
     // The two counters above ask "has enough happened lately?" — this asks
     // "is there standing evidence worth acting on?", which a single-session
@@ -327,7 +323,31 @@ export async function maybeRunReview(
       }
     }
 
-    const reviewPromptBase = selectReviewPrompt(due, config.MEMORY_ENABLED);
+    // The user's "agent remembers" switch: when off, the review must not
+    // write memory (skills review is unaffected). A failed read is treated
+    // like the chat turn treats a failed snapshot read: memory off for this
+    // run — never write on an unknown preference.
+    // Read only when it can matter: some review is due (memory, skill or
+    // scenario) — otherwise this turn returns "not-due" without touching it.
+    let memoryOn = config.MEMORY_ENABLED;
+    const reviewMayRun =
+      counters.memoryReviewDue ||
+      (config.SELF_SKILLS_ENABLED && Boolean(counters.skillReviewDue)) ||
+      scenarios.length > 0;
+    if (memoryOn && reviewMayRun) {
+      try {
+        memoryOn = await store.getMemoryEnabled(userId);
+      } catch (err) {
+        console.error("[review] memory preference read failed; skipping memory:", err);
+        memoryOn = false;
+      }
+    }
+
+    const due = {
+      memoryDue: memoryOn && counters.memoryReviewDue,
+      skillDue: config.SELF_SKILLS_ENABLED && Boolean(counters.skillReviewDue),
+    };
+    const reviewPromptBase = selectReviewPrompt(due, memoryOn);
     // A confirmed scenario can carry a review on its own, even with both
     // counters cold (memoryDue: false, skillDue: false) — selectReviewPrompt
     // returns null for that all-false `due`, so without this fallback the
@@ -348,12 +368,12 @@ export async function maybeRunReview(
     // know whether THIS due-shape — not the original counter-derived one —
     // is what actually put MEMORY_REVIEW_PROMPT into the prompt.
     const scenarioFallbackDue = {
-      memoryDue: config.MEMORY_ENABLED,
+      memoryDue: memoryOn,
       skillDue: config.SELF_SKILLS_ENABLED,
     };
     const promptBase =
       reviewPromptBase ??
-      (scenarios.length > 0 ? selectReviewPrompt(scenarioFallbackDue, config.MEMORY_ENABLED) : null);
+      (scenarios.length > 0 ? selectReviewPrompt(scenarioFallbackDue, memoryOn) : null);
     if (!promptBase) return "not-due";
     // Whichever due-shape actually produced `promptBase` — the real one when
     // a counter fired, the synthesized one when only scenario evidence did.
@@ -403,7 +423,7 @@ export async function maybeRunReview(
     // skill-triggered review can still save a memory it happens to notice,
     // and vice versa.
     const reviewTools: ToolSet = { ...buildReviewToolStubs(input.turnTools) };
-    if (config.MEMORY_ENABLED) {
+    if (memoryOn) {
       const ctx = createMemoryToolContext(
         store, userId, "background_review", attribution, memoryFilterContext(config, undefined),
       );

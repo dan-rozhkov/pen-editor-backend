@@ -76,6 +76,8 @@ export interface Auth {
       headers: Headers;
       returnHeaders: true;
     }): Promise<{ headers: Headers; response: { user: { id: string; email: string } } }>;
+    /** Ends the session named by the request cookie; the returned headers carry the clearing Set-Cookie values. */
+    signOut(context: { headers: Headers; returnHeaders: true }): Promise<{ headers: Headers }>;
     getOAuthServerConfig(...args: never[]): unknown;
     getOpenIdConfig(...args: never[]): unknown;
   };

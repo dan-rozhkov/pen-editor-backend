@@ -18,6 +18,7 @@ vi.mock("../src/ai/mcp.js", async () => (await import("./chatMocks.js")).mockMcp
 function fakeMemoryStore(): MemoryStore & { loadSnapshot: ReturnType<typeof vi.fn> } {
   return {
     loadSnapshot: vi.fn(async () => ({ user: ["User prefers concise responses"], memory: [] })),
+    getMemoryEnabled: vi.fn(async () => true),
     applyOperations: vi.fn(),
     bumpCounters: vi.fn(async () => ({
       turnsSinceMemory: 1,

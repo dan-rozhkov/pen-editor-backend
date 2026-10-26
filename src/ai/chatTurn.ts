@@ -798,14 +798,20 @@ export async function prepareChatTurn(
   let memoryInjected = false;
   if (memoryEligible && memoryStore && input.userId) {
     try {
-      memorySnapshotBlock = renderMemorySnapshot(
-        await withTimeout(
+      // The user's "agent remembers" switch rides the same guarded read: a
+      // failure of either query degrades to a memory-less turn.
+      const [snapshot, remembers] = await withTimeout(
+        Promise.all([
           memoryStore.loadSnapshot(input.userId),
-          MEMORY_SNAPSHOT_TIMEOUT_MS,
-          "[memory] snapshot read",
-        ),
+          memoryStore.getMemoryEnabled(input.userId),
+        ]),
+        MEMORY_SNAPSHOT_TIMEOUT_MS,
+        "[memory] snapshot read",
       );
-      memoryInjected = true;
+      if (remembers) {
+        memorySnapshotBlock = renderMemorySnapshot(snapshot);
+        memoryInjected = true;
+      }
     } catch (err) {
       console.error("[memory] snapshot read failed; continuing without memory:", err);
     }

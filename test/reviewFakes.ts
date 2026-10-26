@@ -130,6 +130,7 @@ export function fakeReviewCounterStore(due: ReviewDueFlags = {}): MemoryStore {
       skillReviewDue: due.skillReviewDue ?? false,
     })),
     writeAudit: vi.fn(),
+    getMemoryEnabled: vi.fn(async () => true),
     close: vi.fn(),
   } as unknown as MemoryStore;
 }

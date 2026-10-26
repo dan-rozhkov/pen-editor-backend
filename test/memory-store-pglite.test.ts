@@ -11,6 +11,7 @@ beforeAll(async () => {
   harness = await createPgliteHarness([
     "agent_memory",
     "agent_review_state",
+    "agent_memory_prefs",
     "agent_selfimprove_audit",
   ]);
   const created = createMemoryStore(
@@ -459,5 +460,44 @@ describe("bumpCounters", () => {
     });
     // The skill reset must not touch the (unrelated, not-yet-due) memory counter.
     expect(after).toMatchObject({ stepsSinceSkill: 1, skillReviewDue: false, turnsSinceMemory: 3 });
+  });
+});
+
+describe("removeEntry / memory preference", () => {
+  async function seed(): Promise<void> {
+    await store.applyOperations({
+      userId: "u1",
+      target: "user",
+      operations: [
+        { action: "add", content: "likes dark mode" },
+        { action: "add", content: "likes dark mode and more" },
+      ],
+      origin: "foreground",
+    });
+  }
+
+  it("removes only the exactly matching entry and audits it as a user action", async () => {
+    await seed();
+    expect(await store.removeEntry("u1", "user", "likes dark mode", "user")).toBe(true);
+    expect((await store.loadSnapshot("u1")).user).toEqual(["likes dark mode and more"]);
+    const audit = await store.listAuditActivity({ userId: "u1", sinceId: 0 });
+    expect(audit.events.at(-1)).toMatchObject({ action: "remove_entry", origin: "user" });
+  });
+
+  it("returns false and changes nothing without an exact match", async () => {
+    await seed();
+    expect(await store.removeEntry("u1", "user", "dark", "user")).toBe(false);
+    expect(await store.removeEntry("u1", "memory", "likes dark mode", "user")).toBe(false);
+    expect(await store.removeEntry("u2", "user", "likes dark mode", "user")).toBe(false);
+    expect((await store.loadSnapshot("u1")).user).toHaveLength(2);
+  });
+
+  it("defaults to enabled and persists the switch per user", async () => {
+    expect(await store.getMemoryEnabled("u1")).toBe(true);
+    await store.setMemoryEnabled("u1", false);
+    expect(await store.getMemoryEnabled("u1")).toBe(false);
+    expect(await store.getMemoryEnabled("u2")).toBe(true);
+    await store.setMemoryEnabled("u1", true);
+    expect(await store.getMemoryEnabled("u1")).toBe(true);
   });
 });

@@ -54,6 +54,19 @@ describe("CORS credentials", () => {
     expect(preflight).toMatchObject({ origin: APP, credentials: "true" });
     expect(preflight.headers).toBe("Content-Type, Authorization, Mcp-Session-Id, X-OpenCode-Key, X-Mobbin-Token");
   });
+
+  it("allows PUT in the preflight (PUT /api/memory/settings)", async () => {
+    const running = await startApp(makeConfig({ CORS_ALLOWED_ORIGINS: APP }));
+    try {
+      const res = await fetch(`${running.url}/api/auth-config`, {
+        method: "OPTIONS",
+        headers: { Origin: APP, "Access-Control-Request-Method": "PUT" },
+      });
+      expect(res.headers.get("access-control-allow-methods")).toContain("PUT");
+    } finally {
+      await running.close();
+    }
+  });
 });
 
 describe("isCredentialedOrigin / credentialHeaders (hijacked SSE replies)", () => {
