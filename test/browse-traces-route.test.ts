@@ -8,7 +8,7 @@ import type { Config } from "../src/config.js";
 
 // S3 IO is mocked (see upload-route.test.ts): the route's own logic —
 // validation, key layout, write order, URL rewriting — runs for real.
-const putCalls: { key: string; body: Buffer; contentType: string }[] = [];
+const putCalls: { key: string; body: Buffer; contentType: string; contentDisposition?: string }[] = [];
 const stored = new Map<string, string>();
 const deleted: string[][] = [];
 let failKey: ((key: string) => boolean) | null = null;
@@ -25,9 +25,10 @@ vi.mock("../src/services/s3.js", async (importOriginal) => {
       key: string,
       body: Buffer,
       contentType: string,
+      extra?: { contentDisposition?: string },
     ) => {
       if (failKey?.(key)) throw new Error("boom");
-      putCalls.push({ key, body, contentType });
+      putCalls.push({ key, body, contentType, contentDisposition: extra?.contentDisposition });
       return `${target.publicBase}/${key}`;
     },
     deleteObjects: async (_t: unknown, keys: string[]) => {
@@ -48,7 +49,10 @@ const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const pngUri = (buf: Buffer = PNG) => `data:image/png;base64,${buf.toString("base64")}`;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-function manifest(frameSrcs: string[] = ["frames/0.png"]) {
+const domUri = (type: string, text = "<html></html>", params = "") =>
+  `data:${type}${params};base64,${Buffer.from(text).toString("base64")}`;
+
+function manifest(frameSrcs: string[] = ["frames/0.png"], domSrcs: string[] = []) {
   return {
     format: "sideform.browse-trace",
     version: 1,
@@ -61,6 +65,18 @@ function manifest(frameSrcs: string[] = ["frames/0.png"]) {
     frames: frameSrcs.map((src, id) => ({ id, at: 1, kind: "step", src })),
     console: [],
     network: [],
+    ...(domSrcs.length
+      ? {
+          doms: domSrcs.map((src, id) => ({
+            id,
+            at: 1,
+            stepIndex: 0,
+            kind: src.endsWith(".txt") ? "ax" : "html",
+            src,
+            bytes: 10,
+          })),
+        }
+      : {}),
   };
 }
 
@@ -217,6 +233,103 @@ describe("POST /api/browse/traces", () => {
   });
 });
 
+describe("POST /api/browse/traces DOM assets", () => {
+  const withDoms = (dom: unknown[], extra: Record<string, unknown>[] = []) => ({
+    manifest: manifest(["frames/0.png"], ["dom/0.html", "dom/1.txt"].slice(0, dom.length)),
+    assets: [{ path: "frames/0.png", dataUrl: pngUri() }, ...extra],
+  });
+
+  it("stores html and txt DOM assets with content types and attachment disposition, and rewrites doms src", async () => {
+    const base = await startServer(makeConfig(S3_CONFIG));
+    const res = await post(
+      base,
+      withDoms(
+        [1, 2],
+        [
+          { path: "dom/0.html", dataUrl: domUri("text/html", "<p>hi</p>", ";charset=utf-8") },
+          { path: "dom/1.txt", dataUrl: domUri("text/plain", "button \"Go\"") },
+        ],
+      ),
+    );
+    expect(res.status).toBe(200);
+    const { id } = (await res.json()) as { id: string };
+    const html = putCalls.find((c) => c.key.endsWith("dom/0.html"))!;
+    const txt = putCalls.find((c) => c.key.endsWith("dom/1.txt"))!;
+    expect(html.contentType).toBe("text/plain; charset=utf-8");
+    expect(html.contentDisposition).toBe("attachment");
+    expect(html.body.toString("utf8")).toBe("<p>hi</p>");
+    expect(txt.contentType).toBe("text/plain; charset=utf-8");
+    expect(txt.contentDisposition).toBe("attachment");
+    const png = putCalls.find((c) => c.key.endsWith("frames/0.png"))!;
+    expect(png.contentDisposition).toBeUndefined();
+    const last = putCalls.at(-1)!;
+    expect(last.key).toBe(`browse-traces/${id}/trace.json`);
+    const trace = JSON.parse(last.body.toString("utf8"));
+    expect(trace.doms.map((d: { src: string }) => d.src)).toEqual([
+      `https://s3.example.test/bucket/browse-traces/${id}/dom/0.html`,
+      `https://s3.example.test/bucket/browse-traces/${id}/dom/1.txt`,
+    ]);
+    expect(trace).not.toHaveProperty("owner");
+  });
+
+  it("returns 400 when the data URL type does not match the extension", async () => {
+    const base = await startServer(makeConfig(S3_CONFIG));
+    await expect400(
+      await post(base, withDoms([1], [{ path: "dom/0.html", dataUrl: domUri("text/plain") }])),
+      "does not match",
+    );
+    await expect400(
+      await post(base, withDoms([1], [{ path: "dom/0.html", dataUrl: pngUri() }])),
+      "invalid data URI",
+    );
+  });
+
+  it("returns 400 for bad base64", async () => {
+    const base = await startServer(makeConfig(S3_CONFIG));
+    await expect400(
+      await post(base, withDoms([1], [{ path: "dom/0.html", dataUrl: "data:text/html;base64,abc" }])),
+      "invalid data URI",
+    );
+  });
+
+  it("returns 400 for a DOM asset over 2 MB", async () => {
+    const base = await startServer(makeConfig(S3_CONFIG));
+    const big = domUri("text/html", "x".repeat(2 * 1024 * 1024 + 3));
+    await expect400(await post(base, withDoms([1], [{ path: "dom/0.html", dataUrl: big }])), "larger than");
+  });
+
+  it("accepts a DOM asset of exactly 2 MB", async () => {
+    const base = await startServer(makeConfig(S3_CONFIG));
+    const ok = domUri("text/html", "x".repeat(2 * 1024 * 1024));
+    const res = await post(base, withDoms([1], [{ path: "dom/0.html", dataUrl: ok }]));
+    expect(res.status).toBe(200);
+  });
+
+  it("returns 400 when a doms src is not uploaded, or is not an asset path", async () => {
+    const base = await startServer(makeConfig(S3_CONFIG));
+    await expect400(await post(base, withDoms([1])), "dom/0.html is missing");
+    const m = manifest(["frames/0.png"], ["https://evil.test/x.html"]);
+    await expect400(
+      await post(base, { manifest: m, assets: [{ path: "frames/0.png", dataUrl: pngUri() }] }),
+      "asset path",
+    );
+  });
+
+  it("returns 400 for a DOM asset no dom references", async () => {
+    const base = await startServer(makeConfig(S3_CONFIG));
+    await expect400(
+      await post(base, {
+        manifest: manifest(),
+        assets: [
+          { path: "frames/0.png", dataUrl: pngUri() },
+          { path: "dom/0.html", dataUrl: domUri("text/html") },
+        ],
+      }),
+      "not referenced",
+    );
+  });
+});
+
 describe("POST /api/browse/traces hardening", () => {
   const body = (n = 1) => ({
     manifest: manifest(Array.from({ length: n }, (_, i) => `frames/${i}.png`)),
@@ -262,6 +375,15 @@ describe("GET /api/browse/traces/:id", () => {
     expect(body).not.toHaveProperty("owner");
   });
 
+  it("serves doms src as stored (public URLs)", async () => {
+    const m = { ...manifest([], ["dom/0.html"]), id: ID };
+    m.doms![0]!.src = `https://s3.example.test/bucket/browse-traces/${ID}/dom/0.html`;
+    stored.set(`browse-traces/${ID}/trace.json`, JSON.stringify(m));
+    const base = await startServer(makeConfig(S3_CONFIG));
+    const body = (await (await fetch(`${base}/api/browse/traces/${ID}`)).json()) as { doms: { src: string }[] };
+    expect(body.doms[0]!.src).toBe(`https://s3.example.test/bucket/browse-traces/${ID}/dom/0.html`);
+  });
+
   it("returns 400 for a non-UUID id without touching S3", async () => {
     const base = await startServer(makeConfig(S3_CONFIG));
     const res = await fetch(`${base}/api/browse/traces/..%2Fetc`);
@@ -290,6 +412,72 @@ describe("GET /api/browse/traces/:id", () => {
   it("returns 503 without an S3 target", async () => {
     const base = await startServer(makeConfig());
     expect((await fetch(`${base}/api/browse/traces/${ID}`)).status).toBe(503);
+  });
+});
+
+describe("GET /api/browse/traces/:id/dom/:file", () => {
+  const ID = "123e4567-e89b-42d3-a456-426614174001";
+  const url = (id: string, file: string) => `/api/browse/traces/${id}/dom/${file}`;
+  const seed = (src = `https://s3.example.test/bucket/browse-traces/${ID}/dom/0.html`) => {
+    const m = { ...manifest([], ["dom/0.html"]), id: ID };
+    m.doms![0]!.src = src;
+    stored.set(`browse-traces/${ID}/trace.json`, JSON.stringify(m));
+    stored.set(`browse-traces/${ID}/dom/0.html`, "<p>hi</p>");
+  };
+
+  it("returns the text with safe headers", async () => {
+    seed();
+    const base = await startServer(makeConfig(S3_CONFIG));
+    const res = await fetch(`${base}${url(ID, "0.html")}`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+    expect(res.headers.get("cache-control")).toBe("private, max-age=3600");
+    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(await res.text()).toBe("<p>hi</p>");
+    expect(getObjectTextMock).toHaveBeenLastCalledWith(
+      expect.anything(),
+      `browse-traces/${ID}/dom/0.html`,
+      expect.objectContaining({ maxBytes: 2 * 1024 * 1024 }),
+    );
+  });
+
+  it("accepts a bare asset path as the stored src", async () => {
+    seed("dom/0.html");
+    const base = await startServer(makeConfig(S3_CONFIG));
+    expect((await fetch(`${base}${url(ID, "0.html")}`)).status).toBe(200);
+  });
+
+  it("returns 404 for a missing object", async () => {
+    seed();
+    const base = await startServer(makeConfig(S3_CONFIG));
+    expect((await fetch(`${base}${url(ID, "1.txt")}`)).status).toBe(404);
+    expect(getObjectTextMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not read the manifest", async () => {
+    seed();
+    const base = await startServer(makeConfig(S3_CONFIG));
+    expect((await fetch(`${base}${url(ID, "0.html")}`)).status).toBe(200);
+    expect(getObjectTextMock).toHaveBeenCalledTimes(1);
+    expect(getObjectTextMock.mock.calls[0]![1]).toBe(`browse-traces/${ID}/dom/0.html`);
+  });
+
+  it("returns 400 for a bad file name or id", async () => {
+    seed();
+    const base = await startServer(makeConfig(S3_CONFIG));
+    for (const f of ["0.png", "x.html", "12345.html", "..%2Ftrace.json", "0.html.txt"]) {
+      expect((await fetch(`${base}${url(ID, f)}`)).status).toBe(400);
+    }
+    expect((await fetch(`${base}${url("a.b", "0.html")}`)).status).toBe(400);
+    expect((await fetch(`${base}${url("..%2Fx", "0.html")}`)).status).toBe(400);
+    expect(getObjectTextMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 502 when storage fails", async () => {
+    seed();
+    const base = await startServer(makeConfig(S3_CONFIG));
+    getObjectTextMock.mockRejectedValueOnce(new Error("larger than 2097152 bytes"));
+    expect((await fetch(`${base}${url(ID, "0.html")}`)).status).toBe(502);
   });
 });
 
