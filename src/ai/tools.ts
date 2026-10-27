@@ -1536,7 +1536,7 @@ const BROWSE_AGENT_QA_FIELD_ISOLATED = isolatedQaField(BROWSE_AGENT_QA_FIELD_HEA
 const BROWSE_AGENT_QA_FIELD_ISOLATED_ASSERT = isolatedQaField(BROWSE_AGENT_QA_FIELD_HEAD_ASSERT);
 
 const BROWSE_AGENT_CHECKS_DESCRIPTION =
-  "Only with `qa: true`. Up to " + QA_CHECKS_MAX + " deterministic checks that the host runs once after the subagent finishes. If the subagent says `passed` and any check fails, the outcome becomes `failed`. Each check has a `type`: `text` {text, absent?} (visible text on the page), `element` {selector or index, state}, `value` {selector or index, equals or contains}, `count` {selector, equals or min or max}, `url` {equals, contains or matches}, `no_console_errors` {ignore?}, `no_failed_requests` {ignore?}. Omit fields you do not need.";
+  "Only with `qa: true`. Up to " + QA_CHECKS_MAX + " deterministic checks that the host runs once after the subagent finishes. If the subagent says `passed` and any check fails, the outcome becomes `failed`. Each check has a `type`: `text` {text, absent?} (visible text on the page), `element` {selector or index, state}, `value` {selector or index, equals or contains}, `count` {selector, equals or min or max}, `url` {equals, contains or matches}, `no_console_errors` {ignore?}, `no_failed_requests` {ignore?}. A `text` check matches a case-insensitive substring of the visible text. Do not use `absent` for a text that is part of another visible text. Example: \"Chat Bot\" is found in \"Chat Bot Two\". For such a case use a text that only the expected result shows, or put the expected result in `goal`. Do not use an `element` check with an index from your own snapshot: the host resolves the index against the snapshot of the subagent. Omit fields you do not need.";
 
 /** Full QA variant (qa + checks), for clients with browseQa + browseAssert. This one is the penTools default. */
 const browseAgentToolQa = browseAgentTool(true, false, true);
@@ -2412,9 +2412,22 @@ Returns the created/updated style ids and names (with a created|updated status) 
       "A trace is the recorded run of browse_agent: steps, screenshots, console errors, failed requests and, for a QA run, the QA check results. " +
       "Use it when the user talks about a trace, a test run or \"this run\". " +
       "It lists only the traces that are open as tabs. It does not list the traces of runs in this chat: for those, use `trace.id` from the browse_agent result. " +
+      "To open the trace of a run in this chat as a tab, call trace_open with `trace.id`. " +
       "Returns JSON: {tabs: [{traceId, title, active}]}. " +
       "active: true is the tab the user looks at now.",
     inputSchema: z.object({}),
+  }),
+
+  trace_open: tool({
+    description:
+      "Open a browse_agent trace in a trace tab of the desktop app, or switch to the tab if it is open. " +
+      "The tab does not take keyboard focus. " +
+      "Use it when the user asks to open, show or look at a run or a trace. " +
+      "Take `traceId` from `trace.id` of a browse_agent result, or from trace_list. " +
+      "Returns {\"traceId\",\"opened\":true}, or {\"error\"}.",
+    inputSchema: z.object({
+      traceId: z.string().min(1).describe("Trace id: `trace.id` from a browse_agent result, or a traceId from trace_list."),
+    }),
   }),
 
   trace_read: tool({

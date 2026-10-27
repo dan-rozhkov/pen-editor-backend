@@ -76,6 +76,7 @@ describe("penTools registry", () => {
         "workflow_edit",
         "workflow_open",
         "trace_list",
+        "trace_open",
         "trace_read",
         "trace_frame",
         "analyze_image",
@@ -159,6 +160,7 @@ describe("penTools registry", () => {
       "workflow_edit",
       "workflow_open",
       "trace_list",
+      "trace_open",
       "trace_read",
       "trace_frame",
       "get_screenshot",
@@ -1935,5 +1937,10 @@ describe("doc_* schemas", () => {
     expect(schemaOf("trace_read").safeParse({ traceId: "" }).success).toBe(false);
     expect(schemaOf("trace_read").safeParse({}).success).toBe(false);
     expect(schemaOf("trace_list").safeParse({}).success).toBe(true);
+  });
+  it("trace_open needs a non-empty traceId", () => {
+    expect(schemaOf("trace_open").safeParse({ traceId: "t1" }).success).toBe(true);
+    expect(schemaOf("trace_open").safeParse({ traceId: "" }).success).toBe(false);
+    expect(schemaOf("trace_open").safeParse({}).success).toBe(false);
   });
 });

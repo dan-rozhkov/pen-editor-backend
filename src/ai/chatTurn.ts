@@ -271,7 +271,7 @@ export interface PreparedChatTurn {
   learnedSkillNames: string[];
 }
 
-const TRACE_TOOL_NAMES = ["trace_list", "trace_read", "trace_frame"] as const;
+const TRACE_TOOL_NAMES = ["trace_list", "trace_open", "trace_read", "trace_frame"] as const;
 const WORKFLOW_TOOL_NAMES = ["workflow_list", "workflow_create", "workflow_read", "workflow_edit", "workflow_open"] as const;
 const DOC_TOOL_NAMES = ["doc_list", "doc_create", "doc_read", "doc_edit", "doc_open", "doc_insert_image"] as const;
 

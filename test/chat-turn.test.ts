@@ -448,7 +448,7 @@ describe("prepareChatTurn", () => {
   });
 
   describe("trace_* gate", () => {
-    const names = ["trace_list", "trace_read", "trace_frame"];
+    const names = ["trace_list", "trace_open", "trace_read", "trace_frame"];
     it.each([
       ["no clientCapabilities", undefined, false],
       ["traceTabs false", { traceTabs: false }, false],

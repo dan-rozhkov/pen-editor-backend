@@ -367,6 +367,8 @@ removes one entry, `--user <id> --clear [--dry-run]` wipes both targets. Only
 
 `doc_*` tools (`doc_list`, `doc_create`, `doc_read`, `doc_edit`, `doc_open`, `doc_insert_image`) are client-executed and offered only when `clientCapabilities.docTabs` is true (`DOC_TOOL_NAMES` in `chatTurn.ts`). `doc_insert_image` takes `imageUrl` or `nodeId` (exactly one; a node is screenshotted by the client). `GET /api/doc-templates` serves the `markdown` blocks under `## Template` / `## Template: <kind>` of the six document skills (`src/ai/docTemplates.ts`, cached); keep that heading/fence structure in those skills.
 
+`trace_*` tools (`trace_list`, `trace_open`, `trace_read`, `trace_frame`) are client-executed (no `execute`) and offered only when `clientCapabilities.traceTabs` is true (`TRACE_TOOL_NAMES` in `chatTurn.ts`). `trace_open` opens a browse_agent trace as a desktop tab by `traceId`.
+
 `workflow_*` tools (`workflow_list`, `workflow_create`, `workflow_read`, `workflow_edit`, `workflow_open`) are client-executed (no `execute`) and offered only when `clientCapabilities.workflowTabs` is true (`WORKFLOW_TOOL_NAMES` in `chatTurn.ts`). A workflow is a titled, ordered list of text steps with no branches; `workflow_edit` `steps` replaces the whole list, and the "at least one of title/steps" rule is enforced by the client. An attached workflow reaches the agent as ordinary user text (a `<workflow id="wf_…" title="…">` block with a numbered list; the `id` works with `workflow_read`), so the backend has no code for it.
 
 ## Self-authored skills (`src/ai/skills/`, phase 2 of the self-improvement loop)
