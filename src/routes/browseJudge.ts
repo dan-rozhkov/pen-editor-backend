@@ -24,6 +24,8 @@ import { abortOnClientDisconnect } from "./clientDisconnect.js";
 
 const jsonLen = (v: unknown): number => JSON.stringify(v)?.length ?? 0;
 const cappedStrings = z.array(z.string().max(500)).max(20).optional();
+// Whitespace collapsed to one line, then cut (not rejected): these values come from the tested page.
+const oneLine = (max: number) => z.string().transform((v) => v.replace(/\s+/g, " ").trim().slice(0, max));
 
 // z.object strips unknown keys (e.g. a client-supplied verdict inside qa).
 // Oversized page fields are truncated, not rejected: the evidence is still
@@ -56,10 +58,14 @@ const bodySchema = z.object({
           passed: z.boolean(),
           actual: z.string().optional(),
           error: z.string().optional(),
+          // The element a check by `index` named (package cap: 80 chars). One line: page text must not forge a check line.
+          target: oneLine(80).optional(),
         }),
       )
       .max(400)
       .optional(),
+    // URL and title of the page at the agent's last qa_assert; cut, not rejected.
+    pageAtCheck: z.object({ url: oneLine(4096), title: oneLine(1024) }).optional(),
     consoleErrors: cappedStrings,
     consoleErrorsDropped: z.number().int().optional(),
     failedRequests: cappedStrings,
