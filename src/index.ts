@@ -1,9 +1,12 @@
+import { installAbortRejectionGuard } from "./abortRejectionGuard.js";
 import { buildApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { closeAllMCPClients } from "./ai/mcp.js";
 import { getAllSkills, loadSkills } from "./ai/skills.js";
 import { applyStartupMigrations } from "./startupMigrations.js";
 import { startTracePruneSchedule } from "./tracing/pruneTraces.js";
+
+installAbortRejectionGuard();
 
 const config = loadConfig();
 

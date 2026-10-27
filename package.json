@@ -29,7 +29,8 @@
     "check:dup": "jscpd src",
     "flaky:summary": "node scripts/flaky-summary.mjs",
     "test:mutation": "stryker run",
-    "check:dup:tests": "node scripts/check-test-dup.mjs"
+    "check:dup:tests": "node scripts/check-test-dup.mjs",
+    "postinstall": "patch-package"
   },
   "dependencies": {
     "@ai-sdk/mcp": "^2.0.83",
@@ -48,7 +49,7 @@
     "@fastify/websocket": "^11.3.0",
     "@modelcontextprotocol/ext-apps": "^1.7.5",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@openrouter/ai-sdk-provider": "^3.1.0",
+    "@openrouter/ai-sdk-provider": "3.1.0",
     "@opentelemetry/api": "1.9.1",
     "@sideform/browser-agent": "github:dan-rozhkov/browser-agent#v0.4.3",
     "ai": "^7.0.150",
@@ -79,6 +80,7 @@
     "eslint": "^10.4.1",
     "globals": "^17.6.0",
     "jscpd": "^5.0.12",
+    "patch-package": "^8.0.1",
     "playwright": "^1.62.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",

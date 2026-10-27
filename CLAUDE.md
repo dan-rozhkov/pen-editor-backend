@@ -127,6 +127,7 @@ true for OpenRouter and for OpenCode Go `deepseek-v4.1-flash` only (the one id v
 - `generateObject` is deprecated: structured calls are `generateText({ output: Output.object({ schema }) })` and read `result.output`.
 - `@ai-sdk/mcp` 2 defaults the HTTP transport to `redirect: "error"`; the Mobbin client sets `"follow"` explicitly.
 - Tests use `MockLanguageModelV4` (the V3 mock goes through an adapter and hides the real V4 prompt shape).
+- **`@openrouter/ai-sdk-provider` is pinned to an exact version and patched** (`patches/`, applied by `postinstall: patch-package`). 3.1.0's `withStreamErrorHandling` dropped the promise of `reader.cancel(reason)`: a client disconnect while the consumer lagged rejected it with the aborted fetch body's AbortError, unhandled, and killed the whole server (`tsx watch` does not restart a crashed process). `test/openrouter-stream-cancel.test.ts` is red without the patch. When bumping the provider, check whether upstream fixed it; delete the patch if so, else regenerate it (`npx patch-package @openrouter/ai-sdk-provider`). Defence in depth: `src/abortRejectionGuard.ts` (installed by `src/index.ts`) logs and absorbs any unhandled AbortError rejection; every other unhandled rejection still crashes.
 
 ## Trace analysis (`src/analysis/`, `src/tracing/`)
 

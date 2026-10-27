@@ -1,0 +1,28 @@
+diff --git a/node_modules/@openrouter/ai-sdk-provider/dist/index.js b/node_modules/@openrouter/ai-sdk-provider/dist/index.js
+index 00ced03..fcac645 100644
+--- a/node_modules/@openrouter/ai-sdk-provider/dist/index.js
++++ b/node_modules/@openrouter/ai-sdk-provider/dist/index.js
+@@ -3424,7 +3424,8 @@ function withStreamErrorHandling(source, onError) {
+       }
+     },
+     cancel(reason) {
+-      reader.cancel(reason);
++      return reader.cancel(reason).catch(() => {
++      });
+     }
+   });
+ }
+diff --git a/node_modules/@openrouter/ai-sdk-provider/dist/internal/index.js b/node_modules/@openrouter/ai-sdk-provider/dist/internal/index.js
+index 5598f8d..77a2470 100644
+--- a/node_modules/@openrouter/ai-sdk-provider/dist/internal/index.js
++++ b/node_modules/@openrouter/ai-sdk-provider/dist/internal/index.js
+@@ -3348,7 +3348,8 @@ function withStreamErrorHandling(source, onError) {
+       }
+     },
+     cancel(reason) {
+-      reader.cancel(reason);
++      return reader.cancel(reason).catch(() => {
++      });
+     }
+   });
+ }
