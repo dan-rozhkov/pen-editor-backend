@@ -45,7 +45,6 @@ Set `setup.fresh: true` in every `qa: true` scenario and in every rerun. This ap
    - Also add one check for the expected result: `text`, `count`, `value`, `element` or `url`.
    - If the schema has no `checks` parameter, put the expected result in `goal` only.
    - Take `count` selectors from recon. Do not guess a selector such as `tr`. For table rows use `visible: true`, because a hidden empty-state row also matches.
-   - A `text` check matches a case-insensitive substring of the visible text. Do not use `absent: true` for a text that is part of another visible text. Example: "Chat Bot" is found in "Chat Bot Two". Use a text that only the expected result shows, or put the expected result in `goal`. Do not use an `element` check with an index from your recon snapshot: the host resolves the index against the snapshot of the subagent.
    - Use CSS selectors only in checks. For text use `{ "type": "text" }`. Do not use `text=` or `:has-text(` in a selector.
    - To check the text of a dialog, write in `goal`: "open the dialog, read it, then cancel; do not delete anything". Do not mix "open the dialog" with "confirm".
 5. **Reproduce.** Rerun every failed scenario once with the same `goal` and `setup`. If it does not fail again, report it as flaky.
@@ -64,8 +63,7 @@ Set `setup.fresh: true` in every `qa: true` scenario and in every rerun. This ap
    - Do not mix items that write data with items that count or list the same data in parallel runs. Isolation covers the browser only. Server state is shared.
    - Each `items` entry has a result: `pass`, `fail` or `blocked`. See step 5 for `blocked`.
    - `qa.outcome` is the verdict of the whole run. It wins over `qa.items`. If the outcome is `failed` and no item failed, the cause is in `qa.reason`: a host check, the judge, or a defect outside the items. If every item was blocked, the result has no verdict and no `qa.items`. Treat every item of that call as blocked.
-10. **Clean up.** Before the end of the hunt, list the test data you created: accounts, records, plans. Delete it, or ask the user whether to keep it. Do not leave test data in the user's project without telling the user.
-11. **Budget.** Run about 8 to 12 scenarios in total. Stop earlier when you have 5 or more confirmed bugs. Run more if the user asks.
+10. **Budget.** Run about 8 to 12 scenarios in total. Stop earlier when you have 5 or more confirmed bugs. Run more if the user asks.
 
 ## Attack catalog
 
