@@ -661,6 +661,20 @@ describe("QA retrospective skill rules", () => {
     expect(report).toContain('<span data-bg="red">Reopened</span>');
   });
 
+  it("bug-report keeps Tested builds, Trace and the check before create", () => {
+    const report = getSkill("bug-report")!.content;
+    expect(report).toContain("| Environment | [OS, browser and version, device] |");
+    expect(report).toContain("| Tested builds |");
+    expect(report).toContain("| Trace | [trace id of the run that reproduced the bug / None] |");
+    expect(report).toContain("Never invent a trace id.");
+    expect(report).toContain("A build that only the user names stays under Evidence.");
+    expect(report).toContain("one pass does not prove a good build");
+    expect(report).toContain("## Check before you create");
+    expect(report).toContain("again after each `doc_edit` of a bug report");
+    expect(report).not.toContain("| Test plan | [TBD");
+    expect(report).not.toContain("| Test report | [TBD");
+  });
+
   it("bug-report never claims a recheck that did not run, and keeps priority and language", () => {
     const report = getSkill("bug-report")!.content;
     expect(report).toContain("When the user asks again about a bug that you already reported");
