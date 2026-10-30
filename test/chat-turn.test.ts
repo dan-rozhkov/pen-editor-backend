@@ -3,7 +3,7 @@ import { DOC_ONLY_SKILL_NAMES, loadSkills, getSkill } from "../src/ai/skills.js"
 import { createModel } from "../src/ai/provider.js";
 import { AGENT_BROWSER_GUIDANCE, AGENT_BROWSER_QA_GUIDANCE, AGENT_BROWSER_QA_ISOLATED_GUIDANCE, BROWSE_AGENT_LOGIN_PROMPT, BROWSE_AGENT_PROMPT, browseAgentPrompt, MANUAL_BROWSER_GUIDANCE } from "../src/ai/system-prompt.js";
 import { asSchema } from "ai";
-import { browseAgentToolWithApp, browseOpenToolApp, browseOpenToolAppNative } from "../src/ai/tools.js";
+import { browseAgentToolWithApp, browseOpenToolApp, browseOpenToolAppNative, penTools } from "../src/ai/tools.js";
 import {
   PEN_EDITOR_BROWSE_AGENT_APP_FIELD,
   PEN_EDITOR_BROWSE_AGENT_APP_RULES,
@@ -1453,6 +1453,50 @@ describe("browse subagent", () => {
           clientCapabilities: { ...DESKTOP, browseApps: true, browseNativeApps: true },
         });
         for (const p of NATIVE_PHRASES) expect(desc(on.tools.browse_open)).toContain(p);
+      });
+
+      describe("browse_act coordinates (x, y, button, clicks)", () => {
+        const COORD = ["x", "y", "button", "clicks"];
+        const actSchema = (t: { tools: Record<string, unknown> }) =>
+          asSchema((t.tools.browse_act as { inputSchema: Parameters<typeof asSchema>[0] }).inputSchema).jsonSchema as {
+            properties: Record<string, unknown>;
+          };
+        const actBytes = (t: { tools: Record<string, unknown> }) => JSON.stringify([desc(t.tools.browse_act), actSchema(t)]);
+        const defaultAct = JSON.stringify([desc(penTools.browse_act), asSchema(penTools.browse_act.inputSchema).jsonSchema]);
+
+        it("subagent turn with browseNativeApps has the coordinate fields", async () => {
+          const on = await prepare({
+            config: cfgAgent,
+            agentMode: "browse",
+            clientCapabilities: { ...DESKTOP, browseApps: true, browseNativeApps: true },
+          });
+          const props = Object.keys(actSchema(on).properties);
+          for (const k of COORD) expect(props).toContain(k);
+          expect(desc(on.tools.browse_act)).toContain("`x` and `y`");
+        });
+
+        it("manual main turn with browseNativeApps has the coordinate fields", async () => {
+          const on = await prepare({ clientCapabilities: { ...DESKTOP, browseApps: true, browseNativeApps: true } });
+          const props = Object.keys(actSchema(on).properties);
+          for (const k of COORD) expect(props).toContain(k);
+        });
+
+        it("without browseNativeApps browse_act equals the default", async () => {
+          const cases = [
+            { clientCapabilities: DESKTOP },
+            { clientCapabilities: { ...DESKTOP, browseApps: true } },
+            { clientCapabilities: { ...DESKTOP, browseApps: true, browseNativeApps: false } },
+            { clientCapabilities: { ...DESKTOP, browseNativeApps: true } },
+            { config: makeConfig({ STEEL_API_KEY: "k" }), clientCapabilities: { browser: "cloud" as const, browseApps: true, browseNativeApps: true } },
+          ];
+          for (const c of cases) {
+            const t = await prepare(c);
+            for (const k of COORD) expect(Object.keys(actSchema(t).properties)).not.toContain(k);
+            expect(actBytes(t)).toBe(defaultAct);
+          }
+          const sub = await prepare({ config: cfgAgent, agentMode: "browse", clientCapabilities: { ...DESKTOP, browseApps: true } });
+          expect(actBytes(sub)).toBe(defaultAct);
+        });
       });
 
       it("browse_agent: native `app` field and guidance, gated, deterministic", async () => {

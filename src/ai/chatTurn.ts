@@ -11,7 +11,7 @@ import { createHash } from "node:crypto";
 import type { Config } from "../config.js";
 import { withStepWatchdog } from "./stepWatchdog.js";
 import { bareModelId, createModel, parseModelRef, providerHandlesToolResultImages } from "./provider.js";
-import { penTools, browseOpenToolApp, browseOpenToolAppNative, browseAgentToolWithApp, browseAgentToolNoQa, browseAgentToolQaIsolated, browseAgentToolQaNoAssert, browseAgentToolQaIsolatedNoAssert, makeBatchDesignTool, makeAnalyzeImageTool } from "./tools.js";
+import { penTools, browseOpenToolApp, browseOpenToolAppNative, browseActToolAppNative, browseAgentToolWithApp, browseAgentToolNoQa, browseAgentToolQaIsolated, browseAgentToolQaNoAssert, browseAgentToolQaIsolatedNoAssert, makeBatchDesignTool, makeAnalyzeImageTool } from "./tools.js";
 import { BROWSE_AGENT_TOOL_NAMES, QA_ASSERT_TOOL, QA_VERDICT_TOOL } from "@sideform/browser-agent/agent";
 import { browseAgentPrompt, buildSystemPrompt, type AgentMode, type BrowserGuidance } from "./system-prompt.js";
 import { resolveTaskPolicy, type TaskPolicy } from "./taskPolicy.js";
@@ -1336,6 +1336,7 @@ export async function prepareChatTurn(
     // Desktop-app variant of browse_open (main manual mode and the browse
     // subagent). Absent when browse_* was removed above.
     if (clientHasApps && !browseAgentOffered && tools.browse_open) tools.browse_open = clientHasNativeApps ? browseOpenToolAppNative : browseOpenToolApp;
+    if (clientHasNativeApps && !browseAgentOffered && tools.browse_act) tools.browse_act = browseActToolAppNative;
 
     // browse_fill_login belongs to the browsing subagent alone (the allowlist
     // below adds it back for a browse turn with browseLogin). Every other

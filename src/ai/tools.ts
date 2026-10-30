@@ -1381,6 +1381,12 @@ export const browseOpenToolAppNative = tool({
   inputSchema: jsonSchema(browseOpenNativeJson as Parameters<typeof jsonSchema>[0]),
 });
 
+/** browse_act with x/y/button/clicks (native macOS app mode only). */
+export const browseActToolAppNative = tool({
+  description: browseAppNativeDefs.browse_act.description,
+  inputSchema: browseAppNativeDefs.browse_act.inputSchema,
+});
+
 // browse_agent `setup`: a PageFixture (@sideform/browser-agent/fixture) without
 // `version` and `url` (the tool's `url` is the start URL). The package parser is
 // the authority; these bounds only keep the model's input small and well-formed.
