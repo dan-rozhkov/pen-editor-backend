@@ -40,12 +40,12 @@ Never change the expected result to agree with the actual result. Never remove a
 
 ## Search for duplicates
 
-Before you write, search for duplicates. Call `doc_list`. A title that is different does not mean a different bug. The `Bug report:` prefix can be in another language, for example `Баг-репорт:`. Compare the behaviour: the same area, the same steps and the same actual result make a duplicate. Read with `doc_read` first the bug reports with the same area, then the reports whose title names the same screen or feature. Read at most 5 reports. A document can hold several bugs (`## BUG-01`, `## BUG-02`), so compare each section.
+Before you write, search for duplicates. Call `doc_list`. A title that is different does not mean a different bug. The `Bug report:` prefix can be in another language, for example `Баг-репорт:`. Compare the behaviour: the same screen or feature, the same steps and the same actual result make a duplicate. Read with `doc_read` first the bug reports whose title or steps name the same screen or feature. Read at most 5 reports. A document can hold several bugs (`## BUG-01`, `## BUG-02`), so compare each section.
 
 The open statuses are New, Triaged, In progress, Ready for retest and Reopened.
 
 - If a duplicate exists and it is open, do not write a second report. Use `doc_read` and `doc_edit` to add the new occurrence under Evidence: the date, the build and the new evidence. Add the build to Tested builds only if your own run in this turn showed the bug there. A build that only the user names stays under Evidence. Update Reproducibility if the count changed.
-- If a duplicate exists and its status is Fixed, Verified, Closed or Cannot reproduce, the bug came back or now reproduces. Set its status to Reopened with the red tag (`<span data-bg="red">Reopened</span>`). Add the build where it occurs under Evidence. If your own run in this turn showed the bug there, also add the build to Tested builds as failing. If the report names the build with the fix, set Regression to `Yes: last good build [fix build], first bad build [this build]`. Otherwise set Regression to `Yes` and write the builds as Unknown. Do not write a new report.
+- If a duplicate exists and its status is Fixed, Verified, Closed or Cannot reproduce, the bug came back or now reproduces. Set its status to Reopened with the red tag (`<span data-bg="red">Reopened</span>`). Add the build where it occurs under Evidence. If your own run in this turn showed the bug there, also add the build to Tested builds as failing. If the report names the build with the fix, write the line `Regression: last good build [fix build], first bad build [this build]` under Evidence. Otherwise write `Regression: Unknown`. Do not write a new report.
 - If the duplicate has the status Duplicate, follow its link to the main report and apply these rules to that report.
 - If the duplicate is Won't fix or Deferred, do not change its status. Tell the user in chat that the bug occurs again.
 
@@ -54,7 +54,7 @@ When the user asks again about a bug that you already reported, do one of these 
 - Run the scenario again with `browse_agent`, then add the new run under Evidence. Write the trace link of the new run under Evidence. The Trace field keeps the run that first reproduced the bug. Do this if the user names a newer build, or asks you to check the bug. If `browse_agent` is not in your tool list, say in chat that you cannot check the bug in this chat.
 - Do not run it again. Say in chat that you did not check it again. Name the run that the report cites: give its trace link (from the Trace field), or the date in its Evidence if Trace is `None`. If the report names no run, say that. Do not give a time or a chat that you cannot see. Do not add a run of your own to Evidence, and do not change Reproducibility, Environment or Tested builds.
 
-An older report can have no Tested builds row or no Trace row, and its build can be in Environment. When you edit such a report, add the missing row after Environment or after Reproducibility. Do not move or delete the old values. If it has no Trace row, look for a trace link or a trace id in its Evidence.
+An older report can have no Tested builds row or no Trace row, and its build can be in Environment. When you edit such a report, add the missing row after Environment or after Reproducibility. Do not move or delete the old values. If it has a Regression row, update that row and do not add a Regression line under Evidence. If it has no Trace row, look for a trace link or a trace id in its Evidence.
 
 If the user gives a new occurrence (a build, a screenshot, an error text), add it under Evidence as the user's report, as the duplicate rules say. That is not a check by you.
 
@@ -80,6 +80,7 @@ Run this check before `doc_create`, and again after each `doc_edit` of a bug rep
 4. Trace holds a trace link or `None`.
 5. Severity is a tag. Priority is a tag only if the user gave it.
 6. Every missing fact is a visible `[TBD: ...]` placeholder. No fact is invented.
+7. Evidence holds a screenshot or a trace link of the run that reproduced the bug. An image inserted with `doc_insert_image` counts as the screenshot. If it has neither, it holds the visible `[TBD: screenshot that shows the bug]` placeholder.
 
 ## Output
 
@@ -90,11 +91,11 @@ Run this check before `doc_create`, and again after each `doc_edit` of a bug rep
 - Use only the markdown that the `doc_create` description allows. A table cell holds ONE line of inline text. Put multi-line content in lists under a heading.
 - Use the field table only for single-line fields. Put steps, expected and actual results under headings, in lists or paragraphs.
 - Write the metadata table as a property list (see the `doc_create` description). Write Status, Severity and Priority as tags with the fixed colours in the writing rules. In the template, Severity and Priority are `[TBD: ...]` placeholders. Replace the Severity placeholder with the tag. Keep the Priority placeholder `[TBD: P1 / P2 / P3 / P4, set at triage]` (translated as the language rule says) unless the user gave the priority. Then write the priority the user gave as the tag.
-- Insert each screenshot with `doc_insert_image` and `afterHeading` "Evidence", and an `alt` that says what the image shows. For a screenshot from a trace, give `traceId` and the `frameId` from `trace_read`. This is the way to put a trace frame into a document. Do one call for each relevant frame. Otherwise give `nodeId`: a node id from the `placed` field of the `browse_agent` result, or the `placedNodeId` of `browse_screenshot`. Or give an image URL. Use `trace_frame` only when it is in your tool list, and only to look at a frame or to place it on the canvas. Then delete the `[TBD: screenshot]` line.
+- Insert each screenshot with `doc_insert_image` and `afterHeading` "Evidence", and an `alt` that says what the image shows. For a screenshot from a trace, give `traceId` and the `frameId` from `trace_read`. This is the way to put a trace frame into a document. Do one call for each relevant frame. Otherwise give `nodeId`: a node id from the `placed` field of the `browse_agent` result, or the `placedNodeId` of `browse_screenshot`. Or give an image URL. Use `trace_frame` only when it is in your tool list, and only to look at a frame or to place it on the canvas. Then delete the whole `- Screenshot: [TBD: screenshot that shows the bug]` line. The inserted image is the screenshot.
 - The H1 of the template is the `title` argument of `doc_create`. Start `markdown` after it, with the first section. The document shows the title above the body, so a `#` heading with the title in the body shows it twice.
 - Write a link to a document as `[Title](/doc?id={docId})` (the docId comes from `doc_list`). If no such document exists, do not write a link.
 - Write every trace as a link: `[Trace: {short goal}](/trace/{traceId}?src={source})`. Never write a bare trace id. Take the link from `trace.href` in the `browse_agent` result. Or build it from the trace id and its source. A trace that you read with `trace_read` has the source `local`. Use this link in Evidence and in the Trace field of the property list.
-- Delete optional sections that do not apply. Do not leave empty headings.
+- Delete optional sections and optional Evidence lines that do not apply: Regression, Suspect change, and any empty evidence line, such as Console errors when there are none. Do not leave empty headings.
 - After `doc_create`, reply in chat with 1 to 3 sentences. Say how many bugs the document holds and which `[TBD]` items the user must fill.
 
 ## Template
@@ -104,24 +105,17 @@ Run this check before `doc_create`, and again after each `doc_edit` of a bug rep
 
 |  |  |
 | --- | --- |
-| ID | [BUG-01] |
 | Status | <span data-bg="gray">New</span> |
-| Area | [component or feature] |
+| Severity | [TBD: Critical / High / Medium / Low] |
+| Priority | [TBD: P1 / P2 / P3 / P4, set at triage] |
 | Environment | [OS, browser and version, device] |
 | Tested builds | [build: fails / passes, for each tested build, for example "0.74.1: fails, 0.73.0: passes"] |
 | Reproducibility | [Always / Sometimes, N of M. A rerun must have reproduced it] |
 | Trace | [link to the trace of the run that reproduced the bug / None] |
-| Severity | [TBD: Critical / High / Medium / Low] |
-| Priority | [TBD: P1 / P2 / P3 / P4, set at triage] |
-| Regression | [Yes: last good build X, first bad build Y / No / Unknown] (optional) |
-
-## Preconditions
-
-- [Account, data and settings needed before step 1.]
 
 ## Steps to reproduce
 
-1. [Start from a clean state: open the app in a new session.]
+1. [Start from a clean state: a new session, with the account and data that the bug needs.]
 2. [Action.]
 3. [Action.]
 
@@ -135,24 +129,13 @@ Run this check before `doc_create`, and again after each `doc_edit` of a bug rep
 
 ## Evidence
 
+- Screenshot: [TBD: screenshot that shows the bug]
+- Trace: [Trace: {short goal}](/trace/{traceId}?src={source})
 - Console errors: `[error text]`
 - Failed requests: [method, URL, status]
 - QA run reason: [qa.reason]
+- Regression: [last good build X, first bad build Y / Unknown] (optional)
 - Suspect change: [the deploy, release or commit after which the bug first occurs] (optional)
-- Trace: [Trace: {short goal}](/trace/{traceId}?src={source})
-- Screenshot: [TBD: screenshot]
-
-## Workaround (optional)
-
-[How the user can avoid the bug.]
-
-## Notes
-
-**Facts**
-- [Observed behaviour that is confirmed.]
-
-**Guesses**
-- [A possible cause. Mark it as a guess.]
 ````
 
 ## Writing rules
@@ -163,15 +146,15 @@ Run this check before `doc_create`, and again after each `doc_edit` of a bug rep
 4. Number the steps. Start from a clean state. Keep the steps minimal: remove every step that is not needed to show the bug.
 5. Write expected and actual results as two separate parts. Say what you see, not what you think is wrong inside.
 6. Give the reproducibility: always, or sometimes with a count ("3 of 5"). A bug seen once and never reproduced is not a report; list it as flaky in the chat.
-7. Add evidence: console errors, failed requests, `qa.reason`, screenshots. Check that the bug exists in the latest build. Name every build you ran in Tested builds. The latest build must be among them. Write the trace link in Trace if the run that reproduced the bug produced one. If that rerun has no trace, for example the user ran it again by hand, write `None`. A report still needs a rerun that reproduced the bug. Never invent a trace id.
+7. Evidence is the most important part of a report. The Evidence section must hold at least a screenshot or a trace link of the run that reproduced the bug. Add also console errors, failed requests and `qa.reason`. Check that the bug exists in the latest build. Name every build you ran in Tested builds. The latest build must be among them. Write the trace link in Trace if the run that reproduced the bug produced one. If that rerun has no trace, for example the user ran it again by hand, write `None`. A report still needs a rerun that reproduced the bug. Never invent a trace id.
 8. Use the same severity scale in every report. Severity is the technical impact. Priority is the urgency of the fix, and it is set at triage. The two are independent.
    - Critical: data loss, security problem, payment error, or the core flow is blocked.
    - High: a main feature fails and there is no workaround.
    - Medium: a feature fails but a workaround exists.
    - Low: a cosmetic or rare problem.
    - Example: a crash in a rare feature is High severity and low priority. A misaligned button in a launch campaign is Low severity and high priority. Write the priority only if the user gave it. Otherwise write `[TBD: P1 / P2 / P3 / P4, set at triage]`.
-9. Find the change that caused a regression, if you can. The change that caused the bug is the strongest clue for a developer. Give the last build where it worked and the first build where it fails. Take them from Tested builds. If Tested builds holds a passing older build and a failing newer build, fill Regression from them. If Reproducibility is Sometimes, one pass does not prove a good build. Then write the last good build as Unknown, or run the older build again until the count is clear. If the user, a trace or a release list names the deploy or commit between them, write it in "Suspect change". If you do not know these builds, write Unknown. Do not guess a commit.
-10. Keep facts apart from guesses about the cause. Put guesses under Notes and mark them.
+9. Find the change that caused a regression, if you can. The change that caused the bug is the strongest clue for a developer. Give the last build where it worked and the first build where it fails. Take them from Tested builds. If Tested builds holds a passing older build and a failing newer build, fill the Regression line under Evidence from them. If Reproducibility is Sometimes, one pass does not prove a good build. Then write the last good build as Unknown, or run the older build again until the count is clear. If the user, a trace or a release list names the deploy or commit between them, write it in the Suspect change line. If you do not know these builds, write Unknown. Do not guess a commit.
+10. Keep facts apart from guesses about the cause. Write only facts. If you add a guess about the cause, write it as one line under Evidence that starts with `Guess:`.
 11. Use these statuses: New, Triaged, In progress, Fixed, Ready for retest, Verified, Closed, Reopened. Closing variants: Won't fix, Duplicate, Cannot reproduce, Deferred. A new report has the status New.
 12. Write Status and Severity as tags. Write Priority as a tag only when the user gave it. Always use the same colours. Do not use other colours.
    - Status: New gray, Triaged yellow, In progress blue, Fixed green, Ready for retest orange, Verified green, Closed gray, Reopened red, Duplicate purple, Won't fix, Cannot reproduce and Deferred brown.

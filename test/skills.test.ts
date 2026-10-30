@@ -667,7 +667,7 @@ describe("QA retrospective skill rules", () => {
     expect(report).toContain("- Suspect change:");
     expect(report).toContain("Do not guess a commit.");
     expect(report).toContain("If the duplicate is Won't fix or Deferred, do not change its status.");
-    expect(report).toContain("| Regression | [Yes: last good build X, first bad build Y / No / Unknown] (optional) |");
+    expect(report).toContain("- Regression: [last good build X, first bad build Y / Unknown] (optional)");
     expect(report).toContain('<span data-bg="red">Reopened</span>');
   });
 
@@ -680,6 +680,7 @@ describe("QA retrospective skill rules", () => {
     expect(report).toContain("A build that only the user names stays under Evidence.");
     expect(report).toContain("one pass does not prove a good build");
     expect(report).toContain("## Check before you create");
+    expect(report).toContain("Evidence holds a screenshot or a trace link");
     expect(report).toContain("again after each `doc_edit` of a bug report");
     expect(report).not.toContain("| Test plan | [TBD");
     expect(report).not.toContain("| Test report | [TBD");

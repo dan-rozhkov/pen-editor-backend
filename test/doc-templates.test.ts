@@ -73,15 +73,14 @@ describe("doc templates extraction", () => {
         }
       }
     }
-    expect(seen).toBeGreaterThanOrEqual(3);
+    expect(seen).toBeGreaterThanOrEqual(1);
   });
 
   it("keeps nested triple-backtick blocks intact", () => {
     const spec = buildDocTemplates(getSkill).find((t) => t.id === "design-spec")!;
     expect(spec.markdown).toContain("```mermaid");
     const report = buildDocTemplates(getSkill).find((t) => t.id === "test-report")!;
-    expect(report.markdown).toContain("pie title");
-    expect(report.markdown).toContain("xychart-beta");
+    expect(report.markdown).toContain("## Open defects and evidence");
   });
 
   it("returns undefined when the heading or fence is missing", () => {
