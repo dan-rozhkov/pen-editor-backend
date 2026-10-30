@@ -264,6 +264,11 @@ describe("reply language rule", () => {
   it("carries the STE writing rules for user-facing text, without changing the reply language", () => {
     const prompt = buildSystemPrompt();
     expect(prompt).toContain("Writing rules (Simplified Technical English, ASD-STE100)");
+    expect(prompt).toContain("Links in replies:");
+    expect(prompt).toContain("[Title](/doc?id=<docId>)");
+    expect(prompt).toContain("[Name](/app?node=<nodeId>)");
+    expect(prompt).toContain("[Name](/app?tab=<tabId>)");
+    expect(prompt).toContain("[Title](/trace/<traceId>?src=<local|cloud>)");
     expect(prompt).toContain("Never switch to English because of these rules.");
     expect(prompt).toContain("apply them to your chat replies to the user and to the `ask_user` questions and options and task titles");
     expect(prompt).toContain('never turn "may have failed" into "failed"');

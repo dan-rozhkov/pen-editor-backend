@@ -626,6 +626,16 @@ describe("document template skills", () => {
     expect(penTools.doc_edit.description ?? "").toContain("property lists");
   });
 
+  it("bug-report and doc_create give the trace link format", () => {
+    const report = getSkill("bug-report")!.content;
+    expect(report).toContain("`trace.href`");
+    expect(report).toContain("- Trace: [Trace: {short goal}](/trace/{traceId}?src={source})");
+    expect(report).toContain("Never write a bare trace id.");
+    const description = penTools.doc_create.description ?? "";
+    expect(description).toContain("(/trace/<traceId>?src=<local|cloud>)");
+    expect(description).not.toContain("/app?tab=");
+  });
+
   it("doc_create routes every template skill by name", () => {
     const description = penTools.doc_create.description ?? "";
     for (const name of DOC_TEMPLATE_SKILLS) expect(description).toContain(name);
@@ -665,7 +675,7 @@ describe("QA retrospective skill rules", () => {
     const report = getSkill("bug-report")!.content;
     expect(report).toContain("| Environment | [OS, browser and version, device] |");
     expect(report).toContain("| Tested builds |");
-    expect(report).toContain("| Trace | [trace id of the run that reproduced the bug / None] |");
+    expect(report).toContain("| Trace | [link to the trace of the run that reproduced the bug / None] |");
     expect(report).toContain("Never invent a trace id.");
     expect(report).toContain("A build that only the user names stays under Evidence.");
     expect(report).toContain("one pass does not prove a good build");

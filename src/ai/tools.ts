@@ -2194,6 +2194,7 @@ Returns the created/updated style ids and names (with a created|updated status) 
       "then the text on the next quote line, for example `> [!WARNING]` and `> Text.`. Use it for a verdict, a blocker or a warning. " +
       "A link to another document: `[Title](/doc?id=<docId>)`. Take the docId from doc_list or doc_create. " +
       "A link to a frame or node on the canvas: `[Name](/app?node=<nodeId>)`. " +
+      "A link to a browse-run trace: `[Trace: <short goal>](/trace/<traceId>?src=<local|cloud>)`. Take it from `trace.href` in the browse_agent result. A trace from trace_read is `local`. Never write a bare trace id. " +
       "In a property list, write a date as `YYYY-MM-DD`. Write a status-like value as a tag. " +
       "Reuse the same tag text and colour that other documents use for the same field. Call doc_list and doc_read to check. " +
       "An image with a public https URL may be written as `![alt](https://...)`. A screenshot of a canvas node, or a `data:` image, needs doc_insert_image. Never write `data:` URLs. " +

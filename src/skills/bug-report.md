@@ -17,7 +17,7 @@ A bug report lets a developer reproduce a problem and fix it without asking ques
 Use what the conversation already has first:
 
 - `browse_agent` results with `qa: true`, for example from a bug-hunt run. Take the steps, `qa.reason`, console errors and failed requests from them. Use only what the run showed.
-- Browser runs saved as traces. If `trace_read` is in your tool list, read the run there. A run of this chat gives its trace id in `trace.id` of the `browse_agent` result. `trace_list` lists only the traces that are open as tabs. Read in the trace: steps, console errors, failed requests and, for a QA run, its checks. A trace without QA results has no verdict. `trace_read` also lists the screenshots of the run in `frames` (`frameId`, `step`, `kind`). Choose the frames that show the bug.
+- Browser runs saved as traces. If `trace_read` is in your tool list, read the run there. A run of this chat gives its trace id in `trace.id` and its trace link in `trace.href` of the `browse_agent` result. `trace_list` lists only the traces that are open as tabs. Read in the trace: steps, console errors, failed requests and, for a QA run, its checks. A trace without QA results has no verdict. `trace_read` also lists the screenshots of the run in `frames` (`frameId`, `step`, `kind`). Choose the frames that show the bug.
 - The design on the canvas (`get_editor_state`) for the expected behaviour of a screen. Use it only if a canvas tab is already open. Never open a canvas tab only to write a bug report.
 - The spec or PRD, for the expected result.
 - Screenshots, logs or text that the user attached.
@@ -51,14 +51,14 @@ The open statuses are New, Triaged, In progress, Ready for retest and Reopened.
 
 When the user asks again about a bug that you already reported, do one of these two things:
 
-- Run the scenario again with `browse_agent`, then add the new run under Evidence. Write the trace id of the new run under Evidence. The Trace field keeps the run that first reproduced the bug. Do this if the user names a newer build, or asks you to check the bug. If `browse_agent` is not in your tool list, say in chat that you cannot check the bug in this chat.
-- Do not run it again. Say in chat that you did not check it again. Name the run that the report cites: the trace id in its Trace field, or the date in its Evidence if Trace is `None`. If the report names no run, say that. Do not give a time or a chat that you cannot see. Do not add a run of your own to Evidence, and do not change Reproducibility, Environment or Tested builds.
+- Run the scenario again with `browse_agent`, then add the new run under Evidence. Write the trace link of the new run under Evidence. The Trace field keeps the run that first reproduced the bug. Do this if the user names a newer build, or asks you to check the bug. If `browse_agent` is not in your tool list, say in chat that you cannot check the bug in this chat.
+- Do not run it again. Say in chat that you did not check it again. Name the run that the report cites: give its trace link (from the Trace field), or the date in its Evidence if Trace is `None`. If the report names no run, say that. Do not give a time or a chat that you cannot see. Do not add a run of your own to Evidence, and do not change Reproducibility, Environment or Tested builds.
 
-An older report can have no Tested builds row or no Trace row, and its build can be in Environment. When you edit such a report, add the missing row after Environment or after Reproducibility. Do not move or delete the old values. If it has no Trace row, look for a trace id in its Evidence.
+An older report can have no Tested builds row or no Trace row, and its build can be in Environment. When you edit such a report, add the missing row after Environment or after Reproducibility. Do not move or delete the old values. If it has no Trace row, look for a trace link or a trace id in its Evidence.
 
 If the user gives a new occurrence (a build, a screenshot, an error text), add it under Evidence as the user's report, as the duplicate rules say. That is not a check by you.
 
-If your rerun does not show the bug, add the run and its trace id under Evidence, add the build to Tested builds as passing, and update Reproducibility (for example "2 of 3"). Do not change Status yourself. Tell the user in chat that the rerun passed, so the team can set Fixed, Verified or Cannot reproduce.
+If your rerun does not show the bug, add the run and its trace link under Evidence, add the build to Tested builds as passing, and update Reproducibility (for example "2 of 3"). Do not change Status yourself. Tell the user in chat that the rerun passed, so the team can set Fixed, Verified or Cannot reproduce.
 
 Only a `browse_agent` run in this turn is a new check. Reading a saved trace with `trace_read` is not a new check. Never say that you checked, reran or reproduced a bug in this turn if you did not call `browse_agent` in this turn. A report that is only translated or corrected is not a new check.
 
@@ -77,7 +77,7 @@ Run this check before `doc_create`, and again after each `doc_edit` of a bug rep
 1. Each step is one action. The steps start from a clean state.
 2. Expected result and Actual result are both filled. They are separate.
 3. Tested builds names at least one build. If no build is known, it is `[TBD: build]`.
-4. Trace holds a trace id or `None`.
+4. Trace holds a trace link or `None`.
 5. Severity is a tag. Priority is a tag only if the user gave it.
 6. Every missing fact is a visible `[TBD: ...]` placeholder. No fact is invented.
 
@@ -93,6 +93,7 @@ Run this check before `doc_create`, and again after each `doc_edit` of a bug rep
 - Insert each screenshot with `doc_insert_image` and `afterHeading` "Evidence", and an `alt` that says what the image shows. For a screenshot from a trace, give `traceId` and the `frameId` from `trace_read`. This is the way to put a trace frame into a document. Do one call for each relevant frame. Otherwise give `nodeId`: a node id from the `placed` field of the `browse_agent` result, or the `placedNodeId` of `browse_screenshot`. Or give an image URL. Use `trace_frame` only when it is in your tool list, and only to look at a frame or to place it on the canvas. Then delete the `[TBD: screenshot]` line.
 - The H1 of the template is the `title` argument of `doc_create`. Start `markdown` after it, with the first section. The document shows the title above the body, so a `#` heading with the title in the body shows it twice.
 - Write a link to a document as `[Title](/doc?id={docId})` (the docId comes from `doc_list`). If no such document exists, do not write a link.
+- Write every trace as a link: `[Trace: {short goal}](/trace/{traceId}?src={source})`. Never write a bare trace id. Take the link from `trace.href` in the `browse_agent` result. Or build it from the trace id and its source. A trace that you read with `trace_read` has the source `local`. Use this link in Evidence and in the Trace field of the property list.
 - Delete optional sections that do not apply. Do not leave empty headings.
 - After `doc_create`, reply in chat with 1 to 3 sentences. Say how many bugs the document holds and which `[TBD]` items the user must fill.
 
@@ -109,7 +110,7 @@ Run this check before `doc_create`, and again after each `doc_edit` of a bug rep
 | Environment | [OS, browser and version, device] |
 | Tested builds | [build: fails / passes, for each tested build, for example "0.74.1: fails, 0.73.0: passes"] |
 | Reproducibility | [Always / Sometimes, N of M. A rerun must have reproduced it] |
-| Trace | [trace id of the run that reproduced the bug / None] |
+| Trace | [link to the trace of the run that reproduced the bug / None] |
 | Severity | [TBD: Critical / High / Medium / Low] |
 | Priority | [TBD: P1 / P2 / P3 / P4, set at triage] |
 | Regression | [Yes: last good build X, first bad build Y / No / Unknown] (optional) |
@@ -138,6 +139,7 @@ Run this check before `doc_create`, and again after each `doc_edit` of a bug rep
 - Failed requests: [method, URL, status]
 - QA run reason: [qa.reason]
 - Suspect change: [the deploy, release or commit after which the bug first occurs] (optional)
+- Trace: [Trace: {short goal}](/trace/{traceId}?src={source})
 - Screenshot: [TBD: screenshot]
 
 ## Workaround (optional)
@@ -161,7 +163,7 @@ Run this check before `doc_create`, and again after each `doc_edit` of a bug rep
 4. Number the steps. Start from a clean state. Keep the steps minimal: remove every step that is not needed to show the bug.
 5. Write expected and actual results as two separate parts. Say what you see, not what you think is wrong inside.
 6. Give the reproducibility: always, or sometimes with a count ("3 of 5"). A bug seen once and never reproduced is not a report; list it as flaky in the chat.
-7. Add evidence: console errors, failed requests, `qa.reason`, screenshots. Check that the bug exists in the latest build. Name every build you ran in Tested builds. The latest build must be among them. Write the trace id in Trace if the run that reproduced the bug produced one. If that rerun has no trace, for example the user ran it again by hand, write `None`. A report still needs a rerun that reproduced the bug. Never invent a trace id.
+7. Add evidence: console errors, failed requests, `qa.reason`, screenshots. Check that the bug exists in the latest build. Name every build you ran in Tested builds. The latest build must be among them. Write the trace link in Trace if the run that reproduced the bug produced one. If that rerun has no trace, for example the user ran it again by hand, write `None`. A report still needs a rerun that reproduced the bug. Never invent a trace id.
 8. Use the same severity scale in every report. Severity is the technical impact. Priority is the urgency of the fix, and it is set at triage. The two are independent.
    - Critical: data loss, security problem, payment error, or the core flow is blocked.
    - High: a main feature fails and there is no workaround.
