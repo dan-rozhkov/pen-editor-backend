@@ -1369,6 +1369,7 @@ describe("browse subagent", () => {
         "permission error",
         "Do not retry.",
         "An action on an element from the snapshot runs in the background.",
+        "You do not need to click the field first.",
         "`hover` bring the app to the front and move the pointer",
         "An Electron app that is not running starts with a new profile",
         "You cannot see native menus or file dialogs.",
