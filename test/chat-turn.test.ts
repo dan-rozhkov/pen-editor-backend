@@ -8,6 +8,7 @@ import {
   PEN_EDITOR_BROWSE_AGENT_APP_FIELD,
   PEN_EDITOR_BROWSE_AGENT_APP_RULES,
   PEN_EDITOR_BROWSE_APP_SLOTS,
+  PEN_EDITOR_BROWSE_APP_SLOTS_NATIVE,
 } from "../src/ai/browseToolText.js";
 import flagOffGolden from "./fixtures/browse-app-flag-off.golden.json" with { type: "json" };
 import { makeConfig } from "./helpers.js";
@@ -1402,6 +1403,11 @@ describe("browse subagent", () => {
       it("flag-off app texts, descriptions and schemas are byte-identical to the pre-native output", async () => {
         const g = flagOffGolden;
         expect(PEN_EDITOR_BROWSE_APP_SLOTS.openApp).toBe(g.texts.openApp);
+        // The main chat has no run end: both variants must say how to get back to the built-in browser.
+        for (const text of [PEN_EDITOR_BROWSE_APP_SLOTS.openApp, PEN_EDITOR_BROWSE_APP_SLOTS_NATIVE.openApp]) {
+          expect(text).toContain("To go back to the built-in browser, call `browse_open` with `url`.");
+          expect(text).not.toContain("Until the run ends");
+        }
         expect(PEN_EDITOR_BROWSE_AGENT_APP_FIELD).toBe(g.texts.field);
         expect(PEN_EDITOR_BROWSE_AGENT_APP_RULES).toBe(g.texts.rules);
         const json = (t: unknown) => JSON.stringify(asSchema((t as { inputSchema: Parameters<typeof asSchema>[0] }).inputSchema).jsonSchema);

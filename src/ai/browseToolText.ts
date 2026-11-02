@@ -78,7 +78,7 @@ const APP_RULES_AGENT = appRulesAgent(WINDOW_RULE_PLAIN);
 export const PEN_EDITOR_BROWSE_APP_SLOTS: BrowseDescriptionSlots = {
   ...PEN_EDITOR_BROWSE_SLOTS,
   appLaunch: true,
-  openApp: `Desktop apps: to start an Electron desktop app, pass \`app\` instead of \`url\`. \`app\` is the path of a macOS .app of an Electron app, for example /Applications/Orca.app. Pass \`url\` or \`app\`, not both. ${APP_NO_GUESS} The user must confirm the launch. ${APP_PROFILE_FACTS} Each window of the app is a tab. Until the run ends, you cannot open URLs or new tabs. You cannot see native menus or file dialogs. ${APP_RULES_OPEN}`,
+  openApp: `Desktop apps: to start an Electron desktop app, pass \`app\` instead of \`url\`. \`app\` is the path of a macOS .app of an Electron app, for example /Applications/Orca.app. Pass \`url\` or \`app\`, not both. ${APP_NO_GUESS} The user must confirm the launch. ${APP_PROFILE_FACTS} Each window of the app is a tab. While you work in the app, you cannot open new tabs, and browse_* calls go to the app. To go back to the built-in browser, call \`browse_open\` with \`url\`. This ends the work in the app. Sideform lets go of the app: it closes an app that it started with a new profile. An app that was already running stays open or opens again normally. You cannot see native menus or file dialogs. ${APP_RULES_OPEN}`,
 };
 
 /** Text of the `app` field of browse_agent (same facts as `openApp`). */
@@ -119,7 +119,7 @@ export const PEN_EDITOR_BROWSE_APP_SLOTS_NATIVE: BrowseDescriptionSlots = {
   ...PEN_EDITOR_BROWSE_SLOTS,
   coordinateActions: true,
   appLaunch: true,
-  openApp: `Desktop apps: to work in a desktop app, pass \`app\` instead of \`url\`. ${APP_NAME_FORM} Pass \`url\` or \`app\`, not both. ${APP_NO_GUESS} ${APP_NATIVE_FACTS} Each window of the app is a tab. Until the run ends, you cannot open URLs or new tabs. ${APP_RULES_OPEN_NATIVE}`,
+  openApp: `Desktop apps: to work in a desktop app, pass \`app\` instead of \`url\`. ${APP_NAME_FORM} Pass \`url\` or \`app\`, not both. ${APP_NO_GUESS} ${APP_NATIVE_FACTS} Each window of the app is a tab. While you work in the app, you cannot open new tabs, and browse_* calls go to the app. To go back to the built-in browser, call \`browse_open\` with \`url\`. This ends the work in the app. Sideform lets go of the app: it closes an app that it started with a new profile. An app that was already running stays open or opens again normally. ${APP_RULES_OPEN_NATIVE}`,
 };
 
 /** Text of the `app` field of browse_agent, native-aware. */
