@@ -7,8 +7,9 @@ import type { LanguageModel } from "ai";
 // LanguageModelV4 itself; this selects it out of the LanguageModel union.
 type LanguageModelV4 = Extract<LanguageModel, { specificationVersion: "v4" }>;
 import type { Config } from "../config.js";
-import { parseModelRef, isOpenCodeProvider } from "./modelRef.js";
+import { parseModelRef, isOpenCodeProvider, isByokProvider } from "./modelRef.js";
 import { createOpenCodeModel } from "./opencode.js";
+import { createByokModel } from "./byok.js";
 
 // Re-exported so existing importers of these helpers keep working and so
 // there is one obvious place to look for them; the definitions live in
@@ -18,6 +19,7 @@ export {
   bareModelId,
   providerHandlesToolResultImages,
   isOpenCodeProvider,
+  isByokProvider,
   type ModelRef,
   type ModelProviderId,
 } from "./modelRef.js";
@@ -108,6 +110,11 @@ export interface CreateModelOptions {
    * resolved provider is an OpenCode route.
    */
   opencodeApiKey?: string;
+  /**
+   * The calling user's own OpenAI-compatible endpoint (headers X-BYOK-Base-URL
+   * / X-BYOK-Key). Only meaningful when the resolved provider is "byok".
+   */
+  byok?: { baseUrl: string; apiKey: string };
   /**
    * OpenRouter only: provider slugs to try first (other providers stay as
    * fallbacks). Ignored for OpenCode routes. Empty or absent = default routing.
@@ -229,6 +236,21 @@ export function createModel(
   options: CreateModelOptions = {},
 ): LanguageModel {
   const ref = parseModelRef(modelOverride ?? config.CHAT_MODEL);
+
+  if (isByokProvider(ref.provider)) {
+    if (!options.byok?.baseUrl || !options.byok.apiKey.trim() || !ref.modelId) {
+      throw new Error(
+        'Model provider "byok" requires the calling user\'s own base URL, API key ' +
+          "and a non-empty model id — there is no server-side BYOK endpoint.",
+      );
+    }
+    return createByokModel({
+      baseUrl: options.byok.baseUrl,
+      apiKey: options.byok.apiKey,
+      modelId: ref.modelId,
+      allowPrivateNetwork: config.BYOK_ALLOW_PRIVATE_NETWORK,
+    });
+  }
 
   if (isOpenCodeProvider(ref.provider)) {
     if (!options.opencodeApiKey || !options.opencodeApiKey.trim()) {

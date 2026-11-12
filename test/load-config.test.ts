@@ -419,6 +419,22 @@ describe("loadConfig opencode: / opencode-go: model rejection", () => {
     },
   );
 
+  it.each(["CHAT_MODEL", "STRUCTURED_MODEL", "ANALYSIS_MODEL", "VISION_MODEL", "BROWSE_AGENT_MODEL", "QA_JUDGE_MODEL"])(
+    "exits loudly when %s carries a byok/ reference",
+    (name) => {
+      process.env = { ...BASE_ENV, [name]: "byok/gpt-4o" } as NodeJS.ProcessEnv;
+      expect(() => loadConfig()).toThrow("process.exit(1)");
+      expect(console.error).toHaveBeenCalledWith(expect.stringContaining(name));
+    },
+  );
+
+  it("parses BYOK_ALLOW_PRIVATE_NETWORK as false by default and true for 'true'", () => {
+    process.env = { ...BASE_ENV } as NodeJS.ProcessEnv;
+    expect(loadConfig().BYOK_ALLOW_PRIVATE_NETWORK).toBe(false);
+    process.env = { ...BASE_ENV, BYOK_ALLOW_PRIVATE_NETWORK: "true" } as NodeJS.ProcessEnv;
+    expect(loadConfig().BYOK_ALLOW_PRIVATE_NETWORK).toBe(true);
+  });
+
   // Ordinary OpenRouter values (including ones with unrelated colons/slashes)
   // must keep booting normally — this rejection must not overreach.
   it("does not reject ordinary OpenRouter model refs", () => {

@@ -1,9 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { APICallError } from "ai";
+import { MockLanguageModelV4 } from "ai/test";
 import { loadSkills } from "../src/ai/skills.js";
 import { makeConfig } from "./helpers.js";
 import type { RawTraceRow, TraceStore } from "../src/tracing/traceStore.js";
 import type { AnalyticsClient, AnalyticsEvent } from "../src/analytics/posthog.js";
-import { resetChatMocks, userMessage } from "./chatMocks.js";
+import { chatMocks, resetChatMocks, userMessage } from "./chatMocks.js";
 import {
   chatTurn,
   postChat,
@@ -80,5 +82,46 @@ describe("OpenCode key never leaks into raw_traces or PostHog", () => {
     expect(res.status).toBe(400);
     const serialized = JSON.stringify(analytics.events);
     expect(serialized).not.toContain(CANARY_MARKER);
+  });
+
+  it("does not leak the BYOK key or base URL into raw_traces or analytics", async () => {
+    const { res } = await chatTurn(
+      server.url,
+      { id: "tab-leak-byok", messages: [userMessage("hi")], model: "byok/some-model" },
+      { "X-BYOK-Key": "sk-BYOK-CANARY", "X-BYOK-Base-URL": "https://byok-canary.example.com/v1" },
+    );
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => expect(traceStore.rows.some((r) => r.sessionId === "tab-leak-byok")).toBe(true));
+    await waitForEvent(analytics, "agent_turn_completed");
+    const serialized = JSON.stringify([traceStore.rows, analytics.events]);
+    expect(serialized).not.toContain("BYOK-CANARY");
+    expect(serialized).not.toContain("byok-canary.example.com");
+  });
+
+  it("keeps host and key out of traces and analytics when the BYOK provider fails", async () => {
+    chatMocks.model = new MockLanguageModelV4({
+      doStream: async () => {
+        throw new APICallError({
+          message: "401 from https://byok-canary.example.com/v1 for key sk-BYOK-CANARY",
+          url: "https://byok-canary.example.com/v1/chat/completions",
+          requestBodyValues: {},
+          statusCode: 401,
+          responseBody: "bad key sk-BYOK-CANARY",
+        });
+      },
+    });
+    await chatTurn(
+      server.url,
+      { id: "tab-leak-byok-fail", messages: [userMessage("hi")], model: "byok/some-model" },
+      { "X-BYOK-Key": "sk-BYOK-CANARY", "X-BYOK-Base-URL": "https://byok-canary.example.com/v1" },
+    );
+    await vi.waitFor(() => expect(traceStore.rows.some((r) => r.sessionId === "tab-leak-byok-fail")).toBe(true));
+    const row = traceStore.rows.find((r) => r.sessionId === "tab-leak-byok-fail");
+    expect(row?.streamError).toBe("byok provider error (HTTP 401)");
+    await waitForEvent(analytics, "agent_turn_failed");
+    const serialized = JSON.stringify([traceStore.rows.filter((r) => r.sessionId === "tab-leak-byok-fail"), analytics.events]);
+    expect(serialized).not.toContain("BYOK-CANARY");
+    expect(serialized).not.toContain("byok-canary.example.com");
+    resetChatMocks();
   });
 });

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { bareModelId, isOpenCodeProvider, parseModelRef } from "./ai/modelRef.js";
+import { bareModelId, isByokProvider, isOpenCodeProvider, parseModelRef } from "./ai/modelRef.js";
 
 /**
  * Completed user turns between background memory reviews.
@@ -137,6 +137,18 @@ export const envSchema = z.object({
   // logging. Only "true"/"1" (case-insensitive) enable it; absent/anything else
   // is false.
   ENABLE_AGENT_LOGGING: z
+    .string()
+    .optional()
+    .transform((v) => {
+      const s = v?.toLowerCase();
+      return s === "true" || s === "1";
+    }),
+  // BYOK custom provider (docs/specs/2026-11-13-byok-custom-provider-design.md):
+  // the user's Base URL is fetched by THIS server, so by default private,
+  // loopback and link-local targets are refused (src/ai/byokNetwork.ts). Set
+  // "true" only for a local Ollama / LM Studio during development. Same
+  // "true"/"1"-only transform as ENABLE_AGENT_LOGGING.
+  BYOK_ALLOW_PRIVATE_NETWORK: z
     .string()
     .optional()
     .transform((v) => {
@@ -715,6 +727,15 @@ function rejectOpenCodeModelRef(env: Record<string, string | undefined>): void {
           `prefix instead (e.g. "opencode-go/glm-5.3-flash"). Left as-is, this ` +
           "value would be silently sent to OpenRouter as a nonexistent bare " +
           "model id.",
+      );
+      process.exit(1);
+    }
+    if (isByokProvider(parseModelRef(value).provider)) {
+      console.error(
+        `${name} is set to "${value}", a BYOK model reference — but a BYOK ` +
+          "endpoint and key exist only per browser (see " +
+          "docs/specs/2026-11-13-byok-custom-provider-design.md), so this var " +
+          "could never answer a request. Use an OpenRouter model here instead.",
       );
       process.exit(1);
     }

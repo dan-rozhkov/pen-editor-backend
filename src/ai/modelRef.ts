@@ -28,7 +28,7 @@
 // /chat/completions request/response shape, which is why they get separate
 // provider ids instead of collapsing into one "opencode" — see
 // src/ai/opencode.ts (a later task) for the base-URL table.
-export type ModelProviderId = "openrouter" | "opencode" | "opencode-go";
+export type ModelProviderId = "openrouter" | "opencode" | "opencode-go" | "byok";
 
 export interface ModelRef {
   provider: ModelProviderId;
@@ -49,7 +49,12 @@ const LEGACY_COLON_PROVIDER_PREFIXES: ModelProviderId[] = ["openrouter"];
 // be checked before "opencode/", or "opencode-go/glm-5.3" would match the
 // shorter "opencode/" prefix first and parse as provider "opencode" with
 // modelId "go/glm-5.3" — wrong provider AND a mangled model id.
-const SLASH_PROVIDER_PREFIXES: ModelProviderId[] = ["opencode-go", "opencode"];
+//
+// "byok/" is the user's own OpenAI-compatible endpoint
+// (docs/specs/2026-11-13-byok-custom-provider-design.md). The id after the
+// prefix is whatever the user's provider calls the model and may itself
+// contain slashes ("byok/meta-llama/llama-4" -> "meta-llama/llama-4").
+const SLASH_PROVIDER_PREFIXES: ModelProviderId[] = ["opencode-go", "opencode", "byok"];
 
 // Parses a model reference. Recognizes:
 //   - the legacy colon form "openrouter:<modelId>"
@@ -126,6 +131,8 @@ export function providerHandlesToolResultImages(ref: ModelRef): boolean {
   // "opencode-go": src/ai/opencode.ts rewrites the stringified tool-result
   // back into image_url parts, but that was verified live only for the ids
   // below. Other Go models and Zen stay false (images become text).
+  // "byok": an arbitrary OpenAI-compatible endpoint through
+  // @ai-sdk/openai-compatible, which stringifies tool-result images.
   if (ref.provider === "openrouter") return true;
   if (ref.provider === "opencode-go") {
     return TOOL_RESULT_IMAGE_VERIFIED_GO_MODELS.has(ref.modelId);
@@ -145,6 +152,11 @@ const TOOL_RESULT_IMAGE_VERIFIED_GO_MODELS: ReadonlySet<string> = new Set([
 // be skipped for either OpenCode route uniformly.
 export function isOpenCodeProvider(provider: ModelProviderId): boolean {
   return provider === "opencode" || provider === "opencode-go";
+}
+
+// The user's own OpenAI-compatible endpoint ("byok/<id>").
+export function isByokProvider(provider: ModelProviderId): boolean {
+  return provider === "byok";
 }
 
 // The legacy colon prefix bareModelId strips — kept as its own constant

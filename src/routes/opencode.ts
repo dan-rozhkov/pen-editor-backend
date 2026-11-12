@@ -2,13 +2,14 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { OPENCODE_BASE_URLS } from "../ai/opencode.js";
 import type { Config } from "../config.js";
+import { readCredentialHeader } from "../lib/credentialHeader.js";
 
 // Why this route exists at all: the browser cannot validate a pasted
 // OpenCode key by calling opencode.ai directly — that origin has no CORS
 // allowance for us, so a fetch from the composer's "Validate key" button
 // would just die on preflight. This route is a thin, server-side relay:
 // it forwards the key upstream once, on the user's behalf, and never stores
-// it anywhere (see readOpenCodeKeyHeader below — same header, same
+// it anywhere (see readCredentialHeader in src/lib/credentialHeader.ts — same header, same
 // never-log contract as the chat route's OpenCode branch).
 
 const UPSTREAM_TIMEOUT_MS = 10_000;
@@ -16,21 +17,6 @@ const UPSTREAM_TIMEOUT_MS = 10_000;
 const validateBodySchema = z.object({
   provider: z.enum(["opencode", "opencode-go"]).optional(),
 });
-
-// Same header, same contract as src/routes/chat.ts's readOpenCodeKeyHeader
-// (kept as its own small copy rather than a shared import so this route's
-// key-handling has no dependency on chat.ts at all — one less place a
-// future refactor of the chat route could accidentally affect this one).
-// Fastify lowercases header names; a header sent twice arrives as an array,
-// so the first non-empty value wins. Blank/whitespace-only counts as absent.
-function readOpenCodeKeyHeader(
-  value: string | string[] | undefined,
-): string | undefined {
-  const raw = Array.isArray(value) ? value[0] : value;
-  if (typeof raw !== "string") return undefined;
-  const trimmed = raw.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
-}
 
 // Upstream's /models response shape is not pinned by any contract we own,
 // so this parses defensively: the documented OpenAI-compatible shape is
@@ -112,7 +98,7 @@ export async function opencodeRoutes(app: FastifyInstance, _config: Config) {
       },
     },
     async (request, reply) => {
-      const apiKey = readOpenCodeKeyHeader(request.headers["x-opencode-key"]);
+      const apiKey = readCredentialHeader(request.headers["x-opencode-key"]);
       if (!apiKey) {
         return reply.status(400).send({
           error:

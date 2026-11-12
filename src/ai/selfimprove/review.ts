@@ -1,7 +1,7 @@
 import { generateText, isStepCount, tool, type ModelMessage, type ToolSet } from "ai";
 import type { Config } from "../../config.js";
 import { logSession } from "../../logging.js";
-import { bareModelId, createModel, isOpenCodeProvider, parseModelRef } from "../provider.js";
+import { bareModelId, createModel, isByokProvider, isOpenCodeProvider, parseModelRef } from "../provider.js";
 import type { MemoryStore } from "../memory/store.js";
 import { isAttributionId, type ReviewAttribution } from "./attribution.js";
 import { createMemoryToolContext, getMemoryTools, memoryFilterContext, memoryInputSchema } from "../memory/tool.js";
@@ -38,7 +38,10 @@ const REVIEW_MAX_STEPS = 8;
 // An OpenRouter override still passes through unchanged.
 function reviewModelOverride(modelOverride: string | undefined): string | undefined {
   if (!modelOverride) return modelOverride;
-  return isOpenCodeProvider(parseModelRef(modelOverride).provider) ? undefined : modelOverride;
+  const provider = parseModelRef(modelOverride).provider;
+  // A user's own BYOK endpoint is as unavailable to a helper role as an
+  // OpenCode key: no credentials are threaded here.
+  return isOpenCodeProvider(provider) || isByokProvider(provider) ? undefined : modelOverride;
 }
 
 /* Both review thresholds now live in config.ts

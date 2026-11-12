@@ -15,7 +15,7 @@ import {
   visionCacheKey,
 } from "../services/vision.js";
 import { parseScreenshotDataUrl, SCREENSHOT_TOOL_NAMES } from "./screenshotOutput.js";
-import { parseModelRef, providerHandlesToolResultImages } from "./modelRef.js";
+import { isByokProvider, parseModelRef, providerHandlesToolResultImages } from "./modelRef.js";
 import {
   fullImageMediaType,
   imageMediaTypeFromUrl,
@@ -112,6 +112,8 @@ const DESCRIBE_CONCURRENCY = 4;
 // --model override) is assumed
 // vision-capable, matching getModels' own convention.
 export function modelSupportsVision(config: Config, modelId: string): boolean {
+  // The user's own endpoint: we cannot know what the model reads.
+  if (isByokProvider(parseModelRef(modelId).provider)) return false;
   const model = getModels(config).find((m) => m.id === modelId);
   return model ? model.supportsVision : true;
 }

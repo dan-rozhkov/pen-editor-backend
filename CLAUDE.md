@@ -31,7 +31,7 @@ Why: in October 2026 this service used 4.93 GB of Render bandwidth. 4.82 GB was 
 
 ## Chat model provider (`src/ai/provider.ts`)
 
-**Two providers: OpenRouter (default, server key) and OpenCode (BYOK).** A
+**Three providers: OpenRouter (default, server key), OpenCode (BYOK) and a custom OpenAI-compatible endpoint (BYOK).** A
 DeepSeek-direct branch (`@ai-sdk/deepseek`, its own key) existed for one day
 and was removed: it never passed a live smoke, and it cost three silent
 divergences from the OpenRouter path (always-on `thinking`, tool-result
@@ -51,6 +51,17 @@ resolves a reference through `parseModelRef` (`src/ai/modelRef.ts`):
   `STRUCTURED_MODEL`/`ANALYSIS_MODEL`/`VISION_MODEL`/`BROWSE_CASCADE_MODEL`,
   is a **loud boot failure** (`src/config.ts`). There is no server-side
   OpenCode key at all, so those roles could never serve one.
+
+**Custom BYOK provider** (`byok/<modelId>`, spec
+`docs/specs/2026-11-13-byok-custom-provider-design.md`): the user's own Base URL
+and key arrive as `X-BYOK-Base-URL` / `X-BYOK-Key` (CORS-allowlisted, never in
+the body), a `byok/` model bypasses `allowedModels`, and missing headers or a
+rejected URL are 400 `byok_key_required` / `byok_base_url_invalid`. Because OUR
+server fetches a client-supplied URL, `src/ai/byokNetwork.ts` guards it twice
+(`parseByokBaseUrl` + a connect-time DNS lookup guard on an undici `Agent`);
+`BYOK_ALLOW_PRIVATE_NETWORK=true` switches both off for local dev. `byok/` refs
+in any server model env var are a boot failure; helper roles stay on OpenRouter.
+`POST /api/byok/models` relays `GET <base>/models`.
 
 **The OpenCode key belongs to the user and lives in their browser.** It
 arrives as the `X-OpenCode-Key` header (never in the body — the body is

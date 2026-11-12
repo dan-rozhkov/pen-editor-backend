@@ -212,6 +212,8 @@ export interface PrepareChatTurnInput {
    * comment).
    */
   opencodeApiKey?: string;
+  /** The user's own OpenAI-compatible endpoint; only for a "byok/" model. */
+  byok?: { baseUrl: string; apiKey: string };
   /**
    * What the requesting client can actually do. Browser: `browser` is
    * "desktop" (Electron shell bridge present) or "cloud" (the web build,
@@ -662,6 +664,7 @@ export async function prepareChatTurn(
     chatAgent: true,
     sessionId: input.sessionId,
     opencodeApiKey: input.opencodeApiKey,
+    byok: input.byok,
     ...(browseSub ? { reasoningEffort: "none" as const } : {}),
   });
   // Only the nested browse subagent gets the per-step watchdog: one stuck

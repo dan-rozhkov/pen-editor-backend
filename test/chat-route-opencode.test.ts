@@ -107,6 +107,75 @@ describe("POST /api/chat — OpenCode BYOK model selection", () => {
   });
 });
 
+describe("POST /api/chat — BYOK custom provider", () => {
+  const BYOK_HEADERS = {
+    "X-BYOK-Base-URL": "https://api.example.com/v1/",
+    "X-BYOK-Key": "sk-byok-abc",
+  };
+
+  it("400s byok_key_required without the headers", async () => {
+    const analytics = recordingAnalyticsClient();
+    const { url, close } = await startApp(makeConfig(), { analytics });
+    const res = await postChat(url, { messages: [userMessage("hi")], model: "byok/gpt-4o" });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: "byok_key_required" });
+    const failed = await waitForEvent(analytics, "agent_turn_failed");
+    expect(failed.properties?.error_kind).toBe("byok_key_required");
+    await close();
+  });
+
+  it("400s byok_key_required when only the key header is present", async () => {
+    const res = await postChat(
+      server.url,
+      { messages: [userMessage("hi")], model: "byok/gpt-4o" },
+      { "X-BYOK-Key": "sk-byok-abc" },
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: "byok_key_required" });
+  });
+
+  it("400s byok_base_url_invalid for a private base URL", async () => {
+    const analytics = recordingAnalyticsClient();
+    const { url, close } = await startApp(makeConfig(), { analytics });
+    const res = await postChat(
+      url,
+      { messages: [userMessage("hi")], model: "byok/gpt-4o" },
+      { ...BYOK_HEADERS, "X-BYOK-Base-URL": "https://169.254.169.254/v1" },
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: "byok_base_url_invalid" });
+    const failed = await waitForEvent(analytics, "agent_turn_failed");
+    expect(failed.properties?.error_kind).toBe("byok_base_url_invalid");
+    await close();
+  });
+
+  it("runs a byok model outside the allowlist and hands createModel the normalized endpoint", async () => {
+    const { createModel } = await import("../src/ai/provider.js");
+    vi.mocked(createModel).mockClear();
+    const res = await postChat(
+      server.url,
+      { messages: [userMessage("hi")], model: "byok/meta-llama/llama-4" },
+      BYOK_HEADERS,
+    );
+    expect(res.status).toBe(200);
+    await res.text();
+    const call = vi.mocked(createModel).mock.calls[0];
+    expect(call?.[1]).toBe("byok/meta-llama/llama-4");
+    expect(call?.[2]).toMatchObject({
+      byok: { baseUrl: "https://api.example.com/v1", apiKey: "sk-byok-abc" },
+    });
+  });
+
+  it.each(["byok/", `byok/${"x".repeat(201)}`])("400s byok_model_invalid for an unusable id (%#)", async (model) => {
+    const { createModel } = await import("../src/ai/provider.js");
+    vi.mocked(createModel).mockClear();
+    const res = await postChat(server.url, { messages: [userMessage("hi")], model }, BYOK_HEADERS);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: "byok_model_invalid" });
+    expect(vi.mocked(createModel)).not.toHaveBeenCalled();
+  });
+});
+
 const browseToolsSent = (url: string, prompt: string) => (extra: Record<string, unknown>) =>
   toolsSentFor(url, prompt, { agentMode: "browse", clientCapabilities: { desktopBrowser: true }, ...extra });
 

@@ -52,7 +52,7 @@ describe("CORS credentials", () => {
   it("answers the preflight with the existing allowed headers", async () => {
     const preflight = await corsHeaders({ CORS_ALLOWED_ORIGINS: APP }, APP, "OPTIONS");
     expect(preflight).toMatchObject({ origin: APP, credentials: "true" });
-    expect(preflight.headers).toBe("Content-Type, Authorization, Mcp-Session-Id, X-OpenCode-Key, X-Mobbin-Token");
+    expect(preflight.headers).toBe("Content-Type, Authorization, Mcp-Session-Id, X-OpenCode-Key, X-BYOK-Base-URL, X-BYOK-Key, X-Mobbin-Token");
   });
 
   it("allows PUT in the preflight (PUT /api/memory/settings)", async () => {

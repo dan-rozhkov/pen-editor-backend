@@ -3,6 +3,7 @@ import {
   toUIMessageStream,
   isStepCount,
   NoSuchToolError,
+  APICallError,
   InvalidToolInputError,
   type ToolSet,
   type StepResult,
@@ -26,7 +27,9 @@ import { logSession, type LogStep } from "../logging.js";
 import { randomUUID } from "node:crypto";
 import { getAllSkills } from "../ai/skills.js";
 import { getDocTemplates } from "../ai/docTemplates.js";
-import { isOpenCodeProvider, parseModelRef } from "../ai/modelRef.js";
+import { isByokProvider, isOpenCodeProvider, parseModelRef, type ModelProviderId } from "../ai/modelRef.js";
+import { readCredentialHeader } from "../lib/credentialHeader.js";
+import { parseByokBaseUrl } from "../ai/byokNetwork.js";
 import { writeRawTraceSafe, type TraceStore } from "../tracing/traceStore.js";
 import { releaseMCPTools } from "../ai/mcp.js";
 import {
@@ -71,35 +74,39 @@ const MAX_MOBBIN_TOKEN_LENGTH = 8192;
 // the model, so it gets a dead-end instead of guidance it could act on. Surface
 // the message for tool-call validation errors only (safe, model-facing
 // guidance); keep the generic mask for everything else.
-export function streamErrorMessage(error: unknown): string {
+export function streamErrorMessage(error: unknown, provider?: ModelProviderId): string {
   if (
     NoSuchToolError.isInstance(error) ||
     InvalidToolInputError.isInstance(error)
   ) {
     return error.message;
   }
+  // Our own fixed text (never the upstream body): a 401/403 from a BYOK or
+  // OpenCode provider is almost always the user's own key or access.
+  if (
+    provider !== undefined &&
+    (isByokProvider(provider) || isOpenCodeProvider(provider)) &&
+    APICallError.isInstance(error) &&
+    (error.statusCode === 401 || error.statusCode === 403)
+  ) {
+    return `The model provider rejected the API key (HTTP ${error.statusCode}). Check your key and model access.`;
+  }
   return "An error occurred.";
 }
 const MAX_AGENT_STEPS = 12;
 
-// Reads the browser-only OpenCode BYOK header (X-OpenCode-Key — see
-// docs/specs/2026-09-18-opencode-byok-design.md, "Поток ключа"). Deliberately
-// NEVER folded into chatBodySchema/the request body: the whole body is
-// stored verbatim in raw_traces (buildTraceRow below stores `messages` —
-// the parsed body's own fields, not this header, which is why this function
-// reads directly off request.headers and its return value is kept OUT of
-// every object that gets logged, traced, or captured to analytics).
-// Fastify normalizes header names to lowercase and a header sent twice
-// arrives as an array — take the first non-empty value in that case, same
-// as most single-value header conventions. Blank/whitespace-only counts as
-// absent, matching how the rest of this route treats an absent field.
-export function readOpenCodeKeyHeader(
-  value: string | string[] | undefined,
-): string | undefined {
-  const raw = Array.isArray(value) ? value[0] : value;
-  if (typeof raw !== "string") return undefined;
-  const trimmed = raw.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
+// The browser-only OpenCode/BYOK key headers are read with the shared
+// readCredentialHeader (src/lib/credentialHeader.ts). They are deliberately
+// NEVER folded into chatBodySchema/the request body: the whole body is stored
+// verbatim in raw_traces. Kept as an alias for existing importers.
+export const readOpenCodeKeyHeader = readCredentialHeader;
+
+// Fixed, secret-free label for a failed BYOK turn. The upstream error message
+// can echo the user's base URL or key, so it never reaches traces or logs.
+export function byokErrorLabel(error: unknown): string {
+  return APICallError.isInstance(error) && typeof error.statusCode === "number"
+    ? `byok provider error (HTTP ${error.statusCode})`
+    : "byok provider error";
 }
 
 // Coarse, PII-free error category for the `agent_turn_failed` analytics
@@ -361,8 +368,12 @@ export async function chatRoutes(
 
     // See chatBodySchema.model: an unknown id runs the default rather than
     // failing the turn.
+    // A "byok/<id>" model is the user's own endpoint: their list is not ours,
+    // so it bypasses allowedModels (only sanity-checked).
+    const requestedRef = requestedModel ? parseModelRef(requestedModel) : undefined;
+    const isByokRequest = requestedRef !== undefined && isByokProvider(requestedRef.provider);
     const modelOverride =
-      requestedModel && allowedModels.includes(requestedModel)
+      requestedModel && (isByokRequest || allowedModels.includes(requestedModel))
         ? requestedModel
         : undefined;
 
@@ -388,12 +399,10 @@ export async function chatRoutes(
     const traceSessionId = chatSessionId ?? `anon-${randomUUID()}`;
 
     // The user's OWN OpenCode key, read from a header — never the body (see
-    // readOpenCodeKeyHeader's doc comment). Deliberately kept as its own
+    // src/lib/credentialHeader.ts). Deliberately kept as its own
     // local, never merged into `parsed.data` or any object that gets
     // traced/logged/captured below.
-    const opencodeApiKey = readOpenCodeKeyHeader(
-      request.headers["x-opencode-key"],
-    );
+    const opencodeApiKey = readCredentialHeader(request.headers["x-opencode-key"]);
     // Same id the frontend's PostHog capture (if any) would use for this
     // person, so client and server events join on one distinct id: the
     // client-supplied anonymous userId when shape-valid, else the (always
@@ -402,6 +411,20 @@ export async function chatRoutes(
     // model/image checks below) so every rejection path below — not just a
     // successful turn — can tag its agent_turn_failed event with it.
     const analyticsDistinctId = userId ?? traceSessionId ?? "anonymous";
+
+    // Any "byok/" request takes the BYOK path or is refused — it never falls
+    // through to the default OpenRouter model.
+    if (isByokRequest && (requestedRef.modelId.length === 0 || requestedRef.modelId.length > 200)) {
+      analytics?.capture({
+        event: "agent_turn_failed",
+        distinctId: analyticsDistinctId,
+        properties: { error_kind: "byok_model_invalid" },
+      });
+      return reply.status(400).send({
+        error: "The BYOK model id is empty or too long.",
+        code: "byok_model_invalid",
+      });
+    }
 
     // New rule (docs/specs/2026-09-18-opencode-byok-design.md, "Слом
     // действующего правила роута"): a requested model that IS in the
@@ -416,8 +439,7 @@ export async function chatRoutes(
     // anyone that it happened. There is no server-side OpenCode key to fall
     // back to in the first place (see src/ai/opencode.ts).
     if (modelOverride) {
-      const requestedRef = parseModelRef(modelOverride);
-      if (isOpenCodeProvider(requestedRef.provider) && !opencodeApiKey) {
+      if (isOpenCodeProvider(parseModelRef(modelOverride).provider) && !opencodeApiKey) {
         analytics?.capture({
           event: "agent_turn_failed",
           distinctId: analyticsDistinctId,
@@ -429,6 +451,40 @@ export async function chatRoutes(
           code: "opencode_key_required",
         });
       }
+    }
+
+    // BYOK custom provider: base URL + key come from headers, never the body.
+    // Kept in locals out of every traced/logged object, like opencodeApiKey.
+    let byok: { baseUrl: string; apiKey: string } | undefined;
+    if (isByokRequest) {
+      const rawBaseUrl = readCredentialHeader(request.headers["x-byok-base-url"]);
+      const byokKey = readCredentialHeader(request.headers["x-byok-key"]);
+      if (!rawBaseUrl || !byokKey) {
+        analytics?.capture({
+          event: "agent_turn_failed",
+          distinctId: analyticsDistinctId,
+          properties: { error_kind: "byok_key_required" },
+        });
+        return reply.status(400).send({
+          error: "This model needs your own base URL and API key. Add them in settings and try again.",
+          code: "byok_key_required",
+        });
+      }
+      const parsedBase = parseByokBaseUrl(rawBaseUrl, {
+        allowPrivateNetwork: config.BYOK_ALLOW_PRIVATE_NETWORK,
+      });
+      if (!parsedBase.ok) {
+        analytics?.capture({
+          event: "agent_turn_failed",
+          distinctId: analyticsDistinctId,
+          properties: { error_kind: "byok_base_url_invalid" },
+        });
+        return reply.status(400).send({
+          error: "The base URL is not allowed. Use a public https:// URL without credentials, query or fragment.",
+          code: "byok_base_url_invalid",
+        });
+      }
+      byok = { baseUrl: parsedBase.url, apiKey: byokKey };
     }
 
     const maxImagesInOneMessage = messages.reduce((max, msg) => {
@@ -493,18 +549,21 @@ export async function chatRoutes(
         // placeholder — the exact mid-history rewrite the ratchet exists to
         // prevent. Absent id → no ratchet home → Jev is skipped entirely.
         chatSessionId,
-        // The user's own key (see readOpenCodeKeyHeader above); undefined on
+        // The user's own key (see readCredentialHeader); undefined on
         // every OpenRouter turn. createModel throws if the resolved
         // provider needs one and none was supplied — this can only happen
         // here if opencodeApiKey somehow went missing between the 400 check
         // above and this call, which the request lifecycle rules out.
         opencodeApiKey,
+        byok,
       });
     } catch (err) {
       // MCP/provider/skill setup failure before the model even starts
       // streaming — otherwise silent, since agent_turn_completed/failed
       // below only fire once streamText is reached.
-      request.log.error(err);
+      // A BYOK failure never logs the raw error (it can echo host or key).
+      if (byok) request.log.error(byokErrorLabel(err));
+      else request.log.error(err);
       analytics?.capture({
         event: "agent_turn_failed",
         distinctId: analyticsDistinctId,
@@ -845,7 +904,7 @@ export async function chatRoutes(
       baseDelayMs: retryPolicy.baseDelayMs,
       maxDelayMs: retryPolicy.maxDelayMs,
       signal: abortController.signal,
-      onError: streamErrorMessage,
+      onError: (error) => streamErrorMessage(error, modelOverride ? parseModelRef(modelOverride).provider : undefined),
       onRetry: ({ attempt, delayMs, error }) => {
         const errorKind = classifyErrorKind(error);
         request.log.warn(
@@ -864,7 +923,11 @@ export async function chatRoutes(
             traceStore,
             buildTraceRow(
               [],
-              error instanceof Error ? error.message : String(error),
+              byok
+                ? byokErrorLabel(error)
+                : error instanceof Error
+                  ? error.message
+                  : String(error),
             ),
           );
         }

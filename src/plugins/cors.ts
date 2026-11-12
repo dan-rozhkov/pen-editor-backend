@@ -71,6 +71,8 @@ export async function registerCors(app: FastifyInstance, config: Config) {
       // edge case.
       //   X-OpenCode-Key  — OpenCode BYOK key, sent to POST /api/chat when the
       //     picked model is an OpenCode one (docs/specs/2026-09-18-opencode-byok-design.md).
+      //   X-BYOK-Base-URL / X-BYOK-Key — the user's own OpenAI-compatible
+      //     endpoint (docs/specs/2026-11-13-byok-custom-provider-design.md).
       //   X-Mobbin-Token  — the user's own Mobbin OAuth access token
       //     (docs/superpowers/specs/2026-09-18-mobbin-mcp-design.md).
       allowedHeaders: [
@@ -78,6 +80,8 @@ export async function registerCors(app: FastifyInstance, config: Config) {
         "Authorization",
         "Mcp-Session-Id",
         "X-OpenCode-Key",
+        "X-BYOK-Base-URL",
+        "X-BYOK-Key",
         "X-Mobbin-Token",
       ],
       exposedHeaders: [...MCP_EXPOSED_HEADERS, ...RATE_LIMIT_EXPOSED_HEADERS],

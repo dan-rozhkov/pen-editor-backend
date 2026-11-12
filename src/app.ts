@@ -22,6 +22,7 @@ import {
 } from "./mcp/autoToken.js";
 import { modelsRoutes } from "./routes/models.js";
 import { opencodeRoutes } from "./routes/opencode.js";
+import { byokRoutes } from "./routes/byok.js";
 import { prototypeLinkRoutes } from "./routes/prototype-link.js";
 import { promptSuggestionRoutes } from "./routes/promptSuggestion.js";
 import { browseStepRoutes } from "./routes/browseStep.js";
@@ -408,6 +409,7 @@ export async function buildApp(
   await sharedCanvasRoutes(app, config, sharedCanvasStore);
   await modelsRoutes(app, config);
   await opencodeRoutes(app, config);
+  await byokRoutes(app, config);
   await uploadRoutes(app, config);
   await generateImageRoutes(app, config, analytics);
   await falRoutes(app, config, analytics);
