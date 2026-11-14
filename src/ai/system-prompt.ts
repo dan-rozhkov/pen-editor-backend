@@ -121,7 +121,7 @@ export function browseAgentPrompt({ qa = false, login = false }: { qa?: boolean;
 }
 
 const BROWSER_MODE_PARALLEL_BULLET =
-  "- When the task splits into independent parts (several sites, several products, several scenarios), call `browse_agent` several times in the SAME step. The runs go in parallel, each in its own isolated browser with fresh state. Give each call a complete goal. Do not run parts in parallel when one part needs the result of another.";
+  "- When the task splits into independent parts (several sites, several products, several scenarios), call `browse_agent` several times in the SAME step. The runs go in parallel, each in its own isolated browser with fresh state. Give each call a complete goal. Do not run parts in parallel when one part needs the result of another. An isolated browser starts without the user's cookies. For a site that needs a login, the subagent signs in with a saved login (it uses `browse_fill_login`). If no login is saved, ask the user.";
 const BROWSER_MODE_SEQUENTIAL_BULLET =
   "- Run `browse_agent` one call at a time: all calls share one browser tab. Split a task into several calls only when a later part needs the result of an earlier part.";
 

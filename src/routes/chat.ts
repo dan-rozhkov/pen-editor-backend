@@ -357,15 +357,25 @@ export async function chatRoutes(
       browseLogin,
     } = parsed.data;
 
+    // Browser mode (Sideform Light) hands every web task to browse_agent, so
+    // it is refused before any model call when the server has no subagent or
+    // the client reports no browser to drive.
+    if (agentMode === "browser") {
+      if (config.BROWSE_MODE !== "agent") {
+        return reply.status(400).send({
+          error: "The browser mode needs the browse subagent, which is disabled on this server.",
+          code: "browse_agent_disabled",
+        });
+      }
+      if (!clientCapabilities?.desktopBrowser && !clientCapabilities?.browser) {
+        return reply.status(400).send({
+          error: "The browser mode needs a browser, and this client reports none.",
+          code: "browser_required",
+        });
+      }
+    }
     // The browse subagent turn exists only in BROWSE_MODE=agent; elsewhere a
     // request for it is refused before any model call.
-    if (agentMode === "browser" && config.BROWSE_MODE !== "agent") {
-      // The browser mode hands every web task to the browse subagent.
-      return reply.status(400).send({
-        error: "The browser mode needs the browse subagent, which is disabled on this server.",
-        code: "browse_agent_disabled",
-      });
-    }
     if (agentMode === "browse" && config.BROWSE_MODE !== "agent") {
       return reply.status(400).send({
         error: "The browse subagent is disabled on this server.",

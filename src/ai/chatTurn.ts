@@ -11,7 +11,7 @@ import { createHash } from "node:crypto";
 import type { Config } from "../config.js";
 import { withStepWatchdog } from "./stepWatchdog.js";
 import { bareModelId, createModel, parseModelRef, providerHandlesToolResultImages } from "./provider.js";
-import { penTools, browseOpenToolApp, browseOpenToolAppNative, browseActToolAppNative, browseAgentToolWithApp, browseAgentToolNoQa, browseAgentToolQaIsolated, browseAgentToolQaNoAssert, browseAgentToolQaIsolatedNoAssert, makeBatchDesignTool, makeAnalyzeImageTool } from "./tools.js";
+import { penTools, browseOpenToolApp, browseOpenToolAppNative, browseActToolAppNative, browseAgentToolWithApp, browseAgentToolNoCapture, browseAgentToolNoQa, browseAgentToolQaIsolated, browseAgentToolQaNoAssert, browseAgentToolQaIsolatedNoAssert, makeBatchDesignTool, makeAnalyzeImageTool } from "./tools.js";
 import { BROWSE_AGENT_TOOL_NAMES, QA_ASSERT_TOOL, QA_VERDICT_TOOL } from "@sideform/browser-agent/agent";
 import { browseAgentPrompt, buildBrowserModePrompt, buildSystemPrompt, type AgentMode, type BrowserGuidance } from "./system-prompt.js";
 import { resolveTaskPolicy, type TaskPolicy } from "./taskPolicy.js";
@@ -306,8 +306,12 @@ export async function prepareChatTurn(
   // memory, no user/learned skills and no MCP tools, and gets a small fixed
   // tool set (see BROWSER_MODE_TOOL_NAMES). It runs on the normal chat model.
   const browserMode = input.agentMode === "browser";
-  // The subagent and the browser mode never see a canvas.
-  const canvasContext = browseSub || browserMode ? undefined : input.canvasContext;
+  // ONE flag for every gate both restricted turns share (canvas, slash
+  // skills, auto-pick, learned/user skills, catalog, memory, audit, MCP): the
+  // browse subagent and the browser-only main turn. A new gate keys off this,
+  // so it cannot forget a mode.
+  const restrictedTurn = browseSub || browserMode;
+  const canvasContext = restrictedTurn ? undefined : input.canvasContext;
   // The model the turn actually runs on. A browsing subagent always runs on
   // BROWSE_AGENT_MODEL (OpenRouter, with OPENROUTER_PROVIDER_ORDER), never
   // on the user's main chat model, also for an OpenCode Go user: OM2W 15.10,
@@ -377,7 +381,7 @@ export async function prepareChatTurn(
   // catalog is not rendered, and a skill pair injected before the last user
   // message would also vary the prompt-cache prefix. A leading "/word" stays
   // plain text.
-  if (lastMsg && lastMsg.role === "user" && !browseSub && !browserMode) {
+  if (lastMsg && lastMsg.role === "user" && !restrictedTurn) {
     const parts = lastMsg.parts ?? lastMsg.content;
 
     // Extract the raw text and a setter to write back the stripped text
@@ -560,7 +564,9 @@ export async function prepareChatTurn(
   // widened to user/learned skills, which need their own Postgres reads
   // (further down, already guarded by their own timeouts) and whose
   // inclusion here is a separate decision to make later.
-  if (config.SKILL_ROUTING_MODE !== "off" && !skillContent && !skipAutoPick && lastUserText) {
+  // Restricted turns (browse subagent, browser mode) never auto-pick: they
+  // offer no skills. Explicit here, not left to `lastUserText` staying unset.
+  if (config.SKILL_ROUTING_MODE !== "off" && !restrictedTurn && !skillContent && !skipAutoPick && lastUserText) {
     const systemOne = input.systemOneClient !== undefined
       ? input.systemOneClient
       : createSystemOne(config);
@@ -698,7 +704,7 @@ export async function prepareChatTurn(
   // identity), and a slow/unreachable catalog read degrades to "no learned
   // skills this turn" rather than hanging the request — same race pattern
   // as the memory snapshot read above.
-  const learnedStore = config.SELF_SKILLS_ENABLED && !browseSub && !browserMode ? (input.learnedSkillStore ?? null) : null;
+  const learnedStore = config.SELF_SKILLS_ENABLED && !restrictedTurn ? (input.learnedSkillStore ?? null) : null;
   let learnedSkills: LearnedSkill[] = [];
   if (learnedStore) {
     try {
@@ -722,7 +728,7 @@ export async function prepareChatTurn(
   // /api/chat; getUserSkillCatalog itself caches per (store, userId) for
   // 15s and catches thrown errors, so this timeout only covers the
   // "acquired but never responds" case a plain try/catch can't.
-  const userSkillStore = browseSub || browserMode ? null : (input.userSkillStore ?? null);
+  const userSkillStore = restrictedTurn ? null : (input.userSkillStore ?? null);
   let userSkills: UserSkill[] = [];
   if (userSkillStore && input.userId) {
     try {
@@ -791,7 +797,7 @@ export async function prepareChatTurn(
     );
   }
 
-  const skillCatalog = browseSub || browserMode ? [] : [
+  const skillCatalog = restrictedTurn ? [] : [
     ...getAllSkills()
       .filter((s) => isSkillOffered(s.name))
       .map((s) => ({ name: s.name, description: s.description })),
@@ -812,7 +818,7 @@ export async function prepareChatTurn(
   // failing the user's request — losing memory for one turn is recoverable,
   // losing the turn is not.
   const memoryStore = input.memoryStore ?? null;
-  const memoryEligible = Boolean(!browseSub && !browserMode && config.MEMORY_ENABLED && input.userId && memoryStore);
+  const memoryEligible = Boolean(!restrictedTurn && config.MEMORY_ENABLED && input.userId && memoryStore);
   let memorySnapshotBlock = "";
   let memoryInjected = false;
   if (memoryEligible && memoryStore && input.userId) {
@@ -841,7 +847,7 @@ export async function prepareChatTurn(
   // tool set decides whether the prompt may talk about writing skills.
   // Guidance without the tool is an instruction the model cannot follow —
   // the same rule memoryGuidance already follows.
-  const auditDb = config.SELF_SKILLS_ENABLED && !browseSub && !browserMode ? (input.auditDb ?? null) : null;
+  const auditDb = config.SELF_SKILLS_ENABLED && !restrictedTurn ? (input.auditDb ?? null) : null;
   const selfSkillsInjected = Boolean(learnedStore && auditDb);
 
   // Whether a canvas context is delivered at all this turn — headless
@@ -1161,7 +1167,7 @@ export async function prepareChatTurn(
   // the current slash command name, if any.
   const taskPolicy = resolveTaskPolicy({ messages, slashSkillName });
 
-  const mcpTools = browseSub || browserMode ? ({} as Awaited<ReturnType<typeof getMCPTools>>) : await getMCPTools(config, {
+  const mcpTools = restrictedTurn ? ({} as Awaited<ReturnType<typeof getMCPTools>>) : await getMCPTools(config, {
     mobbinAccessToken: input.mobbinAccessToken,
     // Same source of truth get_screenshot's own gate uses below — reused
     // rather than a second copy, so "can this model see" can never disagree
@@ -1374,7 +1380,10 @@ export async function prepareChatTurn(
       for (const name of Object.keys(tools)) {
         if (name.startsWith("browse_") && name !== "browse_agent") delete tools[name];
       }
-      if (clientHasApps) {
+      if (browserMode) {
+        // No canvas in this mode: browse_agent without `capture`.
+        tools.browse_agent = browseAgentToolNoCapture({ qa: clientHasQa, isolated: clientHasIsolation, assert: clientHasAssert, app: clientHasApps ? (clientHasNativeApps ? "native" : true) : false });
+      } else if (clientHasApps) {
         tools.browse_agent = browseAgentToolWithApp({ qa: clientHasQa, isolated: clientHasIsolation, assert: clientHasAssert, native: clientHasNativeApps });
       } else if (!clientHasQa) tools.browse_agent = browseAgentToolNoQa;
       else if (clientHasIsolation) {

@@ -225,6 +225,23 @@ describe("prepareChatTurn — Jev skill routing", () => {
     expect(injected).toContain("Agent Mode: prototype");
   });
 
+  it("browser mode never auto-picks, even with SKILL_ROUTING_MODE=enforce", async () => {
+    const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+    const calls = { count: 0 };
+    const client = makeStagedJevClient({ calls });
+
+    const turn = await prepareChatTurn({
+      config: makeConfig({ SKILL_ROUTING_MODE: "enforce", BROWSE_MODE: "agent" }),
+      messages: [userMessage("design me a clickable prototype for a login screen")],
+      agentMode: "browser",
+      clientCapabilities: { desktopBrowser: true, browser: "desktop" },
+      systemOneClient: client,
+    });
+
+    expect(calls.count).toBe(0);
+    expect(JSON.stringify(turn.modelMessages)).not.toContain("lookup_skill");
+  });
+
   it("off mode never calls Jev", async () => {
     const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
     const calls = { count: 0 };

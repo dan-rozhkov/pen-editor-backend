@@ -57,6 +57,52 @@ describe("agentMode browser", () => {
     }
   });
 
+  it("400s browser_required when the client reports no browser", async () => {
+    const res = await postChat(server.url, {
+      messages: [userMessage("hi")],
+      agentMode: "browser",
+      clientCapabilities: {},
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { code: string }).code).toBe("browser_required");
+  });
+
+  it("offers browse_agent without the canvas `capture` param", async () => {
+    const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+    const turn = await prepareChatTurn({
+      config: makeConfig({ BROWSE_MODE: "agent" }),
+      messages: [userMessage("compare two laptops")],
+      agentMode: "browser",
+      clientCapabilities: LIGHT_CAPS,
+    });
+    const tool = turn.tools.browse_agent as { inputSchema: { shape?: Record<string, unknown>; _def?: unknown }; description?: string };
+    const json = JSON.stringify(await (await import("ai")).asSchema(tool.inputSchema as never).jsonSchema);
+    expect(json).toContain('"goal"');
+    expect(json).not.toContain('"capture"');
+    expect(tool.description).not.toContain("capture");
+    expect(tool.description).not.toContain("canvas");
+  });
+
+  it("keeps `capture` on browse_agent in edits mode", async () => {
+    const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+    const turn = await prepareChatTurn({
+      config: makeConfig({ BROWSE_MODE: "agent" }),
+      messages: [userMessage("copy that page")],
+      clientCapabilities: LIGHT_CAPS,
+    });
+    const tool = turn.tools.browse_agent as { inputSchema: never };
+    const json = JSON.stringify(await (await import("ai")).asSchema(tool.inputSchema).jsonSchema);
+    expect(json).toContain('"capture"');
+  });
+
+  it("parallel prompt bullet does not mention qa and explains login for isolated sessions", async () => {
+    const { buildBrowserModePrompt } = await import("../src/ai/system-prompt.js");
+    const prompt = buildBrowserModePrompt({ isolated: true });
+    expect(prompt).not.toMatch(/`qa`/);
+    expect(prompt).toContain("without the user's cookies");
+    expect(prompt).toContain("browse_fill_login");
+  });
+
   it("offers exactly the browser tool set for the Light capabilities, with no canvas tool", async () => {
     const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
     const turn = await prepareChatTurn({

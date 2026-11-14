@@ -1584,6 +1584,26 @@ export function browseAgentToolWithApp(opts: { qa: boolean; isolated: boolean; a
   return t;
 }
 
+const browseAgentNoCaptureCache = new Map<string, ReturnType<typeof browseAgentTool>>();
+/**
+ * browse_agent without the canvas `capture` param (and without the canvas
+ * sentences of its description), for agentMode "browser": that client has no
+ * canvas to capture to. Same axes as browseAgentToolWithApp, plus `app` off.
+ */
+export function browseAgentToolNoCapture(opts: { qa: boolean; isolated: boolean; assert: boolean; app?: boolean | "native" }) {
+  const qa = opts.qa;
+  const isolated = qa && opts.isolated;
+  const assert = qa && opts.assert;
+  const app = opts.app ?? false;
+  const key = `${qa}:${isolated}:${assert}:${app}`;
+  let t = browseAgentNoCaptureCache.get(key);
+  if (!t) {
+    t = browseAgentTool(qa, isolated, assert, app, true);
+    browseAgentNoCaptureCache.set(key, t);
+  }
+  return t;
+}
+
 // Non-isolated QA variant only: a QA run is a fresh scenario, so it cannot resume a checkpoint.
 // The isolated variant may resume (with qa: true).
 function withQaResumeCheck<T extends z.ZodTypeAny>(schema: T): T {
@@ -1604,7 +1624,17 @@ function stripBrowseAgentPlaceholders(input: unknown): unknown {
   return out;
 }
 
-function browseAgentTool(qa: boolean, isolated = false, assert = false, app: boolean | "native" = false) {
+/** Removes every canvas/capture sentence from a browse_agent description (browser mode has no canvas). */
+function stripBrowseAgentCanvasText(text: string): string {
+  return text
+    .replace(" If the user wants a picture (screenshot) of the page on the canvas, say so in `goal`: the subagent then calls browse_screenshot with placeOnCanvas.", "")
+    .replace(" If the user wants an editable copy of the page on the canvas, set `capture: true` and say in `goal` which page or part to copy.", "")
+    .replace(/, plus `captured: [^]*?during the run\./, ".")
+    .replace("`resume` or `capture`", "or `resume`")
+    .replace("`url`, `setup`, or `resume`", "`url`, `setup` or `resume`");
+}
+
+function browseAgentTool(qa: boolean, isolated = false, assert = false, app: boolean | "native" = false, noCapture = false) {
   const base = z.object({
       goal: z
         .string()
@@ -1626,10 +1656,14 @@ function browseAgentTool(qa: boolean, isolated = false, assert = false, app: boo
         .max(64)
         .optional()
         .describe("The id of a checkpoint that an earlier browse_agent call returned in its result (`checkpoint.id`). The browser rebuilds the page (start page, cookies, storage, the recorded steps) before the subagent starts, so it continues where that run stopped. Do not use it together with `url` or `setup`. Checkpoints live in the editor's memory and are lost when the editor reloads."),
-      capture: z
-        .boolean()
-        .optional()
-        .describe("Set true ONLY when the user directly asks to copy or clone the page onto the canvas. The subagent then gets the browse_capture tool and copies the page once. The result then carries `captured: { nodeId, width, height, url, title }`."),
+      ...(noCapture
+        ? {}
+        : {
+            capture: z
+              .boolean()
+              .optional()
+              .describe("Set true ONLY when the user directly asks to copy or clone the page onto the canvas. The subagent then gets the browse_capture tool and copies the page once. The result then carries `captured: { nodeId, width, height, url, title }`."),
+          }),
       ...(app
         ? {
             app: z.string().trim().min(1).max(1024).optional().describe(app === "native" ? PEN_EDITOR_BROWSE_AGENT_APP_FIELD_NATIVE : PEN_EDITOR_BROWSE_AGENT_APP_FIELD),
@@ -1660,7 +1694,7 @@ function browseAgentTool(qa: boolean, isolated = false, assert = false, app: boo
     })
     .refine(
       (a) => (a as { app?: string }).app === undefined ||
-        (a.url === undefined && a.setup === undefined && a.resume === undefined && a.capture !== true),
+        (a.url === undefined && a.setup === undefined && a.resume === undefined && (a as { capture?: boolean }).capture !== true),
       { message: "`app` cannot be combined with `url`, `setup`, `resume` or `capture: true`.", path: ["app"] },
     )
     .refine((a) => (a as { checks?: unknown }).checks === undefined || a.qa === true, {
@@ -1677,7 +1711,8 @@ function browseAgentTool(qa: boolean, isolated = false, assert = false, app: boo
           ? BROWSE_AGENT_DESCRIPTION_WITH_QA_ASSERT
           : BROWSE_AGENT_DESCRIPTION_WITH_QA
         : BROWSE_AGENT_DESCRIPTION;
-      return app ? base.replace(BROWSE_AGENT_RESUME_GUIDANCE, BROWSE_AGENT_RESUME_GUIDANCE + (app === "native" ? BROWSE_AGENT_APP_GUIDANCE_NATIVE : BROWSE_AGENT_APP_GUIDANCE)) : base;
+      const full = app ? base.replace(BROWSE_AGENT_RESUME_GUIDANCE, BROWSE_AGENT_RESUME_GUIDANCE + (app === "native" ? BROWSE_AGENT_APP_GUIDANCE_NATIVE : BROWSE_AGENT_APP_GUIDANCE)) : base;
+      return noCapture ? stripBrowseAgentCanvasText(full) : full;
     })(),
     inputSchema: qa && !isolated ? withQaResumeCheck(schema) : schema,
   });
