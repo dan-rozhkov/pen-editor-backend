@@ -13,7 +13,12 @@ import { chatTurn, startApp, type RunningApp } from "./chatHarness.js";
 // history shows the prototype/slides skill was loaded, batch_design is
 // swapped for the embed-only variant, so a model-emitted native-node create
 // op is rejected at the tool-input-validation layer (surfaced to the client
-// as a tool-output-error carrying the embed-only guidance message). A
+// as a tool-input-error carrying the embed-only guidance message; the client
+// SDK turns it into an `output-error` part). Before ai 7.0.168 the SDK also
+// emitted a duplicate tool-output-error chunk for the same invalid call; the
+// fix "call toUIMessageStream onError once per invalid tool call" dropped it,
+// so assert the input-error chunk, which is the one that carries the
+// rejection. A
 // control case confirms the same op still passes under the default (native)
 // policy.
 
@@ -77,7 +82,7 @@ describe("POST /api/chat — prototype/slides embed-only batch_design guard", ()
     );
 
     expect(res.status).toBe(200);
-    expect(body).toContain("tool-output-error");
+    expect(body).toContain("tool-input-error");
     expect(body).toContain("embed-only");
     expect(body).toContain("may not create a native");
     expect(body).toContain("frame");
@@ -90,7 +95,7 @@ describe("POST /api/chat — prototype/slides embed-only batch_design guard", ()
     );
 
     expect(res.status).toBe(200);
-    expect(body).toContain("tool-output-error");
+    expect(body).toContain("tool-input-error");
     expect(body).toContain("embed-only");
   });
 
@@ -101,6 +106,7 @@ describe("POST /api/chat — prototype/slides embed-only batch_design guard", ()
     );
 
     expect(res.status).toBe(200);
+    expect(body).not.toContain("tool-input-error");
     expect(body).not.toContain("tool-output-error");
     expect(body).toContain("tool-input-available");
   });
@@ -111,6 +117,7 @@ describe("POST /api/chat — prototype/slides embed-only batch_design guard", ()
     ]);
 
     expect(res.status).toBe(200);
+    expect(body).not.toContain("tool-input-error");
     expect(body).not.toContain("tool-output-error");
     expect(body).toContain("tool-input-available");
   });
