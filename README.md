@@ -129,3 +129,7 @@ Tests live in `test/` (Vitest). The LLM (`src/ai/provider.js`) and MCP
 route uses `reply.hijack()`, so integration tests `listen` on an ephemeral port and
 read the SSE stream with `fetch` rather than `app.inject()`. The internet tools are
 tested in `test/web-search.test.ts` with a stubbed global `fetch`.
+
+## License
+
+MIT, see [LICENSE](LICENSE). The design skills in `src/skills/` are adapted from [Impeccable](https://github.com/pbakaus/impeccable) and stay under the Apache License 2.0. See [NOTICE.md](NOTICE.md).
