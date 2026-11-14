@@ -359,6 +359,13 @@ export async function chatRoutes(
 
     // The browse subagent turn exists only in BROWSE_MODE=agent; elsewhere a
     // request for it is refused before any model call.
+    if (agentMode === "browser" && config.BROWSE_MODE !== "agent") {
+      // The browser mode hands every web task to the browse subagent.
+      return reply.status(400).send({
+        error: "The browser mode needs the browse subagent, which is disabled on this server.",
+        code: "browse_agent_disabled",
+      });
+    }
     if (agentMode === "browse" && config.BROWSE_MODE !== "agent") {
       return reply.status(400).send({
         error: "The browse subagent is disabled on this server.",
@@ -519,8 +526,9 @@ export async function chatRoutes(
         messages,
         canvasContext,
         modelOverride,
-        // Trace-only for every mode except "browse", which builds the
-        // browsing-subagent turn (see prepareChatTurn).
+        // Trace-only for every mode except "browse" (builds the browsing-subagent
+        // turn) and "browser" (the browser-only client's main turn); see
+        // prepareChatTurn.
         agentMode,
         userId,
         mobbinAccessToken,
@@ -803,7 +811,7 @@ export async function chatRoutes(
         // showcase runner and every headless entry point never reach it.
         // A browsing-subagent turn is a nested tool run, not a conversation:
         // it must not tick the memory/skill review counters.
-        if (userId && memoryStore && agentMode !== "browse") {
+        if (userId && memoryStore && agentMode !== "browse" && agentMode !== "browser") {
           // turnComplete computed once above, shared with the
           // agent_turn_completed capture. See the `turnComplete` doc
           // comment on MaybeRunReviewInput for what this fixes.

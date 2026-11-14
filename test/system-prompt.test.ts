@@ -4,7 +4,7 @@ import { penTools } from "../src/ai/tools.js";
 
 describe("AGENT_MODES", () => {
   it("remains exported for legacy request-body validation", () => {
-    expect(AGENT_MODES).toEqual(["edits", "prototype", "research", "browse"]);
+    expect(AGENT_MODES).toEqual(["edits", "prototype", "research", "browse", "browser"]);
   });
 });
 

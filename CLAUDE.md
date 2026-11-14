@@ -1063,6 +1063,10 @@ into `showcase_screens` — `showcase:generate`, `showcase:ingest`,
 surface), and there is no unpublish route: cleanup after a bad publish is an
 operator running `npm run showcase:delete --app <runId>` by hand.
 
+## Agent modes: `browser` (Sideform Light)
+
+`AGENT_MODES` (`src/ai/system-prompt.ts`) is `edits` (default), `prototype`, `research`, `browse` (the nested browsing subagent) and `browser`. `browser` is the main chat of the browser-only desktop client Sideform Light: `prepareChatTurn` gives it a dedicated compact prompt (`buildBrowserModePrompt`, constant per client capability) and the fixed tool set `browse_agent`, `ask_user`, `analyze_image`, `trace_list`, `trace_read` (`BROWSER_MODE_TOOL_NAMES` in `src/ai/chatTurn.ts`, still gated on `clientCapabilities` as in `edits`). It ignores `canvasContext`, has no memory, user/learned skills, slash skills or MCP tools, runs on the normal chat model, and 400s `browse_agent_disabled` unless `BROWSE_MODE=agent`. Tests: `test/browser-mode.test.ts`.
+
 ## Browse task: policy and cloud browser live in `@sideform/browser-agent`
 
 The browse_task step policy (step, ultrafast, commit guard, CAPTCHA wall, locate, plan, the `browse*BodySchema` zod schemas) and the cloud-browser controller/Playwright adapter are not in this repo: they come from `@sideform/browser-agent` (`github:dan-rozhkov/browser-agent#<tag>`, built by its `prepare` script on `npm ci`). Change them there, then bump the tag in `package.json`. Renovate (`renovate.json`) opens bump PRs for `@sideform/browser-agent` only. Patch bumps automerge on green CI. Minor bumps are breaking in 0.x and need a human. Backend glue only: `src/ai/browsePolicy.ts` (Config -> `BrowsePolicyOptions`; model built on every call), `src/routes/browse{Step,Locate,Plan}.ts` (Fastify, rate limit, logging, the `BROWSE_STEP_VISION=on` + `jev*` warning), `src/services/systemone.ts` (thin wrapper over `createSystemOneClient`; returns `null` without `TYPESAFE_API_KEY`), `src/browser/connect.ts` and `cloudSessions.ts`. `src/analysis/pii.ts` re-exports the package's PII scrubber. `npm run browser:sync` and `src/browser/vendor/` no longer exist.
