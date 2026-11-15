@@ -11,6 +11,7 @@ import { createHash } from "node:crypto";
 import type { Config } from "../config.js";
 import { withStepWatchdog } from "./stepWatchdog.js";
 import { bareModelId, createModel, parseModelRef, providerHandlesToolResultImages } from "./provider.js";
+import { SCHEDULE_TOOL_NAMES, scheduleTools } from "./scheduleTools.js";
 import { penTools, browseOpenToolApp, browseOpenToolAppNative, browseActToolAppNative, browseAgentToolWithApp, browseAgentToolNoCapture, browseAgentToolNoQa, browseAgentToolQaIsolated, browseAgentToolQaNoAssert, browseAgentToolQaIsolatedNoAssert, makeBatchDesignTool, makeAnalyzeImageTool } from "./tools.js";
 import { BROWSE_AGENT_TOOL_NAMES, QA_ASSERT_TOOL, QA_VERDICT_TOOL } from "@sideform/browser-agent/agent";
 import { browseAgentPrompt, buildBrowserModePrompt, buildSystemPrompt, type AgentMode, type BrowserGuidance } from "./system-prompt.js";
@@ -224,7 +225,7 @@ export interface PrepareChatTurnInput {
    * Undefined/false → the browse_* tools are dropped below, same as any
    * other caller (the showcase runner, tests) that never wires this.
    */
-  clientCapabilities?: { desktopBrowser?: boolean; browser?: "desktop" | "cloud"; browseQa?: boolean; browseIsolation?: boolean; browseAssert?: boolean; browseApps?: boolean; browseNativeApps?: boolean; canvasTabs?: boolean; docTabs?: boolean; workflowTabs?: boolean; traceTabs?: boolean };
+  clientCapabilities?: { desktopBrowser?: boolean; browser?: "desktop" | "cloud"; browseQa?: boolean; browseIsolation?: boolean; browseAssert?: boolean; browseApps?: boolean; browseNativeApps?: boolean; canvasTabs?: boolean; docTabs?: boolean; workflowTabs?: boolean; traceTabs?: boolean; schedules?: boolean };
   /**
    * agentMode "browse" only: the user directly asked to copy the page onto the
    * canvas, so the subagent may carry browse_capture. Ignored otherwise.
@@ -277,7 +278,9 @@ export interface PreparedChatTurn {
 // allowlist in prepareChatTurn); the browse/trace gates still apply on top.
 // trace_frame is left out on purpose: its params (`placeOnCanvas`, x, y) are
 // canvas-bound, and trace_read already gives the text of a run. trace_open is
-// left out as well (the contract names exactly these five).
+// left out as well (the contract names exactly these five). This is the base
+// set: the schedule tools (SCHEDULE_TOOL_NAMES) join it when
+// clientCapabilities.schedules is true.
 const BROWSER_MODE_TOOL_NAMES = ["browse_agent", "ask_user", "analyze_image", "trace_list", "trace_read"] as const;
 const TRACE_TOOL_NAMES = ["trace_list", "trace_open", "trace_read", "trace_frame"] as const;
 const WORKFLOW_TOOL_NAMES = ["workflow_list", "workflow_create", "workflow_read", "workflow_edit", "workflow_open"] as const;
@@ -892,6 +895,8 @@ export async function prepareChatTurn(
 
   // One flag for both the QA prompt and the qa_verdict allowlist entry.
   const browseQaAllowed = input.browseQa === true && hasBrowser;
+  // schedule_create/schedule_list: browser mode and a client that runs them.
+  const schedulesOffered = browserMode && input.clientCapabilities?.schedules === true;
   // qa_assert in the nested QA turn: the nested chat repeats the client
   // capability in its own body, so the same gate applies there.
   const browseAssertAllowed = browseQaAllowed && input.clientCapabilities?.browseAssert === true;
@@ -899,7 +904,7 @@ export async function prepareChatTurn(
   const system = browseSub
     ? browseAgentPrompt({ qa: browseQaAllowed, login: browseLoginAllowed })
     : browserMode
-    ? buildBrowserModePrompt({ isolated: clientHasIsolation })
+    ? buildBrowserModePrompt({ isolated: clientHasIsolation, schedules: schedulesOffered })
     : buildSystemPrompt(skillCatalog, {
         browserGuidance,
         memoryGuidance: memoryInjected,
@@ -1438,9 +1443,13 @@ export async function prepareChatTurn(
       delete tools.vectorize_image;
     }
 
+    // schedule_*: only a browser-mode turn of a client that can run them
+    // (clientCapabilities.schedules). Constant per client: prompt cache stays valid.
+    if (schedulesOffered) Object.assign(tools, scheduleTools);
+
     // Browser mode: the fixed tool set wins over every gate above.
     if (browserMode) {
-      const allowed = new Set<string>(BROWSER_MODE_TOOL_NAMES);
+      const allowed = new Set<string>([...BROWSER_MODE_TOOL_NAMES, ...(schedulesOffered ? SCHEDULE_TOOL_NAMES : [])]);
       for (const name of Object.keys(tools)) {
         if (!allowed.has(name)) delete tools[name];
       }

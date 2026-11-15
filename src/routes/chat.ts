@@ -254,6 +254,9 @@ const chatBodySchema = z.object({
       // from the turn (chatTurn.ts).
       workflowTabs: z.boolean().optional(),
       traceTabs: z.boolean().optional(),
+      // The client runs schedule_create / schedule_list (Sideform Light). Honoured
+      // only in agentMode "browser" (chatTurn.ts).
+      schedules: z.boolean().optional(),
     })
     .optional(),
 });

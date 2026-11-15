@@ -170,3 +170,89 @@ describe("agentMode browser", () => {
     expect(turn.taskPolicy).toBe("native");
   });
 });
+
+describe("schedule tools", () => {
+  const SCHEDULE_CAPS = { ...LIGHT_CAPS, schedules: true };
+  const SCHEDULE_TOOLS = ["schedule_create", "schedule_list"];
+  const turnFor = async (agentMode: "browser" | "browse" | "edits", clientCapabilities: Record<string, unknown>) => {
+    const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+    return prepareChatTurn({
+      config: makeConfig({ BROWSE_MODE: "agent" }),
+      messages: [userMessage("check prices every morning")],
+      agentMode,
+      clientCapabilities,
+    });
+  };
+
+  it("offers both tools, without execute, in browser mode with schedules", async () => {
+    const turn = await turnFor("browser", SCHEDULE_CAPS);
+    expect(Object.keys(turn.tools).sort()).toEqual([...EXPECTED_TOOLS, ...SCHEDULE_TOOLS].sort());
+    expect(turn.tools.schedule_create?.execute).toBeUndefined();
+    expect(turn.tools.schedule_list?.execute).toBeUndefined();
+    expect(turn.system).toContain("## Schedules");
+  });
+
+  it("sends the schedule tools over HTTP", async () => {
+    const sent = await toolsSentFor(server.url, "every monday check the news", {
+      agentMode: "browser",
+      clientCapabilities: SCHEDULE_CAPS,
+    });
+    expect([...sent].sort()).toEqual([...EXPECTED_TOOLS, ...SCHEDULE_TOOLS].sort());
+  });
+
+  it("omits the tools and the prompt section without the schedules flag", async () => {
+    const turn = await turnFor("browser", LIGHT_CAPS);
+    expect(Object.keys(turn.tools).sort()).toEqual(EXPECTED_TOOLS);
+    expect(turn.system).not.toContain("schedule");
+  });
+
+  it("never offers them in edits mode or to a browse subagent", async () => {
+    for (const mode of ["edits", "browse"] as const) {
+      const turn = await turnFor(mode, SCHEDULE_CAPS);
+      for (const name of SCHEDULE_TOOLS) expect(turn.tools[name]).toBeUndefined();
+    }
+  });
+
+  it("keeps the schedule tools out of penTools", async () => {
+    const { penTools } = await import("../src/ai/tools.js");
+    for (const name of SCHEDULE_TOOLS) expect(Object.keys(penTools)).not.toContain(name);
+  });
+
+  it("builds the same prompt with schedules false or omitted, and no schedule text", async () => {
+    const { buildBrowserModePrompt } = await import("../src/ai/system-prompt.js");
+    for (const isolated of [false, true]) {
+      const off = buildBrowserModePrompt({ isolated, schedules: false });
+      expect(off).toBe(buildBrowserModePrompt({ isolated }));
+      expect(off).not.toContain("schedule");
+      const on = buildBrowserModePrompt({ isolated, schedules: true });
+      expect(on).toContain("## Schedules");
+      expect(on).toContain("`schedule_create`");
+      expect(on).toContain("`schedule_list`");
+    }
+  });
+
+  it("accepts only 5-field cron expressions", async () => {
+    const { scheduleCreateInputSchema } = await import("../src/ai/scheduleTools.js");
+    const base = { name: "n", prompt: "p" };
+    for (const cron of ["0 9 * * 1-5", "*/15 * * * *", "0 9 * JAN MON-FRI", "0 8,20 1 * *", " 0 9 * * * "]) {
+      expect(scheduleCreateInputSchema.safeParse({ ...base, cron }).success, cron).toBe(true);
+    }
+    for (const cron of ["@daily", "0 0 9 * * 1", "0 9 * *", "every morning at 9", "0 9 * * ?!", "0 9 * * 1;rm"]) {
+      const r = scheduleCreateInputSchema.safeParse({ ...base, cron });
+      expect(r.success, cron).toBe(false);
+      if (!r.success) expect(r.error.issues[0]?.message).toContain("Use 5 fields");
+    }
+  });
+
+  it("validates the input lengths", async () => {
+    const { scheduleCreateInputSchema } = await import("../src/ai/scheduleTools.js");
+    const ok = { name: "n", prompt: "p", cron: "0 9 * * *" };
+    expect(scheduleCreateInputSchema.safeParse(ok).success).toBe(true);
+    expect(scheduleCreateInputSchema.safeParse({ ...ok, name: "" }).success).toBe(false);
+    expect(scheduleCreateInputSchema.safeParse({ ...ok, name: "n".repeat(101) }).success).toBe(false);
+    expect(scheduleCreateInputSchema.safeParse({ ...ok, prompt: "p".repeat(20001) }).success).toBe(false);
+    expect(scheduleCreateInputSchema.safeParse({ ...ok, prompt: "p".repeat(20000) }).success).toBe(true);
+    expect(scheduleCreateInputSchema.safeParse({ ...ok, cron: "" }).success).toBe(false);
+    expect(scheduleCreateInputSchema.safeParse({ ...ok, cron: "x".repeat(101) }).success).toBe(false);
+  });
+});
