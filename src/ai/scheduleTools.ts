@@ -34,6 +34,18 @@ export const scheduleCreateInputSchema = z.object({
     .describe("Cron expression with 5 fields: minute hour day-of-month month day-of-week. Local time of the person. Example: \"0 9 * * 1-5\"."),
 });
 
+const scheduleIdSchema = z
+  .string()
+  .regex(/^[A-Za-z0-9_-]{1,128}$/)
+  .describe("Id of the schedule, exactly as schedule_list returned it. Never guess an id.");
+
+export const scheduleSetEnabledInputSchema = z.object({
+  id: scheduleIdSchema,
+  enabled: z.boolean().describe("false pauses the schedule. true resumes it."),
+});
+
+export const scheduleDeleteInputSchema = z.object({ id: scheduleIdSchema });
+
 export const scheduleTools = {
   schedule_create: tool({
     description:
@@ -60,6 +72,29 @@ export const scheduleTools = {
       "nextRun and lastRun.at are readable local times. " +
       "This tool runs in the user's browser (client side) and has no server-side execute.",
     inputSchema: z.object({}),
+  }),
+
+  schedule_set_enabled: tool({
+    description:
+      "Pause or resume a scheduled chat. " +
+      "`enabled: false` pauses it: it stops future runs, and the schedule stays in the list. " +
+      "`enabled: true` resumes it: it turns the schedule back on. " +
+      "Take `id` from schedule_list. Never guess an id. " +
+      "The person must confirm in the chat. The tool waits until the person decides. " +
+      "Returns {\"status\":\"updated\",\"schedule\":{id,name,cron,description,enabled,nextRun?,lastRun?}}, " +
+      "{\"status\":\"declined\"} when the person said no, or {\"status\":\"error\",\"error\"}. " +
+      "This tool runs in the user's browser (client side) and has no server-side execute.",
+    inputSchema: scheduleSetEnabledInputSchema,
+  }),
+
+  schedule_delete: tool({
+    description:
+      "Delete a scheduled chat. Delete cannot be undone. To stop runs and keep the schedule, use schedule_set_enabled with enabled false. " +
+      "Take `id` from schedule_list. Never guess an id. " +
+      "The person must confirm in the chat. The tool waits until the person decides. " +
+      "Returns {\"status\":\"deleted\",\"id\"}, {\"status\":\"declined\"} when the person said no, or {\"status\":\"error\",\"error\"}. " +
+      "This tool runs in the user's browser (client side) and has no server-side execute.",
+    inputSchema: scheduleDeleteInputSchema,
   }),
 };
 

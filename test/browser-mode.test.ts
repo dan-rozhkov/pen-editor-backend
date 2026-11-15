@@ -173,7 +173,7 @@ describe("agentMode browser", () => {
 
 describe("schedule tools", () => {
   const SCHEDULE_CAPS = { ...LIGHT_CAPS, schedules: true };
-  const SCHEDULE_TOOLS = ["schedule_create", "schedule_list"];
+  const SCHEDULE_TOOLS = ["schedule_create", "schedule_list", "schedule_set_enabled", "schedule_delete"];
   const turnFor = async (agentMode: "browser" | "browse" | "edits", clientCapabilities: Record<string, unknown>) => {
     const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
     return prepareChatTurn({
@@ -189,6 +189,8 @@ describe("schedule tools", () => {
     expect(Object.keys(turn.tools).sort()).toEqual([...EXPECTED_TOOLS, ...SCHEDULE_TOOLS].sort());
     expect(turn.tools.schedule_create?.execute).toBeUndefined();
     expect(turn.tools.schedule_list?.execute).toBeUndefined();
+    expect(turn.tools.schedule_set_enabled?.execute).toBeUndefined();
+    expect(turn.tools.schedule_delete?.execute).toBeUndefined();
     expect(turn.system).toContain("## Schedules");
   });
 
@@ -228,7 +230,26 @@ describe("schedule tools", () => {
       expect(on).toContain("## Schedules");
       expect(on).toContain("`schedule_create`");
       expect(on).toContain("`schedule_list`");
+      expect(on).toContain("`schedule_set_enabled`");
+      expect(on).toContain("`schedule_delete`");
+      expect(on).toContain("Settings > Schedules");
+      expect(off).not.toContain("schedule_set_enabled");
     }
+  });
+
+  it("validates the id and enabled of schedule_set_enabled and schedule_delete", async () => {
+    const { scheduleSetEnabledInputSchema, scheduleDeleteInputSchema } = await import("../src/ai/scheduleTools.js");
+    expect(scheduleSetEnabledInputSchema.safeParse({ id: "abc_DEF-123", enabled: false }).success).toBe(true);
+    expect(scheduleSetEnabledInputSchema.safeParse({ id: "a".repeat(128), enabled: true }).success).toBe(true);
+    expect(scheduleSetEnabledInputSchema.safeParse({ id: "a".repeat(129), enabled: true }).success).toBe(false);
+    expect(scheduleSetEnabledInputSchema.safeParse({ id: "", enabled: true }).success).toBe(false);
+    expect(scheduleSetEnabledInputSchema.safeParse({ id: "has space", enabled: true }).success).toBe(false);
+    expect(scheduleSetEnabledInputSchema.safeParse({ id: "a/b", enabled: true }).success).toBe(false);
+    expect(scheduleSetEnabledInputSchema.safeParse({ id: "abc", enabled: "yes" }).success).toBe(false);
+    expect(scheduleSetEnabledInputSchema.safeParse({ id: "abc" }).success).toBe(false);
+    expect(scheduleDeleteInputSchema.safeParse({ id: "abc-1" }).success).toBe(true);
+    expect(scheduleDeleteInputSchema.safeParse({ id: "../x" }).success).toBe(false);
+    expect(scheduleDeleteInputSchema.safeParse({}).success).toBe(false);
   });
 
   it("accepts only 5-field cron expressions", async () => {
