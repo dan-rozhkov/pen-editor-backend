@@ -24,6 +24,8 @@ describe("parseByokBaseUrl", () => {
     "https://user:pass@example.com/v1",
     "https://example.com/v1?x=1",
     "https://example.com/v1#frag",
+    "https://example.com/v1?",
+    "https://example.com/v1#",
     "https://localhost/v1",
     "https://foo.localhost/v1",
     "https://printer.local/v1",

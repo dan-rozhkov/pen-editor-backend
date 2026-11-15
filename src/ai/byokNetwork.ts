@@ -97,7 +97,8 @@ export function parseByokBaseUrl(raw: string, opts: ByokNetworkOptions): ParsedB
   const protocolOk = url.protocol === "https:" || (opts.allowPrivateNetwork && url.protocol === "http:");
   if (!protocolOk) return { ok: false };
   if (url.username || url.password) return { ok: false };
-  if (url.search || url.hash) return { ok: false };
+  // A bare trailing "?" or "#" leaves search/hash empty but stays in href.
+  if (url.search || url.hash || url.href.includes("?") || url.href.includes("#")) return { ok: false };
   if (!url.hostname) return { ok: false };
   if (!opts.allowPrivateNetwork) {
     // WHATWG URL already normalised octal/hex/decimal IPv4 forms to dotted

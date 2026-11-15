@@ -77,3 +77,18 @@ LM Studio при `npm run dev`). По умолчанию `false`.
 `upstream_error`. Невалидный base URL → 400 `byok_base_url_invalid`.
 `contextWindow` берётся из `context_length` (форма OpenRouter), если есть.
 Rate limit 10/мин/IP, как у `/api/opencode/validate`.
+
+## Сабагент
+
+Добавлено 2026-11-15 для Sideform Light. Браузерный сабагент
+(`agentMode: "browse"`) обычно закреплён за `BROWSE_AGENT_MODEL`. Исключение:
+в теле пришла `byok/`-модель, а с ней оба заголовка `X-BYOK-*`. Тогда
+сабагент работает на модели пользователя: тот выбрал свой провайдер, чтобы
+агенты не ходили через наш OpenRouter. Без заголовков роут, как и раньше,
+отвечает 400 `byok_key_required`. `reasoningEffort: "none"` для `byok/` ни на
+что не влияет: reasoning мы туда не шлём. Сторожа шага
+(`BROWSE_STEP_FIRST_CHUNK_MS` / `BROWSE_STEP_IDLE_MS`) для такой модели нет:
+он настроен под нашу быструю модель без reasoning, а задержка чужой модели
+неизвестна. Вспомогательные вызовы
+(`/api/browse/{step,plan,locate,judge}`, `VISION_MODEL`) по-прежнему идут на
+модели сервера.

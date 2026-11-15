@@ -10,7 +10,7 @@ import { markCacheBreakpoint, usesAnthropicPromptCache } from "./anthropicCache.
 import { createHash } from "node:crypto";
 import type { Config } from "../config.js";
 import { withStepWatchdog } from "./stepWatchdog.js";
-import { bareModelId, createModel, parseModelRef, providerHandlesToolResultImages } from "./provider.js";
+import { bareModelId, createModel, isByokProvider, parseModelRef, providerHandlesToolResultImages } from "./provider.js";
 import { SCHEDULE_TOOL_NAMES, scheduleTools } from "./scheduleTools.js";
 import { penTools, browseOpenToolApp, browseOpenToolAppNative, browseActToolAppNative, browseAgentToolWithApp, browseAgentToolNoCapture, browseAgentToolNoQa, browseAgentToolQaIsolated, browseAgentToolQaNoAssert, browseAgentToolQaIsolatedNoAssert, makeBatchDesignTool, makeAnalyzeImageTool } from "./tools.js";
 import { BROWSE_AGENT_TOOL_NAMES, QA_ASSERT_TOOL, QA_VERDICT_TOOL } from "@sideform/browser-agent/agent";
@@ -320,9 +320,17 @@ export async function prepareChatTurn(
   // on the user's main chat model, also for an OpenCode Go user: OM2W 15.10,
   // Go subagent p50 93 s vs OpenRouter + Together 53 s at the same success.
   // BROWSE_AGENT_FOLLOW_REQUEST_MODEL (bench-only) lets the request's model win.
-  const modelOverride = browseSub && !(config.BROWSE_AGENT_FOLLOW_REQUEST_MODEL && input.modelOverride)
-    ? config.BROWSE_AGENT_MODEL
-    : input.modelOverride;
+  // A "byok/" model with its credentials also wins: the user chose their own
+  // provider so that the agents run on it, not on our OpenRouter key
+  // (docs/specs/2026-11-13-byok-custom-provider-design.md, "Сабагент").
+  const followsByok =
+    input.byok !== undefined &&
+    input.modelOverride !== undefined &&
+    isByokProvider(parseModelRef(input.modelOverride).provider);
+  const modelOverride =
+    browseSub && !followsByok && !(config.BROWSE_AGENT_FOLLOW_REQUEST_MODEL && input.modelOverride)
+      ? config.BROWSE_AGENT_MODEL
+      : input.modelOverride;
 
   // Every skill lookup below — the slash command, the catalog in the system
   // prompt, the load_skill tool — silently resolves to nothing on an empty
@@ -694,7 +702,10 @@ export async function prepareChatTurn(
   });
   // Only the nested browse subagent gets the per-step watchdog: one stuck
   // step otherwise blocks the main agent for minutes (155 s seen 24.10).
-  const model = browseSub
+  // Not for the user's own provider (followsByok): its latency is unknown (a
+  // reasoning or local model can think past 30 s before the first token), and
+  // reasoningEffort "none" does not reach it.
+  const model = browseSub && !followsByok
     ? withStepWatchdog(baseModel, {
         firstChunkMs: config.BROWSE_STEP_FIRST_CHUNK_MS,
         idleMs: config.BROWSE_STEP_IDLE_MS,

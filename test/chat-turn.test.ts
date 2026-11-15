@@ -1647,6 +1647,31 @@ describe("browse subagent", () => {
       );
     });
 
+    it("runs on the user's own byok model when its credentials came with the request", async () => {
+      const byok = { baseUrl: "https://api.example.com/v1", apiKey: "user-key" };
+      const turn = await prepare({
+        agentMode: "browse",
+        modelOverride: "byok/my-model",
+        byok,
+        clientCapabilities: DESKTOP,
+      });
+      expect(turn.selectedModelId).toBe("byok/my-model");
+      expect(createModel).toHaveBeenCalledWith(
+        expect.anything(),
+        "byok/my-model",
+        expect.objectContaining({ byok, reasoningEffort: "none" }),
+      );
+    });
+
+    it("keeps BROWSE_AGENT_MODEL for a byok model without credentials", async () => {
+      const turn = await prepare({
+        agentMode: "browse",
+        modelOverride: "byok/my-model",
+        clientCapabilities: DESKTOP,
+      });
+      expect(turn.selectedModelId).toBe("deepseek/deepseek-v4.1-flash");
+    });
+
     it("leaves the main model alone for every other agentMode", async () => {
       const edits = await prepare({ agentMode: "edits", modelOverride: "anthropic/claude-haiku-5.5" });
       expect(edits.selectedModelId).toBe("anthropic/claude-haiku-5.5");
@@ -1672,5 +1697,13 @@ describe("browse step watchdog seam", () => {
       clientCapabilities: DESKTOP,
     });
     expect(hasStepWatchdog(off.model)).toBe(false);
+    const byok = await prepare({
+      config: makeConfig({ BROWSE_MODE: "agent" }),
+      agentMode: "browse",
+      modelOverride: "byok/my-model",
+      byok: { baseUrl: "https://api.example.com/v1", apiKey: "user-key" },
+      clientCapabilities: DESKTOP,
+    });
+    expect(hasStepWatchdog(byok.model)).toBe(false);
   });
 });
