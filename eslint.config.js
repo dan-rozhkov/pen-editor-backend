@@ -9,7 +9,7 @@ export default defineConfig([
   // package.json/tsconfig.json) while `npm run test:mutation` is running —
   // without this, typescript-eslint's project auto-detection finds two
   // candidate tsconfig roots and every file fails to parse.
-  globalIgnores(["dist", "coverage", ".stryker-tmp"]),
+  globalIgnores(["dist", "dist-local", "coverage", ".stryker-tmp"]),
   {
     files: ["**/*.ts"],
     extends: [js.configs.recommended, tseslint.configs.recommended],

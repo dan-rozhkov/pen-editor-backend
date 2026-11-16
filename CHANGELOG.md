@@ -8,6 +8,17 @@ While on `0.x`, minor bumps may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+- **Local mode** (`SIDEFORM_LOCAL=1`, `src/local/`) for Sideform Light's bundled
+  backend: only `GET /api/models`, `POST /api/chat`, `POST /api/byok/models` and
+  `POST /api/browse/{step,plan,locate,judge}`; no server-side model (needs no
+  `OPENROUTER_API_KEY`, ignores inherited provider/database/auth/analytics
+  env), a per-launch `X-Sideform-Local-Token` (required; the entry refuses to start without it, except `SIDEFORM_LOCAL_INSECURE_DEV=1`), a `Host` check (403 `forbidden_host`), `HOST` ignored (always 127.0.0.1), exit when the parent process is gone, `400 agent_mode_unsupported` for any mode but `browser`/`browse`, screenshots sent to the user's model as a user message after a text-only tool message, and `400 provider_required` for
+  any chat model that is not `byok/...`. `createModel` refuses every non-BYOK
+  model in this mode. `npm run build:local` bundles it to `dist-local/server.mjs`
+  (+ skills), `npm run smoke:local` runs the bundle in an empty dir against a
+  mock provider, `npm run dev:local` runs it with tsx on port 3001.
+
 ## [0.41.0] - 2026-10-18
 
 Two themes: the browse subagent (`browse_agent`) grows into a QA tool, and the

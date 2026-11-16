@@ -87,12 +87,19 @@ function processContent(content: string): string {
   return content.replace(/\{\{ask_instruction\}\}/g, ASK_INSTRUCTION_REPLACEMENT);
 }
 
+// The local bundle is one file (dist-local/server.mjs), so "relative to this
+// module" no longer points at the skills: src/local/index.ts sets the dir.
+let skillsDirOverride: string | undefined;
+export function setSkillsDir(dir: string | undefined): void {
+  skillsDirOverride = dir;
+}
+
 export async function loadSkills(): Promise<void> {
   // Resolve skills relative to this module: src/ai/../skills when running via
   // tsx, dist/ai/../skills when running the compiled build (the build script
   // copies src/skills → dist/skills so dist deploys are self-contained).
   const thisDir = fileURLToPath(new URL(".", import.meta.url));
-  const dir = join(thisDir, "../skills");
+  const dir = skillsDirOverride ?? join(thisDir, "../skills");
   let files: string[];
   try {
     files = await readdir(dir);

@@ -7,6 +7,9 @@
 ```bash
 npm run dev    # tsx watch with --env-file=.env
 npm run build  # tsc → dist/
+npm run build:local  # esbuild → dist-local/server.mjs (Sideform Light local backend, see "Local mode")
+npm run smoke:local  # run that bundle in an empty dir against a mock provider
+npm run dev:local    # local mode via tsx on :3001
 npm run lint   # ESLint (flat config, 0 errors expected — enforced in CI)
 npm test       # Vitest (test/) — no API keys or network needed
 ```
@@ -1062,6 +1065,15 @@ into `showcase_screens` — `showcase:generate`, `showcase:ingest`,
 `showcase:pin`, `showcase:delete` — is an operator-run CLI with no HTTP
 surface), and there is no unpublish route: cleanup after a bad publish is an
 operator running `npm run showcase:delete --app <runId>` by hand.
+
+## Local mode (`src/local/`, Sideform Light's bundled backend)
+Spec: `docs/specs/2026-11-16-sideform-light-local-mode.md`. `SIDEFORM_LOCAL=1` means there is NO server-side model.
+- `src/local/config.ts` `loadLocalConfig()` builds the Config from a closed set of values (only `PORT` comes from the env; it always binds 127.0.0.1): no `OPENROUTER_API_KEY` (empty string, not a placeholder), `BYOK_ALLOW_PRIVATE_NETWORK` on, TypeSafe/DB/auth/PostHog/S3/Tavily/GitHub/memory/skills-learning off whatever the env holds. `Config.SIDEFORM_LOCAL` is true only from here (`loadConfig()` drops it).
+- `src/local/app.ts` `buildLocalApp(config, { token, insecureDev })` registers only `GET /api/models` (empty), `POST /api/chat`, `POST /api/byok/models`, `POST /api/browse/{step,plan,locate,judge}`; everything else is 404. `X-Sideform-Local-Token` is required (constant time; no token = refuse to build/start unless `SIDEFORM_LOCAL_INSECURE_DEV=1`), and a `Host` other than `127.0.0.1:<port>`/`localhost:<port>` is `403 forbidden_host`. No CORS. `agentMode` other than `browser`/`browse` = `400 agent_mode_unsupported`, non-`byok/` chat model = `400 {error:"provider_required"}`, both before the rate limiter; `createModel()` also throws for any non-BYOK ref in local mode, so a new helper that calls it can never reach OpenRouter from here.
+- Vision in local mode: a `byok/` model is assumed vision-capable and tool-result images reach it as `image_url` parts of a user message after the (text-only) tool message, `moveToolResultImagesToUserMessage` (`modelSupportsVision` / `toolResultImagesNative` in `src/ai/vision-messages.ts`, `restoreToolImages` in `createByokModel`), so `browse_screenshot` stays in browse turns. Hosted BYOK behaviour is unchanged. `analyze_image` (server vision model) is dropped in local mode.
+- Adding a route that Light needs: register it in `buildLocalApp` and extend the test in `test/local-mode.test.ts`. Adding a server-model helper to a path a browser/browse turn reaches: it must be gated off by `loadLocalConfig` (or `SIDEFORM_LOCAL`).
+- `src/local/index.ts` is the entry: prints `SIDEFORM_LOCAL_READY port=<n>` and posts `{type:"ready",port}` on `process.parentPort` (Electron utilityProcess). Env: `SIDEFORM_LOCAL_TOKEN`, `SIDEFORM_LOCAL_DATA_DIR`, `PORT`, `SIDEFORM_LOCAL_INSECURE_DEV`, `SIDEFORM_LOCAL_EXIT_WITH_PARENT`. It exits when the parent pid is gone (polled; `src/local/parentWatch.ts`).
+- `npm run build:local` (`scripts/build-local.mjs`, esbuild) → `dist-local/server.mjs` + `dist-local/skills/`; it must run with plain `node` in a dir with no `node_modules` (packages in the unreachable import graph, e.g. `@aws-sdk/client-s3`, `pg`, are stubbed to throw on use; new native deps must be added to that list or kept out of the graph). `npm run smoke:local` copies the bundle to a temp dir and runs a chat against a mock OpenAI-compatible provider (`scripts/lib/mockOpenAiProvider.mjs`, also used by the tests); CI runs both. `npm run dev:local` = tsx on port 3001, no token (`SIDEFORM_LOCAL_INSECURE_DEV=1`). Stubs: `scripts/lib/stubPlugin.mjs`.
 
 ## Agent modes: `browser` (Sideform Light)
 

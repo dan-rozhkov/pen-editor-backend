@@ -40,3 +40,6 @@ flaky-tests.json
 
 # Agent-eval run output (transcripts, screens, label templates); history.jsonl is tracked.
 evals/runs/
+
+# Local backend bundle (npm run build:local)
+dist-local/

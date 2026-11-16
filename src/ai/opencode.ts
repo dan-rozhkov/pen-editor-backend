@@ -264,6 +264,54 @@ export function restoreToolResultImages(args: Record<string, unknown>): Record<s
   return changed ? { ...args, messages: out } : args;
 }
 
+/**
+ * For providers that take only text in a `role:"tool"` message (OpenAI chat
+ * completions): keep every tool message text-only and carry its images in a
+ * `role:"user"` message placed right after the run of tool messages that holds
+ * them. Same detection as restoreToolResultImages (the AI SDK stringified a
+ * "content" output); a tool message with no convertible image stays
+ * byte-identical.
+ *
+ * Done on the request body, not on ModelMessages: the limit is a wire-format
+ * one, and the image-budget / elision passes in chatTurn work on tool-result
+ * images, so rewriting earlier would fight them.
+ */
+export function moveToolResultImagesToUserMessage(args: Record<string, unknown>): Record<string, unknown> {
+  const messages = args.messages;
+  if (!Array.isArray(messages)) return args;
+  let changed = false;
+  const out: unknown[] = [];
+  let pending: ChatPart[] = [];
+  const flush = () => {
+    if (pending.length === 0) return;
+    out.push({ role: "user", content: pending });
+    pending = [];
+  };
+  for (const m of messages as unknown[]) {
+    const msg = typeof m === "object" && m !== null ? (m as Record<string, unknown>) : undefined;
+    if (msg?.role !== "tool") flush();
+    if (!msg || msg.role !== "tool" || typeof msg.content !== "string") {
+      out.push(m);
+      continue;
+    }
+    const converted = restoreToolResultImages({ messages: [msg] }).messages as Record<string, unknown>[];
+    const content = converted[0]?.content;
+    if (!Array.isArray(content)) {
+      out.push(m);
+      continue;
+    }
+    const parts = content as ChatPart[];
+    const images = parts.filter((p) => p.type === "image_url");
+    const text = parts.flatMap((p) => (p.type === "text" ? [p.text] : []));
+    text.push(images.length === 1 ? "[screenshot attached in the next user message]" : `[${images.length} images attached in the next user message]`);
+    changed = true;
+    out.push({ ...msg, content: text.join("\n") });
+    pending.push({ type: "text", text: `Image from tool call ${String(msg.tool_call_id)}:` }, ...images);
+  }
+  flush();
+  return changed ? { ...args, messages: out } : args;
+}
+
 export function createOpenCodeModel(options: CreateOpenCodeModelOptions): LanguageModel {
   const { provider, modelId, apiKey, sessionId, disableReasoning } = options;
 

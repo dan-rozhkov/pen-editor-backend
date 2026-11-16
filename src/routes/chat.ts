@@ -290,6 +290,9 @@ export async function chatRoutes(
   retryPolicyOverride: Partial<AgentRetryPolicy> = {},
   // Test seam: lowers the per-IP caps (defaults 300 total / 60 main per minute).
   rateLimits: { total?: number; main?: number } = {},
+  // Local mode (src/local/app.ts) serves only POST /api/chat from this module:
+  // false skips the GET /api/skills and /api/doc-templates routes below.
+  options: { auxiliaryRoutes?: boolean } = {},
 ) {
   const totalMax = rateLimits.total ?? CHAT_TOTAL_MAX_PER_MINUTE;
   const checkMainTurnLimit = createMainTurnLimiter(
@@ -344,10 +347,6 @@ export async function chatRoutes(
       });
     }
 
-    // Layer 2 of the rate limit (main turns; browse turns are allow-listed):
-    // before any LLM work and before hijack(). Throws the plugin-shaped 429.
-    await checkMainTurnLimit(request, reply);
-
     const {
       id: chatSessionId,
       messages,
@@ -359,6 +358,22 @@ export async function chatRoutes(
       browseQa,
       browseLogin,
     } = parsed.data;
+
+    // Local mode has no server-side model at all: only the user's own
+    // provider ("byok/<id>") can answer, so anything else is refused before
+    // any model work (createModel also throws for a non-BYOK ref in this mode).
+    // Both gates run before the rate limiter: a refused request must not use up
+    // the user's main-turn budget.
+    if (config.SIDEFORM_LOCAL && agentMode !== "browser" && agentMode !== "browse") {
+      return reply.status(400).send({ error: "agent_mode_unsupported" });
+    }
+    if (config.SIDEFORM_LOCAL && !(requestedModel && isByokProvider(parseModelRef(requestedModel).provider))) {
+      return reply.status(400).send({ error: "provider_required" });
+    }
+
+    // Layer 2 of the rate limit (main turns; browse turns are allow-listed):
+    // before any LLM work and before hijack(). Throws the plugin-shaped 429.
+    await checkMainTurnLimit(request, reply);
 
     // Browser mode (Sideform Light) hands every web task to browse_agent, so
     // it is refused before any model call when the server has no subagent or
@@ -907,7 +922,9 @@ export async function chatRoutes(
     // Only reflect origins from the allowlist (empty allowlist = dev mode, allow any).
     const origin = request.headers.origin;
     reply.raw.setHeader("Vary", "Origin");
-    if (origin && (isOriginAllowed(allowedOrigins, origin) || isCredentialedOrigin(config, origin))) {
+    // Local mode answers no cross-origin page: its callers are the shell's
+    // main-process proxy and the Vite dev proxy, neither of which is bound by CORS.
+    if (!config.SIDEFORM_LOCAL && origin && (isOriginAllowed(allowedOrigins, origin) || isCredentialedOrigin(config, origin))) {
       reply.raw.setHeader("Access-Control-Allow-Origin", origin);
       // The browser sends the session cookie with this request; it only hands
       // the response to the page if credentials are explicitly allowed.
@@ -989,6 +1006,8 @@ export async function chatRoutes(
     reply.hijack();
     },
   );
+
+  if (options.auxiliaryRoutes === false) return;
 
   app.get("/api/skills", async (_request, reply) => {
     const skills = getAllSkills().map((s) => ({

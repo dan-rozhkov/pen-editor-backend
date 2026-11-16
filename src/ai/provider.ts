@@ -237,6 +237,14 @@ export function createModel(
 ): LanguageModel {
   const ref = parseModelRef(modelOverride ?? config.CHAT_MODEL);
 
+  // Local mode has no server-side model: only the user's own provider
+  // (byok/) may be built. This backstop covers every ref (OpenCode and
+  // OpenRouter) so no helper (vision, judge, review, ...) can reach a
+  // server-side route from there.
+  if (config.SIDEFORM_LOCAL && !isByokProvider(ref.provider)) {
+    throw new Error("No server-side model is available in local mode: use your own provider (byok/<model>).");
+  }
+
   if (isByokProvider(ref.provider)) {
     if (!options.byok?.baseUrl || !options.byok.apiKey.trim() || !ref.modelId) {
       throw new Error(
@@ -249,6 +257,7 @@ export function createModel(
       apiKey: options.byok.apiKey,
       modelId: ref.modelId,
       allowPrivateNetwork: config.BYOK_ALLOW_PRIVATE_NETWORK,
+      restoreToolImages: config.SIDEFORM_LOCAL,
     });
   }
 
@@ -294,6 +303,9 @@ export function createModel(
     });
   }
 
+  if (!config.OPENROUTER_API_KEY) {
+    throw new Error("No server-side model is available: OPENROUTER_API_KEY is not set.");
+  }
   const openrouter = createOpenRouter({
     apiKey: config.OPENROUTER_API_KEY,
   });

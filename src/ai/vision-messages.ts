@@ -15,7 +15,7 @@ import {
   visionCacheKey,
 } from "../services/vision.js";
 import { parseScreenshotDataUrl, SCREENSHOT_TOOL_NAMES } from "./screenshotOutput.js";
-import { isByokProvider, parseModelRef, providerHandlesToolResultImages } from "./modelRef.js";
+import { isByokProvider, parseModelRef, providerHandlesToolResultImages, type ModelRef } from "./modelRef.js";
 import {
   fullImageMediaType,
   imageMediaTypeFromUrl,
@@ -103,6 +103,15 @@ const RENDER_LIMIT_PLACEHOLDER = `[Image omitted: this request already reached t
 // parallelism is worth it — but not "however many images the history holds".
 const DESCRIBE_CONCURRENCY = 4;
 
+// Whether an image inside a tool result reaches the model as an image part.
+// providerHandlesToolResultImages is false for BYOK (the AI SDK stringifies
+// it); in local mode createByokModel moves those images into a user message
+// after the tool result itself (moveToolResultImagesToUserMessage), so the
+// model still sees them: true there.
+export function toolResultImagesNative(config: Config, ref: ModelRef): boolean {
+  return providerHandlesToolResultImages(ref) || (config.SIDEFORM_LOCAL && isByokProvider(ref.provider));
+}
+
 // The one place that decides "native or text" for a given model — our
 // analog of Hermes's decide_image_input_mode. Static, not a runtime probe:
 // reuses the same DEFAULT_MODELS/getModels metadata that already powers
@@ -112,8 +121,11 @@ const DESCRIBE_CONCURRENCY = 4;
 // --model override) is assumed
 // vision-capable, matching getModels' own convention.
 export function modelSupportsVision(config: Config, modelId: string): boolean {
-  // The user's own endpoint: we cannot know what the model reads.
-  if (isByokProvider(parseModelRef(modelId).provider)) return false;
+  // The user's own endpoint: we cannot know what the model reads. Hosted: not
+  // vision (images are described by VISION_MODEL). Local mode has no
+  // VISION_MODEL, and a browser agent needs screenshots, so the user's model
+  // is assumed vision-capable there (same convention as an unlisted model).
+  if (isByokProvider(parseModelRef(modelId).provider)) return config.SIDEFORM_LOCAL;
   const model = getModels(config).find((m) => m.id === modelId);
   return model ? model.supportsVision : true;
 }
@@ -874,12 +886,13 @@ export async function applyVisionPreprocessing(
 ): Promise<ModelMessage[]> {
   const { config, modelId } = opts;
   const vision = modelSupportsVision(config, modelId);
-  const toolResultImagesNative = providerHandlesToolResultImages(
+  const imagesNative = toolResultImagesNative(
+    config,
     parseModelRef(opts.chatModelRef ?? config.CHAT_MODEL),
   );
 
   // Fully native on both dimensions: nothing to rewrite.
-  if (vision && toolResultImagesNative) return messages;
+  if (vision && imagesNative) return messages;
 
   // vision=true here means we only need to rewrite TOOL-RESULT image slots
   // (get_screenshot, or any MCP tool that returns image content) —

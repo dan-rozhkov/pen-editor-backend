@@ -10,7 +10,7 @@ import { markCacheBreakpoint, usesAnthropicPromptCache } from "./anthropicCache.
 import { createHash } from "node:crypto";
 import type { Config } from "../config.js";
 import { withStepWatchdog } from "./stepWatchdog.js";
-import { bareModelId, createModel, isByokProvider, parseModelRef, providerHandlesToolResultImages } from "./provider.js";
+import { bareModelId, createModel, isByokProvider, parseModelRef } from "./provider.js";
 import { SCHEDULE_TOOL_NAMES, scheduleTools } from "./scheduleTools.js";
 import { penTools, browseOpenToolApp, browseOpenToolAppNative, browseActToolAppNative, browseAgentToolWithApp, browseAgentToolNoCapture, browseAgentToolNoQa, browseAgentToolQaIsolated, browseAgentToolQaNoAssert, browseAgentToolQaIsolatedNoAssert, makeBatchDesignTool, makeAnalyzeImageTool } from "./tools.js";
 import { BROWSE_AGENT_TOOL_NAMES, QA_ASSERT_TOOL, QA_VERDICT_TOOL } from "@sideform/browser-agent/agent";
@@ -19,7 +19,7 @@ import { resolveTaskPolicy, type TaskPolicy } from "./taskPolicy.js";
 import { applyImageBudget, planImageElision } from "./image-budget.js";
 import { applyTextBudget, planTextBudget, type TextBudgetReport } from "./text-budget.js";
 import { freezeElidedSlots, resolveImageRescues } from "./imageRelevance.js";
-import { applyVisionPreprocessing, modelSupportsVision } from "./vision-messages.js";
+import { applyVisionPreprocessing, modelSupportsVision, toolResultImagesNative } from "./vision-messages.js";
 import { SCREENSHOT_TOOL_NAMES, promoteScreenshotToolOutputs } from "./screenshotOutput.js";
 import { isVisionConfigured } from "../services/vision.js";
 import { isQuiverConfigured } from "../services/quiver.js";
@@ -1003,9 +1003,7 @@ export async function prepareChatTurn(
   // docs/specs/2026-09-20-image-context-budget-design.md.
   const imagesSurviveAsImages =
     modelSupportsVision(config, selectedModelId) &&
-    providerHandlesToolResultImages(
-      parseModelRef(modelOverride ?? config.CHAT_MODEL),
-    );
+    toolResultImagesNative(config, parseModelRef(modelOverride ?? config.CHAT_MODEL));
 
   // Phase 2 (see docs/specs/2026-09-21-jev-image-relevance-design.md): Jev
   // can SPARE a slot phase 1's step-wise recency window was about to elide
@@ -1329,11 +1327,9 @@ export async function prepareChatTurn(
     // in the set when EITHER a real image reaches the model natively (axes 1
     // AND 2 both true) OR a VISION_MODEL is configured to describe it instead.
     const chatModelRef = modelOverride ?? config.CHAT_MODEL;
-    const toolResultImagesNative = providerHandlesToolResultImages(
-      parseModelRef(chatModelRef),
-    );
     const nativeVisionPath =
-      modelSupportsVision(config, selectedModelId) && toolResultImagesNative;
+      modelSupportsVision(config, selectedModelId) &&
+      toolResultImagesNative(config, parseModelRef(chatModelRef));
     if (!nativeVisionPath && !isVisionConfigured(config)) {
       for (const name of SCREENSHOT_TOOL_NAMES) {
         delete tools[name];

@@ -32,6 +32,7 @@ export function makeConfig(overrides: Partial<Config> = {}): Config {
     ENABLE_AGENT_LOGGING: false,
     GITHUB_TOKEN: undefined,
     GITHUB_ALLOW_PRIVATE_REPOS: false,
+    SIDEFORM_LOCAL: false,
     BYOK_ALLOW_PRIVATE_NETWORK: false,
     S3_ENDPOINT: undefined,
     S3_BUCKET: undefined,

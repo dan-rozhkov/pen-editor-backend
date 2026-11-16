@@ -4,6 +4,7 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { LanguageModel } from "ai";
 import { createByokFetch } from "./byokNetwork.js";
+import { moveToolResultImagesToUserMessage } from "./opencode.js";
 
 export interface CreateByokModelOptions {
   /** Already validated by parseByokBaseUrl. */
@@ -13,6 +14,13 @@ export interface CreateByokModelOptions {
   /** What the user's provider calls the model (prefix "byok/" already removed). */
   modelId: string;
   allowPrivateNetwork: boolean;
+  /**
+   * Images inside tool results (the AI SDK stringifies them for
+   * openai-compatible) move into a user message after the tool message(s):
+   * OpenAI chat completions accept only text in role:"tool". Local mode only:
+   * there the user's model gets screenshots.
+   */
+  restoreToolImages?: boolean;
   /** Test seam; defaults to the SSRF-guarded fetch. */
   fetch?: typeof globalThis.fetch;
 }
@@ -26,6 +34,7 @@ export function createByokModel(options: CreateByokModelOptions): LanguageModel 
     // Without it no usage block arrives and raw_traces records zero tokens
     // (same reason as src/ai/opencode.ts).
     includeUsage: true,
+    ...(options.restoreToolImages ? { transformRequestBody: moveToolResultImagesToUserMessage } : {}),
   });
   return provider.chatModel(options.modelId);
 }

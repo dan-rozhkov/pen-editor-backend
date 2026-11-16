@@ -143,6 +143,16 @@ export const envSchema = z.object({
       const s = v?.toLowerCase();
       return s === "true" || s === "1";
     }),
+  // Local mode (Sideform Light's bundled backend, src/local/): NO server-side
+  // model. Set only by loadLocalConfig(); loadConfig() drops it from the env.
+  // createModel() refuses any non-BYOK model while it is on.
+  SIDEFORM_LOCAL: z
+    .string()
+    .optional()
+    .transform((v) => {
+      const s = v?.toLowerCase();
+      return s === "true" || s === "1";
+    }),
   // BYOK custom provider (docs/specs/2026-11-13-byok-custom-provider-design.md):
   // the user's Base URL is fetched by THIS server, so by default private,
   // loopback and link-local targets are refused (src/ai/byokNetwork.ts). Set
@@ -759,6 +769,8 @@ export function loadConfig(): Config {
       env[newName] = env[oldName];
     }
   }
+  // Local mode is entered only through loadLocalConfig (src/local/config.ts).
+  delete env.SIDEFORM_LOCAL;
   rejectDeepSeekModelRef(env);
   rejectOpenCodeModelRef(env);
   const result = envSchema.safeParse(env);

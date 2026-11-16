@@ -44,3 +44,8 @@ jobs:
       - run: npm run flaky:summary
         if: ${{ !cancelled() }}
       - run: npm run build
+      # The local backend bundle (Sideform Light): build it, then run the
+      # bundle copied into an empty dir (no node_modules) against a mock
+      # OpenAI-compatible provider.
+      - run: npm run build:local
+      - run: npm run smoke:local

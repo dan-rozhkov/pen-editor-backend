@@ -3,6 +3,8 @@ import Fastify, {
   type FastifyServerOptions,
 } from "fastify";
 import { isAuthEnabled, type Config } from "./config.js";
+import { maskTokenInUrl } from "./lib/maskTokenInUrl.js";
+import { buildDefaultLogger, createErrorHandler } from "./lib/httpDefaults.js";
 import { registerCors } from "./plugins/cors.js";
 import { registerMultipart } from "./plugins/multipart.js";
 import { registerRateLimit } from "./plugins/rateLimit.js";
@@ -114,31 +116,7 @@ export interface BuildAppOptions {
   authOptions?: CreateAuthOptions;
 }
 
-// The MCP WS upgrade (GET /api/mcp/ws?token=...) carries the auth token in
-// the query string. Fastify's default request logging (pino) logs req.url
-// verbatim, which would put the secret in plaintext logs. This serializer
-// masks any `*token=...` query param on the logged url — not just an exact
-// lowercase `token=`: other routes carry differently-named secrets in their
-// query string too (e.g. an editToken), and a narrower match would leave
-// those in the clear. Matches case-insensitively and requires the param
-// name to be preceded by `?`/`&` so it only fires inside the query string,
-// never inside an unrelated path segment or value.
-export function maskTokenInUrl(url: string): string {
-  return url.replace(/([?&][A-Za-z0-9_]*(?:token|ticket)=)[^&]+/gi, "$1[redacted]");
-}
-
-function buildDefaultLogger(): FastifyServerOptions["logger"] {
-  return {
-    serializers: {
-      req(request: { method?: string; url?: string }) {
-        return {
-          method: request.method,
-          url: request.url ? maskTokenInUrl(request.url) : request.url,
-        };
-      },
-    },
-  };
-}
+export { maskTokenInUrl };
 
 export async function buildApp(
   config: Config,
@@ -435,16 +413,7 @@ export async function buildApp(
   // the two routes would race two independent Postgres pools.
   await showcasePublishRoutes(app, config, showcaseStore, undefined, analytics);
 
-  app.setErrorHandler((error, _request, reply) => {
-    app.log.error(error);
-    const statusCode =
-      typeof error === "object" && error !== null && "statusCode" in error
-        ? (error as { statusCode: number }).statusCode
-        : 500;
-    const message =
-      error instanceof Error ? error.message : "Internal Server Error";
-    reply.status(statusCode).send({ error: message });
-  });
+  app.setErrorHandler(createErrorHandler(app));
 
   // Registered after setErrorHandler: @fastify/websocket (used by mcpRoutes)
   // decorates the root instance and, if registered first, causes routes

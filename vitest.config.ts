@@ -35,6 +35,10 @@ export default defineConfig({
       include: ["src/**/*.ts"],
       exclude: [
         "src/index.ts", // entrypoint: reads env and listens
+        // local-backend entrypoint: same shape; it is exercised by
+        // `npm run smoke:local` against the real bundle, and the app it builds
+        // (src/local/app.ts) is covered by test/local-mode.test.ts.
+        "src/local/index.ts",
         // analyze worker entrypoint: reads env, connects to Postgres, runs the
         // script. Its pure seams (parseWindowDays, tally, tallyInsights,
         // insightInsertValues, buildInsightsForSession) are unit-tested in
