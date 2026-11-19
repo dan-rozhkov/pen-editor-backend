@@ -9,10 +9,11 @@
 // Always binds 127.0.0.1.
 import { mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { AddressInfo } from "node:net";
 import { installAbortRejectionGuard } from "../abortRejectionGuard.js";
 import { closeAllMCPClients } from "../ai/mcp.js";
+import { createFileMemoryStore } from "../ai/memory/fileStore.js";
 import { getAllSkills, loadSkills, setSkillsDir } from "../ai/skills.js";
 import { buildLocalApp } from "./app.js";
 import { loadLocalConfig } from "./config.js";
@@ -40,6 +41,8 @@ if (!token && !insecureDev) {
 const config = loadLocalConfig();
 
 const dataDir = process.env.SIDEFORM_LOCAL_DATA_DIR;
+// Resolved before the chdir below, so a relative data dir cannot be applied twice.
+const memoryFile = dataDir ? resolve(dataDir, "agent-memory.json") : null;
 if (dataDir) {
   await mkdir(dataDir, { recursive: true });
   // Anything cwd-relative (e.g. .logs) lands in the app's data dir, not wherever the shell started us.
@@ -58,7 +61,10 @@ if (getAllSkills().length === 0) {
   console.warn("[skills] No skills loaded (skills dir missing). Continuing: browser and browse turns do not use them.");
 }
 
-const app = await buildLocalApp(config, { token, insecureDev });
+// The agent's memory is a file on the user's device. No data dir: no store, memory off.
+const memoryStore = memoryFile ? createFileMemoryStore(memoryFile) : null;
+
+const app = await buildLocalApp(config, { token, insecureDev, memoryStore });
 
 let shuttingDown = false;
 const shutdown = async () => {
@@ -67,6 +73,7 @@ const shutdown = async () => {
   try {
     await closeAllMCPClients();
     await app.close();
+    await memoryStore?.close();
   } finally {
     process.exit(0);
   }

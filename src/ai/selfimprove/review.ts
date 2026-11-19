@@ -36,12 +36,38 @@ const REVIEW_MAX_STEPS = 8;
 // never valid here — fall back to the operator's own CHAT_MODEL (an
 // OpenRouter id) instead, exactly as if no override had been passed at all.
 // An OpenRouter override still passes through unchanged.
-function reviewModelOverride(modelOverride: string | undefined): string | undefined {
+//
+// A "byok/" model is the user's own endpoint. In LOCAL mode only
+// (`config.SIDEFORM_LOCAL`, Sideform Light) it is usable here, together with
+// the credentials of the turn that picked it (`byok`, threaded from the chat
+// route, the same object prepareChatTurn uses): then the review runs on the
+// user's own model, with their own key. Without credentials it is unavailable.
+// On the HOSTED server the helper role never spends a user's own key, so a
+// byok model (with or without credentials) keeps the old fallback to CHAT_MODEL.
+interface ByokCredentials {
+  baseUrl: string;
+  apiKey: string;
+}
+
+function reviewModelOverride(
+  modelOverride: string | undefined,
+  local: boolean,
+  byok?: ByokCredentials,
+): string | undefined {
   if (!modelOverride) return modelOverride;
   const provider = parseModelRef(modelOverride).provider;
-  // A user's own BYOK endpoint is as unavailable to a helper role as an
-  // OpenCode key: no credentials are threaded here.
-  return isOpenCodeProvider(provider) || isByokProvider(provider) ? undefined : modelOverride;
+  if (isByokProvider(provider)) return local && byok?.baseUrl && byok.apiKey.trim() ? modelOverride : undefined;
+  return isOpenCodeProvider(provider) ? undefined : modelOverride;
+}
+
+// The credentials must never reach a log line or an audit payload: an upstream
+// error text can echo them.
+function redactCredentials(text: string, byok?: ByokCredentials): string {
+  let out = text;
+  for (const secret of [byok?.apiKey, byok?.baseUrl]) {
+    if (secret && secret.length >= 4) out = out.split(secret).join("[redacted]");
+  }
+  return out;
 }
 
 /* Both review thresholds now live in config.ts
@@ -178,6 +204,9 @@ export interface MaybeRunReviewInput {
   assistantText: string;
   stepCount: number;
   modelOverride?: string;
+  /** The turn's own BYOK credentials (X-BYOK-* headers), needed to run the
+   * review on a `byok/` modelOverride. Never logged, never audited. */
+  byok?: ByokCredentials;
   /**
    * True only when this HTTP request's final step made no tool calls — i.e.
    * the model gave its actual reply to the user rather than dispatching a
@@ -239,6 +268,13 @@ export async function maybeRunReview(
   // skills-only deployment (MEMORY_ENABLED false) must still be able to run.
   if (!userId || !store) return "disabled";
   if (!config.MEMORY_ENABLED && !config.SELF_SKILLS_ENABLED) return "disabled";
+
+  const reviewModelRef = reviewModelOverride(input.modelOverride, config.SIDEFORM_LOCAL, input.byok);
+  // Local mode has no server model to fall back to: a review needs the user's
+  // own byok model + credentials. Without them it is skipped BEFORE the
+  // counters are touched (nothing is reset, nothing is audited, nothing is
+  // logged), so the review fires on the first turn that can carry it.
+  if (config.SIDEFORM_LOCAL && !reviewModelRef) return "disabled";
 
   // Hoisted out of the try so the catch can tell a review that FAILED from
   // one that never started, and can still describe which counters fired.
@@ -488,7 +524,7 @@ export async function maybeRunReview(
     dueForAudit = { memoryDue: due.memoryDue, skillDue: due.skillDue };
     scenariosForAudit = scenarios;
     const result = await generateText({
-      model: createModel(config, reviewModelOverride(input.modelOverride)),
+      model: createModel(config, reviewModelRef, reviewModelRef && input.byok ? { byok: input.byok } : undefined),
       instructions: input.system,
       messages,
       tools: reviewTools,
@@ -551,7 +587,7 @@ export async function maybeRunReview(
       await logSession({
         sessionId: `memory-review-${Date.now()}`,
         timestamp: new Date().toISOString(),
-        model: bareModelId(reviewModelOverride(input.modelOverride) ?? config.CHAT_MODEL),
+        model: bareModelId(reviewModelRef ?? config.CHAT_MODEL),
         systemPrompt: input.system,
         messages: messages as unknown[],
         steps: result.steps.map((step, i) => ({
@@ -595,7 +631,7 @@ export async function maybeRunReview(
         `[review] memory review cancelled: exceeded ${input.reviewTimeoutMs ?? DEFAULT_REVIEW_TIMEOUT_MS}ms wall-clock limit`,
       );
     } else {
-      console.error("[review] memory review failed:", err);
+      console.error("[review] memory review failed:", redactCredentials(String(err), input.byok));
     }
 
     // Audit the failure too, but ONLY once the run had actually reached
@@ -621,7 +657,7 @@ export async function maybeRunReview(
         // no-evidence control group in exactly the comparison this metric
         // exists to make.
         scenario_ids: scenariosForAudit.map((s) => s.id),
-        error: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+        error: redactCredentials(err instanceof Error ? `${err.name}: ${err.message}` : String(err), input.byok),
         timeoutMs: input.reviewTimeoutMs ?? DEFAULT_REVIEW_TIMEOUT_MS,
       });
     }
@@ -643,9 +679,9 @@ function isReviewTimeoutError(err: unknown): boolean {
 export function runReviewSafe(input: MaybeRunReviewInput): void {
   try {
     maybeRunReview(input).catch((err) => {
-      console.error("[review] memory review failed:", err);
+      console.error("[review] memory review failed:", redactCredentials(String(err), input.byok));
     });
   } catch (err) {
-    console.error("[review] memory review failed:", err);
+    console.error("[review] memory review failed:", redactCredentials(String(err), input.byok));
   }
 }

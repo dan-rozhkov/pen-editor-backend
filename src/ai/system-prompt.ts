@@ -146,11 +146,18 @@ const BROWSER_MODE_SCHEDULE_SECTION = `
 /**
  * System prompt of agentMode "browser" (Sideform Light, a browser-only client
  * with no canvas). Constant per `isolated` and `schedules` flags, which are per client capability
- * and never per request: no canvas data, no memory, no catalog, nothing else
- * that varies, so the prompt-cache prefix stays byte-identical in a session.
+ * and never per request: no canvas data, no catalog, nothing else that varies.
+ * The only per-user parts are the memory guidance (stable once memory is on)
+ * and the memory snapshot, which comes last, so the cached prefix stays
+ * byte-identical up to it.
  */
-export function buildBrowserModePrompt({ isolated = false, schedules = false }: { isolated?: boolean; schedules?: boolean } = {}): string {
-  return `You are a web assistant in a desktop browser. You do tasks on the web for the user: find information, compare options, read pages, fill forms, test web apps. You have no canvas and no design tools.
+export function buildBrowserModePrompt({
+  isolated = false,
+  schedules = false,
+  memoryGuidance = false,
+  memorySnapshot = "",
+}: { isolated?: boolean; schedules?: boolean; memoryGuidance?: boolean; memorySnapshot?: string } = {}): string {
+  const base = `You are a web assistant in a desktop browser. You do tasks on the web for the user: find information, compare options, read pages, fill forms, test web apps. You have no canvas and no design tools.
 
 ## Communication style
 
@@ -186,6 +193,12 @@ Use \`ask_user\` only when you cannot continue without the answer: a real fork i
 - Report the facts the user asked for, in short form. Do not describe how the subagent got there.
 - Give sources: the URL of each page that a fact comes from. Use URLs that the \`browse_agent\` answers contain. Never invent a URL, a value or a reason.
 - If \`status\` is not \`done\`, say what happened and what is missing. Report only what was observed.${schedules ? BROWSER_MODE_SCHEDULE_SECTION : ""}`;
+  // Same order rule as buildSystemPrompt: the stable guidance extends the
+  // cached prefix, the per-user snapshot is the last (varying) block.
+  const parts = [base];
+  if (memoryGuidance) parts.push(`\n## Persistent Memory\n\n${MEMORY_GUIDANCE}`);
+  if (memorySnapshot) parts.push(`\n${memorySnapshot}`);
+  return parts.join("\n");
 }
 
 export const BROWSER_TASKS_GUIDANCE = `Any task that needs the built-in browser starts with \`browse_task\`: navigating, searching, clicking through, filling forms, adding to a cart. Hand the WHOLE user goal to ONE \`browse_task\` call. Put the user's full goal with all its constraints in \`goal\` (do not shorten it to the first step, do not break it into sub-goals or per-item calls), pass \`url\` when you know it (instead of calling \`browse_open\` first), and set \`maxSteps: 25\`. The loop drives every step itself.

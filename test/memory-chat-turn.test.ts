@@ -177,3 +177,66 @@ describe("prepareChatTurn — memory injection", () => {
     expect(turn.system.length).toBeGreaterThan(0);
   });
 });
+
+describe("prepareChatTurn — memory in the agent modes without a canvas", () => {
+  const BROWSER_CAPS = { desktopBrowser: true, browser: "desktop" as const };
+  const turnFor = async (agentMode: "browser" | "browse", store: MemoryStore | null, userId: string | null = "u1", schedules = false) => {
+    const { prepareChatTurn } = await import("../src/ai/chatTurn.js");
+    return prepareChatTurn({
+      config: makeConfig({ MEMORY_ENABLED: true, BROWSE_MODE: "agent" }),
+      messages: [userMessage("find a laptop")],
+      agentMode,
+      userId: userId ?? undefined,
+      memoryStore: store,
+      clientCapabilities: { ...BROWSER_CAPS, ...(schedules ? { schedules: true } : {}) },
+    });
+  };
+  const SNAPSHOT = { user: ["User prefers metric units"], memory: ["site X needs a cookie click"] };
+
+  it("browser mode: guidance, snapshot and the memory tool, with the fixed tool set otherwise", async () => {
+    const turn = await turnFor("browser", storeWith(SNAPSHOT), "u1", true);
+    expect(turn.memoryInjected).toBe(true);
+    expect(turn.tools.memory).toBeDefined();
+    expect(Object.keys(turn.tools).sort()).toEqual(
+      ["analyze_image", "ask_user", "browse_agent", "memory", "schedule_create", "schedule_delete", "schedule_list", "schedule_set_enabled"]
+        .sort(),
+    );
+    expect(turn.system).toContain(MEMORY_GUIDANCE);
+    expect(turn.system).toContain("User prefers metric units");
+    expect(turn.system).toContain("site X needs a cookie click");
+    // Stable text first, the per-user snapshot last.
+    expect(turn.system.indexOf("## Schedules")).toBeLessThan(turn.system.indexOf(MEMORY_GUIDANCE));
+    expect(turn.system.indexOf(MEMORY_GUIDANCE)).toBeLessThan(turn.system.indexOf("USER PROFILE (who the user is)"));
+    expect(turn.system.endsWith(turn.system.slice(turn.system.indexOf("MEMORY (your personal notes)")))).toBe(true);
+  });
+
+  it("browser mode: the prompt before the memory block is byte-identical to a memory-less turn", async () => {
+    const withMemory = await turnFor("browser", storeWith(SNAPSHOT));
+    const without = await turnFor("browser", null);
+    expect(withMemory.system.startsWith(without.system)).toBe(true);
+    expect(without.system).not.toContain("Persistent Memory");
+    expect(without.tools.memory).toBeUndefined();
+    expect(without.memoryInjected).toBe(false);
+  });
+
+  it("browser mode: no memory without a userId, with the user's switch off, or when the snapshot read fails", async () => {
+    expect((await turnFor("browser", storeWith(SNAPSHOT), null)).tools.memory).toBeUndefined();
+    expect((await turnFor("browser", storeWith(SNAPSHOT, false))).tools.memory).toBeUndefined();
+    const broken = storeWith(SNAPSHOT);
+    (broken.loadSnapshot as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("disk"));
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const turn = await turnFor("browser", broken);
+    spy.mockRestore();
+    expect(turn.tools.memory).toBeUndefined();
+    expect(turn.system).not.toContain("Persistent Memory");
+  });
+
+  it("the nested browse subagent has no memory", async () => {
+    const store = storeWith(SNAPSHOT);
+    const turn = await turnFor("browse", store);
+    expect(turn.memoryInjected).toBe(false);
+    expect(turn.tools.memory).toBeUndefined();
+    expect(turn.system).not.toContain("User prefers metric units");
+    expect(store.loadSnapshot).not.toHaveBeenCalled();
+  });
+});

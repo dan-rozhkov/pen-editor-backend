@@ -275,7 +275,8 @@ export interface PreparedChatTurn {
 }
 
 // The whole tool set of the main model in agentMode "browser" (the final
-// allowlist in prepareChatTurn); the browse/trace gates still apply on top.
+// allowlist in prepareChatTurn, plus `memory` when memory is injected); the
+// browse/trace gates still apply on top.
 // trace_frame is left out on purpose: its params (`placeOnCanvas`, x, y) are
 // canvas-bound, and trace_read already gives the text of a run. trace_open is
 // left out as well (the contract names exactly these five). This is the base
@@ -310,9 +311,10 @@ export async function prepareChatTurn(
   // tool set (see BROWSER_MODE_TOOL_NAMES). It runs on the normal chat model.
   const browserMode = input.agentMode === "browser";
   // ONE flag for every gate both restricted turns share (canvas, slash
-  // skills, auto-pick, learned/user skills, catalog, memory, audit, MCP): the
+  // skills, auto-pick, learned/user skills, catalog, audit, MCP): the
   // browse subagent and the browser-only main turn. A new gate keys off this,
-  // so it cannot forget a mode.
+  // so it cannot forget a mode. Memory is NOT one of them: the browser-only
+  // main turn has memory, only the nested browse subagent does not.
   const restrictedTurn = browseSub || browserMode;
   const canvasContext = restrictedTurn ? undefined : input.canvasContext;
   // The model the turn actually runs on. A browsing subagent always runs on
@@ -832,7 +834,7 @@ export async function prepareChatTurn(
   // failing the user's request — losing memory for one turn is recoverable,
   // losing the turn is not.
   const memoryStore = input.memoryStore ?? null;
-  const memoryEligible = Boolean(!restrictedTurn && config.MEMORY_ENABLED && input.userId && memoryStore);
+  const memoryEligible = Boolean(!browseSub && config.MEMORY_ENABLED && input.userId && memoryStore);
   let memorySnapshotBlock = "";
   let memoryInjected = false;
   if (memoryEligible && memoryStore && input.userId) {
@@ -915,7 +917,12 @@ export async function prepareChatTurn(
   const system = browseSub
     ? browseAgentPrompt({ qa: browseQaAllowed, login: browseLoginAllowed })
     : browserMode
-    ? buildBrowserModePrompt({ isolated: clientHasIsolation, schedules: schedulesOffered })
+    ? buildBrowserModePrompt({
+        isolated: clientHasIsolation,
+        schedules: schedulesOffered,
+        memoryGuidance: memoryInjected,
+        memorySnapshot: memorySnapshotBlock,
+      })
     : buildSystemPrompt(skillCatalog, {
         browserGuidance,
         memoryGuidance: memoryInjected,
@@ -1456,7 +1463,11 @@ export async function prepareChatTurn(
 
     // Browser mode: the fixed tool set wins over every gate above.
     if (browserMode) {
-      const allowed = new Set<string>([...BROWSER_MODE_TOOL_NAMES, ...(schedulesOffered ? SCHEDULE_TOOL_NAMES : [])]);
+      const allowed = new Set<string>([
+        ...BROWSER_MODE_TOOL_NAMES,
+        ...(schedulesOffered ? SCHEDULE_TOOL_NAMES : []),
+        ...(memoryInjected ? ["memory"] : []),
+      ]);
       for (const name of Object.keys(tools)) {
         if (!allowed.has(name)) delete tools[name];
       }

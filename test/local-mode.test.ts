@@ -44,7 +44,9 @@ describe("loadLocalConfig", () => {
     expect(config).toMatchObject({
       SIDEFORM_LOCAL: true,
       OPENROUTER_API_KEY: "",
-      MEMORY_ENABLED: false,
+      // Memory is on (a file on the user's device); the TypeSafe write filter cannot be.
+      MEMORY_ENABLED: true,
+      MEMORY_FILTER_MODE: "off",
       SELF_SKILLS_ENABLED: false,
       SKILL_ROUTING_MODE: "off",
       VISION_MODEL: "",
@@ -205,7 +207,7 @@ describe("local app", () => {
   });
 
   it("has no other route", async () => {
-    for (const path of ["/api/skills", "/api/doc-templates", "/api/auth/get-session", "/api/upload", "/api/memory", "/api/mcp", "/health"]) {
+    for (const path of ["/api/skills", "/api/doc-templates", "/api/auth/get-session", "/api/upload", "/api/mcp", "/health"]) {
       expect((await fetch(`${url}${path}`, { headers: authed })).status).toBe(404);
     }
     for (const path of ["/api/generate-image", "/api/prompt-suggestion", "/api/vector", "/api/showcase/publish"]) {

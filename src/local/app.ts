@@ -11,6 +11,9 @@ import { browsePlanRoutes } from "../routes/browsePlan.js";
 import { browseJudgeRoutes } from "../routes/browseJudge.js";
 import { buildDefaultLogger, createErrorHandler } from "../lib/httpDefaults.js";
 import type { AgentRetryPolicy } from "../ai/retry.js";
+import type { MemoryStore } from "../ai/memory/store.js";
+import { memoryRoutes } from "../routes/memory.js";
+import { memoryActivityRoutes } from "../routes/memoryActivity.js";
 
 export const LOCAL_TOKEN_HEADER = "x-sideform-local-token";
 
@@ -20,6 +23,8 @@ export interface BuildLocalAppOptions {
   token?: string;
   /** Dev only (`npm run dev:local`): run without a token. Without this, a missing token is an error (fail closed). */
   insecureDev?: boolean;
+  /** Where the agent's memory lives (a file store in the data dir). Null/absent: memory is off. */
+  memoryStore?: MemoryStore | null;
   // Test seams, same meaning as in buildApp.
   chatRetryPolicy?: Partial<AgentRetryPolicy>;
   chatRateLimits?: { total?: number; main?: number };
@@ -76,13 +81,16 @@ export async function buildLocalApp(
 
   await registerRateLimit(app);
 
-  // Every store and the analytics client are null: no traces, memory,
-  // learned/user skills, audit, PostHog.
+  // Every store but memory and the analytics client are null: no traces,
+  // learned/user skills, audit, PostHog. Memory is the file store of the
+  // user's data dir (null without one: the memory routes then answer
+  // "unavailable" and chat turns carry no memory).
+  const memoryStore = options.memoryStore ?? null;
   await chatRoutes(
     app,
     config,
     null,
-    null,
+    memoryStore,
     null,
     null,
     null,
@@ -91,6 +99,8 @@ export async function buildLocalApp(
     options.chatRateLimits,
     { auxiliaryRoutes: false },
   );
+  await memoryRoutes(app, config, memoryStore);
+  await memoryActivityRoutes(app, config, memoryStore);
   await byokRoutes(app, config);
   await browseStepRoutes(app, config);
   await browseLocateRoutes(app, config);

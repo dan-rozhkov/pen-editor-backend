@@ -36,7 +36,11 @@ export function loadLocalConfig(env: Record<string, string | undefined> = proces
     QA_JUDGE_MODEL: "off",
     SKILL_ROUTING_MODE: "off",
     IMAGE_RELEVANCE_MODE: "off",
-    MEMORY_ENABLED: "false",
+    // Memory is on, stored in a file on the user's device (agent-memory.json
+    // in the data dir; with no data dir buildLocalApp gets no store and
+    // memory behaves as off). The write filter needs a TypeSafe key: off.
+    MEMORY_ENABLED: "true",
+    MEMORY_FILTER_MODE: "off",
     SELF_SKILLS_ENABLED: "false",
     SCENARIOS_ENABLED: "false",
     ENABLE_AGENT_LOGGING: "false",

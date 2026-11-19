@@ -1,6 +1,5 @@
 // A real local OpenAI-compatible HTTP server for the local-mode tests and the
-// bundle smoke test (scripts/smoke-local-bundle.mjs): streaming
-// POST /v1/chat/completions (SSE) that answers with `text`, and GET /v1/models.
+// bundle smoke test (scripts/smoke-local-bundle.mjs): POST /v1/chat/completions (SSE when `stream: true`, else one JSON body) that answers with `text`, and GET /v1/models.
 // No dependency on the backend's source, so it can drive a bundle.
 import { createServer } from "node:http";
 
@@ -25,6 +24,21 @@ export async function startMockProvider(text) {
       if (req.url === "/v1/models") {
         res.setHeader("content-type", "application/json");
         res.end(JSON.stringify({ data: [{ id: "mock-model", context_length: 32000 }] }));
+        return;
+      }
+      if (req.url === "/v1/chat/completions" && body?.stream !== true) {
+        // A non-streaming call (the background memory review uses generateText).
+        res.setHeader("content-type", "application/json");
+        res.end(
+          JSON.stringify({
+            id: "chatcmpl-mock",
+            object: "chat.completion",
+            created: 0,
+            model: "mock-model",
+            choices: [{ index: 0, message: { role: "assistant", content: text }, finish_reason: "stop" }],
+            usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+          }),
+        );
         return;
       }
       if (req.url === "/v1/chat/completions") {

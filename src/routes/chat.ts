@@ -838,8 +838,10 @@ export async function chatRoutes(
         // cheap "is there anywhere to write at all" precondition — the
         // showcase runner and every headless entry point never reach it.
         // A browsing-subagent turn is a nested tool run, not a conversation:
-        // it must not tick the memory/skill review counters.
-        if (userId && memoryStore && agentMode !== "browse" && agentMode !== "browser") {
+        // it must not tick the memory/skill review counters. The browser-only
+        // main turn is a conversation and has memory (the review needs only
+        // the `memory` tool there).
+        if (userId && memoryStore && agentMode !== "browse") {
           // turnComplete computed once above, shared with the
           // agent_turn_completed capture. See the `turnComplete` doc
           // comment on MaybeRunReviewInput for what this fixes.
@@ -859,6 +861,8 @@ export async function chatRoutes(
             assistantText: steps.map((s) => s.text).join("\n").trim(),
             stepCount: steps.length,
             modelOverride,
+            // The user's own credentials: a byok/ model reviews on their provider.
+            byok,
             turnComplete,
             learnedSkillStore,
             auditDb,
