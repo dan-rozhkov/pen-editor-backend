@@ -258,6 +258,7 @@ export function createModel(
       modelId: ref.modelId,
       allowPrivateNetwork: config.BYOK_ALLOW_PRIVATE_NETWORK,
       restoreToolImages: config.SIDEFORM_LOCAL,
+      sessionId: options.sessionId,
     });
   }
 

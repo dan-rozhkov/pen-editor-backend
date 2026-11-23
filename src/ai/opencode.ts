@@ -140,9 +140,41 @@ export interface CreateOpenCodeModelOptions {
 // treats as no session at all) if nothing safe survives.
 const SAFE_SESSION_ID_CHARS = /[^A-Za-z0-9._-]/g;
 
-function sanitizeSessionId(sessionId: string): string {
+export function sanitizeSessionId(sessionId: string): string {
   const cleaned = sessionId.replace(SAFE_SESSION_ID_CHARS, "");
   return cleaned.length > 0 ? cleaned : randomUUID();
+}
+
+/** True when the base URL points at opencode.ai or one of its subdomains. */
+export function isOpenCodeHost(baseUrl: string): boolean {
+  try {
+    const host = new URL(baseUrl).hostname.toLowerCase().replace(/\.$/, "");
+    return host === "opencode.ai" || host.endsWith(".opencode.ai");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Wraps a fetch so every request carries `x-opencode-session`, forced at the
+ * network boundary. With `forceUserAgent` it also forces OPENCODE_USER_AGENT
+ * (first-party provider only; see createOpenCodeModel for why the `ai`
+ * SDK's own User-Agent would otherwise win).
+ */
+export function withOpenCodeHeaders(
+  baseFetch: typeof globalThis.fetch,
+  sessionId: string | undefined,
+  opts: { forceUserAgent?: boolean } = {},
+): typeof globalThis.fetch {
+  const safeSessionId = sanitizeSessionId(sessionId ?? "");
+  return (input, init) => {
+    // A Request input carries its own headers; init.headers would replace them, so merge both.
+    const headers = new Headers(input instanceof Request ? input.headers : undefined);
+    new Headers(init?.headers).forEach((value, name) => headers.set(name, value));
+    if (opts.forceUserAgent) headers.set("user-agent", OPENCODE_USER_AGENT);
+    headers.set("x-opencode-session", safeSessionId);
+    return baseFetch(input, { ...init, headers });
+  };
 }
 
 type ChatPart =
@@ -363,14 +395,9 @@ export function createOpenCodeModel(options: CreateOpenCodeModelOptions): Langua
   // exactly ONE mechanism responsible for both required OpenCode headers,
   // rather than one path that happens to survive and one that needed a
   // workaround.
-  const safeSessionId = sanitizeSessionId(sessionId);
-  const baseFetch = options.fetch ?? globalThis.fetch;
-  const forcedHeadersFetch: typeof fetch = (input, init) => {
-    const headers = new Headers(init?.headers);
-    headers.set("user-agent", OPENCODE_USER_AGENT);
-    headers.set("x-opencode-session", safeSessionId);
-    return baseFetch(input, { ...init, headers });
-  };
+  const forcedHeadersFetch = withOpenCodeHeaders(options.fetch ?? globalThis.fetch, sessionId, {
+    forceUserAgent: true,
+  });
 
   // createOpenAICompatible sets `Authorization: Bearer <apiKey>` itself from
   // `apiKey` (verified against node_modules/@ai-sdk/openai-compatible/dist/

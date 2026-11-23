@@ -64,7 +64,7 @@ server fetches a client-supplied URL, `src/ai/byokNetwork.ts` guards it twice
 (`parseByokBaseUrl` + a connect-time DNS lookup guard on an undici `Agent`);
 `BYOK_ALLOW_PRIVATE_NETWORK=true` switches both off for local dev. `byok/` refs
 in any server model env var are a boot failure; helper roles stay on OpenRouter.
-`POST /api/byok/models` relays `GET <base>/models`.
+`POST /api/byok/models` relays `GET <base>/models`. For an `opencode.ai`/`*.opencode.ai` base URL only, the relay and `createByokModel` force `x-opencode-session` (OpenCode answers `MissingSessionID` without it; chat uses the request `sessionId`, the relay a fresh UUID; User-Agent untouched), and the relay keeps only entries whose `api` object has a truthy `chat-completions` (entries without `api` stay).
 
 **The OpenCode key belongs to the user and lives in their browser.** It
 arrives as the `X-OpenCode-Key` header (never in the body — the body is

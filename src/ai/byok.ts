@@ -4,7 +4,7 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { LanguageModel } from "ai";
 import { createByokFetch } from "./byokNetwork.js";
-import { moveToolResultImagesToUserMessage } from "./opencode.js";
+import { isOpenCodeHost, moveToolResultImagesToUserMessage, withOpenCodeHeaders } from "./opencode.js";
 
 export interface CreateByokModelOptions {
   /** Already validated by parseByokBaseUrl. */
@@ -21,16 +21,25 @@ export interface CreateByokModelOptions {
    * there the user's model gets screenshots.
    */
   restoreToolImages?: boolean;
+  /**
+   * Stable conversation id. Only used for OpenCode hosts, which require it in
+   * x-opencode-session (a random one is generated once per model if missing).
+   */
+  sessionId?: string;
   /** Test seam; defaults to the SSRF-guarded fetch. */
   fetch?: typeof globalThis.fetch;
 }
 
 export function createByokModel(options: CreateByokModelOptions): LanguageModel {
+  const guarded =
+    options.fetch ?? createByokFetch({ allowPrivateNetwork: options.allowPrivateNetwork });
+  // OpenCode rejects requests without x-opencode-session; other providers are untouched.
+  const doFetch = isOpenCodeHost(options.baseUrl) ? withOpenCodeHeaders(guarded, options.sessionId) : guarded;
   const provider = createOpenAICompatible({
     name: "byok",
     baseURL: options.baseUrl,
     apiKey: options.apiKey,
-    fetch: options.fetch ?? createByokFetch({ allowPrivateNetwork: options.allowPrivateNetwork }),
+    fetch: doFetch,
     // Without it no usage block arrives and raw_traces records zero tokens
     // (same reason as src/ai/opencode.ts).
     includeUsage: true,

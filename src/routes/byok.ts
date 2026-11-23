@@ -1,6 +1,8 @@
+import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import type { Config } from "../config.js";
 import { createByokFetch, parseByokBaseUrl } from "../ai/byokNetwork.js";
+import { isOpenCodeHost, withOpenCodeHeaders } from "../ai/opencode.js";
 import { readCredentialHeader } from "../lib/credentialHeader.js";
 
 // Server-side relay for "Load models": the browser cannot call an arbitrary
@@ -26,8 +28,17 @@ function positiveInt(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined;
 }
 
+// OpenCode names the endpoint family in an `api` object ("chat-completions",
+// "responses", "messages", "generate-content"). This client only speaks
+// chat-completions; entries without `api` are kept.
+function speaksChatCompletions(rec: Record<string, unknown>): boolean {
+  const api = rec.api;
+  if (!api || typeof api !== "object" || Array.isArray(api)) return true;
+  return Boolean((api as Record<string, unknown>)["chat-completions"]);
+}
+
 // Defensive: `{data: [...]}` (OpenAI shape) or a bare array.
-export function extractByokModels(payload: unknown): ByokModelInfo[] {
+export function extractByokModels(payload: unknown, opts: { chatCompletionsOnly?: boolean } = {}): ByokModelInfo[] {
   const entries: unknown[] = Array.isArray(payload)
     ? payload
     : payload && typeof payload === "object" && Array.isArray((payload as { data?: unknown }).data)
@@ -37,6 +48,7 @@ export function extractByokModels(payload: unknown): ByokModelInfo[] {
   for (const entry of entries) {
     if (!entry || typeof entry !== "object") continue;
     const rec = entry as Record<string, unknown>;
+    if (opts.chatCompletionsOnly && !speaksChatCompletions(rec)) continue;
     if (typeof rec.id !== "string" || rec.id.length === 0 || byId.has(rec.id)) continue;
     const contextWindow = positiveInt(rec.context_length) ?? positiveInt(rec.context_window);
     byId.set(rec.id, contextWindow ? { id: rec.id, contextWindow } : { id: rec.id });
@@ -73,7 +85,9 @@ async function loadModels(
   doFetch: typeof fetch,
 ): Promise<Outcome> {
   try {
-    const res = await doFetch(`${baseUrl}/models`, {
+    const openCode = isOpenCodeHost(baseUrl);
+    const send = openCode ? withOpenCodeHeaders(doFetch, randomUUID()) : doFetch;
+    const res = await send(`${baseUrl}/models`, {
       headers: { Authorization: `Bearer ${apiKey}` },
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     });
@@ -92,7 +106,7 @@ async function loadModels(
     } catch {
       return { ok: false, reason: "upstream_error" };
     }
-    return { ok: true, models: extractByokModels(payload) };
+    return { ok: true, models: extractByokModels(payload, { chatCompletionsOnly: openCode }) };
   } catch {
     // Network error, timeout, or the SSRF guard refusing a private address.
     // Deliberately no detail: the error text could echo the key's URL.

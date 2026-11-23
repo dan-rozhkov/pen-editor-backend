@@ -78,6 +78,13 @@ LM Studio при `npm run dev`). По умолчанию `false`.
 `contextWindow` берётся из `context_length` (форма OpenRouter), если есть.
 Rate limit 10/мин/IP, как у `/api/opencode/validate`.
 
+Для base URL на `opencode.ai` (и `*.opencode.ai`) к каждому запросу (и к
+`/models`, и к чату) добавляется `x-opencode-session`: OpenCode отвечает
+`MissingSessionID` без него. В чате это стабильный id сессии (очищенный, иначе
+UUID на экземпляр модели), в `/models` свежий UUID. User-Agent не меняется.
+В списке моделей OpenCode остаются только записи без поля `api` или с
+`api["chat-completions"]`. Остальные провайдеры не затрагиваются.
+
 ## Сабагент
 
 Добавлено 2026-11-15 для Sideform Light. Браузерный сабагент
