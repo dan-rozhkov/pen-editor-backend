@@ -1,19 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { FastifyInstance } from "fastify";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { buildLocalApp } from "../src/local/app.js";
-import { loadLocalConfig } from "../src/local/config.js";
-import { createFileMemoryStore } from "../src/ai/memory/fileStore.js";
+import { startLocalMemoryApp } from "./localMemoryApp.js";
 
 const TOKEN = "local-ops-token";
 const USER = "3b241101-e2bb-4255-8caf-4136c566a962";
 
 describe("local app POST /api/memory/operations", () => {
-  let dir: string;
-  let app: FastifyInstance;
   let url: string;
+  let close: () => Promise<void>;
   const headers = { "x-sideform-local-token": TOKEN, "content-type": "application/json" };
   const call = async (method: string, path: string, body?: unknown) => {
     const res = await fetch(`${url}${path}${path.includes("?") ? "&" : "?"}userId=${USER}`, {
@@ -27,15 +20,9 @@ describe("local app POST /api/memory/operations", () => {
     call("POST", "/api/memory/operations", { target, operations });
 
   beforeAll(async () => {
-    dir = await mkdtemp(join(tmpdir(), "memory-ops-"));
-    const store = createFileMemoryStore(join(dir, "agent-memory.json"));
-    app = await buildLocalApp(loadLocalConfig({}), { logger: false, token: TOKEN, memoryStore: store });
-    url = await app.listen({ port: 0, host: "127.0.0.1" });
+    ({ url, close } = await startLocalMemoryApp(TOKEN, "memory-ops-"));
   });
-  afterAll(async () => {
-    await app.close();
-    await rm(dir, { recursive: true, force: true });
-  });
+  afterAll(() => close());
 
   it("needs the token", async () => {
     const res = await fetch(`${url}/api/memory/operations?userId=${USER}`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });

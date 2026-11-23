@@ -9,11 +9,8 @@ import { moveToolResultImagesToUserMessage } from "../src/ai/opencode.js";
 import { parseSse } from "./chatHarness.js";
 import { userMessage } from "./chatMocks.js";
 import { makeConfig } from "./helpers.js";
-import { createFileMemoryStore } from "../src/ai/memory/fileStore.js";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { startMockProvider } from "../scripts/lib/mockOpenAiProvider.mjs";
+import { startLocalMemoryApp } from "./localMemoryApp.js";
 
 const TOKEN = "local-test-token";
 const MODEL_TEXT = "streamed from the user's own provider";
@@ -394,21 +391,14 @@ describe("watchParent", () => {
 
 describe("local app POST /api/memory/operations", () => {
   const USER = "3b241101-e2bb-4255-8caf-4136c566a962";
-  let dir: string;
-  let app: FastifyInstance;
   let url: string;
+  let close: () => Promise<void>;
   const auth = { "x-sideform-local-token": TOKEN };
 
   beforeAll(async () => {
-    dir = await mkdtemp(join(tmpdir(), "local-mode-memory-ops-"));
-    const store = createFileMemoryStore(join(dir, "agent-memory.json"));
-    app = await buildLocalApp(loadLocalConfig({}), { logger: false, token: TOKEN, memoryStore: store });
-    url = await app.listen({ port: 0, host: "127.0.0.1" });
+    ({ url, close } = await startLocalMemoryApp(TOKEN, "local-mode-memory-ops-"));
   });
-  afterAll(async () => {
-    await app.close();
-    await rm(dir, { recursive: true, force: true });
-  });
+  afterAll(() => close());
 
   const post = (body: unknown, token = true) =>
     fetch(`${url}/api/memory/operations?userId=${USER}`, {
