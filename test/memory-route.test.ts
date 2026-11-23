@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../src/app.js";
 import { makeConfig } from "./helpers.js";
+import { buildLocalApp } from "../src/local/app.js";
+import { loadLocalConfig } from "../src/local/config.js";
 import type { MemoryStore } from "../src/ai/memory/store.js";
 import { MEMORY_LIMITS } from "../src/ai/memory/types.js";
 
@@ -131,5 +133,87 @@ describe("PUT /api/memory/settings", () => {
     await app!.close();
     await build(null);
     expect((await call("PUT", `/api/memory/settings?userId=${ID}`, { enabled: true })).status).toBe(503);
+  });
+});
+
+describe("POST /api/memory/operations", () => {
+  const ops = { target: "user", operations: [{ action: "add", content: "likes tea" }] };
+  const path = `/api/memory/operations?userId=${ID}`;
+  const okOutcome = { ok: true, entries: ["likes tea"], usage: { current: 9, limit: 1375 } };
+
+  // The route only exists in the local app (it skips the hosted write filter).
+  it("is 404 in the hosted app", async () => {
+    await build(fakeStore());
+    expect((await call("POST", path, ops)).status).toBe(404);
+  });
+
+  async function buildLocal(store: MemoryStore | null): Promise<void> {
+    app = await buildLocalApp(loadLocalConfig({}), { logger: false, insecureDev: true, memoryStore: store });
+    url = await app.listen({ port: 0, host: "127.0.0.1" });
+  }
+
+  it("applies the batch as origin user, atomically checked for the switch, and answers from the outcome", async () => {
+    const store = fakeStore({ applyOperations: vi.fn(async () => okOutcome) });
+    await buildLocal(store);
+    const res = await call("POST", path, ops);
+    expect(res).toEqual({
+      status: 200,
+      body: { ok: true, memory: ["m1"], user: ["likes tea"], limits: MEMORY_LIMITS },
+    });
+    expect(store.applyOperations).toHaveBeenCalledWith({
+      userId: ID,
+      target: "user",
+      operations: ops.operations,
+      origin: "user",
+      requireEnabled: true,
+      skipNoopAudit: true,
+    });
+  });
+
+  it("still answers 200 when the snapshot read after the commit fails", async () => {
+    const store = fakeStore({
+      applyOperations: vi.fn(async () => okOutcome),
+      loadSnapshot: vi.fn(async () => { throw new Error("boom"); }),
+    });
+    await buildLocal(store);
+    expect(await call("POST", path, ops)).toEqual({
+      status: 200,
+      body: { ok: true, memory: [], user: ["likes tea"], limits: MEMORY_LIMITS },
+    });
+  });
+
+  it("400s with memory_rejected and the store message", async () => {
+    const store = fakeStore({
+      applyOperations: vi.fn(async () => ({ ok: false, kind: "ambiguous", message: "too many matches", usage: { current: 0, limit: 1 }, currentEntries: [] })),
+    });
+    await buildLocal(store);
+    expect(await call("POST", path, ops)).toEqual({
+      status: 400,
+      body: { error: "too many matches", code: "memory_rejected" },
+    });
+  });
+
+  it("409s when the store reports memory turned off", async () => {
+    const store = fakeStore({
+      applyOperations: vi.fn(async () => ({ ok: false, kind: "disabled", message: "x", usage: { current: 0, limit: 1 }, currentEntries: [] })),
+    });
+    await buildLocal(store);
+    expect(await call("POST", path, ops)).toEqual({
+      status: 409,
+      body: { error: "Memory is turned off in Settings > Memory.", code: "memory_disabled" },
+    });
+  });
+
+  it("400s on a bad body, a foreign body userId or a missing userId, 503s when unavailable", async () => {
+    const store = fakeStore({ applyOperations: vi.fn() });
+    await buildLocal(store);
+    expect(await call("POST", path, { target: "x", operations: [] })).toEqual({ status: 400, body: { error: "Invalid body" } });
+    expect(await call("POST", path, { target: "user", operations: [] })).toEqual({ status: 400, body: { error: "Invalid body" } });
+    expect((await call("POST", "/api/memory/operations", ops)).status).toBe(400);
+    expect((await call("POST", path, { ...ops, userId: "33333333-3333-4333-8333-333333333333" })).status).toBe(400);
+    expect(store.applyOperations).not.toHaveBeenCalled();
+    await app!.close();
+    await buildLocal(null);
+    expect((await call("POST", path, ops)).status).toBe(503);
   });
 });

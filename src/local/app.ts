@@ -99,7 +99,7 @@ export async function buildLocalApp(
     options.chatRateLimits,
     { auxiliaryRoutes: false },
   );
-  await memoryRoutes(app, config, memoryStore);
+  await memoryRoutes(app, config, memoryStore, { writeRoute: true });
   await memoryActivityRoutes(app, config, memoryStore);
   await byokRoutes(app, config);
   await browseStepRoutes(app, config);

@@ -18,7 +18,7 @@ export type MemoryApplyOutcome =
   | { ok: true; entries: string[]; usage: MemoryUsage }
   | {
       ok: false;
-      kind: "over_capacity" | "no_match" | "ambiguous" | "invalid";
+      kind: "over_capacity" | "no_match" | "ambiguous" | "invalid" | "disabled";
       message: string;
       usage: MemoryUsage;
       currentEntries: string[];

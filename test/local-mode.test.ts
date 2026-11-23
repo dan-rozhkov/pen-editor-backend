@@ -9,6 +9,10 @@ import { moveToolResultImagesToUserMessage } from "../src/ai/opencode.js";
 import { parseSse } from "./chatHarness.js";
 import { userMessage } from "./chatMocks.js";
 import { makeConfig } from "./helpers.js";
+import { createFileMemoryStore } from "../src/ai/memory/fileStore.js";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { startMockProvider } from "../scripts/lib/mockOpenAiProvider.mjs";
 
 const TOKEN = "local-test-token";
@@ -385,5 +389,56 @@ describe("watchParent", () => {
     });
     vi.advanceTimersByTime(10_000);
     expect(onGone).not.toHaveBeenCalled();
+  });
+});
+
+describe("local app POST /api/memory/operations", () => {
+  const USER = "3b241101-e2bb-4255-8caf-4136c566a962";
+  let dir: string;
+  let app: FastifyInstance;
+  let url: string;
+  const auth = { "x-sideform-local-token": TOKEN };
+
+  beforeAll(async () => {
+    dir = await mkdtemp(join(tmpdir(), "local-mode-memory-ops-"));
+    const store = createFileMemoryStore(join(dir, "agent-memory.json"));
+    app = await buildLocalApp(loadLocalConfig({}), { logger: false, token: TOKEN, memoryStore: store });
+    url = await app.listen({ port: 0, host: "127.0.0.1" });
+  });
+  afterAll(async () => {
+    await app.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  const post = (body: unknown, token = true) =>
+    fetch(`${url}/api/memory/operations?userId=${USER}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...(token ? auth : {}) },
+      body: JSON.stringify(body),
+    });
+  const activity = async (sinceId: number) =>
+    (await fetch(`${url}/api/memory/activity?userId=${USER}&sinceId=${sinceId}`, { headers: auth })).json() as Promise<{ latestId: number | null; events: unknown[] }>;
+
+  it("is exposed, needs the token, writes, and emits no activity for a no-op batch", async () => {
+    expect((await post({ target: "user", operations: [{ action: "add", content: "a" }] }, false)).status).toBe(401);
+    const base = (await activity(0)).latestId ?? 0;
+    const add = await post({ target: "user", operations: [{ action: "add", content: "likes tea" }] });
+    expect(add.status).toBe(200);
+    expect(await add.json()).toMatchObject({ ok: true, user: ["likes tea"], memory: [] });
+    expect((await activity(base)).events).toHaveLength(1);
+    const again = await post({ target: "user", operations: [{ action: "add", content: "likes tea" }] });
+    expect((await again.json()).user).toEqual(["likes tea"]);
+    expect((await activity(base)).events).toHaveLength(1);
+  });
+
+  it("409s once memory is switched off", async () => {
+    await fetch(`${url}/api/memory/settings?userId=${USER}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json", ...auth },
+      body: JSON.stringify({ enabled: false }),
+    });
+    const res = await post({ target: "user", operations: [{ action: "add", content: "b" }] });
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe("memory_disabled");
   });
 });

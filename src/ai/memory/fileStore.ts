@@ -2,7 +2,7 @@ import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
 import { z } from "zod";
 import { buildActivityDetail } from "./activityDetail.js";
-import { applyMemoryOperations } from "./apply.js";
+import { applyMemoryOperations, usageOf } from "./apply.js";
 import type {
   AuditActivityEvent,
   AuditEntry,
@@ -228,13 +228,25 @@ export function createFileMemoryStore(filePath: string): MemoryStore {
         return { memory: [...(u?.memory ?? [])], user: [...(u?.user ?? [])] };
       }),
 
-    applyOperations: ({ userId, target, operations, origin, attribution }) =>
+    applyOperations: ({ userId, target, operations, origin, attribution, requireEnabled, skipNoopAudit }) =>
       run(async () => {
         const draft = structuredClone(await load());
+        if (requireEnabled && getUser(draft, userId)?.enabled === false) {
+          return {
+            ok: false as const,
+            kind: "disabled" as const,
+            message: "Memory is turned off in Settings > Memory.",
+            usage: usageOf([], target),
+            currentEntries: [],
+          };
+        }
         const user = ensureUser(draft, userId);
         const outcome = applyMemoryOperations(user[target], operations, target);
         // A failed batch changes nothing and writes no audit row (pg ROLLBACK).
         if (!outcome.ok) return outcome;
+        if (skipNoopAudit && JSON.stringify(outcome.entries) === JSON.stringify(user[target])) {
+          return outcome;
+        }
         user[target] = outcome.entries;
         user.updatedAt = new Date().toISOString();
         pushAudit(draft, {

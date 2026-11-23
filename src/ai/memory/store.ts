@@ -4,6 +4,7 @@ import { createPgPool } from "../../tracing/traceStore.js";
 import type { ReviewAttribution } from "../selfimprove/attribution.js";
 import { applyMemoryOperations, type MemoryApplyOutcome } from "./apply.js";
 import {
+  MEMORY_LIMITS,
   type MemoryOperation,
   type MemorySnapshot,
   type MemoryTarget,
@@ -103,6 +104,12 @@ export interface MemoryStore {
     origin: AuditOrigin;
     /** Stamped into the audit row's payload; real payload fields win. */
     attribution?: ReviewAttribution;
+    /** Check the per-user "remembers" switch under the same lock/transaction
+     * as the write; off = `{ ok: false, kind: "disabled" }`, nothing written. */
+    requireEnabled?: boolean;
+    /** A batch that leaves the entries unchanged writes no audit row (no
+     * "memory updated" event). Default false: the agent tool is unchanged. */
+    skipNoopAudit?: boolean;
   }): Promise<MemoryApplyOutcome>;
   bumpCounters(input: {
     userId: string;
@@ -228,10 +235,27 @@ export function createMemoryStore(
       return snapshot;
     },
 
-    async applyOperations({ userId, target, operations, origin, attribution }) {
+    async applyOperations({ userId, target, operations, origin, attribution, requireEnabled, skipNoopAudit }) {
       const client = await db.connect();
       try {
         await client.query("BEGIN");
+        if (requireEnabled) {
+          // FOR SHARE: a concurrent setMemoryEnabled waits for this commit.
+          const pref = (await client.query(
+            "SELECT enabled FROM agent_memory_prefs WHERE user_id = $1 FOR SHARE",
+            [userId],
+          )) as { rows: Array<{ enabled: boolean }> };
+          if (pref.rows[0]?.enabled === false) {
+            await client.query("ROLLBACK");
+            return {
+              ok: false,
+              kind: "disabled",
+              message: "Memory is turned off in Settings > Memory.",
+              usage: { current: 0, limit: MEMORY_LIMITS[target] },
+              currentEntries: [],
+            };
+          }
+        }
         // Materialize the row first: FOR UPDATE locks nothing on a row that
         // does not exist yet, so two concurrent first-writes would both read
         // an empty list and one would silently lose its entry.
@@ -248,6 +272,10 @@ export function createMemoryStore(
 
         const outcome = applyMemoryOperations(current, operations, target);
         if (!outcome.ok) {
+          await client.query("ROLLBACK");
+          return outcome;
+        }
+        if (skipNoopAudit && JSON.stringify(outcome.entries) === JSON.stringify(current)) {
           await client.query("ROLLBACK");
           return outcome;
         }

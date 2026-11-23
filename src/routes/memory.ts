@@ -4,6 +4,7 @@ import type { Config } from "../config.js";
 import type { MemoryStore } from "../ai/memory/store.js";
 import { MEMORY_LIMITS } from "../ai/memory/types.js";
 import { requireUserId } from "../auth/actor.js";
+import { memoryInputSchema } from "../ai/memory/tool.js";
 
 // Validated by resolveActor, which lets a session cookie replace it.
 const querySchema = z.object({ userId: z.string().max(64).optional() });
@@ -22,6 +23,9 @@ export async function memoryRoutes(
   app: FastifyInstance,
   config: Config,
   memoryStore: MemoryStore | null,
+  // `POST /api/memory/operations` skips the hosted LLM write filter, so only
+  // the local app (buildLocalApp) turns it on.
+  options: { writeRoute?: boolean } = {},
 ): Promise<void> {
   const available = config.MEMORY_ENABLED && memoryStore !== null;
 
@@ -113,4 +117,67 @@ export async function memoryRoutes(
       return reply.status(500).send({ error: "Memory settings write failed" });
     }
   });
+
+  if (!options.writeRoute) return;
+
+  // Explicit writes from outside the agent loop (the desktop app's MCP tools).
+  // Same atomic batch semantics as the agent's `memory` tool, but no LLM write
+  // filter: these are direct user/agent instructions, like a Settings delete.
+  app.post(
+    "/api/memory/operations",
+    { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const userId = await authorize(request, reply);
+      if (!userId) return reply;
+      const body = memoryInputSchema.safeParse(request.body);
+      if (!body.success) return reply.status(400).send({ error: "Invalid body" });
+      // The namespace is the one in the URL: a different body userId is refused.
+      // resolveActor prefers body.userId over the query, so compare to the query.
+      const bodyUserId = (request.body as { userId?: unknown }).userId;
+      const queryUserId = (request.query as { userId?: unknown }).userId;
+      if (bodyUserId !== undefined && bodyUserId !== queryUserId) {
+        return reply.status(400).send({ error: "Invalid body" });
+      }
+      if (!available || !memoryStore) return unavailable(reply);
+      const { target } = body.data;
+      let outcome;
+      try {
+        outcome = await memoryStore.applyOperations({
+          userId,
+          target,
+          operations: body.data.operations,
+          origin: "user",
+          requireEnabled: true,
+          skipNoopAudit: true,
+        });
+      } catch (err) {
+        app.log.error({ err }, "[memory] operations failed");
+        return reply.status(500).send({ error: "Memory write failed" });
+      }
+      if (!outcome.ok) {
+        if (outcome.kind === "disabled") {
+          return reply.status(409).send({
+            error: "Memory is turned off in Settings > Memory.",
+            code: "memory_disabled",
+          });
+        }
+        return reply.status(400).send({ error: outcome.message, code: "memory_rejected" });
+      }
+      // Committed: never fail from here. The written target comes from the
+      // write itself; only the other one is read (best effort).
+      const other = target === "memory" ? "user" : "memory";
+      let otherEntries: string[] = [];
+      try {
+        otherEntries = (await memoryStore.loadSnapshot(userId))[other];
+      } catch (err) {
+        app.log.error({ err }, "[memory] snapshot read after write failed");
+      }
+      return reply.send({
+        ok: true,
+        [target]: outcome.entries,
+        [other]: otherEntries,
+        limits: MEMORY_LIMITS,
+      });
+    },
+  );
 }
